@@ -115,19 +115,26 @@ func TestElector_TwoCompetingElectorsOnSameKey(t *testing.T) {
 		})
 	}()
 
-	// e2 must not acquire while e1 is leader.
+	// e2 must not acquire while e1 is leader, AND e1 must still report
+	// leadership.
 	select {
 	case <-e2Acquired:
 		t.Fatal("second elector acquired while first held the advisory lock")
 	case <-time.After(500 * time.Millisecond):
 	}
+	assert.True(t, e1.IsLeader(), "first elector must still report leadership while holding the advisory lock")
+	assert.False(t, e2.IsLeader(), "second elector must not report leadership while waiting")
 
 	cancel1()
 
-	// After e1 releases, e2 must eventually acquire.
+	// After e1 releases, e2 must eventually acquire AND e1 must transition
+	// off leadership.
 	select {
 	case <-e2Acquired:
 	case <-time.After(10 * time.Second):
 		t.Fatal("second elector never acquired after first relinquished")
 	}
+	assert.True(t, e2.IsLeader(), "second elector must report leadership after acquiring")
+	assert.Eventually(t, func() bool { return !e1.IsLeader() }, 5*time.Second, 20*time.Millisecond,
+		"cancelled first elector must transition IsLeader to false")
 }

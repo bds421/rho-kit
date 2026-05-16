@@ -125,19 +125,29 @@ func TestElector_TwoCompetingElectorsOnSameKey(t *testing.T) {
 		})
 	}()
 
-	// e2 should be blocked: confirm it doesn't acquire while e1 is leader.
+	// e2 should be blocked: confirm it doesn't acquire while e1 is leader,
+	// AND that e1 still reports leadership while e2 is waiting.
 	select {
 	case <-e2Acquired:
 		t.Fatal("second elector acquired while first still held the lock")
 	case <-time.After(500 * time.Millisecond):
 	}
+	assert.True(t, e1.IsLeader(), "first elector must still report leadership while holding the key")
+	assert.False(t, e2.IsLeader(), "second elector must not report leadership while waiting")
 
 	cancel1()
 
-	// After e1 releases, e2 must eventually acquire.
+	// After e1 releases, e2 must eventually acquire AND e1 must transition
+	// off the leader role.
 	select {
 	case <-e2Acquired:
 	case <-time.After(10 * time.Second):
 		t.Fatal("second elector never acquired after first relinquished")
 	}
+	assert.True(t, e2.IsLeader(), "second elector must report leadership after acquiring")
+	// e1.IsLeader transitions to false inside the cancelled Run before the
+	// goroutine exits; allow up to a second for the transition to propagate
+	// (Run returns ctx.Err() once OnLost has fired and the leader flag has flipped).
+	assert.Eventually(t, func() bool { return !e1.IsLeader() }, 5*time.Second, 20*time.Millisecond,
+		"cancelled first elector must transition IsLeader to false")
 }

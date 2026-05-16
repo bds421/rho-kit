@@ -340,6 +340,7 @@ by package.
 | Storage batch/migration helpers | Chunk batch operations above `storage.MaxBatchKeys`; check `MigrateResult.ErrorsTruncated`. |
 | Redis queue/stream batch helpers | Chunk above `queue.MaxBatchMessages` or `redisstream.MaxBatchMessages`. |
 | `infra/redis.HealthCheck` | Treats Redis as a critical dependency by default. Use `NonCriticalHealthCheck` for cache-only or degraded-mode services. |
+| `resilience/circuitbreaker.ErrCircuitOpen` | Sentinel message text changed from `"circuit breaker is open"` to `"circuitbreaker: circuit is open"` to match the kit-wide `pkg:` prefix convention. Use `errors.Is(err, circuitbreaker.ErrCircuitOpen)` instead of string-matching the message; the HTTP middleware's `{"error":"circuit breaker is open"}` JSON wire format is unchanged for downstream HTTP clients. |
 
 Validation evidence for the current release-prep tree:
 

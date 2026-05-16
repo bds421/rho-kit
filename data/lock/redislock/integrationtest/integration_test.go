@@ -106,6 +106,9 @@ func TestLocker_WithLockRunsFunctionExclusively(t *testing.T) {
 }
 
 // A lock's TTL expires automatically, letting another caller acquire it.
+// The token-fenced Release on the expired first lock must NOT release the
+// second holder's lock — i.e., after the TTL expires and `second` acquires,
+// `first.Release` should be a no-op and `second` should still own the key.
 func TestLocker_TTLExpiryReleasesLock(t *testing.T) {
 	client := redisClient(t)
 	lc := redislock.NewLocker(client,
@@ -125,11 +128,25 @@ func TestLocker_TTLExpiryReleasesLock(t *testing.T) {
 
 	second, ok, err := lc.Acquire(ctx, key)
 	require.NoError(t, err)
-	assert.True(t, ok, "TTL-expired lock must be re-acquirable")
-	if second != nil {
-		_ = second.Release(ctx)
-	}
-	// first.Release on an expired lock is a no-op or returns no error;
-	// we don't assert its behaviour beyond not panicking.
-	_ = first.Release(ctx)
+	require.True(t, ok, "TTL-expired lock must be re-acquirable")
+	require.NotNil(t, second)
+
+	// `first.Release` is fenced by the original owner token; it must
+	// not release `second`'s lock even though the key matches. A third
+	// contender (with a tight retry budget) confirms `second` still
+	// holds the key after `first.Release` runs.
+	require.NoError(t, first.Release(ctx),
+		"Release on a TTL-expired token must succeed as a no-op, not error")
+
+	lcShort := redislock.NewLocker(client,
+		redislock.WithTTL(500*time.Millisecond),
+		redislock.WithRetry(10*time.Millisecond, 2),
+	)
+	contender, ok, err := lcShort.Acquire(ctx, key)
+	require.NoError(t, err)
+	assert.False(t, ok,
+		"second holder must still own the key after first.Release runs against its expired token")
+	assert.Nil(t, contender)
+
+	require.NoError(t, second.Release(ctx))
 }
