@@ -162,6 +162,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Write integration tests (Redis) | `infra/redis/redistest/v2` | [testing](docs/ai/testing.md) |
 | Write integration tests (RabbitMQ) | `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest` | [testing](docs/ai/testing.md) |
 | Test storage backends | `infra/storage/storagetest/v2` | [testing](docs/ai/testing.md) |
+| One-stop test-helper umbrella (db/redis/storage/amqp aliases) | `testing/kittest/v2` (subpackages `/db`, `/redis`, `/storage`, `/amqp`) | [testing](docs/ai/testing.md) |
 | In-memory broker for unit tests | `infra/messaging/membroker` | [testing](docs/ai/testing.md) |
 | Safe integer cast (no silent overflow) | `core/safecast` | [utilities](docs/ai/utilities.md) |
 | Cryptographically random strings (OTPs, tokens) | `core/randstr` | [utilities](docs/ai/utilities.md) |
@@ -198,7 +199,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | OpenAPI helpers | `httpx/openapi` | [http](docs/ai/http.md) |
 | Run a gRPC service | `grpcx` (Server, RegisterServices) | [http](docs/ai/http.md) |
 | Scaffold a new service | `cmd/kit-new` (`-tenant` for tenant-aware Redis/cache/idempotency) | — |
-| Audit a service for security regressions | `cmd/kit-doctor` | [observability](docs/ai/observability.md) |
+| Audit a service for security regressions | `cmd/kit-doctor` (`-interactive` prompts to apply safe, idempotent fixes per finding; default `[y/N/skip-all]` is "no") | [observability](docs/ai/observability.md) |
 | Verify a running service's ASVS controls | `cmd/kit-verify` | [security](docs/ai/security.md) |
 | NATS JetStream messaging | `infra/messaging/natsbackend` | [messaging](docs/ai/messaging.md) |
 | Postgres-backed durable job queue | `data/queue/riverqueue` | [database](docs/ai/sqldb.md) |

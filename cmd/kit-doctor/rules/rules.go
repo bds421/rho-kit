@@ -42,6 +42,19 @@ func (s Severity) String() string {
 }
 
 // Finding is a single rule emission.
+//
+// Fix is optional. When non-nil and -interactive is set, kit-doctor
+// prompts the operator to apply the fix. The contract for Fix:
+//   - Must be idempotent (running twice yields the same end state).
+//   - Must NOT delete files or perform destructive operations.
+//   - On success, must return a single human-readable line describing
+//     what changed (e.g. "appended docs/audit/dependency-allowlist.txt:
+//     example.com/pkg # needs review (kit-doctor wave 153)").
+//   - On failure, must return an error explaining the cause; partial
+//     state changes must be rolled back where feasible.
+//
+// JSON output ignores Fix so the non-interactive contract is
+// byte-for-byte unchanged.
 type Finding struct {
 	Rule       string
 	Severity   Severity
@@ -49,6 +62,7 @@ type Finding struct {
 	Line       int
 	Message    string
 	Suggestion string
+	Fix        func() (summary string, err error) `json:"-"`
 }
 
 // Rule defines one check. Run is invoked once per file in the target.
