@@ -225,6 +225,7 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/runtime/v2` | Runtime | Lifecycle, cron, eventbus, batchworker, fanout, cancellation and drain behavior; saga compensable-workflow primitive (roll-forward + reverse-order best-effort rollback). |
 | `github.com/bds421/rho-kit/runtime/temporal/v2` | Adapter | Temporal dependency isolation, workflow scaffold, operational dependency caveat. |
 | `github.com/bds421/rho-kit/security/v2` | Runtime | JWT refresh, CSRF rotation, mTLS identity, SSRF guard, ASVS catalog. |
+| `github.com/bds421/rho-kit/testing/integrationtest/v2` | Integration helper | Umbrella module that will host the kit's consolidated Docker-backed integration tests (Wave 154 scaffold; per-package suites move in over follow-up commits). |
 | `github.com/bds421/rho-kit/testing/kittest/v2` | Integration helper | Re-export umbrella over dbtest/redistest/storagetest/rabbitmqtest; no runtime surface. |
 
 ## Check Command

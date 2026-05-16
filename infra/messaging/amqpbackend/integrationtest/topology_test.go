@@ -26,7 +26,7 @@ func TestDeclareTopology_Direct(t *testing.T) {
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
 		Exchange:     "test.direct",
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "test.direct.queue",
+		ConsumerGroup:        "test.direct.queue",
 		RoutingKey:   "test.key",
 	})
 	assert.NoError(t, err)
@@ -41,7 +41,7 @@ func TestDeclareTopology_Fanout(t *testing.T) {
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
 		Exchange:     "test.fanout",
 		ExchangeType: messaging.ExchangeFanout,
-		Queue:        "test.fanout.queue",
+		ConsumerGroup:        "test.fanout.queue",
 		RoutingKey:   "",
 	})
 	assert.NoError(t, err)
@@ -56,7 +56,7 @@ func TestDeclareTopology_Topic(t *testing.T) {
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
 		Exchange:     "test.topic",
 		ExchangeType: messaging.ExchangeTopic,
-		Queue:        "test.topic.queue",
+		ConsumerGroup:        "test.topic.queue",
 		RoutingKey:   "test.#",
 	})
 	assert.NoError(t, err)
@@ -71,7 +71,7 @@ func TestDeclareTopology_Headers(t *testing.T) {
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
 		Exchange:     "test.headers",
 		ExchangeType: messaging.ExchangeHeaders,
-		Queue:        "test.headers.queue",
+		ConsumerGroup:        "test.headers.queue",
 		RoutingKey:   "",
 	})
 	assert.NoError(t, err)
@@ -86,7 +86,7 @@ func TestDeclareTopology_Idempotent(t *testing.T) {
 	spec := messaging.BindingSpec{
 		Exchange:     "test.idempotent",
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "test.idempotent.queue",
+		ConsumerGroup:        "test.idempotent.queue",
 		RoutingKey:   "test.key",
 	}
 
@@ -105,7 +105,7 @@ func TestDeclareAll_RetryTopology(t *testing.T) {
 	spec := messaging.BindingSpec{
 		Exchange:     "test.retrytopo",
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "test.retrytopo.queue",
+		ConsumerGroup:        "test.retrytopo.queue",
 		RoutingKey:   "test.key",
 		Retry: &messaging.RetryPolicy{
 			MaxRetries: 3,
@@ -137,7 +137,7 @@ func TestDeclareAll_RetryTopology(t *testing.T) {
 	// to the main exchange with routing key "test.key".
 	require.NoError(t, pub.Publish(context.Background(),
 		db.RetryExchange,
-		db.Queue, // routing key for retry queue binding
+		db.ConsumerGroup, // routing key for retry queue binding
 		msg,
 	))
 
@@ -169,7 +169,7 @@ func TestDeclareAll_RetryTopology(t *testing.T) {
 	// Verify dead queue exists by publishing directly to it.
 	deadMsg, err := messaging.NewMessage("test.dead", "dead-check")
 	require.NoError(t, err)
-	require.NoError(t, pub.Publish(context.Background(), db.DeadExchange, db.Queue, deadMsg))
+	require.NoError(t, pub.Publish(context.Background(), db.DeadExchange, db.ConsumerGroup, deadMsg))
 
 	ch, err = conn.Channel()
 	require.NoError(t, err)
@@ -193,7 +193,7 @@ func TestDeclareAll_NoRetry_EmptyDeclaredFields(t *testing.T) {
 	declared, err := amqpbackend.DeclareAll(conn, messaging.BindingSpec{
 		Exchange:     "test.noretry",
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "test.noretry.queue",
+		ConsumerGroup:        "test.noretry.queue",
 		RoutingKey:   "test.key",
 		WithoutRetry: true,
 	})
@@ -220,7 +220,7 @@ func TestDeclareAll_ValidationErrors(t *testing.T) {
 	}{
 		{
 			name:    "empty exchange",
-			binding: messaging.BindingSpec{Queue: "q", ExchangeType: messaging.ExchangeDirect},
+			binding: messaging.BindingSpec{ConsumerGroup: "q", ExchangeType: messaging.ExchangeDirect},
 			errMsg:  "exchange name must not be empty",
 		},
 		{
@@ -230,23 +230,23 @@ func TestDeclareAll_ValidationErrors(t *testing.T) {
 		},
 		{
 			name:    "invalid exchange type",
-			binding: messaging.BindingSpec{Exchange: "e", Queue: "q", ExchangeType: "invalid"},
+			binding: messaging.BindingSpec{Exchange: "e", ConsumerGroup: "q", ExchangeType: "invalid"},
 			errMsg:  "unsupported exchange type",
 		},
 		{
 			name:    "missing routing key for direct exchange",
-			binding: messaging.BindingSpec{Exchange: "e", Queue: "q", ExchangeType: messaging.ExchangeDirect},
+			binding: messaging.BindingSpec{Exchange: "e", ConsumerGroup: "q", ExchangeType: messaging.ExchangeDirect},
 			errMsg:  "routing key required for direct exchange",
 		},
 		{
 			name:    "missing routing key for topic exchange",
-			binding: messaging.BindingSpec{Exchange: "e", Queue: "q", ExchangeType: messaging.ExchangeTopic},
+			binding: messaging.BindingSpec{Exchange: "e", ConsumerGroup: "q", ExchangeType: messaging.ExchangeTopic},
 			errMsg:  "routing key required for topic exchange",
 		},
 		{
 			name: "retry max retries < 1",
 			binding: messaging.BindingSpec{
-				Exchange: "e", Queue: "q", ExchangeType: messaging.ExchangeDirect, RoutingKey: "rk",
+				Exchange: "e", ConsumerGroup: "q", ExchangeType: messaging.ExchangeDirect, RoutingKey: "rk",
 				Retry: &messaging.RetryPolicy{MaxRetries: 0, Delay: time.Second},
 			},
 			errMsg: "MaxRetries must be >= 1",
@@ -254,7 +254,7 @@ func TestDeclareAll_ValidationErrors(t *testing.T) {
 		{
 			name: "retry delay <= 0",
 			binding: messaging.BindingSpec{
-				Exchange: "e", Queue: "q", ExchangeType: messaging.ExchangeDirect, RoutingKey: "rk",
+				Exchange: "e", ConsumerGroup: "q", ExchangeType: messaging.ExchangeDirect, RoutingKey: "rk",
 				Retry: &messaging.RetryPolicy{MaxRetries: 1, Delay: 0},
 			},
 			errMsg: "Delay must be >= 1ms",

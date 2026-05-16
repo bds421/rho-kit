@@ -75,7 +75,7 @@ func StartConsumers(
 				}
 			}()
 			if err := c.Consume(ctx, binding, h); err != nil && ctx.Err() == nil {
-				logger.Error("consumer permanently failed", redact.String("queue", binding.Queue), redact.Error(err))
+				logger.Error("consumer permanently failed", redact.String("consumer_group", binding.ConsumerGroup), redact.Error(err))
 				if shutdownFn != nil {
 					shutdownFn()
 				}

@@ -100,9 +100,9 @@ func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.
 
 		if b.Retry != nil {
 			db.RetryExchange = b.Exchange + ".retry"
-			db.RetryQueue = b.Queue + ".retry"
+			db.RetryQueue = b.ConsumerGroup + ".retry"
 			db.DeadExchange = messaging.DeadExchangeName(b.Exchange)
-			db.DeadQueue = b.Queue + ".dead"
+			db.DeadQueue = b.ConsumerGroup + ".dead"
 
 			if err := declareRetryTopology(ch, b, db); err != nil {
 				return nil, err
@@ -113,12 +113,12 @@ func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.
 		if b.Retry != nil {
 			queueArgs = amqp.Table{
 				"x-dead-letter-exchange":    db.RetryExchange,
-				"x-dead-letter-routing-key": b.Queue,
+				"x-dead-letter-routing-key": b.ConsumerGroup,
 			}
 		}
 
 		_, err = ch.QueueDeclare(
-			b.Queue,
+			b.ConsumerGroup,
 			true,  // durable
 			false, // auto-delete
 			false, // exclusive
@@ -130,7 +130,7 @@ func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.
 		}
 
 		if err := ch.QueueBind(
-			b.Queue,
+			b.ConsumerGroup,
 			b.RoutingKey,
 			b.Exchange,
 			false, // no-wait
@@ -172,7 +172,7 @@ func declareRetryTopology(ch *amqp.Channel, b messaging.BindingSpec, db messagin
 		return redact.WrapError("declare retry queue", err)
 	}
 
-	if err := ch.QueueBind(db.RetryQueue, b.Queue, db.RetryExchange, false, nil); err != nil {
+	if err := ch.QueueBind(db.RetryQueue, b.ConsumerGroup, db.RetryExchange, false, nil); err != nil {
 		return redact.WrapError("bind retry queue", err)
 	}
 
@@ -190,7 +190,7 @@ func declareRetryTopology(ch *amqp.Channel, b messaging.BindingSpec, db messagin
 		return redact.WrapError("declare dead queue", err)
 	}
 
-	if err := ch.QueueBind(db.DeadQueue, b.Queue, db.DeadExchange, false, nil); err != nil {
+	if err := ch.QueueBind(db.DeadQueue, b.ConsumerGroup, db.DeadExchange, false, nil); err != nil {
 		return redact.WrapError("bind dead queue", err)
 	}
 

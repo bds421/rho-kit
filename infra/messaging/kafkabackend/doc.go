@@ -22,7 +22,7 @@
 //     resulting Subscriber satisfies [messaging.Consumer] for any
 //     [messaging.Binding] whose Exchange names a topic the group is
 //     subscribed to.
-//   - Binding.Queue, when non-empty, must match the wrapped subscriber's
+//   - Binding.ConsumerGroup, when non-empty, must match the wrapped subscriber's
 //     consumer-group name (mirrors the redisbackend [FR-064] guard) so a
 //     service binding multiple "queues" to one Subscriber surfaces the
 //     configuration drift at startup rather than silently routing every
@@ -76,7 +76,7 @@
 // Kafka's consumer-group model does not natively express AMQP's
 // queue-per-binding semantics. This backend handles that by pinning
 // one Subscriber to one (brokers, groupID, topics) triple and
-// validating Binding.Queue against the configured group at Consume
+// validating Binding.ConsumerGroup against the configured group at Consume
 // time. Callers that need different consumer groups per binding must
 // construct one Subscriber per group.
 //

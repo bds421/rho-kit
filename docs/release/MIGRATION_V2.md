@@ -480,6 +480,45 @@ Validation evidence for the current release-prep tree:
 
 ## 6.X New v2.0.0 Primitives (Wave 150+)
 
+### `messaging.BindingSpec.Queue` renamed to `ConsumerGroup` (Wave 155)
+
+The `Queue` field on `messaging.BindingSpec` and `messaging.Binding`
+has been renamed to `ConsumerGroup`. The old name was an AMQP-ism —
+in AMQP a queue and a consumer group are 1:1, but Kafka and Redis
+Streams have an explicit `(topic|stream, consumer-group)` split and
+the kit's wrappers already interpreted `Queue` as "consumer group
+identity" for those backends. The rename makes the cross-backend
+invariant explicit.
+
+```go
+// Before (v1.x / pre-v2):
+spec := messaging.BindingSpec{
+    Exchange:     "orders",
+    ExchangeType: messaging.ExchangeTopic,
+    Queue:        "billing-worker",
+    RoutingKey:   "order.paid",
+}
+
+// After (v2.0.0):
+spec := messaging.BindingSpec{
+    Exchange:      "orders",
+    ExchangeType:  messaging.ExchangeTopic,
+    ConsumerGroup: "billing-worker",
+    RoutingKey:    "order.paid",
+}
+```
+
+`Binding.RetryQueue` and `Binding.DeadQueue` are unchanged — those
+fields represent AMQP topology artifacts that legitimately model
+queues, not consumer groups, and are populated only by the AMQP
+backend.
+
+`ValidateBindingSpecs` now returns `"consumer group must not be
+empty"` instead of `"queue name must not be empty"`; downstream
+assertions that match on that substring must be updated.
+
+
+
 ### Saga compensable workflows (`runtime/saga`)
 
 Wave 150 ships `runtime/saga` — an in-memory orchestrator for
@@ -734,8 +773,8 @@ Mapping notes (full detail in the package doc):
 - `routingKey` → record key (drives partition assignment under the
   default `kafka.Hash` balancer) and an `X-Routing-Key` record header.
 - `messaging.Message` → JSON-encoded record `Value`.
-- `messaging.Binding.Queue` → must match the subscriber's consumer
-  group when non-empty (mirrors `redisbackend` FR-064).
+- `messaging.Binding.ConsumerGroup` → must match the subscriber's
+  consumer group when non-empty (mirrors `redisbackend` FR-064).
 - Ack semantics: handler `nil` → `Reader.CommitMessages`. Handler
   error → offset NOT advanced; redelivered after rebalance/restart.
   `apperror.IsPermanent` → offset committed (poison-pill discard).

@@ -33,7 +33,7 @@ func TestDeclareAll_DoesNotMutateCallerSpecsBeforeOpeningChannel(t *testing.T) {
 	specs := []messaging.BindingSpec{{
 		Exchange:     "events",
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "q",
+		ConsumerGroup:        "q",
 		RoutingKey:   "rk",
 	}}
 

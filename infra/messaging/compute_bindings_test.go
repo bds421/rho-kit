@@ -17,7 +17,7 @@ func TestComputeBindings_Valid_DirectWithRetry(t *testing.T) {
 	spec := messaging.BindingSpec{
 		Exchange:     "orders",
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "orders.created",
+		ConsumerGroup:        "orders.created",
 		RoutingKey:   "order.created",
 		Retry: &messaging.RetryPolicy{
 			MaxRetries: 3,
@@ -31,7 +31,7 @@ func TestComputeBindings_Valid_DirectWithRetry(t *testing.T) {
 
 	b := bindings[0]
 	assert.Equal(t, "orders", b.Exchange)
-	assert.Equal(t, "orders.created", b.Queue)
+	assert.Equal(t, "orders.created", b.ConsumerGroup)
 	assert.Equal(t, "order.created", b.RoutingKey)
 
 	// Naming convention: <exchange>.retry, <queue>.retry, <exchange>.dead, <queue>.dead
@@ -45,7 +45,7 @@ func TestComputeBindings_Valid_FanoutNoRetry(t *testing.T) {
 	spec := messaging.BindingSpec{
 		Exchange:     "notifications",
 		ExchangeType: messaging.ExchangeFanout,
-		Queue:        "notifications.email",
+		ConsumerGroup:        "notifications.email",
 		RoutingKey:   "",
 	}
 
@@ -55,14 +55,14 @@ func TestComputeBindings_Valid_FanoutNoRetry(t *testing.T) {
 
 	b := bindings[0]
 	assert.Equal(t, "notifications", b.Exchange)
-	assert.Equal(t, "notifications.email", b.Queue)
+	assert.Equal(t, "notifications.email", b.ConsumerGroup)
 }
 
 func TestComputeBindings_Valid_TopicWithRetry(t *testing.T) {
 	spec := messaging.BindingSpec{
 		Exchange:     "events",
 		ExchangeType: messaging.ExchangeTopic,
-		Queue:        "events.audit",
+		ConsumerGroup:        "events.audit",
 		RoutingKey:   "events.#",
 		Retry: &messaging.RetryPolicy{
 			MaxRetries: 5,
@@ -85,7 +85,7 @@ func TestComputeBindings_Valid_HeadersExchange(t *testing.T) {
 	spec := messaging.BindingSpec{
 		Exchange:     "headers.ex",
 		ExchangeType: messaging.ExchangeHeaders,
-		Queue:        "headers.queue",
+		ConsumerGroup:        "headers.queue",
 		RoutingKey:   "",
 	}
 
@@ -100,14 +100,14 @@ func TestComputeBindings_MultipleSpecs(t *testing.T) {
 			// Explicit fire-and-forget binding — no retry topology.
 			Exchange:     "ex1",
 			ExchangeType: messaging.ExchangeDirect,
-			Queue:        "q1",
+			ConsumerGroup:        "q1",
 			RoutingKey:   "rk1",
 			WithoutRetry: true,
 		},
 		{
 			Exchange:     "ex2",
 			ExchangeType: messaging.ExchangeFanout,
-			Queue:        "q2",
+			ConsumerGroup:        "q2",
 			RoutingKey:   "",
 			Retry: &messaging.RetryPolicy{
 				MaxRetries: 2,
@@ -120,10 +120,10 @@ func TestComputeBindings_MultipleSpecs(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, bindings, 2)
 
-	assert.Equal(t, "q1", bindings[0].Queue)
+	assert.Equal(t, "q1", bindings[0].ConsumerGroup)
 	assert.Empty(t, bindings[0].RetryExchange, "WithoutRetry binding has no retry topology")
 
-	assert.Equal(t, "q2", bindings[1].Queue)
+	assert.Equal(t, "q2", bindings[1].ConsumerGroup)
 	assert.Equal(t, "ex2.retry", bindings[1].RetryExchange)
 }
 
@@ -132,7 +132,7 @@ func TestComputeBindings_NilRetryGetsDefault(t *testing.T) {
 		{
 			Exchange:     "ex",
 			ExchangeType: messaging.ExchangeDirect,
-			Queue:        "q",
+			ConsumerGroup:        "q",
 			RoutingKey:   "rk",
 			// no Retry, no WithoutRetry — kit applies DefaultRetryPolicy.
 		},
@@ -153,7 +153,7 @@ func TestComputeBindings_DefaultRetryDoesNotMutateInput(t *testing.T) {
 		{
 			Exchange:     "ex",
 			ExchangeType: messaging.ExchangeDirect,
-			Queue:        "q",
+			ConsumerGroup:        "q",
 			RoutingKey:   "rk",
 		},
 	}
@@ -171,7 +171,7 @@ func TestNormalizeBindingSpecs_WarningDoesNotReflectQueueName(t *testing.T) {
 	specs := []messaging.BindingSpec{{
 		Exchange:     "ex",
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "secret-token",
+		ConsumerGroup:        "secret-token",
 		RoutingKey:   "rk",
 	}}
 
@@ -185,7 +185,7 @@ func TestValidateBindingSpecs_RetryAndWithoutRetryConflict(t *testing.T) {
 		{
 			Exchange:     "ex",
 			ExchangeType: messaging.ExchangeDirect,
-			Queue:        "q",
+			ConsumerGroup:        "q",
 			RoutingKey:   "rk",
 			Retry:        &messaging.RetryPolicy{MaxRetries: 3, Delay: time.Second},
 			WithoutRetry: true, // conflict
@@ -207,7 +207,7 @@ func TestComputeBindings_OriginalSpecPreserved(t *testing.T) {
 	spec := messaging.BindingSpec{
 		Exchange:     "ex",
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "q",
+		ConsumerGroup:        "q",
 		RoutingKey:   "rk",
 		Retry:        retry,
 	}
@@ -218,7 +218,7 @@ func TestComputeBindings_OriginalSpecPreserved(t *testing.T) {
 
 	// The embedded BindingSpec must match the input.
 	assert.Equal(t, spec.Exchange, bindings[0].Exchange)
-	assert.Equal(t, spec.Queue, bindings[0].Queue)
+	assert.Equal(t, spec.ConsumerGroup, bindings[0].ConsumerGroup)
 	assert.Equal(t, spec.RoutingKey, bindings[0].RoutingKey)
 	assert.Equal(t, spec.ExchangeType, bindings[0].ExchangeType)
 	require.NotNil(t, bindings[0].Retry)
@@ -236,7 +236,7 @@ func TestFindBinding_ClonesRetryPolicy(t *testing.T) {
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
 			Exchange:   "ex",
-			Queue:      "q",
+			ConsumerGroup:      "q",
 			RoutingKey: "rk",
 			Retry:      retry,
 		},
@@ -262,26 +262,26 @@ func TestComputeBindings_ValidationErrors(t *testing.T) {
 		{
 			name: "empty exchange",
 			spec: messaging.BindingSpec{
-				Queue:        "q",
+				ConsumerGroup:        "q",
 				ExchangeType: messaging.ExchangeDirect,
 				RoutingKey:   "rk",
 			},
 			errMsg: "exchange name must not be empty",
 		},
 		{
-			name: "empty queue",
+			name: "empty consumer group",
 			spec: messaging.BindingSpec{
 				Exchange:     "ex",
 				ExchangeType: messaging.ExchangeDirect,
 				RoutingKey:   "rk",
 			},
-			errMsg: "queue name must not be empty",
+			errMsg: "consumer group must not be empty",
 		},
 		{
 			name: "unsupported exchange type",
 			spec: messaging.BindingSpec{
 				Exchange:     "ex",
-				Queue:        "q",
+				ConsumerGroup:        "q",
 				ExchangeType: "x-custom",
 				RoutingKey:   "rk",
 			},
@@ -291,7 +291,7 @@ func TestComputeBindings_ValidationErrors(t *testing.T) {
 			name: "missing routing key for direct exchange",
 			spec: messaging.BindingSpec{
 				Exchange:     "ex",
-				Queue:        "q",
+				ConsumerGroup:        "q",
 				ExchangeType: messaging.ExchangeDirect,
 				RoutingKey:   "",
 			},
@@ -301,7 +301,7 @@ func TestComputeBindings_ValidationErrors(t *testing.T) {
 			name: "missing routing key for topic exchange",
 			spec: messaging.BindingSpec{
 				Exchange:     "ex",
-				Queue:        "q",
+				ConsumerGroup:        "q",
 				ExchangeType: messaging.ExchangeTopic,
 				RoutingKey:   "",
 			},
@@ -311,7 +311,7 @@ func TestComputeBindings_ValidationErrors(t *testing.T) {
 			name: "retry MaxRetries less than 1",
 			spec: messaging.BindingSpec{
 				Exchange:     "ex",
-				Queue:        "q",
+				ConsumerGroup:        "q",
 				ExchangeType: messaging.ExchangeDirect,
 				RoutingKey:   "rk",
 				Retry:        &messaging.RetryPolicy{MaxRetries: 0, Delay: time.Second},
@@ -322,7 +322,7 @@ func TestComputeBindings_ValidationErrors(t *testing.T) {
 			name: "retry Delay zero",
 			spec: messaging.BindingSpec{
 				Exchange:     "ex",
-				Queue:        "q",
+				ConsumerGroup:        "q",
 				ExchangeType: messaging.ExchangeDirect,
 				RoutingKey:   "rk",
 				Retry:        &messaging.RetryPolicy{MaxRetries: 1, Delay: 0},
@@ -333,7 +333,7 @@ func TestComputeBindings_ValidationErrors(t *testing.T) {
 			name: "retry Delay negative",
 			spec: messaging.BindingSpec{
 				Exchange:     "ex",
-				Queue:        "q",
+				ConsumerGroup:        "q",
 				ExchangeType: messaging.ExchangeDirect,
 				RoutingKey:   "rk",
 				Retry:        &messaging.RetryPolicy{MaxRetries: 1, Delay: -time.Second},
@@ -358,18 +358,18 @@ func TestValidateBindingSpecs_DoesNotReflectBindingMetadata(t *testing.T) {
 		"unsupported exchange type": {{
 			Exchange:     "events",
 			ExchangeType: "secret-token",
-			Queue:        "queue",
+			ConsumerGroup:        "queue",
 			RoutingKey:   "rk",
 		}},
 		"missing routing key": {{
 			Exchange:     "secret-token",
 			ExchangeType: messaging.ExchangeDirect,
-			Queue:        "queue",
+			ConsumerGroup:        "queue",
 		}},
 		"retry conflict": {{
 			Exchange:     "events",
 			ExchangeType: messaging.ExchangeDirect,
-			Queue:        "secret-token",
+			ConsumerGroup:        "secret-token",
 			RoutingKey:   "rk",
 			Retry:        &messaging.RetryPolicy{MaxRetries: 1, Delay: time.Second},
 			WithoutRetry: true,
@@ -377,14 +377,14 @@ func TestValidateBindingSpecs_DoesNotReflectBindingMetadata(t *testing.T) {
 		"retry max retries": {{
 			Exchange:     "events",
 			ExchangeType: messaging.ExchangeDirect,
-			Queue:        "secret-token",
+			ConsumerGroup:        "secret-token",
 			RoutingKey:   "rk",
 			Retry:        &messaging.RetryPolicy{MaxRetries: 0, Delay: time.Second},
 		}},
 		"retry delay": {{
 			Exchange:     "events",
 			ExchangeType: messaging.ExchangeDirect,
-			Queue:        "secret-token",
+			ConsumerGroup:        "secret-token",
 			RoutingKey:   "rk",
 			Retry:        &messaging.RetryPolicy{MaxRetries: 1},
 		}},
@@ -410,7 +410,7 @@ func TestFindBinding_DoesNotReflectRoutingKey(t *testing.T) {
 
 func TestComputeBindings_ValidationError_ReturnsNilBindings(t *testing.T) {
 	_, err := messaging.ComputeBindings(messaging.BindingSpec{
-		Queue:        "q",
+		ConsumerGroup:        "q",
 		ExchangeType: messaging.ExchangeDirect,
 		RoutingKey:   "rk",
 		// Exchange is empty — triggers validation error
@@ -423,13 +423,13 @@ func TestComputeBindings_FirstInvalidSpecFails(t *testing.T) {
 	validSpec := messaging.BindingSpec{
 		Exchange:     "ex",
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "q",
+		ConsumerGroup:        "q",
 		RoutingKey:   "rk",
 	}
 	invalidSpec := messaging.BindingSpec{
 		// Missing exchange
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "q2",
+		ConsumerGroup:        "q2",
 		RoutingKey:   "rk2",
 	}
 

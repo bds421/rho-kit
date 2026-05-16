@@ -197,7 +197,7 @@ type ConsumerOption func(*Consumer)
 
 // Group returns the consumer-group name this Consumer was
 // constructed with. Used by the redisbackend wrapper to validate
-// Binding.Queue equality (audit FR-064).
+// Binding.ConsumerGroup equality (audit FR-064).
 func (c *Consumer) Group() string {
 	if c == nil {
 		return ""

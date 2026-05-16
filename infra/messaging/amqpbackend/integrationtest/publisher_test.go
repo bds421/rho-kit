@@ -29,7 +29,7 @@ func setupPublisher(t *testing.T) (*amqpbackend.Publisher, *amqpbackend.Connecti
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
 		Exchange:     "test.publish",
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "test.publish.queue",
+		ConsumerGroup:        "test.publish.queue",
 		RoutingKey:   "test.key",
 	})
 	require.NoError(t, err)

@@ -132,7 +132,7 @@ func TestConsumerMetrics_RecordDeliveryOutcomes(t *testing.T) {
 	c.metrics = metrics
 	msg, err := messaging.NewMessage("test.event", "payload")
 	require.NoError(t, err)
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Queue: "test-queue"}}
+	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
 
 	t.Run("acked", func(t *testing.T) {
 		ack := &fakeAcknowledger{}
@@ -165,7 +165,7 @@ func TestConsumerMetrics_RecordFailureOutcomes(t *testing.T) {
 		c.metrics = metrics
 		ack := &fakeAcknowledger{}
 		binding := messaging.Binding{BindingSpec: messaging.BindingSpec{
-			Queue:      "retry-queue",
+			ConsumerGroup:      "retry-queue",
 			RoutingKey: "test.event",
 			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
 		}}
@@ -182,7 +182,7 @@ func TestConsumerMetrics_RecordFailureOutcomes(t *testing.T) {
 		ack := &fakeAcknowledger{}
 		binding := messaging.Binding{
 			BindingSpec: messaging.BindingSpec{
-				Queue:      "dead-queue",
+				ConsumerGroup:      "dead-queue",
 				RoutingKey: "test.event",
 				Retry:      &messaging.RetryPolicy{MaxRetries: 3},
 			},

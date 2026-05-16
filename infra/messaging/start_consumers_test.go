@@ -27,8 +27,8 @@ func (f fakeConsumer) ConsumeOnce(context.Context, Binding, Handler) error {
 
 func TestStartConsumers_MissingHandler_ReturnsError(t *testing.T) {
 	bindings := []Binding{
-		{BindingSpec: BindingSpec{RoutingKey: "order.created", Queue: "orders"}},
-		{BindingSpec: BindingSpec{RoutingKey: "user.updated", Queue: "users"}},
+		{BindingSpec: BindingSpec{RoutingKey: "order.created", ConsumerGroup: "orders"}},
+		{BindingSpec: BindingSpec{RoutingKey: "user.updated", ConsumerGroup: "users"}},
 	}
 	handlers := map[string]Handler{
 		"order.created": func(_ context.Context, _ Delivery) error { return nil },
@@ -46,9 +46,9 @@ func TestStartConsumers_MissingHandler_ReturnsError(t *testing.T) {
 
 func TestStartConsumers_MultipleMissingHandlers(t *testing.T) {
 	bindings := []Binding{
-		{BindingSpec: BindingSpec{RoutingKey: "a.event", Queue: "qa"}},
-		{BindingSpec: BindingSpec{RoutingKey: "b.event", Queue: "qb"}},
-		{BindingSpec: BindingSpec{RoutingKey: "c.event", Queue: "qc"}},
+		{BindingSpec: BindingSpec{RoutingKey: "a.event", ConsumerGroup: "qa"}},
+		{BindingSpec: BindingSpec{RoutingKey: "b.event", ConsumerGroup: "qb"}},
+		{BindingSpec: BindingSpec{RoutingKey: "c.event", ConsumerGroup: "qc"}},
 	}
 	handlers := map[string]Handler{
 		"a.event": func(_ context.Context, _ Delivery) error { return nil },
@@ -65,7 +65,7 @@ func TestStartConsumers_MultipleMissingHandlers(t *testing.T) {
 
 func TestStartConsumers_NilHandler_ReturnsError(t *testing.T) {
 	bindings := []Binding{
-		{BindingSpec: BindingSpec{RoutingKey: "order.created", Queue: "orders"}},
+		{BindingSpec: BindingSpec{RoutingKey: "order.created", ConsumerGroup: "orders"}},
 	}
 	handlers := map[string]Handler{
 		"order.created": nil,
@@ -82,7 +82,7 @@ func TestStartConsumers_NilHandler_ReturnsError(t *testing.T) {
 
 func TestStartConsumers_NilConsumer_ReturnsError(t *testing.T) {
 	bindings := []Binding{
-		{BindingSpec: BindingSpec{RoutingKey: "order.created", Queue: "orders"}},
+		{BindingSpec: BindingSpec{RoutingKey: "order.created", ConsumerGroup: "orders"}},
 	}
 	handlers := map[string]Handler{
 		"order.created": func(_ context.Context, _ Delivery) error { return nil },
@@ -96,7 +96,7 @@ func TestStartConsumers_NilConsumer_ReturnsError(t *testing.T) {
 
 func TestStartConsumers_NilWaitGroup_ReturnsError(t *testing.T) {
 	bindings := []Binding{
-		{BindingSpec: BindingSpec{RoutingKey: "order.created", Queue: "orders"}},
+		{BindingSpec: BindingSpec{RoutingKey: "order.created", ConsumerGroup: "orders"}},
 	}
 	handlers := map[string]Handler{
 		"order.created": func(_ context.Context, _ Delivery) error { return nil },
@@ -110,7 +110,7 @@ func TestStartConsumers_NilWaitGroup_ReturnsError(t *testing.T) {
 
 func TestStartConsumers_AllHandlersPresent_NoError(t *testing.T) {
 	bindings := []Binding{
-		{BindingSpec: BindingSpec{RoutingKey: "order.created", Queue: "orders"}},
+		{BindingSpec: BindingSpec{RoutingKey: "order.created", ConsumerGroup: "orders"}},
 	}
 	handlers := map[string]Handler{
 		"order.created": func(_ context.Context, _ Delivery) error { return nil },
@@ -138,7 +138,7 @@ func TestStartConsumers_AllHandlersPresent_NoError(t *testing.T) {
 
 func TestStartConsumers_PanicRecovery_NilShutdownFn(t *testing.T) {
 	bindings := []Binding{
-		{BindingSpec: BindingSpec{RoutingKey: "order.created", Queue: "orders"}},
+		{BindingSpec: BindingSpec{RoutingKey: "order.created", ConsumerGroup: "orders"}},
 	}
 	handlers := map[string]Handler{
 		"order.created": func(_ context.Context, _ Delivery) error { return nil },
@@ -173,7 +173,7 @@ func (panicConsumer) ConsumeOnce(context.Context, Binding, Handler) error {
 
 func TestStartConsumers_ConsumeErrorCallsShutdown(t *testing.T) {
 	bindings := []Binding{
-		{BindingSpec: BindingSpec{RoutingKey: "order.created", Queue: "orders"}},
+		{BindingSpec: BindingSpec{RoutingKey: "order.created", ConsumerGroup: "orders"}},
 	}
 	handlers := map[string]Handler{
 		"order.created": func(_ context.Context, _ Delivery) error { return nil },

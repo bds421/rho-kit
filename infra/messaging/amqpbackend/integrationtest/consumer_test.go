@@ -41,7 +41,7 @@ func setupConsumerTest(t *testing.T) (*amqpbackend.Connection, *amqpbackend.Publ
 	db, err := amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
 		Exchange:     amqpTestName(t, ".exchange"),
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        amqpTestName(t, ".queue"),
+		ConsumerGroup:        amqpTestName(t, ".queue"),
 		RoutingKey:   amqpTestName(t, ".key"),
 		WithoutRetry: true,
 	})
@@ -136,7 +136,7 @@ func TestConsumeOnce_AckOnSuccess(t *testing.T) {
 	require.NoError(t, err)
 	defer ch.Close()
 
-	_, ok, err := ch.Get(db.Queue, true)
+	_, ok, err := ch.Get(db.ConsumerGroup, true)
 	require.NoError(t, err)
 	assert.False(t, ok, "expected queue to be empty after successful ack")
 }
@@ -150,7 +150,7 @@ func TestConsumeOnce_DLXRetryFlow(t *testing.T) {
 	spec := messaging.BindingSpec{
 		Exchange:     "test.retry",
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "test.retry.queue",
+		ConsumerGroup:        "test.retry.queue",
 		RoutingKey:   "test.retry.key",
 		Retry: &messaging.RetryPolicy{
 			MaxRetries: 2,
@@ -202,7 +202,7 @@ func TestConsumeOnce_MaxRetriesExceeded_GoesToDeadQueue(t *testing.T) {
 	spec := messaging.BindingSpec{
 		Exchange:     "test.maxretry",
 		ExchangeType: messaging.ExchangeDirect,
-		Queue:        "test.maxretry.queue",
+		ConsumerGroup:        "test.maxretry.queue",
 		RoutingKey:   "test.maxretry.key",
 		Retry: &messaging.RetryPolicy{
 			MaxRetries: 1,
@@ -405,7 +405,7 @@ func TestConsumeOnce_RequiresPublisher(t *testing.T) {
 		BindingSpec: messaging.BindingSpec{
 			Exchange:     "test.pub-required",
 			ExchangeType: messaging.ExchangeDirect,
-			Queue:        "test.pub-required.queue",
+			ConsumerGroup:        "test.pub-required.queue",
 			RoutingKey:   "test.key",
 			Retry:        &messaging.RetryPolicy{MaxRetries: 1, Delay: time.Second},
 		},

@@ -61,7 +61,7 @@ func TestSubscriber_Consume_RejectsForeignTopic(t *testing.T) {
 func TestSubscriber_Consume_RejectsMismatchedQueue(t *testing.T) {
 	sub := mustSubscriber(t)
 	err := sub.Consume(context.Background(), messaging.Binding{
-		BindingSpec: messaging.BindingSpec{Exchange: "events", Queue: "other-group"},
+		BindingSpec: messaging.BindingSpec{Exchange: "events", ConsumerGroup: "other-group"},
 	}, func(context.Context, messaging.Delivery) error { return nil })
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not match subscriber group")

@@ -50,10 +50,17 @@ func DefaultRetryPolicy() *RetryPolicy {
 type BindingSpec struct {
 	Exchange     string
 	ExchangeType string
-	Queue        string
-	RoutingKey   string
-	Retry        *RetryPolicy
-	WithoutRetry bool
+	// ConsumerGroup is the identity of the cooperating-consumers group
+	// that delivers this binding. In AMQP this is also the queue name
+	// (queue ↔ consumer group are 1:1 in AMQP). In Kafka/Redis Streams
+	// it is the consumer-group identity passed to the broker — the
+	// stream/topic itself comes from Exchange.
+	//
+	// Renamed from Queue in v2.0.0 wave 155 to drop the AMQP-ism.
+	ConsumerGroup string
+	RoutingKey    string
+	Retry         *RetryPolicy
+	WithoutRetry  bool
 }
 
 // Binding is a BindingSpec whose topology has been declared on the broker.
@@ -136,8 +143,8 @@ func ValidateBindingSpecs(specs []BindingSpec) error {
 		if err := ValidateExchangeName(b.Exchange); err != nil {
 			return err
 		}
-		if b.Queue == "" {
-			return fmt.Errorf("queue name must not be empty")
+		if b.ConsumerGroup == "" {
+			return errors.New("consumer group must not be empty")
 		}
 		switch b.ExchangeType {
 		case ExchangeDirect, ExchangeFanout, ExchangeTopic, ExchangeHeaders:
@@ -189,9 +196,9 @@ func ComputeBindings(specs ...BindingSpec) ([]Binding, error) {
 		db := Binding{BindingSpec: b}
 		if b.Retry != nil {
 			db.RetryExchange = b.Exchange + ".retry"
-			db.RetryQueue = b.Queue + ".retry"
+			db.RetryQueue = b.ConsumerGroup + ".retry"
 			db.DeadExchange = DeadExchangeName(b.Exchange)
-			db.DeadQueue = b.Queue + ".dead"
+			db.DeadQueue = b.ConsumerGroup + ".dead"
 		}
 		result = append(result, db)
 	}

@@ -12,15 +12,15 @@ import (
 // Consumer wraps a stream.Consumer to satisfy messaging.Consumer.
 // Binding.Exchange maps to the Redis stream name.
 //
-// FR-064 [MED]: Binding.Queue is interpreted as the *expected*
+// FR-064 [MED]: Binding.ConsumerGroup is interpreted as the *expected*
 // consumer-group name. The wrapper does NOT switch groups per
 // binding because the underlying *stream.Consumer is constructed
-// with a fixed group. If Binding.Queue is non-empty the wrapper
+// with a fixed group. If Binding.ConsumerGroup is non-empty the wrapper
 // validates it equals the wrapped consumer's group and returns an
 // error otherwise — pre-fix the field was silently ignored, so a
 // service binding multiple queues to one Consumer would route every
 // delivery through the constructor-time group regardless of
-// Binding.Queue. Construct one Consumer per (stream, group) pair.
+// Binding.ConsumerGroup. Construct one Consumer per (stream, group) pair.
 type Consumer struct {
 	consumer *stream.Consumer
 	logger   *slog.Logger
@@ -49,7 +49,7 @@ func (c *Consumer) ready() error {
 
 // Consume blocks until ctx is cancelled, dispatching messages to handler.
 // It delegates to the StreamConsumer's built-in retry and dead-letter logic.
-// The Binding.Exchange is used as the stream name; Binding.Queue, when
+// The Binding.Exchange is used as the stream name; Binding.ConsumerGroup, when
 // non-empty, must match the wrapped consumer's group (audit FR-064).
 func (c *Consumer) Consume(ctx context.Context, b messaging.Binding, handler messaging.Handler) error {
 	if err := c.ready(); err != nil {
@@ -61,8 +61,8 @@ func (c *Consumer) Consume(ctx context.Context, b messaging.Binding, handler mes
 	if err := messaging.ValidateExchangeName(b.Exchange); err != nil {
 		return err
 	}
-	if b.Queue != "" && b.Queue != c.consumer.Group() {
-		return fmt.Errorf("redisbackend: Binding.Queue does not match wrapped consumer group (FR-064): construct a separate Consumer per group")
+	if b.ConsumerGroup != "" && b.ConsumerGroup != c.consumer.Group() {
+		return fmt.Errorf("redisbackend: Binding.ConsumerGroup does not match wrapped consumer group (FR-064): construct a separate Consumer per group")
 	}
 	streamName := b.Exchange
 	c.consumer.Consume(ctx, streamName, func(ctx context.Context, sm stream.Message) error {

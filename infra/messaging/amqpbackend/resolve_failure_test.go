@@ -27,7 +27,7 @@ func retryBinding(maxRetries int) messaging.Binding {
 		BindingSpec: messaging.BindingSpec{
 			Exchange:     "test.exchange",
 			ExchangeType: messaging.ExchangeDirect,
-			Queue:        "test.queue",
+			ConsumerGroup:        "test.queue",
 			RoutingKey:   "test.key",
 			Retry: &messaging.RetryPolicy{
 				MaxRetries: maxRetries,
@@ -63,7 +63,7 @@ func TestResolveFailure_NoRetry(t *testing.T) {
 		BindingSpec: messaging.BindingSpec{
 			Exchange:     "test.exchange",
 			ExchangeType: messaging.ExchangeDirect,
-			Queue:        "test.queue",
+			ConsumerGroup:        "test.queue",
 			RoutingKey:   "test.key",
 			Retry:        nil,
 		},

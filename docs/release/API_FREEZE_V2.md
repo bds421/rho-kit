@@ -153,6 +153,7 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/infra/sqldb/pgx/integrationtest/v2` | Integration test helper | No rename/remove | pgx/Postgres integration tests. |
 | `github.com/bds421/rho-kit/observability/auditlog/postgres/integrationtest/v2` | Integration test helper | No rename/remove | Postgres audit-log integration tests (chain integrity, tamper detection, concurrent appends). |
 | `github.com/bds421/rho-kit/httpx/websocket/integrationtest/v2` | Integration test helper | No rename/remove | Real-listener WebSocket round-trip coverage for the kit adapter. |
+| `github.com/bds421/rho-kit/testing/integrationtest/v2` | Integration test helper | No rename/remove | Umbrella module for the kit's consolidated Docker-backed integration tests (Wave 154 scaffold; tests move in over follow-up commits). |
 | `github.com/bds421/rho-kit/testing/kittest/v2` | Integration test helper | No rename/remove | Re-export umbrella over `dbtest`, `redistest`, `storagetest`, and `rabbitmqtest`. Aliases only; direct imports still work. |
 
 ## Commands And Examples

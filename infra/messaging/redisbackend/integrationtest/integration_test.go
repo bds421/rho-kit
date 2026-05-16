@@ -67,7 +67,7 @@ func TestPublisherConsumer_Roundtrip(t *testing.T) {
 
 	go func() {
 		_ = c.Consume(ctx, messaging.Binding{
-			BindingSpec: messaging.BindingSpec{Exchange: streamName, Queue: group, WithoutRetry: true},
+			BindingSpec: messaging.BindingSpec{Exchange: streamName, ConsumerGroup: group, WithoutRetry: true},
 		}, func(_ context.Context, d messaging.Delivery) error {
 			received.Store(d)
 			wg.Done()
@@ -104,7 +104,7 @@ func TestPublisher_WithMaxMessageBytesEnforcesCap(t *testing.T) {
 	assert.ErrorIs(t, err, messaging.ErrMessageTooLarge)
 }
 
-// Consumer.Consume returns an error if Binding.Queue doesn't match the
+// Consumer.Consume returns an error if Binding.ConsumerGroup doesn't match the
 // wrapped consumer's group (audit FR-064).
 func TestConsumer_BindingQueueMismatch(t *testing.T) {
 	client := redisClient(t)
@@ -115,9 +115,9 @@ func TestConsumer_BindingQueueMismatch(t *testing.T) {
 	c := redisbackend.NewConsumer(cons, slog.Default())
 
 	err = c.Consume(context.Background(), messaging.Binding{
-		BindingSpec: messaging.BindingSpec{Exchange: streamName, Queue: "g-other", WithoutRetry: true},
+		BindingSpec: messaging.BindingSpec{Exchange: streamName, ConsumerGroup: "g-other", WithoutRetry: true},
 	}, func(_ context.Context, _ messaging.Delivery) error { return nil })
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Binding.Queue does not match wrapped consumer group")
+	assert.Contains(t, err.Error(), "Binding.ConsumerGroup does not match wrapped consumer group")
 }

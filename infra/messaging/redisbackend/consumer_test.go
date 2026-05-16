@@ -51,7 +51,7 @@ func TestConsumer_BindingGroupMismatchDoesNotReflectNames(t *testing.T) {
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
 			Exchange: "test.stream",
-			Queue:    "binding-secret-token-group",
+			ConsumerGroup:    "binding-secret-token-group",
 		},
 	}
 	err = consumer.Consume(context.Background(), binding, func(context.Context, messaging.Delivery) error { return nil })
@@ -59,5 +59,5 @@ func TestConsumer_BindingGroupMismatchDoesNotReflectNames(t *testing.T) {
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "wrapped-secret-token-group")
 	assert.NotContains(t, err.Error(), "binding-secret-token-group")
-	assert.Contains(t, err.Error(), "Binding.Queue does not match wrapped consumer group")
+	assert.Contains(t, err.Error(), "Binding.ConsumerGroup does not match wrapped consumer group")
 }

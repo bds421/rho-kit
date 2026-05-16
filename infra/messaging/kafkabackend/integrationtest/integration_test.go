@@ -145,7 +145,7 @@ func TestPublishConsume_RoundTrip(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		_ = sub.Consume(ctx, messaging.Binding{
-			BindingSpec: messaging.BindingSpec{Exchange: topic, Queue: group},
+			BindingSpec: messaging.BindingSpec{Exchange: topic, ConsumerGroup: group},
 		}, func(_ context.Context, d messaging.Delivery) error {
 			if d.Message.Type == probeType {
 				select {
@@ -215,7 +215,7 @@ func TestSubscriber_PermanentErrorAdvancesOffset(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		_ = sub.Consume(ctx, messaging.Binding{
-			BindingSpec: messaging.BindingSpec{Exchange: topic, Queue: group},
+			BindingSpec: messaging.BindingSpec{Exchange: topic, ConsumerGroup: group},
 		}, func(_ context.Context, d messaging.Delivery) error {
 			if d.Message.Type == probeType {
 				select {

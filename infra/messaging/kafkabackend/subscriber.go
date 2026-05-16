@@ -243,7 +243,7 @@ func NewSubscriberWithConfig(cfg Config, groupID string, topics []string, opts .
 }
 
 // Group reports the consumer-group ID this subscriber was constructed
-// with. Used by [Consume] to validate Binding.Queue.
+// with. Used by [Consume] to validate Binding.ConsumerGroup.
 func (s *Subscriber) Group() string {
 	if s == nil {
 		return ""
@@ -267,7 +267,7 @@ func (s *Subscriber) ready() error {
 }
 
 // Consume satisfies [messaging.Consumer]. The Binding.Exchange must
-// name a topic this subscriber was constructed with; Binding.Queue,
+// name a topic this subscriber was constructed with; Binding.ConsumerGroup,
 // when non-empty, must equal [Group]. Returns nil on graceful
 // shutdown (ctx cancelled) or an error if Reader construction fails.
 //
@@ -294,8 +294,8 @@ func (s *Subscriber) Consume(ctx context.Context, b messaging.Binding, handler m
 	if err := messaging.ValidateExchangeName(b.Exchange); err != nil {
 		return err
 	}
-	if b.Queue != "" && b.Queue != s.groupID {
-		return fmt.Errorf("kafkabackend: Binding.Queue %q does not match subscriber group %q — construct a separate Subscriber per group", b.Queue, s.groupID)
+	if b.ConsumerGroup != "" && b.ConsumerGroup != s.groupID {
+		return fmt.Errorf("kafkabackend: Binding.ConsumerGroup %q does not match subscriber group %q — construct a separate Subscriber per group", b.ConsumerGroup, s.groupID)
 	}
 	if !s.subscribesTo(b.Exchange) {
 		return fmt.Errorf("kafkabackend: topic %q is not in the subscriber topic set", b.Exchange)
