@@ -2,12 +2,12 @@ package amqpbackend
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
@@ -28,7 +28,7 @@ func DeclareExchanges(conn Connector, specs ...messaging.ExchangeSpec) error {
 	}
 	ch, err := conn.Channel()
 	if err != nil {
-		return fmt.Errorf("get channel: %w", err)
+		return redact.WrapError("get channel", err)
 	}
 	defer func() { _ = ch.Close() }()
 
@@ -42,7 +42,7 @@ func DeclareExchanges(conn Connector, specs ...messaging.ExchangeSpec) error {
 			false, // no-wait
 			nil,
 		); err != nil {
-			return fmt.Errorf("declare exchange: %w", err)
+			return redact.WrapError("declare exchange", err)
 		}
 	}
 	return nil
@@ -77,7 +77,7 @@ func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.
 
 	ch, err := conn.Channel()
 	if err != nil {
-		return nil, fmt.Errorf("get channel: %w", err)
+		return nil, redact.WrapError("get channel", err)
 	}
 	defer func() { _ = ch.Close() }()
 
@@ -93,7 +93,7 @@ func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.
 			false, // no-wait
 			nil,
 		); err != nil {
-			return nil, fmt.Errorf("declare exchange: %w", err)
+			return nil, redact.WrapError("declare exchange", err)
 		}
 
 		db := messaging.Binding{BindingSpec: b}
@@ -126,7 +126,7 @@ func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.
 			queueArgs,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("declare queue: %w", err)
+			return nil, redact.WrapError("declare queue", err)
 		}
 
 		if err := ch.QueueBind(
@@ -136,7 +136,7 @@ func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.
 			false, // no-wait
 			nil,
 		); err != nil {
-			return nil, fmt.Errorf("bind queue to exchange: %w", err)
+			return nil, redact.WrapError("bind queue to exchange", err)
 		}
 
 		result = append(result, db)
@@ -154,7 +154,7 @@ func declareRetryTopology(ch *amqp.Channel, b messaging.BindingSpec, db messagin
 		messaging.ExchangeDirect,
 		true, false, false, false, nil,
 	); err != nil {
-		return fmt.Errorf("declare retry exchange: %w", err)
+		return redact.WrapError("declare retry exchange", err)
 	}
 
 	// Retry queue — holds messages for the TTL delay, then dead-letters
@@ -169,11 +169,11 @@ func declareRetryTopology(ch *amqp.Channel, b messaging.BindingSpec, db messagin
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("declare retry queue: %w", err)
+		return redact.WrapError("declare retry queue", err)
 	}
 
 	if err := ch.QueueBind(db.RetryQueue, b.Queue, db.RetryExchange, false, nil); err != nil {
-		return fmt.Errorf("bind retry queue: %w", err)
+		return redact.WrapError("bind retry queue", err)
 	}
 
 	// Dead exchange — routes permanently failed messages.
@@ -182,16 +182,16 @@ func declareRetryTopology(ch *amqp.Channel, b messaging.BindingSpec, db messagin
 		messaging.ExchangeDirect,
 		true, false, false, false, nil,
 	); err != nil {
-		return fmt.Errorf("declare dead exchange: %w", err)
+		return redact.WrapError("declare dead exchange", err)
 	}
 
 	// Dead queue — permanent storage for inspection.
 	if _, err := ch.QueueDeclare(db.DeadQueue, true, false, false, false, nil); err != nil {
-		return fmt.Errorf("declare dead queue: %w", err)
+		return redact.WrapError("declare dead queue", err)
 	}
 
 	if err := ch.QueueBind(db.DeadQueue, b.Queue, db.DeadExchange, false, nil); err != nil {
-		return fmt.Errorf("bind dead queue: %w", err)
+		return redact.WrapError("bind dead queue", err)
 	}
 
 	return nil
