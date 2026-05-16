@@ -5,8 +5,14 @@ go 1.26.2
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/bds421/rho-kit/infra/redis/v2 v2.0.0
+	github.com/go-redsync/redsync/v4 v4.16.0
 	github.com/redis/go-redis/v9 v9.19.0
 	github.com/stretchr/testify v1.11.1
+)
+
+require (
+	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/hashicorp/go-multierror v1.1.1 // indirect
 )
 
 require (

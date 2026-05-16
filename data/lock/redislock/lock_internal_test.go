@@ -2,12 +2,7 @@ package redislock
 
 import (
 	"context"
-	"io"
-	"strings"
 	"testing"
-	"time"
-
-	"github.com/redis/go-redis/v9"
 )
 
 type releaseContextKey struct{}
@@ -27,50 +22,11 @@ func (*recordingLock) Extend(context.Context) (bool, error) {
 	return true, nil
 }
 
-type failingReader struct{}
-
-func (failingReader) Read([]byte) (int, error) {
-	return 0, io.ErrUnexpectedEOF
-}
-
-func TestGenerateTokenReturnsErrorOnRandomFailure(t *testing.T) {
-	prev := tokenRandReader
-	tokenRandReader = failingReader{}
-	t.Cleanup(func() { tokenRandReader = prev })
-
-	token, err := generateToken()
-	if err == nil {
-		t.Fatal("expected random failure")
-	}
-	if token != "" {
-		t.Fatalf("token = %q, want empty on error", token)
-	}
-	if !strings.Contains(err.Error(), "generate lock token") {
-		t.Fatalf("error = %v, want generate lock token context", err)
-	}
-}
-
-func TestLockerAcquireReturnsRandomFailure(t *testing.T) {
-	prev := tokenRandReader
-	tokenRandReader = failingReader{}
-	t.Cleanup(func() { tokenRandReader = prev })
-
-	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
-	t.Cleanup(func() { _ = client.Close() })
-
-	lc := NewLocker(client, WithTTL(time.Minute))
-	lock, ok, err := lc.Acquire(context.Background(), "k")
-	if err == nil {
-		t.Fatal("expected random failure")
-	}
-	if lock != nil || ok {
-		t.Fatalf("Acquire = lock=%v ok=%v, want nil false", lock, ok)
-	}
-	if !strings.Contains(err.Error(), "generate lock token") {
-		t.Fatalf("error = %v, want generate lock token context", err)
-	}
-}
-
+// Wave 126 removed the kit's bespoke token generator and the
+// SETNX-then-GET probe; those tests went with them. The
+// generate-token / orphan-window paths are now redsync's
+// responsibility and exercised by the redsync upstream test suite
+// plus the kit's integrationtest package against a real Redis.
 func TestReleaseAndJoinPreservesValuesAfterCancellation(t *testing.T) {
 	parent := context.WithValue(context.Background(), releaseContextKey{}, "trace-123")
 	ctx, cancel := context.WithCancel(parent)
