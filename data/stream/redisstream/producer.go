@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/core/v2/redact"
 	kitstream "github.com/bds421/rho-kit/data/v2/stream"
 	"github.com/bds421/rho-kit/infra/redis/v2"
@@ -349,11 +349,7 @@ func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Messa
 // missing ID and timestamp, and marshalling headers.
 func (p *Producer) buildXAddArgs(stream string, msg Message) (*goredis.XAddArgs, error) {
 	if msg.ID == "" {
-		id, err := uuid.NewV7()
-		if err != nil {
-			return nil, fmt.Errorf("generate message ID: %w", err)
-		}
-		msg.ID = id.String()
+		msg.ID = id.New()
 	}
 	if msg.Timestamp.IsZero() {
 		msg.Timestamp = time.Now().UTC()

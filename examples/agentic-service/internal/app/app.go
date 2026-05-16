@@ -54,8 +54,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
+	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 	actionlogmem "github.com/bds421/rho-kit/data/v2/actionlog/memory"
 	"github.com/bds421/rho-kit/data/v2/approval"
@@ -290,13 +289,8 @@ func dangerousAction(s approval.Store) http.HandlerFunc {
 			return
 		}
 		now := time.Now()
-		id, err := uuid.NewV7()
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
 		req, err := s.Create(r.Context(), approval.Request{
-			ID:        id.String(),
+			ID:        id.New(),
 			TenantID:  tenantID,
 			Actor:     "demo-actor",
 			Action:    "admin.dangerous-action",

@@ -4,16 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/core/v2/redact"
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
-	"github.com/google/uuid"
 	"golang.org/x/net/http/httpguts"
 
 	"github.com/bds421/rho-kit/data/v2/approval"
@@ -211,11 +210,7 @@ func defaultConfig() config {
 		actionExtractor:   func(r *http.Request) string { return r.Method + " " + httpx.RequestPath(r) },
 		resourceExtractor: httpx.RequestPath,
 		idFunc: func() (string, error) {
-			id, err := uuid.NewV7()
-			if err != nil {
-				return "", fmt.Errorf("approval: generate approval id: %w", err)
-			}
-			return id.String(), nil
+			return id.New(), nil
 		},
 		logger: slog.Default(),
 	}

@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
-	"github.com/google/uuid"
+	"github.com/bds421/rho-kit/core/v2/id"
 )
 
 // Header keys for cross-service tracing and schema versioning.
@@ -70,13 +70,8 @@ func NewMessage(msgType string, payload any) (Message, error) {
 		return Message{}, fmt.Errorf("marshal payload: %w", err)
 	}
 
-	id, err := uuid.NewV7()
-	if err != nil {
-		return Message{}, fmt.Errorf("generate message id: %w", err)
-	}
-
 	return Message{
-		ID:        id.String(),
+		ID:        id.New(),
 		Type:      msgType,
 		Payload:   data,
 		Timestamp: time.Now().UTC(),

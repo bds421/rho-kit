@@ -14,10 +14,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/core/v2/secret"
 )
@@ -274,7 +274,11 @@ type Logger struct {
 	closed      atomic.Bool
 }
 
-var newAuditID = uuid.NewV7
+// newAuditID is the package-level hook tests swap to install a
+// deterministic event ID. Production code reads through this
+// indirection rather than calling [id.New] directly so chain-HMAC
+// fixtures stay stable across runs.
+var newAuditID = id.New
 
 // Option configures a Logger.
 type Option func(*Logger)
@@ -432,14 +436,7 @@ func (l *Logger) LogE(ctx context.Context, event Event) error {
 		return ErrLoggerClosed
 	}
 	if event.ID == "" {
-		id, err := newAuditID()
-		if err != nil {
-			err = fmt.Errorf("auditlog: generate event ID: %w", err)
-			l.logger.Error("auditlog: failed to generate event ID", redact.Error(err))
-			l.recordDrop(ctx, event, err)
-			return err
-		}
-		event.ID = id.String()
+		event.ID = newAuditID()
 	}
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()

@@ -6,6 +6,7 @@ module github.com/bds421/rho-kit/infra/outbox/postgres/integrationtest/v2
 go 1.26.2
 
 require (
+	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/outbox/postgres/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/v2 v2.0.0
@@ -19,7 +20,6 @@ require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/bds421/rho-kit/core/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/io/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/observability/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect

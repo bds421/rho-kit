@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
 	outboxpg "github.com/bds421/rho-kit/infra/outbox/postgres/v2"
 	"github.com/bds421/rho-kit/infra/v2/outbox"
@@ -66,7 +67,7 @@ func openAndMigrate(t *testing.T, dsn string) *pgxpool.Pool {
 
 func mustEntry() outbox.Entry {
 	return outbox.Entry{
-		ID:          uuid.Must(uuid.NewV7()),
+		ID:          uuid.UUID(id.NewBytes()),
 		Topic:       "events",
 		RoutingKey:  "user.created",
 		MessageID:   "msg-" + uuid.NewString(),

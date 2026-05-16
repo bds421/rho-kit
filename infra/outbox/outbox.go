@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
@@ -261,13 +262,8 @@ func (w *Writer) Write(ctx context.Context, params WriteParams) error {
 		return fmt.Errorf("outbox: marshal headers: %w", err)
 	}
 
-	id, err := uuid.NewV7()
-	if err != nil {
-		return fmt.Errorf("outbox: generate entry id: %w", err)
-	}
-
 	entry := Entry{
-		ID:          id,
+		ID:          uuid.UUID(id.NewBytes()),
 		Topic:       params.Topic,
 		RoutingKey:  params.RoutingKey,
 		MessageID:   params.MessageID,

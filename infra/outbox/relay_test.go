@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/infra/v2/outbox"
 )
 
@@ -380,10 +381,10 @@ func TestRelay_Cleanup(t *testing.T) {
 	oldTime := now.Add(-48 * time.Hour)
 	recentTime := now.Add(-1 * time.Hour)
 
-	oldPublishedID, _ := uuid.NewV7()
-	recentPublishedID, _ := uuid.NewV7()
-	oldFailedID, _ := uuid.NewV7()
-	recentFailedID, _ := uuid.NewV7()
+	oldPublishedID := uuid.UUID(id.NewBytes())
+	recentPublishedID := uuid.UUID(id.NewBytes())
+	oldFailedID := uuid.UUID(id.NewBytes())
+	recentFailedID := uuid.UUID(id.NewBytes())
 
 	for _, entry := range []outbox.Entry{
 		{
@@ -625,7 +626,7 @@ func TestRelay_RecoverStaleProcessingEntries(t *testing.T) {
 
 	// Insert an entry that is stuck in "processing" with a very old created_at.
 	staleTime := time.Now().UTC().Add(-10 * time.Minute)
-	staleID, _ := uuid.NewV7()
+	staleID := uuid.UUID(id.NewBytes())
 	staleEntry := outbox.Entry{
 		ID:          staleID,
 		Topic:       "test",

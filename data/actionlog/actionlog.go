@@ -13,8 +13,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/bds421/rho-kit/core/v2/clock"
+	"github.com/bds421/rho-kit/core/v2/id"
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
-	"github.com/google/uuid"
 )
 
 // Outcome categorises an action's result. The three values are
@@ -537,11 +537,7 @@ func New(store Store, secrets SecretSource, opts ...LoggerOption) Logger {
 		secrets: secrets,
 		clock:   time.Now,
 		newID: func() (string, error) {
-			id, err := uuid.NewV7()
-			if err != nil {
-				return "", fmt.Errorf("actionlog: generate entry ID: %w", err)
-			}
-			return id.String(), nil
+			return id.New(), nil
 		},
 	}
 	for _, o := range opts {

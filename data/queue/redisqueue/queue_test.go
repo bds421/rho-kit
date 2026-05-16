@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -429,19 +428,17 @@ func TestNewQueue_GeneratesUniqueConsumerID(t *testing.T) {
 		"each Queue must have a unique consumer ID for log disambiguation")
 }
 
-func TestNewQueue_PanicsOnConsumerIDGenerationFailure(t *testing.T) {
+func TestNewQueue_UsesSwappedConsumerIDHookForDefault(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
 	prev := newQueueConsumerID
-	newQueueConsumerID = func() (uuid.UUID, error) {
-		return uuid.Nil, errors.New("rng failed")
-	}
+	newQueueConsumerID = func() string { return "deterministic-consumer" }
 	t.Cleanup(func() { newQueueConsumerID = prev })
 
-	assert.PanicsWithValue(t,
-		"redisqueue: NewQueue generate consumer ID: rng failed",
-		func() { _ = NewQueue(client) })
+	q := NewQueue(client)
+	t.Cleanup(func() { _ = q.Close() })
+	assert.Equal(t, "deterministic-consumer", q.ConsumerID())
 }
 
 func TestNewQueue_WithConsumerIDSkipsDefaultIDGeneration(t *testing.T) {
@@ -449,8 +446,9 @@ func TestNewQueue_WithConsumerIDSkipsDefaultIDGeneration(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	prev := newQueueConsumerID
-	newQueueConsumerID = func() (uuid.UUID, error) {
-		return uuid.Nil, errors.New("should not be called")
+	newQueueConsumerID = func() string {
+		t.Fatal("default consumer ID generator must not run when WithConsumerID is set")
+		return ""
 	}
 	t.Cleanup(func() { newQueueConsumerID = prev })
 

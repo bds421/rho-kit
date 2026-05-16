@@ -8,8 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/google/uuid"
-
+	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
@@ -88,12 +87,8 @@ func NewMessage(msgType string, payload any) (Message, error) {
 	if err != nil {
 		return Message{}, redact.WrapError("marshal payload", err)
 	}
-	id, err := uuid.NewV7()
-	if err != nil {
-		return Message{}, redact.WrapError("generate message ID", err)
-	}
 	msg := Message{
-		ID:        id.String(),
+		ID:        id.New(),
 		Type:      msgType,
 		Payload:   data,
 		Timestamp: time.Now().UTC(),

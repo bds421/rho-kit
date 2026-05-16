@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/infra/v2/outbox"
 )
@@ -647,15 +648,14 @@ func TestEntry_HeadersMap_RejectsInvalidStoredHeaders(t *testing.T) {
 }
 
 func TestEntry_HeadersMapErrorsDoNotReflectEntryID(t *testing.T) {
-	id, err := uuid.NewV7()
-	require.NoError(t, err)
+	entryID := uuid.UUID(id.NewBytes())
 
 	entry := outbox.Entry{
-		ID:      id,
+		ID:      entryID,
 		Headers: []byte(`{"bad"`),
 	}
 
-	_, err = entry.HeadersMap()
+	_, err := entry.HeadersMap()
 	require.Error(t, err)
-	assert.NotContains(t, err.Error(), id.String())
+	assert.NotContains(t, err.Error(), entryID.String())
 }

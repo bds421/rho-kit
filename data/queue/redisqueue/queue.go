@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/core/v2/redact"
 	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 	"github.com/bds421/rho-kit/infra/redis/v2"
@@ -31,7 +31,11 @@ import (
 // bounded.
 var messageIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
 
-var newQueueConsumerID = uuid.NewV7
+// newQueueConsumerID is the package-level hook tests swap to install a
+// deterministic consumer ID. Production code reads through this
+// indirection rather than calling [id.New] so tests can assert against
+// a fixed consumer name without dragging in core/v2/id internals.
+var newQueueConsumerID = id.New
 
 // envelopeTaskType is the single asynq task type the kit publishes under.
 // Routing happens via Queue (per-tenant queue names) plus the inner
@@ -105,12 +109,8 @@ func NewMessage(msgType string, payload any) (Message, error) {
 	if err != nil {
 		return Message{}, fmt.Errorf("marshal payload: %w", err)
 	}
-	id, err := uuid.NewV7()
-	if err != nil {
-		return Message{}, fmt.Errorf("generate message ID: %w", err)
-	}
 	return Message{
-		ID:        id.String(),
+		ID:        id.New(),
 		Type:      msgType,
 		Payload:   data,
 		Timestamp: time.Now().UTC(),
@@ -508,11 +508,7 @@ func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 		o(q)
 	}
 	if q.consumerID == "" {
-		consumerID, err := newQueueConsumerID()
-		if err != nil {
-			panic("redisqueue: NewQueue generate consumer ID: " + err.Error())
-		}
-		q.consumerID = consumerID.String()
+		q.consumerID = newQueueConsumerID()
 	}
 
 	return q

@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -364,22 +363,25 @@ func (s hmacFailingStore) LastHMAC(context.Context) ([]byte, error) {
 	return nil, s.hmacErr
 }
 
-func TestLogger_LogEReturnsIDGenerationError(t *testing.T) {
-	idErr := errors.New("rng unavailable")
+func TestLogger_LogE_UsesSwappedAuditIDHook(t *testing.T) {
+	const fixedID = "deterministic-event-id"
 	prev := newAuditID
-	newAuditID = func() (uuid.UUID, error) { return uuid.Nil, idErr }
+	newAuditID = func() string { return fixedID }
 	t.Cleanup(func() { newAuditID = prev })
 
-	l := newTestLogger(NewMemoryStore())
-	err := l.LogE(context.Background(), Event{
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	require.NoError(t, l.LogE(context.Background(), Event{
 		Actor:    "a",
 		Action:   "x",
 		Resource: "r",
 		Status:   "failure",
-	})
+	}))
 
-	require.ErrorIs(t, err, idErr)
-	assert.Equal(t, uint64(1), l.DroppedCount())
+	events := store.Events()
+	require.Len(t, events, 1)
+	assert.Equal(t, fixedID, events[0].ID,
+		"swapped newAuditID hook must drive Event.ID when caller leaves it empty")
 }
 
 func TestLogger_LogE_PrevHMACReadFailureCountsAsDrop(t *testing.T) {

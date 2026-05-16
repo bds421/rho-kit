@@ -1,14 +1,13 @@
 package storagehttp
 
 import (
-	"fmt"
 	"net/http"
 	"path"
 	"strings"
 
 	"github.com/gabriel-vasile/mimetype"
-	"github.com/google/uuid"
 
+	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
@@ -39,11 +38,7 @@ func UUIDKeyFunc(prefix string) KeyFunc {
 		if ext == "" {
 			ext = extensionFromFilename(filename)
 		}
-		id, err := uuid.NewV7()
-		if err != nil {
-			return "", fmt.Errorf("storagehttp: generate object key ID: %w", err)
-		}
-		key := id.String() + ext
+		key := id.New() + ext
 		if prefix != "" {
 			key = prefix + "/" + key
 		}

@@ -9,11 +9,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/core/v2/redact"
 	kitstream "github.com/bds421/rho-kit/data/v2/stream"
 	"github.com/bds421/rho-kit/infra/redis/v2"
@@ -349,15 +349,11 @@ func NewConsumer(client goredis.UniversalClient, group string, opts ...ConsumerO
 	if err := redis.ValidateName(group, "consumer group"); err != nil {
 		return nil, err
 	}
-	consumerID, err := uuid.NewV7()
-	if err != nil {
-		return nil, fmt.Errorf("generate consumer ID: %w", err)
-	}
 	c := &Consumer{
 		client:           client,
 		logger:           slog.Default(),
 		group:            group,
-		consumer:         consumerID.String(),
+		consumer:         id.New(),
 		blockDuration:    defaultBlockDuration,
 		claimMinIdle:     defaultClaimMinIdle,
 		claimInterval:    defaultClaimInterval,
@@ -438,15 +434,11 @@ func (c *Consumer) cloneForStream() (*Consumer, error) {
 	if err := c.ready(); err != nil {
 		return nil, err
 	}
-	id, err := uuid.NewV7()
-	if err != nil {
-		return nil, fmt.Errorf("generate consumer ID: %w", err)
-	}
 	return &Consumer{
 		client:           c.client,
 		logger:           c.logger,
 		group:            c.group,
-		consumer:         id.String(),
+		consumer:         id.New(),
 		blockDuration:    c.blockDuration,
 		claimMinIdle:     c.claimMinIdle,
 		claimInterval:    c.claimInterval,
