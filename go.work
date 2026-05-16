@@ -47,19 +47,23 @@ use (
 	./data/approval/postgres
 	./data/approval/postgres/integrationtest
 	./data/budget/redis
+	./data/budget/redis/integrationtest
 	./data/cache/rediscache
 	./data/cache/rediscache/integrationtest
 	./data/idempotency/pgstore
 	./data/idempotency/pgstore/integrationtest
 	./data/idempotency/redisstore
+	./data/idempotency/redisstore/integrationtest
 	./data/lock/pgadvisory
 	./data/lock/pgadvisory/integrationtest
 	./data/lock/redislock
+	./data/lock/redislock/integrationtest
 	./data/queue/redisqueue
 	./data/queue/redisqueue/integrationtest
 	./data/queue/riverqueue
 	./data/queue/riverqueue/integrationtest
 	./data/ratelimit/redis
+	./data/ratelimit/redis/integrationtest
 	./data/stream/redisstream
 	./data/stream/redisstream/integrationtest
 	./examples/agentic-service
@@ -69,13 +73,16 @@ use (
 	./httpx/middleware/signedrequest/redis
 	./infra
 	./infra/leaderelection/pgadvisory
+	./infra/leaderelection/pgadvisory/integrationtest
 	./infra/leaderelection/redislock
+	./infra/leaderelection/redislock/integrationtest
 	./infra/messaging/amqpbackend
 	./infra/messaging/amqpbackend/debughttp
 	./infra/messaging/amqpbackend/integrationtest
 	./infra/messaging/natsbackend
 	./infra/messaging/natsbackend/integrationtest
 	./infra/messaging/redisbackend
+	./infra/messaging/redisbackend/integrationtest
 	./infra/redis
 	./infra/redis/redistest
 	./infra/sqldb/dbtest
