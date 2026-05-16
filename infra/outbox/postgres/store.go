@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/outbox"
 )
 
@@ -95,7 +96,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
 		_, err = s.pool.Exec(ctx, q, args...)
 	}
 	if err != nil {
-		return fmt.Errorf("outbox/postgres: insert: %w", err)
+		return redact.WrapError("outbox/postgres: insert", err)
 	}
 	return nil
 }
@@ -157,19 +158,19 @@ FROM updated
 ORDER BY ord`
 	rows, err := s.pool.Query(ctx, q, limit)
 	if err != nil {
-		return nil, fmt.Errorf("outbox/postgres: fetch pending: %w", err)
+		return nil, redact.WrapError("outbox/postgres: fetch pending", err)
 	}
 	defer rows.Close()
 	out := make([]outbox.Entry, 0, limit)
 	for rows.Next() {
 		e, scanErr := scanEntry(rows)
 		if scanErr != nil {
-			return nil, fmt.Errorf("outbox/postgres: fetch pending scan: %w", scanErr)
+			return nil, redact.WrapError("outbox/postgres: fetch pending scan", scanErr)
 		}
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("outbox/postgres: fetch pending iterate: %w", err)
+		return nil, redact.WrapError("outbox/postgres: fetch pending iterate", err)
 	}
 	return out, nil
 }
@@ -192,7 +193,7 @@ WHERE status = 'processing'
   AND id = ANY($1::uuid[])`
 	ct, err := s.pool.Exec(ctx, q, ids)
 	if err != nil {
-		return 0, fmt.Errorf("outbox/postgres: heartbeat: %w", err)
+		return 0, redact.WrapError("outbox/postgres: heartbeat", err)
 	}
 	return ct.RowsAffected(), nil
 }
@@ -268,7 +269,7 @@ func (s *Store) transition(ctx context.Context, id string, p transitionParams) e
 	args := append([]any{id}, p.args...)
 	ct, err := s.pool.Exec(ctx, p.sql, args...)
 	if err != nil {
-		return fmt.Errorf("outbox/postgres: transition: %w", err)
+		return redact.WrapError("outbox/postgres: transition", err)
 	}
 	if ct.RowsAffected() == 1 {
 		return nil
@@ -281,7 +282,7 @@ func (s *Store) transition(ctx context.Context, id string, p transitionParams) e
 		if errors.Is(err, pgx.ErrNoRows) {
 			return outbox.ErrNotFound
 		}
-		return fmt.Errorf("outbox/postgres: transition disambiguate: %w", err)
+		return redact.WrapError("outbox/postgres: transition disambiguate", err)
 	}
 	return fmt.Errorf("%w: row in status %q", outbox.ErrStaleState, status)
 }
@@ -295,7 +296,7 @@ func (s *Store) DeletePublishedBefore(ctx context.Context, before time.Time) (in
 	const q = `DELETE FROM outbox_entries WHERE status = 'published' AND published_at < $1`
 	ct, err := s.pool.Exec(ctx, q, before.UTC())
 	if err != nil {
-		return 0, fmt.Errorf("outbox/postgres: delete published before: %w", err)
+		return 0, redact.WrapError("outbox/postgres: delete published before", err)
 	}
 	return ct.RowsAffected(), nil
 }
@@ -311,7 +312,7 @@ func (s *Store) DeleteFailedBefore(ctx context.Context, before time.Time) (int64
 	const q = `DELETE FROM outbox_entries WHERE status = 'failed' AND updated_at < $1`
 	ct, err := s.pool.Exec(ctx, q, before.UTC())
 	if err != nil {
-		return 0, fmt.Errorf("outbox/postgres: delete failed before: %w", err)
+		return 0, redact.WrapError("outbox/postgres: delete failed before", err)
 	}
 	return ct.RowsAffected(), nil
 }
@@ -337,7 +338,7 @@ WHERE status = 'processing'
   AND updated_at < NOW() - make_interval(secs => $1)`
 	ct, err := s.pool.Exec(ctx, q, staleDuration.Seconds())
 	if err != nil {
-		return 0, fmt.Errorf("outbox/postgres: reset stale processing: %w", err)
+		return 0, redact.WrapError("outbox/postgres: reset stale processing", err)
 	}
 	return ct.RowsAffected(), nil
 }
@@ -352,7 +353,7 @@ func (s *Store) CountPending(ctx context.Context) (int64, error) {
 	const q = `SELECT count(*) FROM outbox_entries WHERE status = 'pending'`
 	var n int64
 	if err := s.pool.QueryRow(ctx, q).Scan(&n); err != nil {
-		return 0, fmt.Errorf("outbox/postgres: count pending: %w", err)
+		return 0, redact.WrapError("outbox/postgres: count pending", err)
 	}
 	return n, nil
 }
