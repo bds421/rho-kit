@@ -41,6 +41,43 @@ func TestWriteJSONError(t *testing.T) {
 	assert.JSONEq(t, `{"error":"internal error","code":"INTERNAL"}`, rr.Body.String())
 }
 
+func TestReadiness_DependencyGraphReportsRootCause(t *testing.T) {
+	t.Parallel()
+
+	checker := &Checker{
+		Version: "v1",
+		Checks: []DependencyCheck{
+			{
+				Name:     "db",
+				Critical: true,
+				Check:    func(_ context.Context) string { return StatusUnhealthy },
+			},
+			{
+				Name:      "api",
+				Critical:  true,
+				DependsOn: []string{"db"},
+				Check:     func(_ context.Context) string { return StatusDegraded },
+			},
+		},
+	}
+	h := Readiness(checker)
+	rr := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/ready", nil)
+
+	h.ServeHTTP(rr, r)
+	require.Equal(t, http.StatusServiceUnavailable, rr.Code)
+
+	var body Response
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+	assert.Equal(t, StatusUnhealthy, body.Status)
+	require.Contains(t, body.Details, "api")
+	assert.Equal(t, "db", body.Details["api"].RootCause,
+		"api's RootCause must point to the failing dep")
+	require.Contains(t, body.Details, "db")
+	assert.Empty(t, body.Details["db"].RootCause,
+		"db has no DependsOn; RootCause stays empty")
+}
+
 func TestReadiness_HealthyReturns200(t *testing.T) {
 	t.Parallel()
 

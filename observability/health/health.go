@@ -209,13 +209,51 @@ type DependencyCheck struct {
 	// context through every blocking call and observe cancellation at
 	// well-defined safe points.
 	Timeout time.Duration
+
+	// DependsOn lists other check names this dependency requires.
+	// When any listed dependency is unhealthy, the [Response.Details]
+	// entry for this check surfaces a RootCause pointing at the
+	// upstream failure — operators reading /healthz can distinguish
+	// "I'm down" (RootCause unset) from "my dep X is down"
+	// (RootCause = "X"). The kit does NOT auto-cascade status from
+	// the upstream into this check's Status field; the Check
+	// function remains the source of truth for the leaf status.
+	// Wave 146 added this for graph-aware triage.
+	DependsOn []string
+}
+
+// CheckResult is the per-check entry in [Response.Details]. Wave 146
+// added this so /healthz can show graph-aware triage info alongside
+// the legacy flat Services map.
+type CheckResult struct {
+	Status string `json:"status"`
+
+	// RootCause names the upstream dependency whose failure most
+	// likely explains this check's non-healthy status. Empty when
+	// the check is healthy OR when none of its DependsOn entries
+	// are unhealthy (i.e. this check failed on its own). When
+	// multiple upstream deps are unhealthy, the first listed name
+	// wins so the rendering is deterministic.
+	RootCause string `json:"root_cause,omitempty"`
+
+	// DependsOn echoes the configured upstream names so operators
+	// can read the graph from the JSON without cross-referencing
+	// service config.
+	DependsOn []string `json:"depends_on,omitempty"`
 }
 
 // Response is the standard health endpoint JSON envelope.
+//
+// Services keeps the v1 flat-list shape for backward compatibility
+// (kubelet probes, monitoring scrapers that key off check names).
+// Details is the wave-146 graph-aware view: per-check Status,
+// optional RootCause when a dep is the proximate failure, and the
+// declared DependsOn list.
 type Response struct {
-	Status   string            `json:"status"`
-	Version  string            `json:"version"`
-	Services map[string]string `json:"services"`
+	Status   string                 `json:"status"`
+	Version  string                 `json:"version"`
+	Services map[string]string      `json:"services"`
+	Details  map[string]CheckResult `json:"details,omitempty"`
 }
 
 // defaultCacheTTL is the duration health check results are cached before
@@ -348,9 +386,10 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 	// Run checks concurrently to avoid a slow dependency blocking others.
 	// Each check has its own panic recovery in runCheck.
 	type checkResult struct {
-		name     string
-		status   string
-		critical bool
+		name      string
+		status    string
+		critical  bool
+		dependsOn []string
 	}
 	results := make([]checkResult, len(checks))
 	var wg sync.WaitGroup
@@ -359,9 +398,10 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 		go func(idx int, dc DependencyCheck) {
 			defer wg.Done()
 			results[idx] = checkResult{
-				name:     dc.Name,
-				status:   runCheck(ctx, dc),
-				critical: dc.Critical,
+				name:      dc.Name,
+				status:    runCheck(ctx, dc),
+				critical:  dc.Critical,
+				dependsOn: dc.DependsOn,
 			}
 		}(i, dc)
 	}
@@ -387,10 +427,37 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 		}
 	}
 
+	// Wave 146: build graph-aware Details. For each non-healthy
+	// check with DependsOn, the RootCause is the first declared dep
+	// whose own Services entry is non-healthy. Healthy checks omit
+	// RootCause. Checks with no declared DependsOn omit it (and the
+	// DependsOn field) so the JSON stays compact when callers don't
+	// use the graph feature.
+	var details map[string]CheckResult
+	for _, cr := range results {
+		if len(cr.dependsOn) == 0 && cr.status == StatusHealthy {
+			continue
+		}
+		entry := CheckResult{Status: cr.status, DependsOn: cr.dependsOn}
+		if cr.status != StatusHealthy {
+			for _, dep := range cr.dependsOn {
+				if depStatus, ok := services[dep]; ok && depStatus != StatusHealthy {
+					entry.RootCause = dep
+					break
+				}
+			}
+		}
+		if details == nil {
+			details = make(map[string]CheckResult, len(results))
+		}
+		details[cr.name] = entry
+	}
+
 	resp := Response{
 		Status:   overall,
 		Version:  hc.Version,
 		Services: services,
+		Details:  details,
 	}
 
 	result = &cachedResult{response: resp}
