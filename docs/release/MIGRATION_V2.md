@@ -376,6 +376,16 @@ wrapper around the SDK's `Server.AddTool` and
 | Run semantics | Unlike k8slease's one-shot `LeaderElector.Run`, the etcd adapter loops internally: it Campaigns, holds the term while the session is healthy, drains `OnAcquired`, runs `OnLost`, and re-Campaigns. `Run` returns only when the caller ctx is cancelled or `WithCallbackDrainTimeout` fires. The session is closed and the election is explicitly Resigned on planned shutdown so peers do not wait out the lease TTL. |
 | Metrics | `leaderelection_callback_drain_seconds{election,state}` and `leaderelection_callback_drain_warn_total{election}` — the `election` label is the operator-configured key prefix, validated via `promutil.ValidateStaticLabelValue` so a misconfigured caller cannot inflate cardinality. |
 
+### `infra/messaging` — Subscription mid-level abstraction (new)
+
+| Area | Migration |
+|---|---|
+| New primitives | Wave 165 adds three additive types to `infra/messaging` without modifying the existing `Consumer` / `Publisher` interfaces. `Subscription` wraps a (`Consumer`, `Binding`, `Handler`) triple as a `lifecycle.Component` so a service no longer hand-rolls goroutine plumbing per consumer. `TypedSubscription[T]` adds payload decode (JSON) plus `validate.Struct` validation so handlers operate on typed values, mirroring `httpx`'s typed handlers. `SubscriptionGroup` runs N subscriptions concurrently as a single lifecycle row. |
+| Construction | `messaging.NewSubscription(name, consumer, binding, handler, opts ...)` returns a `*Subscription`. `messaging.NewTypedSubscription[T](name, consumer, binding, typedHandler, opts ...)` returns `*TypedSubscription[T]` (which embeds `*Subscription`). `messaging.NewSubscriptionGroup(logger)` returns `*SubscriptionGroup`. |
+| Lifecycle wiring | The previous pattern `runner.Add("kafka-consumer", lifecycle.NewFuncComponent(func(ctx) { return consumer.Consume(...) }))` collapses to `runner.Add(sub.Name(), sub)`. Subscriptions can also be grouped — `group.Add(sub1)` / `group.Add(sub2)` / `runner.Add("orders", group)` — to share a single start/stop boundary. |
+| Typed dispatch | `TypedHandler[T]` is `func(ctx, T, raw Delivery) error`. The kit JSON-decodes the payload into T then calls `validate.Struct(T)` before dispatch. Decode and validation failures are surfaced to the underlying `Consumer` (which then applies its nack / dead-letter policy) — the typed handler is NOT called on malformed input. Opt out of the validate step via `WithoutTypedValidation` (discouraged for shared business types). |
+| Backwards compat | The existing `Consumer.Consume` API is unchanged; services that already wired bespoke `lifecycle.FuncComponent` plumbing continue to work. The Subscription primitives are a more ergonomic surface on top, not a replacement. |
+
 ### `realtime/centrifuge` (new)
 
 | Area | Migration |
