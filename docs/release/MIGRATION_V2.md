@@ -376,6 +376,15 @@ wrapper around the SDK's `Server.AddTool` and
 | Run semantics | Unlike k8slease's one-shot `LeaderElector.Run`, the etcd adapter loops internally: it Campaigns, holds the term while the session is healthy, drains `OnAcquired`, runs `OnLost`, and re-Campaigns. `Run` returns only when the caller ctx is cancelled or `WithCallbackDrainTimeout` fires. The session is closed and the election is explicitly Resigned on planned shutdown so peers do not wait out the lease TTL. |
 | Metrics | `leaderelection_callback_drain_seconds{election,state}` and `leaderelection_callback_drain_warn_total{election}` — the `election` label is the operator-configured key prefix, validated via `promutil.ValidateStaticLabelValue` so a misconfigured caller cannot inflate cardinality. |
 
+### `grpcx/interceptor` — stream resource discipline (new in wave 166)
+
+| Area | Migration |
+|---|---|
+| New interceptors | `MaxConcurrentStreamsServer(max, metrics)` caps in-flight streaming RPCs across the WHOLE server (gRPC's built-in `MaxConcurrentStreams` is per-HTTP/2-connection only — a fleet of clients can collectively saturate even when each connection respects its cap). Overflow returns `codes.ResourceExhausted` before handler entry. `StreamIdleTimeout(d, metrics)` cancels streams that have neither sent nor received a message within the idle window — fills the gap gRPC's HTTP/2 keepalive leaves (keepalive detects DEAD peers, not IDLE streams). |
+| New metrics | `grpc_server_active_streams` (gauge), `grpc_server_streams_rejected_total{reason}` (bounded reason enum, currently only `max_concurrent`), `grpc_server_streams_idle_closed_total` (counter). Constructed via `interceptor.NewStreamLimitMetrics(opts...)` with the same registerer-option shape as the rest of grpcx. |
+| Operational story | These interceptors mirror the `httpx/websocket` hardening shipped in wave 157 (`WithMaxConnections`, `WithPingInterval`, `httpx_websocket_active`). The two transports now share a resource-discipline vocabulary so an operator who knows one can reason about the other. |
+| Composition | Standard interceptor composition: `grpcx.NewServer(..., grpcx.WithStreamInterceptors(interceptor.MaxConcurrentStreamsServer(N, m), interceptor.StreamIdleTimeout(d, m)))`. Order them in the chain after recovery/logging so a stream rejected for capacity still surfaces in logs and metrics. |
+
 ### `infra/messaging` — Subscription mid-level abstraction (new)
 
 | Area | Migration |
