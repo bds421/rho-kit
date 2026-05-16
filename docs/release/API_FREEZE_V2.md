@@ -43,6 +43,23 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/app/postgres/v2` | Keep | No rename/remove | Postgres pool adapter Module wired via `Builder.With(postgres.Module(cfg, ...))`; password-provider rotation, TLS reload. Frozen for v2.0.0. |
 | `github.com/bds421/rho-kit/app/redis/v2` | Keep | No rename/remove | Redis client adapter Module wired via `Builder.With(redis.Module(opts, ...))`; credential provider, TLS reload. Frozen for v2.0.0. |
 | `github.com/bds421/rho-kit/app/tracing/v2` | Keep | No rename/remove | Tracing adapter Module wired via `Builder.With(tracing.Module(cfg))`; OTLP exporter, sampler, propagator config. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/actionlog/v2` | Keep | No rename/remove | Action-log adapter Module; storage backend and lifecycle wiring. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/approval/v2` | Keep | No rename/remove | Approval-flow adapter Module; storage backend, audit fan-out, lifecycle. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/auditlog/v2` | Keep | No rename/remove | Audit-log adapter Module; backend, batched flush, redaction. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/authz/v2` | Keep | No rename/remove | Authz adapter Module; policy provider, fail-closed defaults. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/budget/v2` | Keep | No rename/remove | Budget adapter Module; backend selection, refund handler. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/cron/v2` | Keep | No rename/remove | Cron adapter Module; scheduler wiring, lifecycle. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/eventbus/v2` | Keep | No rename/remove | Eventbus adapter Module; worker pool, async handler registration. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/flags/v2` | Keep | No rename/remove | Feature flags adapter Module; provider attachment. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/http/v2` | Keep | No rename/remove | HTTP server adapter Module; middleware stack composition. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/jwt/v2` | Keep | No rename/remove | JWT adapter Module; provider backend, JWKS refresh. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/leader/v2` | Keep | No rename/remove | Leader-election adapter Module; elector backend, callbacks. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/paseto/v2` | Keep | No rename/remove | PASETO adapter Module; key store, refresh. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/ratelimit/v2` | Keep | No rename/remove | Rate-limit adapter Module; limiter backend, key extractor. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/signedrequest/v2` | Keep | No rename/remove | Signed-request adapter Module; key store, refresh. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/slo/v2` | Keep | No rename/remove | SLO adapter Module; registry, burn-rate alerts. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/storage/v2` | Keep | No rename/remove | Storage adapter Module; backend, upload validators. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/tenant/v2` | Keep | No rename/remove | Tenant adapter Module; extractor, fail-closed defaults. Frozen for v2.0.0. |
 | `github.com/bds421/rho-kit/core/v2` | Keep | No rename/remove | Shared low-dependency primitives: config, typed errors, tenant IDs, redaction, secrets, validation, tls clone helpers. |
 | `github.com/bds421/rho-kit/httpx/v2` | Keep | No rename/remove | HTTP server/client defaults, JSON helpers, middleware, authz bridge, MCP, pagination, signing, redirect safety. |
 | `github.com/bds421/rho-kit/grpcx/v2` | Keep | No rename/remove | gRPC server defaults, interceptors, RED metrics, auth, health, deadlines. |
@@ -63,17 +80,21 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/infra/v2` | Keep | No rename/remove | Infrastructure contracts: messaging, Redis, SQL DB, storage, outbox, leader election. |
 | `github.com/bds421/rho-kit/data/idempotency/pgstore/v2` | Adapter | No rename/remove | Postgres idempotency store; owns its migration surface. |
 | `github.com/bds421/rho-kit/data/idempotency/redisstore/v2` | Adapter | No rename/remove | Redis idempotency store. |
+| `github.com/bds421/rho-kit/data/idempotency/redisstore/integrationtest/v2` | Integration helper | No rename/remove | Redis idempotency-store integration coverage only. |
 | `github.com/bds421/rho-kit/data/cache/rediscache/v2` | Adapter | No rename/remove | Redis cache backend with bulk limits and degraded-mode wrapper. |
 | `github.com/bds421/rho-kit/data/budget/redis/v2` | Adapter | No rename/remove | Redis-backed tenant budget ledger. |
+| `github.com/bds421/rho-kit/data/budget/redis/integrationtest/v2` | Integration helper | No rename/remove | Redis budget integration coverage only. |
 | `github.com/bds421/rho-kit/data/actionlog/postgres/v2` | Adapter | No rename/remove | Postgres signed action-log store and migrations. |
 | `github.com/bds421/rho-kit/data/approval/postgres/v2` | Adapter | No rename/remove | Postgres approval workflow store and migrations. |
 | `github.com/bds421/rho-kit/observability/auditlog/postgres/v2` | Adapter | No rename/remove | Postgres tamper-evident audit-log Store (AppendChained / RangeChain / Query / LastHMAC) and migrations. |
 | `github.com/bds421/rho-kit/infra/outbox/postgres/v2` | Adapter | No rename/remove | Postgres transactional-outbox Store (Inserter, Claimer, Outcomer, Janitor, Observer) with `WithTx`/`RequireTx` ctx helpers and migrations. |
 | `github.com/bds421/rho-kit/data/lock/pgadvisory/v2` | Adapter | No rename/remove | Postgres advisory-lock implementation. |
 | `github.com/bds421/rho-kit/data/lock/redislock/v2` | Adapter | No rename/remove | Redis lock implementation. |
+| `github.com/bds421/rho-kit/data/lock/redislock/integrationtest/v2` | Integration helper | No rename/remove | Redis distributed-lock integration coverage only. |
 | `github.com/bds421/rho-kit/data/queue/redisqueue/v2` | Adapter | No rename/remove | Redis list-backed queue. |
 | `github.com/bds421/rho-kit/data/queue/riverqueue/v2` | Adapter | No rename/remove | River/Postgres queue adapter. |
 | `github.com/bds421/rho-kit/data/ratelimit/redis/v2` | Adapter | No rename/remove | Redis GCRA distributed rate limiter. |
+| `github.com/bds421/rho-kit/data/ratelimit/redis/integrationtest/v2` | Integration helper | No rename/remove | Redis rate-limit integration coverage only. |
 | `github.com/bds421/rho-kit/data/stream/redisstream/v2` | Adapter | No rename/remove | Redis Streams producer/consumer. |
 | `github.com/bds421/rho-kit/infra/redis/v2` | Adapter | No rename/remove | Redis connection/config/health helpers. |
 | `github.com/bds421/rho-kit/infra/sqldb/pgx/v2` | Adapter | No rename/remove | pgx pool, migrations, COPY helper. |
@@ -81,7 +102,9 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2` | Adapter | No rename/remove | Leader election using Kubernetes coordination.k8s.io/v1 Lease objects via k8s.io/client-go. |
 | `github.com/bds421/rho-kit/infra/leaderelection/k8slease/integrationtest/v2` | Integration test helper | No rename/remove | Fake-clientset-backed k8slease integration tests. |
 | `github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2` | Adapter | No rename/remove | Leader election using Postgres advisory locks. |
+| `github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/integrationtest/v2` | Integration helper | No rename/remove | Postgres advisory leader-election integration coverage only. |
 | `github.com/bds421/rho-kit/infra/leaderelection/redislock/v2` | Adapter | No rename/remove | Leader election using Redis locks. |
+| `github.com/bds421/rho-kit/infra/leaderelection/redislock/integrationtest/v2` | Integration helper | No rename/remove | Redis leader-election integration coverage only. |
 
 ## Messaging, Storage, And Optional SDK Adapters
 
@@ -93,6 +116,7 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/infra/messaging/kafkabackend/integrationtest/v2` | Integration test helper | No rename/remove | Testcontainers Kafka integration tests. |
 | `github.com/bds421/rho-kit/infra/messaging/natsbackend/v2` | Adapter | No rename/remove | NATS JetStream backend, dependency isolated here. |
 | `github.com/bds421/rho-kit/infra/messaging/redisbackend/v2` | Adapter | No rename/remove | Messaging bridge over Redis streams. |
+| `github.com/bds421/rho-kit/infra/messaging/redisbackend/integrationtest/v2` | Integration helper | No rename/remove | Redis Streams messaging integration coverage only. |
 | `github.com/bds421/rho-kit/infra/storage/azurebackend/v2` | Adapter | No rename/remove | Azure Blob storage backend, dependency isolated here. |
 | `github.com/bds421/rho-kit/infra/storage/gcsbackend/v2` | Adapter | No rename/remove | Google Cloud Storage backend, dependency isolated here. |
 | `github.com/bds421/rho-kit/infra/storage/s3backend/v2` | Adapter | No rename/remove | S3-compatible storage backend, dependency isolated here. |
@@ -131,7 +155,6 @@ freezes `redis_stream_messages_produced_total`,
 
 | Module | Decision | Rename/remove decision | Freeze notes |
 |---|---|---|---|
-| `github.com/bds421/rho-kit/cmd/kit-bench-gate/v2` | Keep command API | No rename/remove | Performance-regression gate CLI. |
 | `github.com/bds421/rho-kit/cmd/kit-doctor/v2` | Keep command API | No rename/remove | Static service-health/security scanner CLI. |
 | `github.com/bds421/rho-kit/cmd/kit-migrate/v2` | Keep command API | No rename/remove | Kit-managed DB migration CLI. |
 | `github.com/bds421/rho-kit/cmd/kit-new/v2` | Keep command API | No rename/remove | Service scaffold CLI; scaffold variants are compile-tested. |

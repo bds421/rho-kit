@@ -48,9 +48,6 @@ operational migration sequence.
 
 - License finalized as **Apache 2.0**; `SECURITY.md` published at the repo
   root with the coordinated-disclosure policy.
-- Performance baselines captured under
-  [`docs/release/benchmarks/v2.0.0/`](docs/release/benchmarks/v2.0.0/) as the
-  canonical inputs for `kit-bench-gate`.
 - Release-candidate hardening: clarified release provenance, removed
   placeholder cryptographic material, added CODEOWNERS coverage for
   security-sensitive audit/release/workflow files, and trimmed completed

@@ -272,18 +272,3 @@ func TestVerify_MalformedRejected(t *testing.T) {
 	}
 }
 
-func BenchmarkHash_FastParams(b *testing.B) {
-	p := fastParams()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = Hash("hunter2", p)
-	}
-}
-
-func BenchmarkVerify_FastParams(b *testing.B) {
-	enc, _ := Hash("hunter2", fastParams())
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = Verify("hunter2", enc, fastParams())
-	}
-}

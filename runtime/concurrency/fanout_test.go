@@ -579,58 +579,6 @@ func TestFanOut_ContextCancelledWithMaxGoroutines(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
-// ---------------------------------------------------------------------------
-// Benchmarks
-// ---------------------------------------------------------------------------
-
-func BenchmarkFanOut(b *testing.B) {
-	fns := make([]func(ctx context.Context) (int, error), 10)
-	for i := range fns {
-		fns[i] = func(_ context.Context) (int, error) { return 0, nil }
-	}
-
-	b.ResetTimer()
-	for range b.N {
-		_, _ = FanOut(context.Background(), fns)
-	}
-}
-
-func BenchmarkFanOutSettled(b *testing.B) {
-	fns := make([]func(ctx context.Context) (int, error), 10)
-	for i := range fns {
-		fns[i] = func(_ context.Context) (int, error) { return 0, nil }
-	}
-
-	b.ResetTimer()
-	for range b.N {
-		_ = FanOutSettled(context.Background(), fns)
-	}
-}
-
-func BenchmarkFanOut_Bounded(b *testing.B) {
-	fns := make([]func(ctx context.Context) (int, error), 10)
-	for i := range fns {
-		fns[i] = func(_ context.Context) (int, error) { return 0, nil }
-	}
-
-	b.ResetTimer()
-	for range b.N {
-		_, _ = FanOut(context.Background(), fns, WithMaxGoroutines(4))
-	}
-}
-
-func BenchmarkFanOutSettled_Bounded(b *testing.B) {
-	fns := make([]func(ctx context.Context) (int, error), 10)
-	for i := range fns {
-		fns[i] = func(_ context.Context) (int, error) { return 0, nil }
-	}
-
-	b.ResetTimer()
-	for range b.N {
-		_ = FanOutSettled(context.Background(), fns, WithMaxGoroutines(4))
-	}
-}
-
 func TestBuildConfig_DefaultMaxGoroutines(t *testing.T) {
 	t.Parallel()
 	cfg := buildConfig(nil)

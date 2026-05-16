@@ -20,9 +20,8 @@ repository root unless a block says to `cd` into a module first.
 | Release notes complete | [../RELEASE_NOTES_v2.md](../RELEASE_NOTES_v2.md) | Notes include breaking changes, new primitives, deferred items, links to release artifacts, and are ready to paste into a future GitHub release. | Passed 2026-05-11: release notes link to release artifacts and cover breaking changes, shipped primitives, verification, and deferred work. |
 | Semantic security/default review complete | Source, tests, and commit history | Fail-open defaults, audit metadata idempotency, auth bypass semantics, and misleading legacy APIs are reviewed before the API freeze. | Passed 2026-05-11/12: S2S auth checked fail-closed for missing permissions/scopes, approval idempotency preserves audit metadata, Redis per-feature health policy is explicit, MCP audited calls require actor attribution, and leader election term semantics are hardened. |
 | Operational readiness review complete | [OPERATIONAL_READINESS_V2.md](OPERATIONAL_READINESS_V2.md), `make check-operational-readiness`, `make check-api-freeze-coverage` | Every `go.work` module has an operational review row AND an API-freeze decision row, covering rotation, TLS, startup, shutdown, bounded work, health, metrics, migrations, and release gates. | Refreshed 2026-05-14 wave 65: the prior pass on this entry was a false positive because the gate used `go list -m` in workspace mode (printed every module's path, collapsing the grep into a tautology). Wave 65 rewrote the gate to parse `module` directly from each `go.mod`; six previously-uncovered `app/*` adapter modules were then added to both matrices. The gate now genuinely covers all 77 workspace modules. |
-| Benchmark suite runs | `make bench` | Hot-path benchmarks under [`docs/ai/`](../../docs/ai/) (jwtutil, gcra, tokenbucket, encrypt, envelope, signing, tenant, compute cache, memory cache, stack chain, circuitbreaker, budget memory) compile and run cleanly on the RC commit. | `make bench` was extended in wave 81 to cover jwtutil verify and budget memory hot paths. No checked-in baseline: benchmark numbers are hardware-specific (`kit-bench-gate` is a downstream consumer tool, not a release gate — `grep -rn kit-bench-gate .github/` returns nothing), and a baseline captured on one CI runner would flag every benchmark as a regression on a different runner. Operators wanting a perf snapshot run `make bench-baseline` on their own hardware. |
 | Docs snippets executable or illustrative | This checklist plus per-doc notes | Executable snippets are tied to tests or commands; recipe snippets are explicitly illustrative. | Passed 2026-05-11: markdown snippet sweep found every fenced-block document covered by a snippet-status note or explicit executable evidence. |
-| Full gates pass | Commands below | test, race, lint, vulncheck, dependency allowlist, dependency boundaries, dashboard/rule validation, benchmark baseline capture, coverage, benchmarks, kit-doctor, diff check. | Partial refresh 2026-05-12: diff, test, lint, build, dependency, dashboard, publishability, release-plan, kit-doctor, historical benchmark-baseline, and Azure Key Vault module race/vulncheck gates passed on the 73-module tree. A clean current `make bench-baseline`, full workspace race, coverage, benchmark, Docker integration, and release rehearsal remain to rerun before tagging. |
+| Full gates pass | Commands below | test, race, lint, vulncheck, dependency allowlist, dependency boundaries, dashboard/rule validation, coverage, kit-doctor, diff check. | Partial refresh 2026-05-12: diff, test, lint, build, dependency, dashboard, publishability, release-plan, kit-doctor, and Azure Key Vault module race/vulncheck gates passed on the 73-module tree. Full workspace race, coverage, Docker integration, and release rehearsal remain to rerun before tagging. (Wave 137 dropped benchmarks from release gates — hardware-specific numbers were never a useful release signal.) |
 | Docker-backed integration tests pass where available | `go test -tags integration ./...` in split integration modules | Docker available: pass. Docker unavailable: record skip reason. | Blocked 2026-05-12: `docker info` hung before the first module; the stuck process was terminated. Last successful full Docker run remains 2026-05-11 with Docker 29.4.1. |
 | No unreviewed heavy deps in core modules | `make check-dependency-boundaries`, `make check-dependency-allowlist`, [../audit/dependency-allowlist.txt](../audit/dependency-allowlist.txt) | Both checks pass and allowlist is reviewed. | Passed 2026-05-13 on live workspace: boundary check reviewed 393 direct module edges; allowlist check reviewed 59 direct external deps including Vault API, Azure Key Vault keys, and NATS Prometheus metrics. |
 | Security-sensitive files have review ownership | [.github/CODEOWNERS](../../.github/CODEOWNERS), [../audit/SUPPLY_CHAIN.md](../audit/SUPPLY_CHAIN.md), `make check-release-team` | Supply-chain policy, threat model, dependency allowlist, release docs, workflows, and release gate scripts route to the security owner. The team and branch protection are verified by `make check-release-team` (added 2026-05-13). | Present for security-sensitive package and release files. Branch-protection enforcement of CODEOWNERS reviews and existence of the `@bds421/security` GitHub team remain open; `make check-release-team` will fail loudly at the runbook's preflight step if either is missing. |
@@ -228,8 +227,6 @@ make test-race
 make test-integration
 make vulncheck
 make test-cover
-make bench
-make bench-baseline
 RELEASE_MODE=all make release-plan
 tools/rehearse-v2-release.sh
 git tag --list '*v2.0.0'
@@ -244,9 +241,8 @@ The rehearsal evidence from that date predates the
 must be refreshed before tagging. No
 local or remote `*v2.0.0` tags existed after the rehearsal.
 
-2026-05-12 follow-up for Vault Transit, Azure Key Vault, benchmark baselines,
-and provider dashboards refreshed the following non-Docker gates on the
-73-module tree:
+2026-05-12 follow-up for Vault Transit, Azure Key Vault, and provider
+dashboards refreshed the following non-Docker gates on the 73-module tree:
 
 ```bash
 git diff --check
@@ -261,7 +257,6 @@ make test
 make lint
 make build
 make check-no-binaries
-make bench-baseline
 cd crypto/envelope/azurekeyvault && go test -race ./...
 cd crypto/envelope/azurekeyvault && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 cd crypto/envelope/azurekeyvault && go mod verify
@@ -274,9 +269,9 @@ grep collapsed to a tautology. Wave 65 replaced that ad-hoc check with
 `make check-api-freeze-coverage` (parses `module` from each `go.mod`
 directly) and added the previously-missing rows for the six `app/*` adapter
 modules.
-The earlier full `make test-race`, `make test-cover`, and `make bench` evidence
+The earlier full `make test-race` and `make test-cover` evidence
 predates the workspace expansion to 77 modules (the ten modules added since the
-last bench/race capture include `crypto/envelope/{vaulttransit,azurekeyvault}`
+last race capture include `crypto/envelope/{vaulttransit,azurekeyvault}`
 and the wave-60/61 additions `observability/auditlog/postgres{,/integrationtest}`
 and `infra/outbox/postgres{,/integrationtest}`); rerun those full gates before
 tagging if this remains the final candidate. `make test-integration` did not

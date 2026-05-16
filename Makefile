@@ -1,11 +1,9 @@
-.PHONY: lint vulncheck test test-race test-integration test-cover bench bench-baseline build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-operational-readiness check-api-freeze-coverage check-dashboard-metrics check-dashboard-labels
+.PHONY: lint vulncheck test test-race test-integration test-cover build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-operational-readiness check-api-freeze-coverage check-dashboard-metrics check-dashboard-labels
 
 GOLANGCI_LINT_VERSION := v2.10.1
 GOVULNCHECK_VERSION  ?= v1.1.4
 COVERAGE_FILE        := coverage.out
 RELEASE_VERSION      ?= v2.0.0
-BENCH_VERSION        ?= $(RELEASE_VERSION)
-BENCH_COUNT          ?= 5
 RELEASE_BASE_REF     ?= HEAD~1
 RELEASE_MODE         ?= changed
 RELEASE_FORMAT       ?= text
@@ -63,17 +61,6 @@ test-cover:
 		(cd $$dir && go test -race -coverprofile=coverage.out ./...) || exit 1; \
 	done
 
-## bench: Run benchmarks (all workspace modules)
-bench:
-	@for dir in $(WORKSPACE_MODULES); do \
-		echo "==> Benchmarking $$dir"; \
-		(cd $$dir && go test -bench=. -benchmem ./...) || exit 1; \
-	done
-
-## bench-baseline: Capture release benchmark baselines for kit-bench-gate
-bench-baseline:
-	@BENCH_VERSION=$(BENCH_VERSION) BENCH_COUNT=$(BENCH_COUNT) bash tools/capture-benchmark-baselines.sh
-
 ## build: Build all packages (all workspace modules)
 build:
 	@for dir in $(WORKSPACE_MODULES); do \
@@ -112,7 +99,7 @@ kit-doctor:
 	@go run ./cmd/kit-doctor -format=json -strict=critical .
 
 ## release-candidate: Run the full pre-release quality gate
-release-candidate: ci vulncheck test-integration test-cover bench kit-doctor
+release-candidate: ci vulncheck test-integration test-cover kit-doctor
 
 ## release-plan: Compute dependency-aware module release levels
 release-plan:

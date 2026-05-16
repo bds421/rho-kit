@@ -24,8 +24,6 @@ make check-operational-readiness # operational-review coverage for every module
 make check-publishable # pre-tag Go module release invariants
 make check-dashboards # Grafana JSON + Prometheus rule validation
 make release-candidate # full local pre-release quality gate
-make bench         # benchmarks
-make bench-baseline # capture v2 benchmark baselines for kit-bench-gate
 make fmt           # goimports + gofumpt
 make tidy          # go mod tidy
 ```
@@ -202,7 +200,6 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Scaffold a new service | `cmd/kit-new` (`-tenant` for tenant-aware Redis/cache/idempotency) | — |
 | Audit a service for security regressions | `cmd/kit-doctor` | [observability](docs/ai/observability.md) |
 | Verify a running service's ASVS controls | `cmd/kit-verify` | [security](docs/ai/security.md) |
-| Performance regression gate | `cmd/kit-bench-gate` | — |
 | NATS JetStream messaging | `infra/messaging/natsbackend` | [messaging](docs/ai/messaging.md) |
 | Postgres-backed durable job queue | `data/queue/riverqueue` | [database](docs/ai/sqldb.md) |
 | Leader election | `infra/leaderelection` (`pgadvisory`/`redislock`) | [redis](docs/ai/redis.md) |
@@ -238,7 +235,6 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 - **Dependencies**: New direct external Go modules must be added to `docs/audit/dependency-allowlist.txt` in the same change; `make check-dependency-allowlist` rejects unreviewed or stale direct dependencies.
 - **Messaging size**: `infra/messaging` publishers default to `messaging.DefaultMaxMessageBytes` (1 MiB); `infra/outbox.WithRouteMaxMessageBytes` overrides for one route, `infra/messaging/buffered_publisher.WithMaxMessageBytes` overrides the buffered-publisher default. Adapter modules (`app/amqp`, `app/nats`) wire these limits through to the underlying backend.
 - **Credential rotation**: Prefer provider-backed credentials over static secrets when the upstream SDK supports it. Use DB `PasswordProvider`, go-redis credential providers, AMQP URL providers, NATS auth providers, cloud SDK default credentials, CSRF `WithSecrets`, and signed-request key stores for zero-downtime rotation.
-- **Benchmark baselines**: `make bench-baseline` writes raw `go test -bench` outputs under `docs/release/benchmarks/$(RELEASE_VERSION)/`; a clean current release-candidate capture is the canonical `kit-bench-gate -baseline` input for the release branch. If the directory manifest marks the files historical/preliminary, treat them as comparison evidence only and rerun the baseline before tagging.
 
 ## Anti-Patterns
 

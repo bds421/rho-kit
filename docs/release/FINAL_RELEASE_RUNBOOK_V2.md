@@ -156,7 +156,6 @@ FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishab
 GOCACHE=/private/tmp/rho-kit-gocache go run ./cmd/kit-doctor -format=json -strict=critical .
 make vulncheck
 make test-race
-make bench
 make test-integration
 RELEASE_MODE=all make release-plan
 ```
@@ -181,7 +180,7 @@ Expected output summary:
   local internal replaces, and Go directives.
 - `cmd/kit-doctor -strict=critical`: `null`.
 - `make vulncheck`: `No vulnerabilities found.` for every module.
-- `make test`, `make lint`, `make test-race`, `make bench`, and
+- `make test`, `make lint`, `make test-race`, and
   `make test-integration`: no `FAIL`; integration tests require Docker.
 - `RELEASE_MODE=all make release-plan`: prints the dependency levels used for
   the release loop.

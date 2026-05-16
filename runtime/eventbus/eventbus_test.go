@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -398,51 +397,6 @@ func TestHasHandlers(t *testing.T) {
 	Subscribe(bus, func(_ context.Context, _ testEvent) error { return nil })
 	assert.True(t, bus.HasHandlers("test.event"))
 	assert.False(t, bus.HasHandlers("other.event"))
-}
-
-func BenchmarkPublish_Sync(b *testing.B) {
-	bus := New()
-	Subscribe(bus, func(_ context.Context, _ testEvent) error {
-		return nil
-	}, WithName("noop"))
-
-	ctx := context.Background()
-	evt := testEvent{ID: "bench"}
-
-	b.ResetTimer()
-	for range b.N {
-		_ = Publish(bus, ctx, evt)
-	}
-}
-
-func BenchmarkPublish_Async_WithPool(b *testing.B) {
-	reg := prometheus.NewRegistry()
-	bus := New(
-		WithWorkerPool(4),
-		WithWorkerPoolBuffer(1024),
-		WithRegisterer(reg),
-	)
-
-	Subscribe(bus, func(_ context.Context, _ testEvent) error {
-		return nil
-	}, WithAsync(), WithName("noop"))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		_ = bus.Start(ctx)
-	}()
-	waitForWorkers(b, bus)
-
-	evt := testEvent{ID: "bench"}
-
-	b.ResetTimer()
-	for range b.N {
-		_ = Publish(bus, context.Background(), evt)
-	}
-	b.StopTimer()
-
-	cancel()
-	_ = bus.Stop(context.Background())
 }
 
 func TestBus_ConcurrentPublishSubscribe(t *testing.T) {

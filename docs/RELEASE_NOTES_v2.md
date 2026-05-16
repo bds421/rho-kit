@@ -39,7 +39,7 @@ evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
 | 5 | SBOM (CycloneDX), `govulncheck` + `osv-scanner` CI, direct dependency allowlist, heavy SDK boundary gate, `THREAT_MODEL.md`, `SUPPLY_CHAIN.md` | "Trusted library" claim is auditable, not marketing |
 | 6 | Builder integrations for every new primitive | The kit's golden path (`app.Builder`) reaches the new primitives without each consumer wiring middleware by hand |
 | 7 | gRPC RED, DB pool, Redis, Outbox, AMQP, NATS JetStream, Redis Streams, Rate-limit, Storage overview, S3, GCS, Azure, and SFTP Grafana dashboards + 11 runbooks + `promtool` CI | Operations teams stop rebuilding the same panels per service |
-| 8 | AWS KMS, Azure Key Vault, GCP KMS, and HashiCorp Vault Transit envelope KEK adapters + v2 benchmark baselines | Production encryption and performance gates are concrete before the API freeze |
+| 8 | AWS KMS, Azure Key Vault, GCP KMS, and HashiCorp Vault Transit envelope KEK adapters | Production encryption surfaces are concrete before the API freeze |
 
 Plus: `WithDefaultTimeout` for gRPC (closes threat-model GAP-03),
 `httpx.SafeRedirect` (closes GAP-02), JWT revocation checks (closes
@@ -1190,7 +1190,7 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
   the rejected control ID.
 
 ### Command tooling diagnostics
-- `kit-new`, `kit-migrate`, `kit-verify`, `kit-doctor`, and `kit-bench-gate`
+- `kit-new`, `kit-migrate`, `kit-verify`, and `kit-doctor`
   now use stable validation and filesystem-diagnostic text for rejected
   arguments, probe URLs/paths, migration targets, scaffold destinations, and
   threshold/metric options instead of echoing raw command-line values or local
@@ -1225,10 +1225,6 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - `promtool check rules` in CI
 - The v2.0.0 Prometheus contract freeze covers the dashboarded families above,
   including direct NATS JetStream and Redis Streams messaging metrics.
-
-### Benchmarks
-- `make bench` runs the kit's benchmark suite (jwtutil verify, gcra, tokenbucket, encrypt, envelope, signing, tenant, compute cache, memory cache, stack chain, circuitbreaker, budget memory). `make bench-baseline` is available as an operator helper that captures raw `go test -bench` output for a local snapshot.
-- The kit does NOT ship a checked-in `kit-bench-gate` baseline. Benchmark numbers are hardware-specific and would flag spurious regressions on every CI runner that doesn't match the capture hardware; `kit-bench-gate` is a downstream tool consumers run on their own clusters, not a release-time CI gate.
 
 ### gRPC hardening
 - `grpcx.WithDefaultTimeout(d)` — per-RPC default deadline; closes threat-model GAP-03 (streaming-RPC exhaustion)
@@ -1325,7 +1321,7 @@ file an issue with a concrete use case before assuming we will add them.
   [`docs/release/API_FREEZE_V2.md`](release/API_FREEZE_V2.md) for the
   authoritative inventory.
 - Package-relevant docs cover threat modeling, supply-chain policy,
-  release notes, migration, benchmarks, dashboards, and runbooks. See
+  release notes, migration, dashboards, and runbooks. See
   [`docs/ai/`](ai/) for the AI-agent recipe set and
   [`docs/audit/`](audit/) for the audit ledger.
 
