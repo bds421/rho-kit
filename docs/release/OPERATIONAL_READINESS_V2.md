@@ -144,6 +144,7 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/app/tenant/v2` | Adapter | Tenant module wiring: tenant extractor attachment, fail-closed defaults, lifecycle drain. |
 | `github.com/bds421/rho-kit/authz/v2` | Runtime | Policy defaults, fail-closed authorization, low-cardinality audit behavior. |
 | `github.com/bds421/rho-kit/authz/openfga/v2` | Adapter | External authz dependency configuration, client deadlines, optional dependency isolation. |
+| `github.com/bds421/rho-kit/cmd/kit-catalog/v2` | Tool | Fleet inventory: scans a service tree (single or fleet) and emits JSON / table / CSV manifest of which kit packages each service composes, with module version pins. Filterable by import path. |
 | `github.com/bds421/rho-kit/cmd/kit-doctor/v2` | Tool | Static operational/security checks for downstream services. |
 | `github.com/bds421/rho-kit/cmd/kit-migrate/v2` | Tool | Migration execution safety and rollback-oriented failure reporting. |
 | `github.com/bds421/rho-kit/cmd/kit-new/v2` | Tool | Generated service defaults, TLS, Redis, idempotency, and golden-path compile evidence. |

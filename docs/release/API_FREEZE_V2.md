@@ -138,6 +138,7 @@ freezes `redis_stream_messages_produced_total`,
 
 | Module | Decision | Rename/remove decision | Freeze notes |
 |---|---|---|---|
+| `github.com/bds421/rho-kit/cmd/kit-catalog/v2` | Keep command API | No rename/remove | Fleet-inventory CLI: emits JSON / table / CSV manifest of kit composition per service. F8 closeout. |
 | `github.com/bds421/rho-kit/cmd/kit-doctor/v2` | Keep command API | No rename/remove | Static service-health/security scanner CLI. |
 | `github.com/bds421/rho-kit/cmd/kit-migrate/v2` | Keep command API | No rename/remove | Kit-managed DB migration CLI. |
 | `github.com/bds421/rho-kit/cmd/kit-new/v2` | Keep command API | No rename/remove | Service scaffold CLI; scaffold variants are compile-tested. |

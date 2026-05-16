@@ -29,6 +29,7 @@ use (
 	./app/tracing
 	./authz
 	./authz/openfga
+	./cmd/kit-catalog
 	./cmd/kit-doctor
 	./cmd/kit-migrate
 	./cmd/kit-new
