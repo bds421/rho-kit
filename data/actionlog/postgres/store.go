@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 )
 
@@ -71,7 +72,7 @@ func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(p
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return actionlog.Entry{}, fmt.Errorf("actionlog/postgres: begin: %w", err)
+		return actionlog.Entry{}, redact.WrapError("actionlog/postgres: begin", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -82,7 +83,7 @@ func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(p
 	// constraint. The lock is released at commit/rollback, so it never
 	// escapes this transaction.
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", tenantID); err != nil {
-		return actionlog.Entry{}, fmt.Errorf("actionlog/postgres: advisory lock: %w", err)
+		return actionlog.Entry{}, redact.WrapError("actionlog/postgres: advisory lock", err)
 	}
 
 	prev, prevSeq, err := selectLatestForUpdate(ctx, tx, tenantID)
@@ -103,7 +104,7 @@ func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(p
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return actionlog.Entry{}, fmt.Errorf("actionlog/postgres: commit: %w", err)
+		return actionlog.Entry{}, redact.WrapError("actionlog/postgres: commit", err)
 	}
 	return entry, nil
 }
@@ -125,7 +126,7 @@ WHERE id = $1`
 		if errors.Is(err, pgx.ErrNoRows) {
 			return actionlog.Entry{}, actionlog.ErrNotFound
 		}
-		return actionlog.Entry{}, fmt.Errorf("actionlog/postgres: get: %w", err)
+		return actionlog.Entry{}, redact.WrapError("actionlog/postgres: get", err)
 	}
 	return entry, nil
 }
@@ -197,7 +198,7 @@ FROM action_log_entries`
 
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
-		return nil, "", fmt.Errorf("actionlog/postgres: list: %w", err)
+		return nil, "", redact.WrapError("actionlog/postgres: list", err)
 	}
 	defer rows.Close()
 
@@ -205,12 +206,12 @@ FROM action_log_entries`
 	for rows.Next() {
 		entry, scanErr := scanEntry(rows)
 		if scanErr != nil {
-			return nil, "", fmt.Errorf("actionlog/postgres: list scan: %w", scanErr)
+			return nil, "", redact.WrapError("actionlog/postgres: list scan", scanErr)
 		}
 		out = append(out, entry)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, "", fmt.Errorf("actionlog/postgres: list iterate: %w", err)
+		return nil, "", redact.WrapError("actionlog/postgres: list iterate", err)
 	}
 	var next string
 	if len(out) > limit {
@@ -242,21 +243,21 @@ WHERE tenant_id = $1
 ORDER BY seq ASC`
 	rows, err := s.pool.Query(ctx, q, tenantID)
 	if err != nil {
-		return fmt.Errorf("actionlog/postgres: range by tenant seq: %w", err)
+		return redact.WrapError("actionlog/postgres: range by tenant seq", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		entry, scanErr := scanEntry(rows)
 		if scanErr != nil {
-			return fmt.Errorf("actionlog/postgres: range by tenant seq scan: %w", scanErr)
+			return redact.WrapError("actionlog/postgres: range by tenant seq scan", scanErr)
 		}
 		if err := fn(entry); err != nil {
 			return err
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("actionlog/postgres: range by tenant seq iterate: %w", err)
+		return redact.WrapError("actionlog/postgres: range by tenant seq iterate", err)
 	}
 	return nil
 }
@@ -288,7 +289,7 @@ func scanEntry(s scannable) (actionlog.Entry, error) {
 	if len(metaRaw) > 0 {
 		var meta map[string]any
 		if err := json.Unmarshal(metaRaw, &meta); err != nil {
-			return actionlog.Entry{}, fmt.Errorf("actionlog/postgres: unmarshal metadata: %w", err)
+			return actionlog.Entry{}, redact.WrapError("actionlog/postgres: unmarshal metadata", err)
 		}
 		e.Metadata = meta
 	}
@@ -310,7 +311,7 @@ FOR UPDATE`
 		if errors.Is(err, pgx.ErrNoRows) {
 			return actionlog.Entry{}, 0, nil
 		}
-		return actionlog.Entry{}, 0, fmt.Errorf("actionlog/postgres: select latest: %w", err)
+		return actionlog.Entry{}, 0, redact.WrapError("actionlog/postgres: select latest", err)
 	}
 	return entry, entry.Seq, nil
 }
@@ -320,7 +321,7 @@ func insertEntry(ctx context.Context, tx pgx.Tx, e actionlog.Entry) error {
 	if len(e.Metadata) > 0 {
 		b, err := json.Marshal(e.Metadata)
 		if err != nil {
-			return fmt.Errorf("actionlog/postgres: marshal metadata: %w", err)
+			return redact.WrapError("actionlog/postgres: marshal metadata", err)
 		}
 		metaRaw = b
 	}
@@ -335,9 +336,9 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`
 	); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
-			return fmt.Errorf("actionlog/postgres: append: concurrent seq collision: %w", err)
+			return redact.WrapError("actionlog/postgres: append: concurrent seq collision", err)
 		}
-		return fmt.Errorf("actionlog/postgres: append: %w", err)
+		return redact.WrapError("actionlog/postgres: append", err)
 	}
 	return nil
 }

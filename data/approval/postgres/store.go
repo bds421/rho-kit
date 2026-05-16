@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/bds421/rho-kit/core/v2/clock"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/data/v2/approval"
 )
 
@@ -86,7 +87,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`
 		string(r.State), r.DecidedBy, nullableTime(r.DecidedAt), r.Reason,
 		r.CreatedAt, r.ExpiresAt,
 	); err != nil {
-		return approval.Request{}, fmt.Errorf("approval/postgres: create: %w", err)
+		return approval.Request{}, redact.WrapError("approval/postgres: create", err)
 	}
 	return r, nil
 }
@@ -107,7 +108,7 @@ WHERE id = $1`
 		if errors.Is(err, pgx.ErrNoRows) {
 			return approval.Request{}, approval.ErrNotFound
 		}
-		return approval.Request{}, fmt.Errorf("approval/postgres: get: %w", err)
+		return approval.Request{}, redact.WrapError("approval/postgres: get", err)
 	}
 	return out, nil
 }
@@ -183,7 +184,7 @@ FROM approval_requests`
 
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
-		return nil, "", fmt.Errorf("approval/postgres: list: %w", err)
+		return nil, "", redact.WrapError("approval/postgres: list", err)
 	}
 	defer rows.Close()
 
@@ -191,12 +192,12 @@ FROM approval_requests`
 	for rows.Next() {
 		req, scanErr := scanRequest(rows)
 		if scanErr != nil {
-			return nil, "", fmt.Errorf("approval/postgres: list scan: %w", scanErr)
+			return nil, "", redact.WrapError("approval/postgres: list scan", scanErr)
 		}
 		out = append(out, req)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, "", fmt.Errorf("approval/postgres: list iterate: %w", err)
+		return nil, "", redact.WrapError("approval/postgres: list iterate", err)
 	}
 	var next string
 	if len(out) > limit {
@@ -239,7 +240,7 @@ func (s *Store) decide(ctx context.Context, id, decidedBy, reason string, approv
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return approval.Request{}, fmt.Errorf("approval/postgres: begin: %w", err)
+		return approval.Request{}, redact.WrapError("approval/postgres: begin", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -255,7 +256,7 @@ FOR UPDATE`
 		if errors.Is(err, pgx.ErrNoRows) {
 			return approval.Request{}, approval.ErrNotFound
 		}
-		return approval.Request{}, fmt.Errorf("approval/postgres: decide select: %w", err)
+		return approval.Request{}, redact.WrapError("approval/postgres: decide select", err)
 	}
 
 	now := s.clock().UTC()
@@ -266,17 +267,17 @@ FOR UPDATE`
 	if r.State == approval.StatePending && !r.ExpiresAt.IsZero() && !now.Before(r.ExpiresAt) {
 		const expireSQL = `UPDATE approval_requests SET state = $1, decided_at = $2 WHERE id = $3`
 		if _, err := tx.Exec(ctx, expireSQL, string(approval.StateExpired), now, r.ID); err != nil {
-			return approval.Request{}, fmt.Errorf("approval/postgres: expire: %w", err)
+			return approval.Request{}, redact.WrapError("approval/postgres: expire", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return approval.Request{}, fmt.Errorf("approval/postgres: commit: %w", err)
+			return approval.Request{}, redact.WrapError("approval/postgres: commit", err)
 		}
 		return approval.Request{}, fmt.Errorf("%w: request expired", approval.ErrInvalidTransition)
 	}
 
 	if r.State == target {
 		if err := tx.Commit(ctx); err != nil {
-			return approval.Request{}, fmt.Errorf("approval/postgres: commit: %w", err)
+			return approval.Request{}, redact.WrapError("approval/postgres: commit", err)
 		}
 		return r, nil
 	}
@@ -291,10 +292,10 @@ FOR UPDATE`
 
 	const decideSQL = `UPDATE approval_requests SET state = $1, decided_by = $2, reason = $3, decided_at = $4 WHERE id = $5`
 	if _, err := tx.Exec(ctx, decideSQL, string(target), decidedBy, reason, now, r.ID); err != nil {
-		return approval.Request{}, fmt.Errorf("approval/postgres: decide update: %w", err)
+		return approval.Request{}, redact.WrapError("approval/postgres: decide update", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return approval.Request{}, fmt.Errorf("approval/postgres: commit: %w", err)
+		return approval.Request{}, redact.WrapError("approval/postgres: commit", err)
 	}
 	r.State = target
 	r.DecidedBy = decidedBy
@@ -310,7 +311,7 @@ func (s *Store) MarkExecuted(ctx context.Context, id string) (approval.Request, 
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return approval.Request{}, fmt.Errorf("approval/postgres: begin: %w", err)
+		return approval.Request{}, redact.WrapError("approval/postgres: begin", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -326,12 +327,12 @@ FOR UPDATE`
 		if errors.Is(err, pgx.ErrNoRows) {
 			return approval.Request{}, approval.ErrNotFound
 		}
-		return approval.Request{}, fmt.Errorf("approval/postgres: mark executed select: %w", err)
+		return approval.Request{}, redact.WrapError("approval/postgres: mark executed select", err)
 	}
 
 	if r.State == approval.StateExecuted {
 		if err := tx.Commit(ctx); err != nil {
-			return approval.Request{}, fmt.Errorf("approval/postgres: commit: %w", err)
+			return approval.Request{}, redact.WrapError("approval/postgres: commit", err)
 		}
 		return r, nil
 	}
@@ -341,10 +342,10 @@ FOR UPDATE`
 
 	const updateSQL = `UPDATE approval_requests SET state = $1 WHERE id = $2`
 	if _, err := tx.Exec(ctx, updateSQL, string(approval.StateExecuted), r.ID); err != nil {
-		return approval.Request{}, fmt.Errorf("approval/postgres: mark executed update: %w", err)
+		return approval.Request{}, redact.WrapError("approval/postgres: mark executed update", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return approval.Request{}, fmt.Errorf("approval/postgres: commit: %w", err)
+		return approval.Request{}, redact.WrapError("approval/postgres: commit", err)
 	}
 	r.State = approval.StateExecuted
 	return r, nil
