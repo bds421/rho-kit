@@ -31,18 +31,18 @@ func defaultTenantExtractor(ctx context.Context) (string, bool) {
 //
 // Strict mode (default; opt out via [WithBestEffortAuditOnMissingTenant]) enforces the
 // invariant by refusing to execute the tool when the tenant cannot
-// be resolved — the JSON-RPC caller sees -32603 internal error and
-// no tool side effects occur. The signed-store contract rejects
-// empty tenant ids; this check pre-empts that rejection at the
-// transport layer so the failure surface stays at the boundary
-// rather than mid-tool.
+// be resolved — the caller sees a [sdkmcp.CallToolResult] with
+// `isError: true` and "internal error" content, and no tool side
+// effects occur. The signed-store contract rejects empty tenant ids;
+// this check pre-empts that rejection at the transport layer so the
+// failure surface stays at the boundary rather than mid-tool.
 //
 // Loose mode ([WithBestEffortAuditOnMissingTenant]) preserves the legacy
 // behaviour: log a warn-level message, skip the audit entry, run
 // the tool anyway. The caller has explicitly accepted the audit gap.
 //
 // Returns ok=false when the tool MUST NOT execute (strict + no
-// tenant). The caller emits the JSON-RPC error in that case.
+// tenant). The caller emits the CallToolResult error in that case.
 //
 // When no action logger is configured this is a no-op (returns
 // ok=true) — auditing is opt-in so the strict/loose distinction is
@@ -87,7 +87,7 @@ func (s *Server) auditPrecheck(ctx context.Context, r *http.Request, tool string
 //
 //   - Sync mode + strict audit (default): caller is expected to
 //     invoke recordActionLog BEFORE returning the tool result and
-//     to surface a non-nil return as a JSON-RPC error. This
+//     to surface a non-nil return as a CallToolResult error. This
 //     preserves the audit invariant that every successfully-returned
 //     tool call produced a signed entry.
 //   - Sync mode + loose audit: a non-nil return is logged and ignored

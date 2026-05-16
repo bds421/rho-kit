@@ -62,10 +62,10 @@
 //     [WithParameter].
 //   - Single response per status code per route. Callers needing
 //     multiple statuses register the response per-status via
-//     [WithResponseStatus] / [WithResponseStatusSchema].
+//     [WithResponseType] / [WithResponseSchema] / [WithResponseStatus].
 //   - No security schemes are inferred. Callers attach security
-//     schemes via [WithComponentsSecurityScheme] +
-//     [WithOperationSecurity].
+//     schemes via [Spec.AddSecurityScheme] and bind them per-operation
+//     with [WithSecurity] (or document-wide via [Spec.SetGlobalSecurity]).
 //   - No tags object is emitted — only per-operation `tags` strings.
 //
 // These are not architectural limits; future waves can extend the

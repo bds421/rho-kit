@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/core/v2/validate"
 	"github.com/bds421/rho-kit/httpx/v2/openapigen"
 )
 
@@ -307,8 +308,9 @@ func TestSpec_Components(t *testing.T) {
 	assert.Equal(t, "JWT", scheme.BearerFormat)
 
 	op := doc.Paths["/x"].Get
-	require.Len(t, op.Security, 1)
-	assert.Equal(t, []string{}, op.Security[0]["bearerAuth"])
+	require.NotNil(t, op.Security)
+	require.Len(t, *op.Security, 1)
+	assert.Equal(t, []string{}, (*op.Security)[0]["bearerAuth"])
 }
 
 func TestSpec_GlobalSecurity(t *testing.T) {
@@ -326,8 +328,15 @@ func TestSpec_AnonymousOperationOverride(t *testing.T) {
 	))
 	doc := spec.Document()
 	op := doc.Paths["/public"].Get
-	require.NotNil(t, op.Security)
-	assert.Len(t, op.Security, 0, "anonymous override must emit empty (not nil) slice")
+	require.NotNil(t, op.Security, "anonymous override must surface as a non-nil pointer")
+	assert.Len(t, *op.Security, 0, "anonymous override must emit empty (not nil) slice")
+
+	// Critically: the Marshal output must include `security: []` so OAS
+	// readers do not fall back to the document-level requirement.
+	raw, err := spec.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"security":[]`,
+		"anonymous override must round-trip through JSON as an empty array, not be omitted")
 }
 
 func TestSpec_ServersAndTags(t *testing.T) {
@@ -475,6 +484,56 @@ func TestHandle_FailsFastOnSchemaError(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, openapigen.ErrSchemaGeneration),
 		"schema build failure must wrap ErrSchemaGeneration; got: %v", err)
+	assert.True(t, errors.Is(err, validate.ErrCyclicSchema),
+		"schema build failure must preserve the underlying validate sentinel; got: %v", err)
+}
+
+func TestWithRequestOptional_FlipsRequiredFalse(t *testing.T) {
+	spec := openapigen.NewSpec("api", "v1")
+	// WithRequestType defaults Required=true; WithRequestOptional must
+	// flip it back to false. Order matters — the doc comment promises
+	// WithRequestOptional pairs with WithRequestType, applied later.
+	require.NoError(t, spec.Register(http.MethodPost, "/x",
+		openapigen.WithRequestType[createWidgetReq](),
+		openapigen.WithRequestOptional(),
+	))
+	doc := spec.Document()
+	rb := doc.Paths["/x"].Post.RequestBody
+	require.NotNil(t, rb)
+	assert.False(t, rb.Required, "WithRequestOptional must clear the required flag")
+}
+
+func TestWithRequestMediaType_OverridesDefault(t *testing.T) {
+	spec := openapigen.NewSpec("api", "v1")
+	require.NoError(t, spec.Register(http.MethodPost, "/x",
+		openapigen.WithRequestType[createWidgetReq](),
+		openapigen.WithRequestMediaType("application/x-www-form-urlencoded"),
+	))
+	doc := spec.Document()
+	rb := doc.Paths["/x"].Post.RequestBody
+	require.NotNil(t, rb)
+	_, ok := rb.Content["application/x-www-form-urlencoded"]
+	assert.True(t, ok, "WithRequestMediaType must override the default application/json key")
+	_, jsonKey := rb.Content["application/json"]
+	assert.False(t, jsonKey, "default media type must not also appear")
+}
+
+func TestWithRequestSchema_RejectsNil(t *testing.T) {
+	spec := openapigen.NewSpec("api", "v1")
+	err := spec.Register(http.MethodPost, "/x", openapigen.WithRequestSchema(nil))
+	require.Error(t, err)
+}
+
+func TestWithResponseMediaType_OverridesDefault(t *testing.T) {
+	spec := openapigen.NewSpec("api", "v1")
+	require.NoError(t, spec.Register(http.MethodGet, "/x",
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+		openapigen.WithResponseMediaType(http.StatusOK, "application/yaml"),
+	))
+	doc := spec.Document()
+	resp := doc.Paths["/x"].Get.Responses["200"]
+	_, ok := resp.Content["application/yaml"]
+	assert.True(t, ok)
 }
 
 func TestRegister_RoundTripJSONShape(t *testing.T) {

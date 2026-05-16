@@ -465,11 +465,12 @@ func (s *Spec) Handler() http.Handler {
 
 // schemaFor is a thin wrapper around [validate.SchemaFor] that wraps
 // the returned error with [ErrSchemaGeneration] so callers can branch
-// uniformly.
+// uniformly. The wrapping preserves the underlying error chain so
+// `errors.Is(err, validate.ErrCyclicSchema)` continues to work.
 func schemaFor[T any]() (*jsonschema.Schema, error) {
 	schema, err := validate.SchemaFor[T]()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s: %v", ErrSchemaGeneration, reflect.TypeOf((*T)(nil)).Elem(), err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrSchemaGeneration, reflect.TypeOf((*T)(nil)).Elem(), err)
 	}
 	return schema, nil
 }

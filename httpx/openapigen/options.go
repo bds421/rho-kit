@@ -14,6 +14,10 @@ type RouteOption func(*routeConfig) error
 
 // routeConfig is the working state assembled by RouteOption calls
 // before being copied onto the *routeState.
+//
+// security is a pointer-to-slice to preserve the OAS 3.1 three-state
+// distinction (unset / anonymous-override / declared). See
+// [Operation] for the rationale.
 type routeConfig struct {
 	tags        []string
 	summary     string
@@ -21,7 +25,7 @@ type routeConfig struct {
 	operationID string
 	parameters  []Parameter
 	deprecated  bool
-	security    []map[string][]string
+	security    *[]map[string][]string
 
 	// Request body.
 	requestSchema      *jsonschema.Schema
@@ -263,17 +267,24 @@ func WithResponseStatus(status int, desc string) RouteOption {
 // [Spec.SetGlobalSecurity]. Each map entry is one alternative; within
 // a map, all entries must apply.
 //
-// Pass an empty slice (`WithSecurity()`) to explicitly clear the
-// global requirement for this operation (anonymous endpoint).
+// Pass no arguments (`WithSecurity()`) to explicitly clear the
+// global requirement for this operation (anonymous endpoint); the
+// rendered document emits `"security": []` so OAS readers do not
+// fall back to the document-level requirement.
 func WithSecurity(req ...map[string][]string) RouteOption {
 	return func(c *routeConfig) error {
 		if len(req) == 0 {
-			// Empty slice marks "no security required" — must NOT be nil
-			// or OAS readers treat it as "fall back to global".
-			c.security = []map[string][]string{}
+			// Empty slice marks "no security required" — must be a
+			// pointer to an empty slice, not nil, so JSON
+			// marshalling emits the explicit `[]` rather than
+			// omitting the field (which OAS readers treat as
+			// "fall back to global").
+			empty := []map[string][]string{}
+			c.security = &empty
 			return nil
 		}
-		c.security = append([]map[string][]string(nil), req...)
+		clone := append([]map[string][]string(nil), req...)
+		c.security = &clone
 		return nil
 	}
 }

@@ -206,7 +206,7 @@ type DestructiveGate func(ctx context.Context, toolName string, payload []byte) 
 // with [WithDestructive].
 func WithDestructiveGate(fn DestructiveGate) ServerOption {
 	if fn == nil {
-		panic("mcp: WithDestructiveGate function must not be nil")
+		panic("mcp: WithDestructiveGate requires a non-nil gate")
 	}
 	return func(c *serverConfig) { c.destructiveGate = fn }
 }
@@ -222,7 +222,7 @@ func WithoutDestructiveGate() ServerOption {
 // Default: [slog.Default].
 func WithLogger(l *slog.Logger) ServerOption {
 	if l == nil {
-		panic("mcp: WithLogger logger must not be nil")
+		panic("mcp: WithLogger requires a non-nil logger")
 	}
 	return func(c *serverConfig) { c.logger = l }
 }
@@ -232,7 +232,7 @@ func WithLogger(l *slog.Logger) ServerOption {
 // return, Outcome=failure on any error).
 func WithActionLogger(l actionlog.Logger) ServerOption {
 	if l == nil {
-		panic("mcp: WithActionLogger logger must not be nil")
+		panic("mcp: WithActionLogger requires a non-nil logger")
 	}
 	return func(c *serverConfig) { c.actionLogger = l }
 }
@@ -250,7 +250,7 @@ func WithActionLogger(l actionlog.Logger) ServerOption {
 // to read Header / Context instead.
 func WithActorExtractor(fn func(*http.Request) string) ServerOption {
 	if fn == nil {
-		panic("mcp: WithActorExtractor function must not be nil")
+		panic("mcp: WithActorExtractor requires a non-nil extractor")
 	}
 	return func(c *serverConfig) {
 		c.actorExtractor = func(r *http.Request) string {
@@ -275,7 +275,7 @@ func WithAllowAnonymousActor() ServerOption {
 // inbound HTTP request.
 func WithActorFromContext(fn func(context.Context) string) ServerOption {
 	if fn == nil {
-		panic("mcp: WithActorFromContext function must not be nil")
+		panic("mcp: WithActorFromContext requires a non-nil extractor")
 	}
 	return WithActorExtractor(func(r *http.Request) string {
 		return fn(r.Context())
@@ -291,7 +291,7 @@ func WithActorFromContext(fn func(context.Context) string) ServerOption {
 // otherwise.
 func WithActorFromHeader(header string) ServerOption {
 	if !httpguts.ValidHeaderFieldName(header) {
-		panic("mcp: WithActorFromHeader header must be a valid non-empty header name")
+		panic("mcp: WithActorFromHeader requires a valid non-empty header name")
 	}
 	return WithActorExtractor(func(r *http.Request) string {
 		value, ok := headerutil.SingletonIdentity(r.Header, header)
@@ -306,7 +306,7 @@ func WithActorFromHeader(header string) ServerOption {
 // from a context.
 func WithTenantExtractor(fn func(ctx context.Context) (string, bool)) ServerOption {
 	if fn == nil {
-		panic("mcp: WithTenantExtractor function must not be nil")
+		panic("mcp: WithTenantExtractor requires a non-nil extractor")
 	}
 	return func(c *serverConfig) { c.tenantExtractor = fn }
 }
@@ -316,7 +316,7 @@ func WithTenantExtractor(fn func(ctx context.Context) (string, bool)) ServerOpti
 // Default: 5s.
 func WithStrictAuditTimeout(d time.Duration) ServerOption {
 	if d <= 0 {
-		panic("mcp: WithStrictAuditTimeout requires a positive value")
+		panic("mcp: WithStrictAuditTimeout requires a positive duration")
 	}
 	return func(c *serverConfig) { c.strictAuditTimeout = d }
 }
@@ -337,7 +337,7 @@ func WithAsyncAuditDispatch() ServerOption {
 // performing async audit appends. Default: 4. Must be > 0.
 func WithAsyncAuditWorkers(n int) ServerOption {
 	if n <= 0 {
-		panic("mcp: WithAsyncAuditWorkers requires a positive value")
+		panic("mcp: WithAsyncAuditWorkers requires a positive worker count")
 	}
 	return func(c *serverConfig) { c.asyncAuditWorkers = n }
 }
@@ -346,7 +346,7 @@ func WithAsyncAuditWorkers(n int) ServerOption {
 // appends. Default: 256. Must be > 0.
 func WithAsyncAuditQueue(n int) ServerOption {
 	if n <= 0 {
-		panic("mcp: WithAsyncAuditQueue requires a positive value")
+		panic("mcp: WithAsyncAuditQueue requires a positive queue depth")
 	}
 	return func(c *serverConfig) { c.asyncAuditQueue = n }
 }
@@ -355,7 +355,7 @@ func WithAsyncAuditQueue(n int) ServerOption {
 // may run before its context deadline trips. Default: 5s.
 func WithAsyncAuditTimeout(d time.Duration) ServerOption {
 	if d <= 0 {
-		panic("mcp: WithAsyncAuditTimeout requires a positive value")
+		panic("mcp: WithAsyncAuditTimeout requires a positive duration")
 	}
 	return func(c *serverConfig) { c.asyncAuditTimeout = d }
 }
@@ -406,7 +406,7 @@ func NewServer(opts ...ServerOption) *Server {
 	cfg := defaultServerConfig()
 	for _, o := range opts {
 		if o == nil {
-			panic("mcp: NewServer server option must not be nil")
+			panic("mcp: NewServer option must not be nil")
 		}
 		o(&cfg)
 	}
@@ -603,7 +603,7 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 	cfg := toolConfig{}
 	for _, o := range opts {
 		if o == nil {
-			panic("mcp: Register tool option must not be nil")
+			panic("mcp: Register option must not be nil")
 		}
 		o(&cfg)
 	}
@@ -945,20 +945,42 @@ func wrapToolHandler[In any, Out any](s *Server, name string, h Handler[In, Out]
 		}
 
 		out, callErr := h(ctx, in)
+
+		// Marshal the response payload BEFORE auditing so a
+		// marshal-failure on a "successful" handler return surfaces
+		// to the audit as a failure rather than a phantom success.
+		// The audit invariant is "every executed tool call produces
+		// an entry whose outcome matches what the caller saw"; we
+		// can only honour it if the audit reason reflects the
+		// post-marshal outcome.
+		var outBytes []byte
+		marshalFailed := false
+		if callErr == nil {
+			b, marshalErr := json.Marshal(out)
+			if marshalErr != nil {
+				s.logInternalError(ctx, "mcp: marshal tool output", marshalErr)
+				callErr = marshalErr
+				marshalFailed = true
+			} else {
+				outBytes = b
+			}
+		}
+
 		if auditErr := s.recordActionLog(ctx, httpReq, name, callErr); auditErr != nil {
 			if s.cfg.strictAudit && !s.cfg.asyncAudit {
 				return errorResult("internal error"), nil
 			}
 		}
 		if callErr != nil {
+			if marshalFailed {
+				// Already logged above; skip the default-branch
+				// logInternalError inside mapErrorForCaller to
+				// avoid a duplicate server-side entry.
+				return errorResult("internal error"), nil
+			}
 			return errorResult(mapErrorForCaller(s, ctx, callErr)), nil
 		}
 
-		outBytes, err := json.Marshal(out)
-		if err != nil {
-			s.logInternalError(ctx, "mcp: marshal tool output", err)
-			return errorResult("internal error"), nil
-		}
 		return &sdkmcp.CallToolResult{
 			Content: []sdkmcp.Content{
 				&sdkmcp.TextContent{Text: string(outBytes)},

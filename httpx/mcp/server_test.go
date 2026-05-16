@@ -1189,6 +1189,41 @@ func TestServer_AsyncAudit_StopRace_NoLostJobs(t *testing.T) {
 		len(entries), dropped)
 }
 
+type unmarshalableOut struct {
+	C chan int `json:"c"`
+}
+
+func TestServer_MarshalFailureAfterHandlerSuccess_RecordsAuditAsFailure(t *testing.T) {
+	// Marshalling a chan-typed field fails at json.Marshal. The kit
+	// must surface this as a tool error AND record the audit entry as
+	// Outcome=failure — auditing "success" while the caller sees
+	// "internal error" would break the audit invariant.
+	logger, _ := newTestActionLogger(t)
+	s := mcp.NewServer(mcp.WithActionLogger(logger), withTestActor("agent-marshal"))
+	// Bypass the schema check that would normally reject the output
+	// type via an explicit output schema override.
+	require.NoError(t, mcp.Register[echoIn, unmarshalableOut](s, "boom",
+		func(_ context.Context, _ echoIn) (unmarshalableOut, error) {
+			return unmarshalableOut{C: make(chan int)}, nil
+		},
+		mcp.WithOutputSchema(json.RawMessage(`{"type":"object"}`)),
+	))
+
+	h := withTenantHandler(s.HTTP(), "tenant-marshal")
+	res, rpc := callTool(t, h, "boom", map[string]any{"message": "x"}, nil)
+	require.Nil(t, rpc.Error)
+	require.True(t, res.IsError, "marshal failure must surface as a tool error")
+	require.Len(t, res.Content, 1)
+	assert.Equal(t, "internal error", res.Content[0].Text)
+
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-marshal"})
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, actionlog.OutcomeFailure, entries[0].Outcome,
+		"marshal failure must be recorded as a failure in the audit log, not a phantom success")
+	assert.NotEmpty(t, entries[0].Reason, "audit entry must carry a non-empty reason on marshal failure")
+}
+
 func TestServer_ToolsCall_ReturnsMCPContentShape(t *testing.T) {
 	s := newTestServer(t)
 	res, rpc := callTool(t, s.HTTP(), "echo", map[string]any{"message": "world"}, nil)

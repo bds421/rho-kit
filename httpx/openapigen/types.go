@@ -81,16 +81,30 @@ type PathItem struct {
 
 // Operation is one HTTP verb under a [PathItem]. Field ordering
 // matches the OAS 3.1 `Operation Object` section.
+//
+// Security is a pointer-to-slice so callers can distinguish three
+// states the OAS spec treats differently:
+//
+//   - nil pointer        → emit nothing (operation inherits the
+//     document-level `security` requirement).
+//   - pointer to empty   → emit `"security": []` (operation
+//     explicitly opts out of the document-level requirement —
+//     anonymous endpoint).
+//   - pointer to entries → emit the declared requirements.
+//
+// A bare `[]map[string][]string` with `omitempty` would drop the
+// empty-slice case (Go's `json` package treats len==0 as absent),
+// silently re-enabling the global requirement.
 type Operation struct {
-	Tags        []string              `json:"tags,omitempty"`
-	Summary     string                `json:"summary,omitempty"`
-	Description string                `json:"description,omitempty"`
-	OperationID string                `json:"operationId,omitempty"`
-	Parameters  []Parameter           `json:"parameters,omitempty"`
-	RequestBody *RequestBody          `json:"requestBody,omitempty"`
-	Responses   map[string]Response   `json:"responses,omitempty"`
-	Security    []map[string][]string `json:"security,omitempty"`
-	Deprecated  bool                  `json:"deprecated,omitempty"`
+	Tags        []string               `json:"tags,omitempty"`
+	Summary     string                 `json:"summary,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	OperationID string                 `json:"operationId,omitempty"`
+	Parameters  []Parameter            `json:"parameters,omitempty"`
+	RequestBody *RequestBody           `json:"requestBody,omitempty"`
+	Responses   map[string]Response    `json:"responses,omitempty"`
+	Security    *[]map[string][]string `json:"security,omitempty"`
+	Deprecated  bool                   `json:"deprecated,omitempty"`
 }
 
 // Parameter is the `parameter` object. `In` is one of "query", "header",
@@ -132,9 +146,10 @@ type Header struct {
 	Schema      *jsonschema.Schema `json:"schema,omitempty"`
 }
 
-// MediaType is the `mediaType` object. The kit currently emits only
-// the `schema` field; `example` is reserved for callers that supply
-// one explicitly via [WithRequestExample] (not yet implemented).
+// MediaType is the `mediaType` object. The kit currently emits the
+// `schema` field via the request/response options; the `Example`
+// field is reserved for a future option (no [RouteOption] surfaces
+// it yet).
 type MediaType struct {
 	Schema  *jsonschema.Schema `json:"schema,omitempty"`
 	Example any                `json:"example,omitempty"`
