@@ -31,7 +31,8 @@ func TestIntegrationReExportsCompile(t *testing.T) {
 	if storage.StartSFTP == nil {
 		t.Fatalf("storage.StartSFTP should be a live function reference")
 	}
-	if amqp.Start == nil {
-		t.Fatalf("amqp.Start should be a live function reference")
-	}
+	// amqp.Start is a plain function (not a re-exported var like the
+	// storage helpers above), so a `== nil` check is a Go-level
+	// tautology. The import below is the live wiring check.
+	_ = amqp.Start
 }

@@ -224,9 +224,9 @@ func TestDeclareAll_ValidationErrors(t *testing.T) {
 			errMsg:  "exchange name must not be empty",
 		},
 		{
-			name:    "empty queue",
+			name:    "empty consumer group",
 			binding: messaging.BindingSpec{Exchange: "e", ExchangeType: messaging.ExchangeDirect},
-			errMsg:  "queue name must not be empty",
+			errMsg:  "consumer group must not be empty",
 		},
 		{
 			name:    "invalid exchange type",

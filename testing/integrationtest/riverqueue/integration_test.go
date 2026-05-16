@@ -160,7 +160,9 @@ func TestIntegration_RiverPublisher_RejectsEmptyQueue(t *testing.T) {
 	pub := riverqueue.NewPublisher(client)
 	err = pub.Enqueue(ctx, "", kitqueue.Message{ID: "x", Type: "y", Payload: json.RawMessage(`{}`)})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "queue name must not be empty")
+	// Inner validation text is redacted via redact.WrapError; assert
+	// against the exported sentinel instead.
+	assert.ErrorIs(t, err, kitqueue.ErrInvalidName)
 }
 
 // TestIntegration_RiverPublisher_DedupesBySharedID guards L050: the
