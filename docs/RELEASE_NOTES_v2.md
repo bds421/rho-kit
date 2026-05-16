@@ -1393,6 +1393,28 @@ in v2.0.0.
   leader-election and messaging consume-labels entries were resolved
   in waves 160 and 140 respectively.
 
+### Post-implementation gates (waves 170–173)
+- **Wave 170:** Per-package `AGENTS.md` sweep — coding agents picking
+  the kit see "when to use / when to use something else / common
+  mistakes / observability" at every consumer-facing package, in the
+  same format. 28 packages covered.
+- **Wave 171:** `check-doc-rot` CI gate — every "wave N" reference
+  under `docs/` is validated against `git log` subjects so stale
+  unanchored deferral claims fail CI rather than ship to
+  release notes. Six findings caught on first run; all resolved.
+- **Wave 172:** Dashboards + runbooks for waves 157–169. New Grafana
+  dashboards for leader election, realtime centrifuge, and gRPC stream
+  limits; new `alerts-coordination.yaml` group; new runbooks for
+  leader-election callback-drain, centrifuge auth / connect errors,
+  gRPC stream cap exhaustion, plus a non-alert OTel tracing
+  reference that documents every span the kit emits.
+- **Wave 173:** `kit-doctor` rule additions for the wave 157 / 164
+  surface — `websocket-any-origin-unsafe` (HIGH, flags
+  cross-site WebSocket hijacking risk), `websocket-missing-max-connections`
+  (WARNING, goroutine / fd DoS exposure), `centrifuge-missing-jwt-auth`
+  (CRITICAL, unauthenticated realtime broadcast). All honour the
+  standard `// kit-doctor:allow <rule>` suppression marker.
+
 ## What's deliberately NOT shipped
 
 The kit intentionally does not include these. None are on a roadmap;

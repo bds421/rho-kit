@@ -1223,6 +1223,138 @@ func TestFormatFindings_EmptyShowsCheck(t *testing.T) {
 	assert.True(t, strings.HasPrefix(out, "✓"))
 }
 
+// Wave 173: websocket-any-origin-unsafe + websocket-missing-max-connections
+// + centrifuge-missing-jwt-auth pin the kit's wave 157 / 164 hardening
+// surface against consumer-side misconfiguration.
+
+func TestScan_FlagsWebsocketAnyOriginUnsafe(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "ws.go", `package svc
+
+import "github.com/bds421/rho-kit/httpx/v2/websocket"
+
+func wire() {
+	websocket.Handle(websocket.WithAnyOriginUnsafe(), websocket.WithMaxConnections(100))
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "websocket-any-origin-unsafe"),
+		"WithAnyOriginUnsafe in production code must flag, got %+v", findings)
+}
+
+func TestScan_WebsocketAnyOriginUnsafeSkipsTestFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "ws_test.go", `package svc
+
+import "github.com/bds421/rho-kit/httpx/v2/websocket"
+
+func wire() {
+	websocket.Handle(websocket.WithAnyOriginUnsafe())
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "websocket-any-origin-unsafe"),
+		"_test.go must not flag, got %+v", findings)
+}
+
+func TestScan_FlagsWebsocketMissingMaxConnections(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "ws.go", `package svc
+
+import "github.com/bds421/rho-kit/httpx/v2/websocket"
+
+func wire() {
+	websocket.Handle(websocket.WithAllowedOrigins([]string{"https://example.com"}))
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "websocket-missing-max-connections"),
+		"Handle without WithMaxConnections must flag, got %+v", findings)
+}
+
+func TestScan_AcceptsWebsocketWithMaxConnections(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "ws.go", `package svc
+
+import "github.com/bds421/rho-kit/httpx/v2/websocket"
+
+func wire() {
+	websocket.Handle(websocket.WithMaxConnections(1000))
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "websocket-missing-max-connections"),
+		"WithMaxConnections must suppress finding, got %+v", findings)
+}
+
+func TestScan_FlagsCentrifugeMissingJWTAuth(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "realtime.go", `package svc
+
+import "github.com/bds421/rho-kit/realtime/v2/centrifuge"
+
+func wire() {
+	_, _ = centrifuge.NewNode(centrifuge.WithChannelClassifier(classifier))
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "centrifuge-missing-jwt-auth"),
+		"NewNode without WithJWTAuth must flag, got %+v", findings)
+}
+
+func TestScan_AcceptsCentrifugeWithJWTAuth(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "realtime.go", `package svc
+
+import "github.com/bds421/rho-kit/realtime/v2/centrifuge"
+
+func wire() {
+	_, _ = centrifuge.NewNode(centrifuge.WithJWTAuth(provider))
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "centrifuge-missing-jwt-auth"),
+		"WithJWTAuth must suppress finding, got %+v", findings)
+}
+
+func TestScan_CentrifugeMissingJWTAuthSkipsTestFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "realtime_test.go", `package svc
+
+import "github.com/bds421/rho-kit/realtime/v2/centrifuge"
+
+func wire() {
+	_, _ = centrifuge.NewNode()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "centrifuge-missing-jwt-auth"),
+		"_test.go must not flag, got %+v", findings)
+}
+
+func TestScan_CentrifugeJWTAuthAliasedImport(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "realtime.go", `package svc
+
+import rt "github.com/bds421/rho-kit/realtime/v2/centrifuge"
+
+func wire() {
+	_, _ = rt.NewNode()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "centrifuge-missing-jwt-auth"),
+		"aliased centrifuge import must still trigger rule, got %+v", findings)
+}
+
 func hasRule(findings []rules.Finding, name string) bool {
 	for _, f := range findings {
 		if f.Rule == name {

@@ -86,5 +86,8 @@ func Registered() []Rule {
 		httpServerMissingErrorLogRule{},
 		httpServerDirectConstructionRule{},
 		rateLimitOmissionRule{},
+		websocketAnyOriginUnsafeRule{},
+		websocketMissingMaxConnectionsRule{},
+		centrifugeMissingJWTAuthRule{},
 	}
 }
