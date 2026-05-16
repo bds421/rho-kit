@@ -33,9 +33,13 @@ const (
 // and consuming.
 //
 // Labels are intentionally restricted to topology-level dimensions:
-// exchange, routing_key, stream, durable, and outcome. Do not encode tenant
-// IDs, request IDs, user IDs, or payload-derived values into NATS topology
-// names when these metrics are enabled.
+// exchange, routing_key, stream, durable, and outcome. Both publish-side
+// route labels AND consume-side (stream, durable) labels default to the
+// bounded / opaque form in v2 — wave 140 closed the consume-side gap so
+// operators with high-cardinality consumer-group naming cannot blow up
+// Prometheus. Do not encode tenant IDs, request IDs, user IDs, or
+// payload-derived values into NATS topology names when these metrics
+// are enabled.
 type Metrics struct {
 	published       *prometheus.CounterVec
 	publishDuration *prometheus.HistogramVec
@@ -48,12 +52,29 @@ type Metrics struct {
 	// services that have audited their topology can opt back into
 	// raw labels with [WithRawRouteLabels].
 	labelRoute routeLabelFunc
+
+	// labelConsume maps a raw (stream, durable) pair to the label
+	// values that reach Prometheus. The v2 default is the
+	// cardinality-safe opaque form ([opaqueConsumeLabel]); services
+	// with audited consumer-group naming can opt back into raw labels
+	// with [WithRawConsumeLabels].
+	labelConsume consumeLabelFunc
 }
 
 type routeLabelFunc func(exchange, routingKey string) (string, string)
+type consumeLabelFunc func(stream, durable string) (string, string)
 
 func passthroughRouteLabel(exchange, routingKey string) (string, string) {
 	return exchange, routingKey
+}
+
+func passthroughConsumeLabel(stream, durable string) (string, string) {
+	return stream, durable
+}
+
+func opaqueConsumeLabel(stream, durable string) (string, string) {
+	return promutil.OpaqueLabelValue("stream", stream),
+		promutil.OpaqueLabelValue("durable", durable)
 }
 
 // MetricsOption configures the NATS metric constructor. Standardised
@@ -61,8 +82,9 @@ func passthroughRouteLabel(exchange, routingKey string) (string, string) {
 type MetricsOption func(*metricsConfig)
 
 type metricsConfig struct {
-	registerer prometheus.Registerer
-	labelRoute routeLabelFunc
+	registerer   prometheus.Registerer
+	labelRoute   routeLabelFunc
+	labelConsume consumeLabelFunc
 }
 
 // WithRegisterer pins the Prometheus registerer used for NATS
@@ -98,6 +120,26 @@ func WithRawRouteLabels() MetricsOption {
 	}
 }
 
+// WithOpaqueConsumeLabels (the v2 default) passes every (stream,
+// durable) pair through [promutil.OpaqueLabelValue] so per-tenant
+// consumer-group naming cannot blow up Prometheus cardinality. Wave
+// 140 made this the default; consumers with audited, low-cardinality
+// durable naming can revert with [WithRawConsumeLabels].
+func WithOpaqueConsumeLabels() MetricsOption {
+	return func(c *metricsConfig) {
+		c.labelConsume = opaqueConsumeLabel
+	}
+}
+
+// WithRawConsumeLabels reverts to raw stream / durable labels for
+// consume-side metrics. Use ONLY when the deployment has audited
+// durable naming and confirmed low cardinality.
+func WithRawConsumeLabels() MetricsOption {
+	return func(c *metricsConfig) {
+		c.labelConsume = passthroughConsumeLabel
+	}
+}
+
 func opaqueRouteLabel(exchange, routingKey string) (string, string) {
 	return promutil.OpaqueLabelValue("exchange", exchange),
 		promutil.OpaqueLabelValue("routingkey", routingKey)
@@ -111,8 +153,9 @@ func opaqueRouteLabel(exchange, routingKey string) (string, string) {
 // the same registry.
 func NewMetrics(opts ...MetricsOption) *Metrics {
 	cfg := metricsConfig{
-		registerer: prometheus.DefaultRegisterer,
-		labelRoute: opaqueRouteLabel,
+		registerer:   prometheus.DefaultRegisterer,
+		labelRoute:   opaqueRouteLabel,
+		labelConsume: opaqueConsumeLabel,
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -151,6 +194,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	m.consumed = promutil.MustRegisterOrGet(reg, m.consumed)
 	m.handlerDuration = promutil.MustRegisterOrGet(reg, m.handlerDuration)
 	m.labelRoute = cfg.labelRoute
+	m.labelConsume = cfg.labelConsume
 	return m
 }
 
@@ -170,16 +214,25 @@ func (m *Metrics) routeLabel(exchange, routingKey string) (string, string) {
 	return m.labelRoute(exchange, routingKey)
 }
 
+func (m *Metrics) consumeLabel(stream, durable string) (string, string) {
+	if m == nil || m.labelConsume == nil {
+		return stream, durable
+	}
+	return m.labelConsume(stream, durable)
+}
+
 func (m *Metrics) observeConsumed(stream, durable, outcome string) {
 	if m == nil {
 		return
 	}
-	m.consumed.WithLabelValues(stream, durable, outcome).Inc()
+	s, d := m.consumeLabel(stream, durable)
+	m.consumed.WithLabelValues(s, d, outcome).Inc()
 }
 
 func (m *Metrics) observeHandler(stream, durable, outcome string, started time.Time) {
 	if m == nil {
 		return
 	}
-	m.handlerDuration.WithLabelValues(stream, durable, outcome).Observe(time.Since(started).Seconds())
+	s, d := m.consumeLabel(stream, durable)
+	m.handlerDuration.WithLabelValues(s, d, outcome).Observe(time.Since(started).Seconds())
 }

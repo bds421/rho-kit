@@ -78,6 +78,50 @@ func TestKafkaMetrics_OpaqueLabelsDefault(t *testing.T) {
 	}
 }
 
+// Wave 140: consume-side labels default to opaque too. A high-cardinality
+// per-tenant consumer-group naming pattern would have blown up Prometheus
+// in v1 / pre-wave-140 with the raw labels.
+func TestKafkaMetrics_ConsumeLabelsOpaqueDefault(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics := NewMetrics(WithRegisterer(reg))
+	metrics.observeConsumed("tenant-42.events", "tenant-42.orders", kafkaConsumeOutcomeAcked)
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	for _, mf := range mfs {
+		if mf.GetName() != "kafka_consumed_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := labelValueMap(m.GetLabel())
+			assert.NotEqual(t, "tenant-42.events", labels["topic"])
+			assert.NotEqual(t, "tenant-42.orders", labels["group"])
+		}
+	}
+}
+
+func TestKafkaMetrics_ConsumeRawLabelsOptIn(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics := NewMetrics(WithRegisterer(reg), WithRawConsumeLabels())
+	metrics.observeConsumed("events", "orders", kafkaConsumeOutcomeAcked)
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	found := false
+	for _, mf := range mfs {
+		if mf.GetName() != "kafka_consumed_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := labelValueMap(m.GetLabel())
+			if labels["topic"] == "events" && labels["group"] == "orders" {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "raw consume labels must surface real topic / group when opted in")
+}
+
 func TestKafkaMetrics_WithRegisterer_NilPanics(t *testing.T) {
 	assert.Panics(t, func() { WithRegisterer(nil) })
 }

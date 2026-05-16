@@ -159,7 +159,8 @@ func (f *fakeNATSMsg) TermWithReason(string) error {
 
 func assertNATSConsume(t *testing.T, m *Metrics, stream, durable, outcome string, want float64) {
 	t.Helper()
-	got := testutil.ToFloat64(m.consumed.WithLabelValues(stream, durable, outcome))
+	s, d := m.consumeLabel(stream, durable)
+	got := testutil.ToFloat64(m.consumed.WithLabelValues(s, d, outcome))
 	if got != want {
 		t.Fatalf("consume %s/%s/%s = %v, want %v", stream, durable, outcome, got, want)
 	}
