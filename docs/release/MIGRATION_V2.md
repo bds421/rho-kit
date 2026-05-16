@@ -376,6 +376,15 @@ wrapper around the SDK's `Server.AddTool` and
 | Run semantics | Unlike k8slease's one-shot `LeaderElector.Run`, the etcd adapter loops internally: it Campaigns, holds the term while the session is healthy, drains `OnAcquired`, runs `OnLost`, and re-Campaigns. `Run` returns only when the caller ctx is cancelled or `WithCallbackDrainTimeout` fires. The session is closed and the election is explicitly Resigned on planned shutdown so peers do not wait out the lease TTL. |
 | Metrics | `leaderelection_callback_drain_seconds{election,state}` and `leaderelection_callback_drain_warn_total{election}` — the `election` label is the operator-configured key prefix, validated via `promutil.ValidateStaticLabelValue` so a misconfigured caller cannot inflate cardinality. |
 
+### Messaging trace propagation — Kafka, NATS, Redis (new in wave 167)
+
+| Area | Migration |
+|---|---|
+| New packages | Three new tracing sub-packages mirror the existing `amqpbackend/amqptracing`: `kafkabackend/kafkatracing`, `natsbackend/natstracing`, `redisbackend/redistracing`. Each exposes a `Carrier` over the kit's `map[string]string` message headers plus `InjectHeaders` / `ExtractContext` for W3C trace context propagation, and `StartConsumerSpan` / `StartPublisherSpan` helpers that set the OTel semantic-conventions `messaging.*` attribute set for that backend. |
+| Usage | Identical to `amqptracing`: the packages are **helpers**, not auto-wired. Publishers call `StartPublisherSpan` before `Publish`; consumers call `StartConsumerSpan` inside the handler. The kit chose not to auto-instrument the backends so callers retain control over span granularity (one span per delivery vs one span per batch, for example). |
+| Semantic conventions | `kafkatracing` emits `messaging.system=kafka` plus `messaging.kafka.consumer.group` / `messaging.kafka.message.key`. `natstracing` emits `messaging.system=nats` plus `messaging.nats.consumer.durable_name`. `redistracing` emits `messaging.system=redis-stream` plus `messaging.redis.consumer.group`. All three follow the OTel 1.30 semantic conventions for messaging spans. |
+| Backwards compat | Purely additive — services that did not previously trace messaging are unchanged. The four packages have a consistent surface so swapping backends does not require relearning the tracing helper. |
+
 ### `grpcx/interceptor` — stream resource discipline (new in wave 166)
 
 | Area | Migration |
