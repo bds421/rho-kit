@@ -809,6 +809,150 @@ func TestRegister_AutoDiscovery_NoBracesEmitsNothing(t *testing.T) {
 	assert.Empty(t, spec.Document().Paths["/health/ready"].Get.Parameters)
 }
 
+// TestRegister_OperationExternalDocs covers the wave 163 extension:
+// per-operation externalDocs links into the rendered spec so
+// generated portals can deep-link to runbooks, design docs, etc.
+func TestRegister_OperationExternalDocs(t *testing.T) {
+	spec := openapigen.NewSpec("xdocs", "v1")
+	err := spec.Register(http.MethodGet, "/health",
+		openapigen.WithExternalDocs("https://docs.example/api/health", "Health-check semantics and runbook"),
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+	)
+	require.NoError(t, err)
+
+	op := spec.Document().Paths["/health"].Get
+	require.NotNil(t, op.ExternalDocs)
+	assert.Equal(t, "https://docs.example/api/health", op.ExternalDocs.URL)
+	assert.Equal(t, "Health-check semantics and runbook", op.ExternalDocs.Description)
+}
+
+func TestRegister_OperationExternalDocs_RejectsEmptyURL(t *testing.T) {
+	spec := openapigen.NewSpec("xdocs-bad", "v1")
+	err := spec.Register(http.MethodGet, "/x",
+		openapigen.WithExternalDocs("", "description without url"),
+	)
+	require.Error(t, err)
+}
+
+// TestTag_WithExternalDocs verifies the Tag-level externalDocs field
+// emitted via AddTag.
+func TestTag_WithExternalDocs(t *testing.T) {
+	spec := openapigen.NewSpec("tags-xdocs", "v1")
+	spec.AddTag(openapigen.Tag{
+		Name:        "Orders",
+		Description: "Order-lifecycle operations.",
+		ExternalDocs: &openapigen.ExternalDocs{
+			URL:         "https://docs.example/orders",
+			Description: "Order domain guide",
+		},
+	})
+
+	tags := spec.Document().Tags
+	require.Len(t, tags, 1)
+	require.NotNil(t, tags[0].ExternalDocs)
+	assert.Equal(t, "https://docs.example/orders", tags[0].ExternalDocs.URL)
+}
+
+// TestRegister_RequestExample covers the wave 163 example surface
+// for request bodies.
+func TestRegister_RequestExample(t *testing.T) {
+	spec := openapigen.NewSpec("req-ex", "v1")
+	example := map[string]any{"name": "widget-1", "price": 999}
+	err := spec.Register(http.MethodPost, "/widgets",
+		openapigen.WithRequestType[createWidgetReq](),
+		openapigen.WithRequestExample(example),
+	)
+	require.NoError(t, err)
+
+	rb := spec.Document().Paths["/widgets"].Post.RequestBody
+	require.NotNil(t, rb)
+	mt := rb.Content[openapigen.DefaultJSONMediaType]
+	require.NotNil(t, mt.Schema, "schema must still be present")
+	assert.Equal(t, example, mt.Example, "example must attach to the request body media type")
+}
+
+// TestRegister_ResponseExample covers the wave 163 example surface
+// for response bodies, including the case where an example exists
+// for a media type that has no schema (caller documents shape via
+// description).
+func TestRegister_ResponseExample(t *testing.T) {
+	spec := openapigen.NewSpec("resp-ex", "v1")
+	jsonExample := map[string]any{"id": "w-1", "name": "widget-1", "price": 999}
+	xmlExample := "<widget><id>w-1</id></widget>"
+
+	err := spec.Register(http.MethodGet, "/widgets/{id}",
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+		openapigen.WithResponseExample(http.StatusOK, "application/json", jsonExample),
+		openapigen.WithResponseExample(http.StatusOK, "application/xml", xmlExample),
+		openapigen.WithResponseDescription(http.StatusOK, "ok"),
+	)
+	require.NoError(t, err)
+
+	resp := spec.Document().Paths["/widgets/{id}"].Get.Responses["200"]
+
+	jsonMT := resp.Content["application/json"]
+	require.NotNil(t, jsonMT.Schema)
+	assert.Equal(t, jsonExample, jsonMT.Example, "JSON example must attach to the schema-bearing media type")
+
+	xmlMT := resp.Content["application/xml"]
+	assert.Equal(t, xmlExample, xmlMT.Example,
+		"example for a media type with no schema must still attach so portals show it")
+}
+
+func TestRegister_ResponseExample_RejectsBadInput(t *testing.T) {
+	spec := openapigen.NewSpec("resp-ex-bad", "v1")
+	err := spec.Register(http.MethodGet, "/x",
+		openapigen.WithResponseExample(99, "application/json", "x"),
+	)
+	require.Error(t, err)
+
+	spec2 := openapigen.NewSpec("resp-ex-bad-2", "v1")
+	err = spec2.Register(http.MethodGet, "/x",
+		openapigen.WithResponseExample(http.StatusOK, "", "x"),
+	)
+	require.Error(t, err)
+}
+
+// TestRegister_ParameterExample covers WithParameterExample: an
+// already-declared parameter (or auto-discovered one) can have an
+// example attached by name without re-declaring the whole Parameter
+// struct.
+func TestRegister_ParameterExample(t *testing.T) {
+	spec := openapigen.NewSpec("param-ex", "v1")
+	err := spec.Register(http.MethodGet, "/users/{id}",
+		// id is auto-discovered as a path parameter (wave 162).
+		openapigen.WithParameterExample("id", "01HABCDEFGHIJKLMNOPQRSTUVW"),
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+	)
+	require.NoError(t, err)
+
+	params := spec.Document().Paths["/users/{id}"].Get.Parameters
+	require.Len(t, params, 1)
+	assert.Equal(t, "id", params[0].Name)
+	assert.Equal(t, "01HABCDEFGHIJKLMNOPQRSTUVW", params[0].Example)
+}
+
+func TestRegister_ParameterExample_NoMatchingParameterIsNoOp(t *testing.T) {
+	spec := openapigen.NewSpec("param-ex-noop", "v1")
+	// "unknown" doesn't match any declared or auto-discovered path
+	// parameter; the option must not error and must not invent a
+	// fake Parameter.
+	err := spec.Register(http.MethodGet, "/literal/path",
+		openapigen.WithParameterExample("unknown", "x"),
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+	)
+	require.NoError(t, err)
+	assert.Empty(t, spec.Document().Paths["/literal/path"].Get.Parameters)
+}
+
+func TestRegister_ParameterExample_RejectsEmptyName(t *testing.T) {
+	spec := openapigen.NewSpec("param-ex-bad", "v1")
+	err := spec.Register(http.MethodGet, "/x",
+		openapigen.WithParameterExample("", "v"),
+	)
+	require.Error(t, err)
+}
+
 // TestRegister_ResponseContent_BadInput verifies the per-option
 // validation guards for the multi-content options.
 func TestRegister_ResponseContent_BadInput(t *testing.T) {

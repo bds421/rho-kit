@@ -58,8 +58,20 @@ type Server struct {
 
 // Tag is one entry in the top-level `tags` array. Per-operation tag
 // strings reference these entries by name.
+//
+// ExternalDocs lets a tag link to richer documentation (e.g. a
+// developer portal page) — OAS 3.1 `Tag Object § externalDocs`.
 type Tag struct {
-	Name        string `json:"name"`
+	Name         string        `json:"name"`
+	Description  string        `json:"description,omitempty"`
+	ExternalDocs *ExternalDocs `json:"externalDocs,omitempty"`
+}
+
+// ExternalDocs is the OAS 3.1 `ExternalDocumentation Object`. It
+// appears under [Tag.ExternalDocs] and [Operation.ExternalDocs] to
+// point readers at a longer-form documentation URL.
+type ExternalDocs struct {
+	URL         string `json:"url"`
 	Description string `json:"description,omitempty"`
 }
 
@@ -96,15 +108,16 @@ type PathItem struct {
 // empty-slice case (Go's `json` package treats len==0 as absent),
 // silently re-enabling the global requirement.
 type Operation struct {
-	Tags        []string               `json:"tags,omitempty"`
-	Summary     string                 `json:"summary,omitempty"`
-	Description string                 `json:"description,omitempty"`
-	OperationID string                 `json:"operationId,omitempty"`
-	Parameters  []Parameter            `json:"parameters,omitempty"`
-	RequestBody *RequestBody           `json:"requestBody,omitempty"`
-	Responses   map[string]Response    `json:"responses,omitempty"`
-	Security    *[]map[string][]string `json:"security,omitempty"`
-	Deprecated  bool                   `json:"deprecated,omitempty"`
+	Tags         []string               `json:"tags,omitempty"`
+	Summary      string                 `json:"summary,omitempty"`
+	Description  string                 `json:"description,omitempty"`
+	OperationID  string                 `json:"operationId,omitempty"`
+	Parameters   []Parameter            `json:"parameters,omitempty"`
+	RequestBody  *RequestBody           `json:"requestBody,omitempty"`
+	Responses    map[string]Response    `json:"responses,omitempty"`
+	Security     *[]map[string][]string `json:"security,omitempty"`
+	Deprecated   bool                   `json:"deprecated,omitempty"`
+	ExternalDocs *ExternalDocs          `json:"externalDocs,omitempty"`
 }
 
 // Parameter is the `parameter` object. `In` is one of "query", "header",

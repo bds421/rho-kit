@@ -33,6 +33,25 @@ type routeConfig struct {
 	// callers get the ergonomic shape automatically.
 	skipParamDiscovery bool
 
+	// externalDocs is the per-operation externalDocs link added in
+	// wave 163. Optional.
+	externalDocs *ExternalDocs
+
+	// requestExample is an optional example payload for the request
+	// body, keyed by request media type. Lets a generated portal show
+	// concrete inputs without consuming the request schema's `example`
+	// keyword.
+	requestExamples map[string]any
+
+	// responseExamples is an optional example payload per (status,
+	// media type). Same rationale as requestExamples.
+	responseExamples map[int]map[string]any
+
+	// parameterExamples augments [Parameter.Example] post-hoc so the
+	// example can be set after WithParameter without re-declaring the
+	// whole Parameter struct.
+	parameterExamples map[string]any
+
 	// Request body.
 	requestSchema      *jsonschema.Schema
 	requestMediaType   string
@@ -102,6 +121,94 @@ func WithOperationID(id string) RouteOption {
 func WithDeprecated() RouteOption {
 	return func(c *routeConfig) error {
 		c.deprecated = true
+		return nil
+	}
+}
+
+// WithExternalDocs attaches an [ExternalDocs] link to the operation
+// (OAS 3.1 `Operation Object § externalDocs`). Use to point readers
+// at a runbook, design doc, or developer-portal page from the
+// generated spec.
+//
+// URL must be non-empty. Pass an empty description to omit it from
+// the rendered document.
+func WithExternalDocs(url, description string) RouteOption {
+	return func(c *routeConfig) error {
+		if url == "" {
+			return errors.New("openapigen: WithExternalDocs: empty url")
+		}
+		c.externalDocs = &ExternalDocs{URL: url, Description: description}
+		return nil
+	}
+}
+
+// WithRequestExample attaches an example request payload at the
+// configured request media type (defaults to `application/json` if
+// no [WithRequestMediaType] has been set yet). The example is
+// emitted under the MediaType `example` field rather than the
+// JSON-Schema `example` keyword so it appears in OAS rendering
+// tools without contaminating the schema.
+//
+// Calling twice for the same media type replaces the previous
+// example.
+func WithRequestExample(example any) RouteOption {
+	return func(c *routeConfig) error {
+		if c.requestExamples == nil {
+			c.requestExamples = map[string]any{}
+		}
+		mt := c.requestMediaType
+		if mt == "" {
+			mt = DefaultJSONMediaType
+		}
+		c.requestExamples[mt] = example
+		return nil
+	}
+}
+
+// WithResponseExample attaches an example response payload at
+// (status, mediaType). Pair with [WithResponseType] /
+// [WithResponseContentT] to register the schema; this option fills
+// in the corresponding MediaType `example` field for portal
+// rendering.
+func WithResponseExample(status int, mediaType string, example any) RouteOption {
+	return func(c *routeConfig) error {
+		if !validHTTPStatus(status) {
+			return fmt.Errorf("openapigen: WithResponseExample: invalid status %d", status)
+		}
+		if mediaType == "" {
+			return errors.New("openapigen: WithResponseExample: empty media type")
+		}
+		if c.responseExamples == nil {
+			c.responseExamples = map[int]map[string]any{}
+		}
+		if c.responseExamples[status] == nil {
+			c.responseExamples[status] = map[string]any{}
+		}
+		c.responseExamples[status][mediaType] = example
+		return nil
+	}
+}
+
+// WithParameterExample attaches an example value to a previously-
+// declared parameter (by name). Useful when the [WithParameter]
+// declaration came from a shared helper that does not know the
+// example, or when multiple call sites attach different examples
+// without re-declaring the schema.
+//
+// The option is a no-op if no parameter with the given name has
+// been declared. Returning an error would be more strict but the
+// kit prefers progressive disclosure: callers can attach examples
+// alongside refactors that move parameter declarations into
+// shared helpers without coordinating the two changes.
+func WithParameterExample(name string, example any) RouteOption {
+	return func(c *routeConfig) error {
+		if name == "" {
+			return errors.New("openapigen: WithParameterExample: empty parameter name")
+		}
+		if c.parameterExamples == nil {
+			c.parameterExamples = map[string]any{}
+		}
+		c.parameterExamples[name] = example
 		return nil
 	}
 }

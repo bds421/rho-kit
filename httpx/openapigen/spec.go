@@ -80,6 +80,10 @@ type routeState struct {
 	requestType   string
 	requestDesc   string
 	requestReq    bool
+	// requestExamples is keyed by request media type. Folded into
+	// the RequestBody's MediaType.Example at render time. Populated
+	// from cfg.requestExamples by Register.
+	requestExamples map[string]any
 }
 
 // NewSpec constructs a new Spec with the supplied title and version.
@@ -235,9 +239,13 @@ func (s *Spec) Register(method, path string, opts ...RouteOption) error {
 	rs.op.Summary = cfg.summary
 	rs.op.Description = cfg.description
 	rs.op.OperationID = cfg.operationID
-	rs.op.Parameters = mergePathParameters(path, cfg.parameters, cfg.skipParamDiscovery)
+	rs.op.Parameters = applyParameterExamples(
+		mergePathParameters(path, cfg.parameters, cfg.skipParamDiscovery),
+		cfg.parameterExamples,
+	)
 	rs.op.Deprecated = cfg.deprecated
 	rs.op.Security = cfg.security
+	rs.op.ExternalDocs = cfg.externalDocs
 
 	if cfg.requestSchema != nil {
 		rs.requestSchema = cfg.requestSchema
@@ -246,6 +254,12 @@ func (s *Spec) Register(method, path string, opts ...RouteOption) error {
 		rs.requestReq = cfg.requestRequired
 		if rs.requestType == "" {
 			rs.requestType = DefaultJSONMediaType
+		}
+	}
+	if len(cfg.requestExamples) > 0 {
+		rs.requestExamples = make(map[string]any, len(cfg.requestExamples))
+		for k, v := range cfg.requestExamples {
+			rs.requestExamples[k] = v
 		}
 	}
 
@@ -275,6 +289,7 @@ func (s *Spec) Register(method, path string, opts ...RouteOption) error {
 		}
 
 		var content map[string]MediaType
+		examplesForStatus := cfg.responseExamples[status]
 		// Singular schema contributes one entry under the configured
 		// media type (default application/json).
 		if schema, ok := cfg.responseSchemas[status]; ok {
@@ -282,8 +297,12 @@ func (s *Spec) Register(method, path string, opts ...RouteOption) error {
 			if mediaType == "" {
 				mediaType = DefaultJSONMediaType
 			}
+			entry := MediaType{Schema: schema}
+			if ex, ok := examplesForStatus[mediaType]; ok {
+				entry.Example = ex
+			}
 			content = map[string]MediaType{
-				mediaType: {Schema: schema},
+				mediaType: entry,
 			}
 		}
 		// Extra-content entries append (and replace any duplicate
@@ -294,8 +313,25 @@ func (s *Spec) Register(method, path string, opts ...RouteOption) error {
 				content = make(map[string]MediaType, len(extras))
 			}
 			for mt, schema := range extras {
-				content[mt] = MediaType{Schema: schema}
+				entry := MediaType{Schema: schema}
+				if ex, ok := examplesForStatus[mt]; ok {
+					entry.Example = ex
+				}
+				content[mt] = entry
 			}
+		}
+		// Examples for media types that have no schema entry still
+		// attach to a MediaType node so generated portals see them.
+		// This is the "schema-less example" case for callers who
+		// document the shape via description alone.
+		for mt, ex := range examplesForStatus {
+			if _, has := content[mt]; has {
+				continue
+			}
+			if content == nil {
+				content = map[string]MediaType{}
+			}
+			content[mt] = MediaType{Example: ex}
 		}
 
 		var headers map[string]Header
@@ -391,11 +427,15 @@ func (s *Spec) build() Document {
 func applyOperation(item *PathItem, rs *routeState) {
 	op := rs.op
 	if rs.requestSchema != nil {
+		mt := MediaType{Schema: rs.requestSchema}
+		if ex, ok := rs.requestExamples[rs.requestType]; ok {
+			mt.Example = ex
+		}
 		op.RequestBody = &RequestBody{
 			Description: rs.requestDesc,
 			Required:    rs.requestReq,
 			Content: map[string]MediaType{
-				rs.requestType: {Schema: rs.requestSchema},
+				rs.requestType: mt,
 			},
 		}
 	}
@@ -532,6 +572,25 @@ func defaultResponseDescription(status int) string {
 		return t
 	}
 	return "Response for HTTP " + strconv.Itoa(status)
+}
+
+// applyParameterExamples writes the wave-163 [WithParameterExample]
+// values onto the matching Parameter entries by name. Parameters
+// without a matching example pass through unchanged. The function
+// allocates a new slice rather than mutating in place so the route
+// state never aliases option-layer config.
+func applyParameterExamples(params []Parameter, examples map[string]any) []Parameter {
+	if len(examples) == 0 || len(params) == 0 {
+		return params
+	}
+	out := make([]Parameter, len(params))
+	for i, p := range params {
+		if ex, ok := examples[p.Name]; ok {
+			p.Example = ex
+		}
+		out[i] = p
+	}
+	return out
 }
 
 // mergePathParameters auto-discovers path parameters from the OAS
