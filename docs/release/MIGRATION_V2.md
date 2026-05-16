@@ -610,7 +610,7 @@ if err := saga.Run(ctx, def, &orderState{}); err != nil {
 ```
 
 The package preamble documents the planned redisqueue + outbox + DB
-table wiring that future waves layer on top of `Run` for crash-safe
+table wiring that future waves layer on top of `Run` for crash-safe <!-- kit:ok-doc-rot -->
 sagas. v2.0.0 ships only the in-memory executor and the type
 vocabulary (Step / Definition / Run / ForwardError / CompensateError)
 so downstream services can adopt the API now and inherit the
@@ -868,7 +868,7 @@ Operator notes:
 - **SASL OAUTHBEARER is not supported.** The current kafka-go SASL
   surface covers PLAIN and SCRAM. Cloud-managed Kafka brokers that
   mandate OAUTHBEARER (Confluent Cloud, AWS MSK with IAM) cannot wire
-  through kafkabackend today; tracked as a follow-up wave.
+  through kafkabackend today; tracked as a follow-up wave. <!-- kit:ok-doc-rot -->
 - **Metrics label cardinality.** Both publisher-side and consumer-side
   metrics default to `WithOpaqueRouteLabels` / `WithOpaqueConsumeLabels`
   in v2 (wave 140), projecting `(topic, group)` and `(topic, routing_key)`

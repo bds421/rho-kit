@@ -372,7 +372,7 @@ The 2026-05-13 hostile review's metric contract findings are CLOSED for
 v2.0.0:
 
 - **M-004 — Prometheus metric constructor shape inconsistency.** Resolved
-  in wave 35 (refined in wave 41 and wave 52). Every metric-producing
+  in wave 35 (and refined in subsequent waves). Every metric-producing
   package exposes `NewMetrics(opts ...MetricsOption)` (positional
   `NewMetrics(reg)` is gone) and defaults to
   `prometheus.DefaultRegisterer`. The canonical registerer option is
@@ -390,7 +390,7 @@ v2.0.0:
   alone could not.
 
 - **M-008 — AMQP/NATS publish metric route-label cardinality.** Resolved
-  in wave 36 + refined in wave 41 / wave 50. `amqpbackend` and
+  in wave 36 (and refined in subsequent waves). `amqpbackend` and
   `natsbackend` now default to the cardinality-safe **opaque**
   route-label form: `exchange` and `routing_key` are routed through
   [`promutil.OpaqueLabelValue`](../../observability/promutil/label_value.go)
