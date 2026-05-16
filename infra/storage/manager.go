@@ -2,11 +2,11 @@ package storage
 
 import (
 	"errors"
-	"fmt"
 	"sort"
 	"sync"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // ErrManagerClosed is returned by [Manager.Register], [Manager.Backend],
@@ -211,7 +211,7 @@ func (m *Manager) Close() error {
 	for i := len(m.order) - 1; i >= 0; i-- {
 		name := m.order[i]
 		if err := Close(m.backends[name]); err != nil {
-			errs = append(errs, fmt.Errorf("close backend: %w", err))
+			errs = append(errs, redact.WrapError("close backend", err))
 		}
 	}
 	return errors.Join(errs...)

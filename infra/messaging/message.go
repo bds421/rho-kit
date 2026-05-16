@@ -9,6 +9,7 @@ import (
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
 	"github.com/bds421/rho-kit/core/v2/id"
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Header keys for cross-service tracing and schema versioning.
@@ -67,7 +68,7 @@ type Message struct {
 func NewMessage(msgType string, payload any) (Message, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return Message{}, fmt.Errorf("marshal payload: %w", err)
+		return Message{}, redact.WrapError("marshal payload", err)
 	}
 
 	return Message{
@@ -127,7 +128,7 @@ func (m Message) CorrelationID() string {
 // DecodePayload unmarshals the message payload into the provided target.
 func (m Message) DecodePayload(target any) error {
 	if err := json.Unmarshal(m.Payload, target); err != nil {
-		return fmt.Errorf("decode payload: %w", err)
+		return redact.WrapError("decode payload", err)
 	}
 	return nil
 }

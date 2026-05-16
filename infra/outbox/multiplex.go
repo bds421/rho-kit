@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // ErrNoRoute is returned by [Multiplex.Publish] when no registered
@@ -93,9 +95,9 @@ func (m *Multiplex) Publish(ctx context.Context, entry Entry) error {
 	}
 	if err := publisher.Publish(ctx, entry); err != nil {
 		if matched != "" {
-			return fmt.Errorf("outbox/multiplex route %q: %w", matched, err)
+			return redact.WrapError(fmt.Sprintf("outbox/multiplex route %q", matched), err)
 		}
-		return fmt.Errorf("outbox/multiplex fallback: %w", err)
+		return redact.WrapError("outbox/multiplex fallback", err)
 	}
 	return nil
 }

@@ -36,7 +36,7 @@ func Up(ctx context.Context, db *sql.DB, cfg Config) (int, error) {
 	}
 	results, err := provider.Up(ctx)
 	if err != nil {
-		return len(results), fmt.Errorf("migrate: up: %w", err)
+		return len(results), redact.WrapError("migrate: up", err)
 	}
 	return len(results), nil
 }
@@ -48,7 +48,7 @@ func Down(ctx context.Context, db *sql.DB, cfg Config) error {
 		return err
 	}
 	if _, err := provider.Down(ctx); err != nil {
-		return fmt.Errorf("migrate: down: %w", err)
+		return redact.WrapError("migrate: down", err)
 	}
 	return nil
 }
@@ -64,7 +64,7 @@ func Status(ctx context.Context, db *sql.DB, cfg Config, logger *slog.Logger) er
 	}
 	status, err := provider.Status(ctx)
 	if err != nil {
-		return fmt.Errorf("migrate: status: %w", err)
+		return redact.WrapError("migrate: status", err)
 	}
 	for _, s := range status {
 		state := "pending"
@@ -90,7 +90,7 @@ func newProvider(db *sql.DB, cfg Config) (*goose.Provider, error) {
 	}
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, cfg.Dir)
 	if err != nil {
-		return nil, fmt.Errorf("migrate: create provider: %w", err)
+		return nil, redact.WrapError("migrate: create provider", err)
 	}
 	return provider, nil
 }

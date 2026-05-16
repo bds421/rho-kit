@@ -294,7 +294,7 @@ func TestSFTPBackend_Delete(t *testing.T) {
 
 		err := b.Delete(ctx, "secret-token-link")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "symlink")
+		assert.Contains(t, err.Error(), "unsafe")
 		assert.NotContains(t, err.Error(), "secret-token")
 		assert.Contains(t, mock.store, "/data/secret-token-link")
 	})
@@ -384,7 +384,7 @@ func TestSFTPBackend_Exists(t *testing.T) {
 		ok, err := b.Exists(ctx, "secret-token-link")
 		require.Error(t, err)
 		assert.False(t, ok)
-		assert.Contains(t, err.Error(), "symlink")
+		assert.Contains(t, err.Error(), "unsafe")
 		assert.NotContains(t, err.Error(), "secret-token")
 	})
 
@@ -708,7 +708,7 @@ func TestSFTPBackend_List(t *testing.T) {
 			}
 		}
 		require.NotEmpty(t, errs)
-		assert.Contains(t, errs[0].Error(), "symlink")
+		assert.Contains(t, errs[0].Error(), "unsafe")
 		assert.Equal(t, 0, readCalls)
 	})
 

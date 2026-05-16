@@ -479,7 +479,7 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 			// save would persist a message the caller was told failed.
 			o.pending = o.pending[:len(o.pending)-1]
 			o.mu.Unlock()
-			return fmt.Errorf("buffered publisher: persist message after direct publish failure: %w", saveErr)
+			return redact.WrapError("buffered publisher: persist message after direct publish failure", saveErr)
 		}
 		pending := len(o.pending)
 		bytes := o.pendingBytesLocked()
@@ -532,7 +532,7 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 	if saveErr != nil && !o.lossyMode {
 		o.pending = o.pending[:len(o.pending)-1]
 		o.mu.Unlock()
-		return fmt.Errorf("buffered publisher: persist buffered message: %w", saveErr)
+		return redact.WrapError("buffered publisher: persist buffered message", saveErr)
 	}
 	pending := len(o.pending)
 	bytes := o.pendingBytesLocked()
@@ -859,7 +859,7 @@ func resolveStateFilePath(stateDir, relPath string) (string, error) {
 	joined := filepath.Join(cleanedDir, cleanedRel)
 	rel, err := filepath.Rel(cleanedDir, joined)
 	if err != nil {
-		return "", fmt.Errorf("path is not reachable from the configured state directory: %w", err)
+		return "", redact.WrapError("path is not reachable from the configured state directory", err)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", errors.New("path escapes the configured state directory")
@@ -928,7 +928,7 @@ func (o *BufferedPublisher) load() error {
 	for i, pm := range pending {
 		if err := ValidatePublishRoute(pm.Exchange, pm.RoutingKey); err != nil {
 			if !o.lossyStateValidation {
-				return fmt.Errorf("buffered publisher state: invalid entry at index %d: %w (set WithLossyStateValidation to skip)", i, err)
+				return redact.WrapError(fmt.Sprintf("buffered publisher state: invalid entry at index %d (set WithLossyStateValidation to skip)", i), err)
 			}
 			o.logger.Warn("buffered publisher state: skipping invalid entry",
 				"index", i, redact.String("msg_id", pm.Msg.ID), redact.Error(err))
@@ -936,7 +936,7 @@ func (o *BufferedPublisher) load() error {
 		}
 		if err := ValidateMessage(pm.Msg); err != nil {
 			if !o.lossyStateValidation {
-				return fmt.Errorf("buffered publisher state: invalid message at index %d: %w (set WithLossyStateValidation to skip)", i, err)
+				return redact.WrapError(fmt.Sprintf("buffered publisher state: invalid message at index %d (set WithLossyStateValidation to skip)", i), err)
 			}
 			o.logger.Warn("buffered publisher state: skipping invalid message",
 				"index", i, redact.String("msg_id", pm.Msg.ID), redact.Error(err))

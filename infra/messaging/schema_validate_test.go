@@ -217,7 +217,7 @@ func TestValidatingHandler_RejectsInvalidPayload(t *testing.T) {
 
 	err := h(context.Background(), d)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "schema validation failed")
+	assert.Contains(t, err.Error(), "message validation failed")
 	assert.NotContains(t, err.Error(), "secret-token")
 	assert.False(t, nextCalled)
 }

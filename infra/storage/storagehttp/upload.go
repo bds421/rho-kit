@@ -219,7 +219,7 @@ func storePart(ctx context.Context, part *multipart.Part, r *http.Request, backe
 	}
 
 	if err := storage.ValidateKey(key); err != nil {
-		return UploadResult{}, fmt.Errorf("storagehttp: invalid derived key: %w", err)
+		return UploadResult{}, redact.WrapError("storagehttp: invalid derived key", err)
 	}
 
 	cr := &countingReader{r: reader}

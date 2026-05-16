@@ -326,8 +326,8 @@ func TestWriter_RequireTransaction_RejectsWithoutTx(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when ctx has no tx")
 	}
-	if !strings.Contains(err.Error(), "tx required") {
-		t.Errorf("error %q does not mention tx requirement", err.Error())
+	if !errors.Is(err, errAssertedTx) {
+		t.Errorf("error %q does not wrap errAssertedTx", err.Error())
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()

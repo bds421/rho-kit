@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/bds421/rho-kit/core/v2/id"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
@@ -90,10 +91,10 @@ func (e Entry) HeadersMap() (map[string]string, error) {
 
 	var headers map[string]string
 	if err := json.Unmarshal(e.Headers, &headers); err != nil {
-		return nil, fmt.Errorf("outbox: unmarshal headers: %w", err)
+		return nil, redact.WrapError("outbox: unmarshal headers", err)
 	}
 	if err := messaging.ValidateMessageHeaders(headers); err != nil {
-		return nil, fmt.Errorf("outbox: invalid headers: %w", err)
+		return nil, redact.WrapError("outbox: invalid headers", err)
 	}
 
 	return headers, nil
@@ -242,7 +243,7 @@ func newWriter(store Inserter, txCheck func(context.Context) error, opts []Write
 func (w *Writer) Write(ctx context.Context, params WriteParams) error {
 	if w.txCheck != nil {
 		if err := w.txCheck(ctx); err != nil {
-			return fmt.Errorf("outbox: %w", err)
+			return redact.WrapError("outbox", err)
 		}
 	}
 	if err := validateWriteParams(params); err != nil {
@@ -259,7 +260,7 @@ func (w *Writer) Write(ctx context.Context, params WriteParams) error {
 
 	headersJSON, err := json.Marshal(params.Headers)
 	if err != nil {
-		return fmt.Errorf("outbox: marshal headers: %w", err)
+		return redact.WrapError("outbox: marshal headers", err)
 	}
 
 	entry := Entry{
@@ -286,7 +287,7 @@ func validateWriteParams(params WriteParams) error {
 		return fmt.Errorf("outbox: routing key must not be empty")
 	}
 	if err := messaging.ValidatePublishRoute(params.Topic, params.RoutingKey); err != nil {
-		return fmt.Errorf("outbox: invalid publish route: %w", err)
+		return redact.WrapError("outbox: invalid publish route", err)
 	}
 	if err := validatePortableField("message id", params.MessageID); err != nil {
 		return err
@@ -301,7 +302,7 @@ func validateWriteParams(params WriteParams) error {
 		return fmt.Errorf("outbox: payload must be valid JSON")
 	}
 	if err := messaging.ValidateMessageHeaders(params.Headers); err != nil {
-		return fmt.Errorf("outbox: invalid headers: %w", err)
+		return redact.WrapError("outbox: invalid headers", err)
 	}
 	return nil
 }

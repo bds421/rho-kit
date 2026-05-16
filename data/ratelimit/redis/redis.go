@@ -30,7 +30,6 @@ package redis
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -38,6 +37,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/bds421/rho-kit/core/v2/clock"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/data/v2/ratelimit"
 )
 
@@ -143,7 +143,7 @@ func WithRedisTime() Option {
 		l.now = func(ctx context.Context) (time.Time, error) {
 			t, err := l.client.Time(ctx).Result()
 			if err != nil {
-				return time.Time{}, fmt.Errorf("ratelimit/redis: TIME: %w", err)
+				return time.Time{}, redact.WrapError("ratelimit/redis: TIME", err)
 			}
 			return t, nil
 		}
@@ -244,7 +244,7 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 		ttlSec,
 	).Result()
 	if err != nil {
-		return false, 0, fmt.Errorf("ratelimit/redis: script: %w", err)
+		return false, 0, redact.WrapError("ratelimit/redis: script", err)
 	}
 	pair, ok := res.([]any)
 	if !ok || len(pair) != 2 {

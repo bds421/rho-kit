@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -71,7 +72,7 @@ func (r *InMemorySchemaRegistry) Register(msgType string, version SchemaVersion,
 	// Compile the JSON schema at registration time (fail-fast).
 	compiled, err := compileJSONSchema(msgType, version, schema)
 	if err != nil {
-		return fmt.Errorf("compile schema: %w", err)
+		return redact.WrapError("compile schema", err)
 	}
 
 	key := schemaKey{msgType: msgType, version: version}
@@ -148,18 +149,18 @@ func (r *InMemorySchemaRegistry) ValidateMessage(msg Message) error {
 func compileJSONSchema(_ string, version SchemaVersion, raw json.RawMessage) (*jsonschema.Schema, error) {
 	var doc any
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("invalid JSON: %w", err)
+		return nil, redact.WrapError("invalid JSON", err)
 	}
 
 	resourceURL := fmt.Sprintf("schema://message/v%d", version)
 	c := jsonschema.NewCompiler()
 	if err := c.AddResource(resourceURL, doc); err != nil {
-		return nil, fmt.Errorf("add resource: %w", err)
+		return nil, redact.WrapError("add resource", err)
 	}
 
 	compiled, err := c.Compile(resourceURL)
 	if err != nil {
-		return nil, fmt.Errorf("compile: %w", err)
+		return nil, redact.WrapError("compile", err)
 	}
 
 	return compiled, nil
@@ -169,7 +170,7 @@ func compileJSONSchema(_ string, version SchemaVersion, raw json.RawMessage) (*j
 func validatePayload(schema *jsonschema.Schema, payload json.RawMessage) error {
 	var doc any
 	if err := json.Unmarshal(payload, &doc); err != nil {
-		return fmt.Errorf("unmarshal payload for validation: %w", err)
+		return redact.WrapError("unmarshal payload for validation", err)
 	}
 
 	err := schema.Validate(doc)

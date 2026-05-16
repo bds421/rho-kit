@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // canonicalForm produces the exact byte sequence that the HMAC is
@@ -53,7 +55,7 @@ import (
 func canonicalForm(e Entry) ([]byte, error) {
 	metaJSON, err := canonicalJSON(e.Metadata)
 	if err != nil {
-		return nil, fmt.Errorf("actionlog: canonical metadata: %w", err)
+		return nil, redact.WrapError("actionlog: canonical metadata", err)
 	}
 	parts := []string{
 		e.ID,

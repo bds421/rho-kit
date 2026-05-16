@@ -488,7 +488,7 @@ func rejectSFTPSymlinkAt(client Client, remotePath string) error {
 
 func sftpRemoteError(op string, err error) error {
 	if errors.Is(err, storage.ErrValidation) {
-		return fmt.Errorf("sftpbackend: %w", err)
+		return redact.WrapError("sftpbackend", err)
 	}
 	return fmt.Errorf("sftpbackend: %s failed", op)
 }
@@ -504,10 +504,10 @@ func translateSFTPCapacity(err error) error {
 		return nil
 	}
 	if errors.Is(err, syscall.ENOSPC) {
-		return fmt.Errorf("sftpbackend: remote disk full: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+		return fmt.Errorf("sftpbackend: remote disk full: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
 	}
 	if msg := err.Error(); strings.Contains(strings.ToLower(msg), "no space left") {
-		return fmt.Errorf("sftpbackend: remote disk full: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+		return fmt.Errorf("sftpbackend: remote disk full: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
 	}
 	return nil
 }
@@ -553,7 +553,7 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 	// Ensure parent directory exists.
 	dir := path.Dir(remotePath)
 	if err := b.rejectSymlinkAncestors(client, remotePath); err != nil {
-		opErr := fmt.Errorf("sftpbackend: unsafe parent: %w", err)
+		opErr := redact.WrapError("sftpbackend: unsafe parent", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
 	}
@@ -563,12 +563,12 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 		return opErr
 	}
 	if err := b.rejectSymlinkAncestors(client, remotePath); err != nil {
-		opErr := fmt.Errorf("sftpbackend: unsafe parent: %w", err)
+		opErr := redact.WrapError("sftpbackend: unsafe parent", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
 	}
 	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
-		opErr := fmt.Errorf("sftpbackend: unsafe target: %w", err)
+		opErr := redact.WrapError("sftpbackend: unsafe target", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
 	}
@@ -613,7 +613,7 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
 		_ = client.Remove(tmpPath)
 		b.metrics.observeOp(b.instance, "put", start, err)
-		opErr := fmt.Errorf("sftpbackend: unsafe target: %w", err)
+		opErr := redact.WrapError("sftpbackend: unsafe target", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
 	}
@@ -653,7 +653,7 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 			span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 			return nil, storage.ObjectMeta{}, opErr
 		}
-		opErr := fmt.Errorf("sftpbackend: unsafe path: %w", err)
+		opErr := redact.WrapError("sftpbackend: unsafe path", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return nil, storage.ObjectMeta{}, opErr
 	}
@@ -705,7 +705,7 @@ func (b *Backend) Delete(ctx context.Context, key string) error {
 		if isNotExist(err) {
 			return nil
 		}
-		opErr := fmt.Errorf("sftpbackend: unsafe path: %w", err)
+		opErr := redact.WrapError("sftpbackend: unsafe path", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
 	}
@@ -746,7 +746,7 @@ func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
 		if isNotExist(err) {
 			return false, nil
 		}
-		opErr := fmt.Errorf("sftpbackend: unsafe path: %w", err)
+		opErr := redact.WrapError("sftpbackend: unsafe path", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return false, opErr
 	}

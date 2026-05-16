@@ -203,7 +203,7 @@ func StorageValidator(scanner uploadsec.Scanner, opts ...StorageValidatorOption)
 		}
 		if err := scanner.Scan(ctx, tmp, scanMeta); err != nil {
 			if errors.Is(err, uploadsec.ErrMalwareDetected) {
-				return nil, fmt.Errorf("%w: %w", storage.ErrValidation, err)
+				return nil, fmt.Errorf("%w: %w", storage.ErrValidation, err) // kit:ok-fmt-errorf-wrap
 			}
 			return nil, uploadsec.ErrScannerUnavailable
 		}
@@ -271,25 +271,25 @@ func (s *Scanner) Scan(ctx context.Context, body io.Reader, _ uploadsec.Meta) (r
 
 	conn, err := s.dial(ctx, s.network, s.address)
 	if err != nil {
-		return fmt.Errorf("%w: dial clamd: %w", uploadsec.ErrScannerUnavailable, err)
+		return fmt.Errorf("%w: dial clamd: %w", uploadsec.ErrScannerUnavailable, err) // kit:ok-fmt-errorf-wrap
 	}
 	defer func() { _ = conn.Close() }()
 
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
-			return fmt.Errorf("%w: set clamd deadline: %w", uploadsec.ErrScannerUnavailable, err)
+			return fmt.Errorf("%w: set clamd deadline: %w", uploadsec.ErrScannerUnavailable, err) // kit:ok-fmt-errorf-wrap
 		}
 	}
 
 	if err := writeAll(conn, []byte("zINSTREAM\x00")); err != nil {
-		return fmt.Errorf("%w: send INSTREAM command: %w", uploadsec.ErrScannerUnavailable, err)
+		return fmt.Errorf("%w: send INSTREAM command: %w", uploadsec.ErrScannerUnavailable, err) // kit:ok-fmt-errorf-wrap
 	}
 	if err := streamBody(conn, body, s.chunkSize); err != nil {
 		return err
 	}
 	response, err := readResponse(conn)
 	if err != nil {
-		return fmt.Errorf("%w: read clamd response: %w", uploadsec.ErrScannerUnavailable, err)
+		return fmt.Errorf("%w: read clamd response: %w", uploadsec.ErrScannerUnavailable, err) // kit:ok-fmt-errorf-wrap
 	}
 	return parseResponse(response)
 }
@@ -302,10 +302,10 @@ func streamBody(w io.Writer, body io.Reader, chunkSize int) error {
 		if n > 0 {
 			binary.BigEndian.PutUint32(lenbuf[:], uint32(n))
 			if err := writeAll(w, lenbuf[:]); err != nil {
-				return fmt.Errorf("%w: send INSTREAM chunk length: %w", uploadsec.ErrScannerUnavailable, err)
+				return fmt.Errorf("%w: send INSTREAM chunk length: %w", uploadsec.ErrScannerUnavailable, err) // kit:ok-fmt-errorf-wrap
 			}
 			if err := writeAll(w, buf[:n]); err != nil {
-				return fmt.Errorf("%w: send INSTREAM chunk: %w", uploadsec.ErrScannerUnavailable, err)
+				return fmt.Errorf("%w: send INSTREAM chunk: %w", uploadsec.ErrScannerUnavailable, err) // kit:ok-fmt-errorf-wrap
 			}
 		}
 		if readErr == nil {
@@ -314,11 +314,11 @@ func streamBody(w io.Writer, body io.Reader, chunkSize int) error {
 		if errors.Is(readErr, io.EOF) {
 			binary.BigEndian.PutUint32(lenbuf[:], 0)
 			if err := writeAll(w, lenbuf[:]); err != nil {
-				return fmt.Errorf("%w: send INSTREAM terminator: %w", uploadsec.ErrScannerUnavailable, err)
+				return fmt.Errorf("%w: send INSTREAM terminator: %w", uploadsec.ErrScannerUnavailable, err) // kit:ok-fmt-errorf-wrap
 			}
 			return nil
 		}
-		return fmt.Errorf("%w: read upload body: %w", uploadsec.ErrScannerUnavailable, readErr)
+		return fmt.Errorf("%w: read upload body: %w", uploadsec.ErrScannerUnavailable, readErr) // kit:ok-fmt-errorf-wrap
 	}
 }
 

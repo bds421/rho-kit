@@ -393,7 +393,7 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		// just clear the started flag for the unit-test surface that
 		// asserts a fresh Elector after a construction-time error.
 		e.started.Store(false)
-		return fmt.Errorf("leader-election: NewLeaderElector: %w", err)
+		return redact.WrapError("leader-election: NewLeaderElector", err)
 	}
 
 	// client-go's Run blocks until ctx cancels or the leader stops

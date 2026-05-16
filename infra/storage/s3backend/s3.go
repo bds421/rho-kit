@@ -328,10 +328,10 @@ func translateS3Capacity(err error, size int64) error {
 	}
 	switch apiErr.ErrorCode() {
 	case "EntityTooLarge":
-		return fmt.Errorf("s3backend: object exceeds bucket size limit: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+		return fmt.Errorf("s3backend: object exceeds bucket size limit: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
 	case "InvalidRequest":
 		if size > 0 {
-			return fmt.Errorf("s3backend: request rejected for size: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+			return fmt.Errorf("s3backend: request rejected for size: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
 		}
 	}
 	return nil

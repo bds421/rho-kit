@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
@@ -101,13 +102,13 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 		return err
 	}
 	if err := b.rejectSymlinkPath(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("localbackend: unsafe parent: %w", err)
+		return redact.WrapError("localbackend: unsafe parent", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return localFileError("create dirs", err)
 	}
 	if err := b.rejectSymlinkPath(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("localbackend: unsafe parent: %w", err)
+		return redact.WrapError("localbackend: unsafe parent", err)
 	}
 
 	// Re-check cancellation after the symlink/mkdir prep work: a
@@ -225,7 +226,7 @@ func (b *Backend) Delete(ctx context.Context, key string) error {
 		return err
 	}
 	if err := b.rejectSymlinkPath(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("localbackend: unsafe parent: %w", err)
+		return redact.WrapError("localbackend: unsafe parent", err)
 	}
 
 	err = os.Remove(path)
@@ -280,7 +281,7 @@ func (b *Backend) existingRegularPath(key string) (string, error) {
 		return "", err
 	}
 	if err := b.rejectSymlinkPath(filepath.Dir(path)); err != nil {
-		return "", fmt.Errorf("localbackend: unsafe parent: %w", err)
+		return "", redact.WrapError("localbackend: unsafe parent", err)
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -347,7 +348,7 @@ func (b *Backend) ensureContained(path string) error {
 func localFileError(op string, err error) error {
 	switch {
 	case errors.Is(err, storage.ErrValidation):
-		return fmt.Errorf("localbackend: %w", err)
+		return redact.WrapError("localbackend", err)
 	case errors.Is(err, os.ErrPermission):
 		return fmt.Errorf("localbackend: %s: %w", op, os.ErrPermission)
 	case errors.Is(err, os.ErrNotExist):

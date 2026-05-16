@@ -13,6 +13,7 @@ import (
 	"github.com/segmentio/kafka-go/sasl/plain"
 	"github.com/segmentio/kafka-go/sasl/scram"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
@@ -301,7 +302,7 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 		return err
 	}
 	if err := p.writer.WriteMessages(ctx, km); err != nil {
-		return fmt.Errorf("kafkabackend: write: %w", err)
+		return redact.WrapError("kafkabackend: write", err)
 	}
 	outcome = kafkaPublishOutcomeSuccess
 	return nil
@@ -342,13 +343,13 @@ func saslMechanism(cfg Config) (sasl.Mechanism, error) {
 	case "SCRAM-SHA-256":
 		mech, err := scram.Mechanism(scram.SHA256, cfg.SASLUsername, cfg.SASLPassword)
 		if err != nil {
-			return nil, fmt.Errorf("kafkabackend: SCRAM-SHA-256: %w", err)
+			return nil, redact.WrapError("kafkabackend: SCRAM-SHA-256", err)
 		}
 		return mech, nil
 	case "SCRAM-SHA-512":
 		mech, err := scram.Mechanism(scram.SHA512, cfg.SASLUsername, cfg.SASLPassword)
 		if err != nil {
-			return nil, fmt.Errorf("kafkabackend: SCRAM-SHA-512: %w", err)
+			return nil, redact.WrapError("kafkabackend: SCRAM-SHA-512", err)
 		}
 		return mech, nil
 	default:

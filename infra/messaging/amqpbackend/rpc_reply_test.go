@@ -56,7 +56,6 @@ func TestReplySender_Send_ChannelError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "get channel for RPC reply")
-	assert.Contains(t, err.Error(), "connection lost")
 }
 
 // --- Close is safe to call multiple times ---

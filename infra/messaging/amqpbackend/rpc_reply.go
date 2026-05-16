@@ -2,11 +2,11 @@ package amqpbackend
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
@@ -40,7 +40,7 @@ func (rs *ReplySender) Send(ctx context.Context, d messaging.Delivery, body []by
 
 	ch, err := rs.channelLocked()
 	if err != nil {
-		return fmt.Errorf("get channel for RPC reply: %w", err)
+		return redact.WrapError("get channel for RPC reply", err)
 	}
 
 	if err := ch.PublishWithContext(ctx,
@@ -55,7 +55,7 @@ func (rs *ReplySender) Send(ctx context.Context, d messaging.Delivery, body []by
 		},
 	); err != nil {
 		rs.resetLocked()
-		return fmt.Errorf("publish RPC reply: %w", err)
+		return redact.WrapError("publish RPC reply", err)
 	}
 
 	return nil

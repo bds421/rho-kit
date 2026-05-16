@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
@@ -51,13 +52,13 @@ func (b *Backend) Copy(ctx context.Context, srcKey, dstKey string) error {
 	defer func() { _ = src.Close() }()
 
 	if err := b.rejectSymlinkPath(filepath.Dir(dstPath)); err != nil {
-		return fmt.Errorf("localbackend: copy unsafe parent: %w", err)
+		return redact.WrapError("localbackend: copy unsafe parent", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o750); err != nil {
 		return localFileError("copy mkdir", err)
 	}
 	if err := b.rejectSymlinkPath(filepath.Dir(dstPath)); err != nil {
-		return fmt.Errorf("localbackend: copy unsafe parent: %w", err)
+		return redact.WrapError("localbackend: copy unsafe parent", err)
 	}
 
 	if err := ctxErr(ctx); err != nil {

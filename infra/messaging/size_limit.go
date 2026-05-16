@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // DefaultMaxMessageBytes is the cross-backend publish limit used by
@@ -161,7 +162,7 @@ func (l MessageSizeLimiter) Check(exchange, routingKey string, msg Message) erro
 func EstimateMessageBytes(msg Message) (int, error) {
 	body, err := json.Marshal(msg)
 	if err != nil {
-		return 0, fmt.Errorf("messaging: estimate message size: %w", err)
+		return 0, redact.WrapError("messaging: estimate message size", err)
 	}
 	size := len(body)
 	for k, v := range msg.Headers {

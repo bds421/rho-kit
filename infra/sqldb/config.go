@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Config holds PostgreSQL connection settings. pgx + sqlc is the
@@ -115,7 +116,7 @@ func ParseDSN(rawURL string) (Config, error) {
 	if u.Port() != "" {
 		port, err = strconv.Atoi(u.Port())
 		if err != nil {
-			return Config{}, fmt.Errorf("sqldb: invalid port in DATABASE_URL: %w", err)
+			return Config{}, redact.WrapError("sqldb: invalid port in DATABASE_URL", err)
 		}
 	}
 

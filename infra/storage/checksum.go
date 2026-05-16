@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"hash"
 	"io"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // ChecksumMetaKey is the ObjectMeta.Custom key used to store/retrieve SHA-256 checksums.
@@ -24,15 +26,15 @@ func ChecksumValidator() Validator {
 		}
 		start, err := rs.Seek(0, io.SeekCurrent)
 		if err != nil {
-			return nil, fmt.Errorf("storage: checksum seek current: %w", err)
+			return nil, redact.WrapError("storage: checksum seek current", err)
 		}
 		h := sha256.New()
 		if _, err := io.Copy(h, rs); err != nil {
 			_, _ = rs.Seek(start, io.SeekStart)
-			return nil, fmt.Errorf("storage: compute checksum: %w", err)
+			return nil, redact.WrapError("storage: compute checksum", err)
 		}
 		if _, err := rs.Seek(start, io.SeekStart); err != nil {
-			return nil, fmt.Errorf("storage: checksum rewind: %w", err)
+			return nil, redact.WrapError("storage: checksum rewind", err)
 		}
 		meta.Custom = CloneCustomMeta(meta.Custom)
 		if meta.Custom == nil {

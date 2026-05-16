@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"iter"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // ObjectInfo describes an object returned by [Lister.List].
@@ -147,7 +149,7 @@ func ValidateListOptions(opts ListOptions) error {
 	}
 	if opts.StartAfter != "" {
 		if err := ValidateKey(opts.StartAfter); err != nil {
-			return fmt.Errorf("storage list StartAfter is invalid: %w", err)
+			return redact.WrapError("storage list StartAfter is invalid", err)
 		}
 	}
 	return nil

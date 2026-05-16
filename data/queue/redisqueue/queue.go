@@ -107,7 +107,7 @@ func NewMessage(msgType string, payload any) (Message, error) {
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return Message{}, fmt.Errorf("marshal payload: %w", err)
+		return Message{}, redact.WrapError("marshal payload", err)
 	}
 	return Message{
 		ID:        id.New(),
@@ -550,12 +550,12 @@ func (q *Queue) Close() error {
 	var firstErr error
 	if q.client != nil {
 		if err := q.client.Close(); err != nil {
-			firstErr = fmt.Errorf("close asynq client: %w", err)
+			firstErr = redact.WrapError("close asynq client", err)
 		}
 	}
 	if q.inspector != nil {
 		if err := q.inspector.Close(); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("close asynq inspector: %w", err)
+			firstErr = redact.WrapError("close asynq inspector", err)
 		}
 	}
 	return firstErr
@@ -579,7 +579,7 @@ func (q *Queue) Enqueue(ctx context.Context, queue string, msg Message) error {
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return fmt.Errorf("marshal message: %w", err)
+		return redact.WrapError("marshal message", err)
 	}
 	// Belt-and-braces cap on the full envelope (validateMessage already
 	// bounded the inner Payload). Use the same headroom the handler side
@@ -590,7 +590,7 @@ func (q *Queue) Enqueue(ctx context.Context, queue string, msg Message) error {
 	}
 	task := asynq.NewTask(envelopeTaskType, data)
 	if _, err := q.client.EnqueueContext(ctx, task, q.enqueueOpts(queue, msg.ID)...); err != nil {
-		return fmt.Errorf("asynq enqueue: %w", err)
+		return redact.WrapError("asynq enqueue", err)
 	}
 	q.metrics.messagesEnqueued.WithLabelValues(queueMetricLabel(queue)).Inc()
 	return nil
@@ -616,7 +616,7 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 	}
 	for i, msg := range msgs {
 		if err := validateMessage(msg, q.maxPayloadSize); err != nil {
-			return fmt.Errorf("message [%d]: %w", i, err)
+			return redact.WrapError(fmt.Sprintf("message [%d]", i), err)
 		}
 	}
 
@@ -625,17 +625,17 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 	for i, msg := range msgs {
 		data, err := json.Marshal(msg)
 		if err != nil {
-			return fmt.Errorf("marshal message [%d]: %w", i, err)
+			return redact.WrapError(fmt.Sprintf("marshal message [%d]", i), err)
 		}
 		// Envelope cap matches the handler side (maxPayloadSize +
 		// queueEnvelopeOverhead) so a max-sized payload that survived
 		// validateMessage cannot fail this belt-and-braces check.
 		if envelopeLimit > 0 && len(data) > envelopeLimit {
-			return fmt.Errorf("message [%d]: %w", i, &kitqueue.MessageTooLargeError{Size: len(data), Limit: envelopeLimit})
+			return redact.WrapError(fmt.Sprintf("message [%d]", i), &kitqueue.MessageTooLargeError{Size: len(data), Limit: envelopeLimit})
 		}
 		task := asynq.NewTask(envelopeTaskType, data)
 		if _, err := q.client.EnqueueContext(ctx, task, q.enqueueOpts(queue, msg.ID)...); err != nil {
-			return fmt.Errorf("asynq enqueue [%d]: %w", i, err)
+			return redact.WrapError(fmt.Sprintf("asynq enqueue [%d]", i), err)
 		}
 		q.metrics.messagesEnqueued.WithLabelValues(label).Inc()
 	}
@@ -894,7 +894,7 @@ func (q *Queue) Len(ctx context.Context, queue string) (int64, error) {
 		if isQueueNotFoundError(err) {
 			return 0, nil
 		}
-		return 0, fmt.Errorf("inspect queue: %w", err)
+		return 0, redact.WrapError("inspect queue", err)
 	}
 	return int64(info.Pending), nil
 }

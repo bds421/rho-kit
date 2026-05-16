@@ -2,7 +2,8 @@ package messaging
 
 import (
 	"context"
-	"fmt"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // NewValidatingHandler returns a handler that validates each delivery's payload
@@ -34,7 +35,7 @@ func NewValidatingHandler(registry *InMemorySchemaRegistry, next Handler) Handle
 			SchemaVersion: d.SchemaVersion,
 		}
 		if err := registry.ValidateMessage(validationMsg); err != nil {
-			return fmt.Errorf("message validation failed: %w", err)
+			return redact.WrapError("message validation failed", err)
 		}
 		return next(ctx, d)
 	}

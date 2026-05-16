@@ -51,13 +51,13 @@ type Connection struct {
 	closeOnce            sync.Once
 	dead                 chan struct{}
 	deadOnce             sync.Once
-	connected            chan struct{} // closed on first successful connect
-	connectedOnce        sync.Once     // ensures connected is closed exactly once
-	maxReconnectAttempts int           // 0 = unlimited
-	lazyConnect          bool          // defer initial connection to background
-	generation           uint64        // incremented on each reconnect; stale watchers self-terminate
-	reconnecting         atomic.Bool   // prevents overlapping reconnect goroutines
-	reconnectSignal      chan struct{} // buffered(1); queues a reconnect when loop is finishing
+	connected            chan struct{}  // closed on first successful connect
+	connectedOnce        sync.Once      // ensures connected is closed exactly once
+	maxReconnectAttempts int            // 0 = unlimited
+	lazyConnect          bool           // defer initial connection to background
+	generation           uint64         // incremented on each reconnect; stale watchers self-terminate
+	reconnecting         atomic.Bool    // prevents overlapping reconnect goroutines
+	reconnectSignal      chan struct{}  // buffered(1); queues a reconnect when loop is finishing
 	reconnectWG          sync.WaitGroup // tracks in-flight reconnect goroutines so Stop can wait
 
 	// metrics, brokerLabel are observability hooks set via WithConnectionMetrics.
@@ -260,7 +260,7 @@ func Connect(rawURL string, logger *slog.Logger, opts ...DialOption) (*Connectio
 
 	conn, err := c.dial()
 	if err != nil {
-		return nil, fmt.Errorf("amqp dial: %w", err)
+		return nil, redact.WrapError("amqp dial", err)
 	}
 
 	c.conn = conn
@@ -377,7 +377,7 @@ func (c *Connection) Channel() (*amqp.Channel, error) {
 
 	ch, err := c.conn.Channel()
 	if err != nil {
-		return nil, fmt.Errorf("open channel: %w", err)
+		return nil, redact.WrapError("open channel", err)
 	}
 
 	return ch, nil
@@ -447,7 +447,7 @@ func (c *Connection) Stop(ctx context.Context) error {
 		c.mu.Lock()
 		if c.conn != nil && !c.conn.IsClosed() {
 			if err := c.conn.Close(); err != nil {
-				closeErr = fmt.Errorf("messaging: close connection: %w", err)
+				closeErr = redact.WrapError("messaging: close connection", err)
 			}
 		}
 		c.mu.Unlock()

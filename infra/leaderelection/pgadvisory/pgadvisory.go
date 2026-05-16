@@ -389,7 +389,7 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 		case <-healthTicker.C:
 			if ok, err := handle.Extend(ctx); err != nil {
 				cancel()
-				return joinDrainResult(fmt.Errorf("extend: %w", err), awaitCallback())
+				return joinDrainResult(redact.WrapError("extend", err), awaitCallback())
 			} else if !ok {
 				cancel()
 				return joinDrainResult(errors.New("leader-election: handle reports lost"), awaitCallback())

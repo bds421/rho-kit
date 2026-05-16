@@ -283,12 +283,12 @@ func translateAzureCapacity(err error) error {
 	}
 	switch respErr.ErrorCode {
 	case "InsufficientStorage", "InsufficientAccountPermissions":
-		return fmt.Errorf("azurebackend: account out of capacity: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+		return fmt.Errorf("azurebackend: account out of capacity: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
 	case "RequestBodyTooLarge":
-		return fmt.Errorf("azurebackend: blob exceeds size limit: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+		return fmt.Errorf("azurebackend: blob exceeds size limit: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
 	}
 	if respErr.StatusCode == 507 || respErr.StatusCode == 413 {
-		return fmt.Errorf("azurebackend: insufficient storage: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+		return fmt.Errorf("azurebackend: insufficient storage: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
 	}
 	return nil
 }

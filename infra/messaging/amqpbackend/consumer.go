@@ -25,14 +25,14 @@ type DeadLetterPublisher interface {
 }
 
 const (
-	defaultPrefetch          = 10
+	defaultPrefetch = 10
 	// handlerTimeout caps every handler invocation, both during normal
 	// operation and during graceful shutdown. The same bound is used in
 	// both paths because a stuck handler is the root failure mode the
 	// timeout exists to defend against — there is no useful reason to
 	// be lenient about it during steady-state. Handlers that must
 	// distinguish steady-state from shutdown can call IsShutdown(ctx).
-	handlerTimeout = 30 * time.Second
+	handlerTimeout           = 30 * time.Second
 	deadLetterPublishTimeout = 10 * time.Second // max time for dead-letter exchange publish
 )
 
@@ -230,12 +230,12 @@ func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler
 
 	ch, err := c.conn.Channel()
 	if err != nil {
-		return fmt.Errorf("get channel: %w", err)
+		return redact.WrapError("get channel", err)
 	}
 	defer func() { _ = ch.Close() }()
 
 	if err := ch.Qos(c.prefetch, 0, false); err != nil {
-		return fmt.Errorf("set qos: %w", err)
+		return redact.WrapError("set qos", err)
 	}
 
 	deliveries, err := ch.Consume(
@@ -248,7 +248,7 @@ func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler
 		nil,
 	)
 	if err != nil {
-		return fmt.Errorf("start consuming: %w", err)
+		return redact.WrapError("start consuming", err)
 	}
 
 	c.logger.Info("consumer started", redact.String("queue", b.ConsumerGroup))
@@ -393,7 +393,7 @@ func unmarshal(delivery amqp.Delivery) (messaging.Message, error) {
 	}
 	var msg messaging.Message
 	if err := json.Unmarshal(delivery.Body, &msg); err != nil {
-		return messaging.Message{}, fmt.Errorf("unmarshal delivery: %w", err)
+		return messaging.Message{}, redact.WrapError("unmarshal delivery", err)
 	}
 	return msg, nil
 }

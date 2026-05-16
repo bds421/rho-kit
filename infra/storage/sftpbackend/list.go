@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
@@ -28,11 +29,11 @@ var _ storage.Lister = (*Backend)(nil)
 func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
 		if err := storage.ValidatePrefix(prefix); err != nil {
-			yield(storage.ObjectInfo{}, fmt.Errorf("sftpbackend: %w", err))
+			yield(storage.ObjectInfo{}, redact.WrapError("sftpbackend", err))
 			return
 		}
 		if err := storage.ValidateListOptions(opts); err != nil {
-			yield(storage.ObjectInfo{}, fmt.Errorf("sftpbackend: %w", err))
+			yield(storage.ObjectInfo{}, redact.WrapError("sftpbackend", err))
 			return
 		}
 
@@ -51,7 +52,7 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 			if isNotExist(err) {
 				return
 			}
-			opErr := fmt.Errorf("sftpbackend: unsafe root: %w", err)
+			opErr := redact.WrapError("sftpbackend: unsafe root", err)
 			span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 			yield(storage.ObjectInfo{}, opErr)
 			return

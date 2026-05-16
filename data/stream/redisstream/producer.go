@@ -306,7 +306,7 @@ func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Messa
 	// partially constructing pipeline commands that are then discarded.
 	for i, msg := range msgs {
 		if err := ValidateMessage(msg, p.maxPayloadSize); err != nil {
-			return nil, fmt.Errorf("message [%d]: %w", i, err)
+			return nil, redact.WrapError(fmt.Sprintf("message [%d]", i), err)
 		}
 	}
 
@@ -316,7 +316,7 @@ func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Messa
 	for i, msg := range msgs {
 		args, err := p.buildXAddArgs(stream, msg)
 		if err != nil {
-			return nil, fmt.Errorf("message [%d]: %w", i, err)
+			return nil, redact.WrapError(fmt.Sprintf("message [%d]", i), err)
 		}
 		cmds[i] = pipe.XAdd(ctx, args)
 	}

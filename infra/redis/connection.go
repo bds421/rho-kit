@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"runtime/debug"
 	"sync"
@@ -264,7 +263,7 @@ func connectInternal(client redis.UniversalClient, connOpts ...ConnOption) (*Con
 
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
-		return nil, fmt.Errorf("redis connect: %w", err)
+		return nil, redact.WrapError("redis connect", err)
 	}
 
 	c.mu.Lock()

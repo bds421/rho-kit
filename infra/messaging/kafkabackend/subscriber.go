@@ -388,7 +388,7 @@ func (s *Subscriber) newReader(topic string) (*kafka.Reader, error) {
 		rc.GroupTopics = nil
 	}
 	if err := rc.Validate(); err != nil {
-		return nil, fmt.Errorf("kafkabackend: reader config: %w", err)
+		return nil, redact.WrapError("kafkabackend: reader config", err)
 	}
 	return kafka.NewReader(rc), nil
 }

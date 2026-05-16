@@ -188,7 +188,7 @@ func TestLocalBackend_Put(t *testing.T) {
 
 		err := b.Put(ctx, "secret-token-link/owned.txt", bytes.NewReader([]byte("owned")), storage.ObjectMeta{})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "symlink")
+		assert.Contains(t, err.Error(), "unsafe")
 		assert.NotContains(t, err.Error(), "secret-token")
 
 		_, statErr := os.Stat(filepath.Join(outside, "owned.txt"))
@@ -206,7 +206,7 @@ func TestLocalBackend_Put(t *testing.T) {
 
 		err := b.Put(ctx, "link/sub/owned.txt", bytes.NewReader([]byte("owned")), storage.ObjectMeta{})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "symlink")
+		assert.Contains(t, err.Error(), "unsafe")
 
 		_, statErr := os.Stat(filepath.Join(outside, "sub"))
 		assert.True(t, errors.Is(statErr, os.ErrNotExist))
@@ -350,7 +350,7 @@ func TestLocalBackend_CopyRejectsSymlinkDestinationBeforeCreatingNestedDirs(t *t
 
 	err := b.Copy(ctx, "source.txt", "secret-token-link/sub/copy.txt")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "symlink")
+	assert.Contains(t, err.Error(), "unsafe")
 	assert.NotContains(t, err.Error(), "secret-token")
 
 	_, statErr := os.Stat(filepath.Join(outside, "sub"))
@@ -430,7 +430,7 @@ func TestLocalBackend_RejectsSymlinkedRoot(t *testing.T) {
 
 		err := b.Put(ctx, "owned.txt", bytes.NewReader([]byte("owned")), storage.ObjectMeta{})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "symlink")
+		assert.Contains(t, err.Error(), "unsafe")
 
 		_, statErr := os.Stat(filepath.Join(outside, "owned.txt"))
 		assert.True(t, errors.Is(statErr, os.ErrNotExist))
@@ -444,7 +444,7 @@ func TestLocalBackend_RejectsSymlinkedRoot(t *testing.T) {
 
 		_, _, err := b.Get(ctx, "secret.txt")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "symlink")
+		assert.Contains(t, err.Error(), "unsafe")
 	})
 
 	t.Run("exists", func(t *testing.T) {
@@ -456,7 +456,7 @@ func TestLocalBackend_RejectsSymlinkedRoot(t *testing.T) {
 		exists, err := b.Exists(ctx, "secret.txt")
 		require.Error(t, err)
 		assert.False(t, exists)
-		assert.Contains(t, err.Error(), "symlink")
+		assert.Contains(t, err.Error(), "unsafe")
 	})
 
 	t.Run("delete", func(t *testing.T) {
@@ -468,7 +468,7 @@ func TestLocalBackend_RejectsSymlinkedRoot(t *testing.T) {
 
 		err := b.Delete(ctx, "secret.txt")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "symlink")
+		assert.Contains(t, err.Error(), "unsafe")
 
 		_, statErr := os.Stat(secretPath)
 		require.NoError(t, statErr)
@@ -482,7 +482,7 @@ func TestLocalBackend_RejectsSymlinkedRoot(t *testing.T) {
 
 		err := b.Copy(ctx, "source.txt", "copy.txt")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "symlink")
+		assert.Contains(t, err.Error(), "unsafe")
 
 		_, statErr := os.Stat(filepath.Join(outside, "copy.txt"))
 		assert.True(t, errors.Is(statErr, os.ErrNotExist))

@@ -345,11 +345,11 @@ func translateGCSCapacity(err error) error {
 	}
 	switch gerr.Code {
 	case 507:
-		return fmt.Errorf("gcsbackend: bucket insufficient storage: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+		return fmt.Errorf("gcsbackend: bucket insufficient storage: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
 	case 413:
 		msg := strings.ToLower(gerr.Message)
 		if strings.Contains(msg, "quota") || strings.Contains(msg, "storage") {
-			return fmt.Errorf("gcsbackend: quota exhausted: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+			return fmt.Errorf("gcsbackend: quota exhausted: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
 		}
 	}
 	return nil

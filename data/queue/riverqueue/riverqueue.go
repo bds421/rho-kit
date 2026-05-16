@@ -20,7 +20,6 @@ package riverqueue
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,6 +27,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 )
 
@@ -98,10 +98,10 @@ func (p *Publisher) Enqueue(ctx context.Context, queue string, msg kitqueue.Mess
 		return err
 	}
 	if err := kitqueue.ValidateName(queue, "queue"); err != nil {
-		return fmt.Errorf("riverqueue: %w", err)
+		return redact.WrapError("riverqueue", err)
 	}
 	if err := kitqueue.ValidateMessage(msg, p.maxPayloadBytes); err != nil {
-		return fmt.Errorf("riverqueue: %w", err)
+		return redact.WrapError("riverqueue", err)
 	}
 	job := envelopeArgs{
 		ID:      msg.ID,
@@ -116,7 +116,7 @@ func (p *Publisher) Enqueue(ctx context.Context, queue string, msg kitqueue.Mess
 		}
 	}
 	if _, err := p.client.Insert(ctx, job, opts); err != nil {
-		return fmt.Errorf("riverqueue: insert: %w", err)
+		return redact.WrapError("riverqueue: insert", err)
 	}
 	return nil
 }
@@ -216,7 +216,7 @@ func (w *EnvelopeWorker) Work(ctx context.Context, job *river.Job[envelopeArgs])
 		Payload: clonePayload(job.Args.Payload),
 	}
 	if err := kitqueue.ValidateMessage(msg, w.maxPayloadBytes); err != nil {
-		return fmt.Errorf("riverqueue: invalid envelope: %w", err)
+		return redact.WrapError("riverqueue: invalid envelope", err)
 	}
 	return w.handler(ctx, msg)
 }

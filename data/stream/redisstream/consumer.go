@@ -467,7 +467,7 @@ func (c *Consumer) consumeOnce(ctx context.Context, stream string, handler Handl
 	// this is not desired.
 	err := c.client.XGroupCreateMkStream(ctx, stream, c.group, "0").Err()
 	if err != nil && !isGroupExistsError(err) {
-		return fmt.Errorf("create consumer group: %w", err)
+		return redact.WrapError("create consumer group", err)
 	}
 
 	// Start the claim loop for stale pending messages.
@@ -585,7 +585,7 @@ func (c *Consumer) processPending(ctx context.Context, stream, dlStream string, 
 			// goredis.Nil when no pending messages exist (handled by the
 			// len() check below). Any error here is a real protocol/network
 			// failure that must propagate.
-			return fmt.Errorf("xreadgroup pending: %w", err)
+			return redact.WrapError("xreadgroup pending", err)
 		}
 
 		if len(msgs) == 0 || len(msgs[0].Messages) == 0 {
@@ -624,7 +624,7 @@ func (c *Consumer) readNew(ctx context.Context, stream, dlStream string, handler
 			if ctx.Err() != nil {
 				return nil
 			}
-			return fmt.Errorf("xreadgroup: %w", err)
+			return redact.WrapError("xreadgroup", err)
 		}
 
 		for _, s := range msgs {

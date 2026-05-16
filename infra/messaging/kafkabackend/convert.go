@@ -7,6 +7,7 @@ import (
 
 	kafka "github.com/segmentio/kafka-go"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
@@ -15,9 +16,9 @@ import (
 // through Kafka preserves the kit's [messaging.Message] envelope and
 // the (exchange, routingKey) pair carried by [messaging.Delivery].
 const (
-	headerExchange   = "X-Exchange"
-	headerRoutingKey = "X-Routing-Key"
-	headerMessageID  = "X-Message-Id"
+	headerExchange    = "X-Exchange"
+	headerRoutingKey  = "X-Routing-Key"
+	headerMessageID   = "X-Message-Id"
 	headerMessageType = "X-Message-Type"
 )
 
@@ -38,7 +39,7 @@ const maxConsumerDeliveryBytes = 32 * 1024 * 1024
 func toKafkaMessage(exchange, routingKey string, msg messaging.Message) (kafka.Message, error) {
 	body, err := json.Marshal(msg)
 	if err != nil {
-		return kafka.Message{}, fmt.Errorf("kafkabackend: marshal message: %w", err)
+		return kafka.Message{}, redact.WrapError("kafkabackend: marshal message", err)
 	}
 	headers := make([]kafka.Header, 0, len(msg.Headers)+5)
 	for k, v := range msg.Headers {
@@ -88,7 +89,7 @@ func fromKafkaMessage(km kafka.Message) (messaging.Delivery, error) {
 	}
 	var msg messaging.Message
 	if err := json.Unmarshal(km.Value, &msg); err != nil {
-		return messaging.Delivery{}, fmt.Errorf("kafkabackend: decode message body: %w", err)
+		return messaging.Delivery{}, redact.WrapError("kafkabackend: decode message body", err)
 	}
 	headerAny, headerStr := splitHeaders(km.Headers)
 	if msg.Headers == nil {

@@ -403,7 +403,7 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 			ok, err := handle.Extend(ctx)
 			if err != nil {
 				cancel()
-				return joinDrainResult(fmt.Errorf("extend: %w", err), awaitCallback())
+				return joinDrainResult(redact.WrapError("extend", err), awaitCallback())
 			}
 			if !ok {
 				cancel()

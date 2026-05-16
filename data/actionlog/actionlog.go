@@ -14,6 +14,7 @@ import (
 
 	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/core/v2/id"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 )
 
@@ -579,18 +580,18 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 
 	keyID, err := l.secrets.CurrentKeyID(ctx)
 	if err != nil {
-		return Entry{}, fmt.Errorf("actionlog: resolve current key id: %w", err)
+		return Entry{}, redact.WrapError("actionlog: resolve current key id", err)
 	}
 	if keyID == "" {
 		// FR-050 [HIGH] belt-and-suspenders: NewStaticSecrets panics
 		// on empty current key id, but a custom Secrets implementation
 		// could still return "". Reject here so we never persist an
 		// entry whose SignatureKeyID Verify will reject permanently.
-		return Entry{}, fmt.Errorf("actionlog: Secrets.CurrentKeyID returned empty string: %w", ErrUnknownKeyID)
+		return Entry{}, redact.WrapError("actionlog: Secrets.CurrentKeyID returned empty string", ErrUnknownKeyID)
 	}
 	secret, err := resolveSignatureSecret(ctx, l.secrets, keyID)
 	if err != nil {
-		return Entry{}, fmt.Errorf("actionlog: current key id: %w", err)
+		return Entry{}, redact.WrapError("actionlog: current key id", err)
 	}
 
 	entry, err := l.store.AppendChained(ctx, e.TenantID, func(prev Entry, prevSeq int64) (Entry, error) {
@@ -609,7 +610,7 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 		} else {
 			h, err := entryHash(prev)
 			if err != nil {
-				return Entry{}, fmt.Errorf("actionlog: prev hash: %w", err)
+				return Entry{}, redact.WrapError("actionlog: prev hash", err)
 			}
 			entry.PrevHash = h
 		}
@@ -618,7 +619,7 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 		}
 		sig, err := computeSignature(entry, secret)
 		if err != nil {
-			return Entry{}, fmt.Errorf("actionlog: compute signature: %w", err)
+			return Entry{}, redact.WrapError("actionlog: compute signature", err)
 		}
 		entry.Signature = sig
 		return entry, nil
@@ -665,7 +666,7 @@ func (l *signedLogger) List(ctx context.Context, q Query) ([]Entry, string, erro
 	for i, e := range entries {
 		e = cloneEntry(e)
 		if err := VerifyEntry(ctx, e, l.secrets); err != nil {
-			return nil, "", fmt.Errorf("actionlog: entry verification failed: %w", err)
+			return nil, "", redact.WrapError("actionlog: entry verification failed", err)
 		}
 		out[i] = e
 	}
@@ -685,7 +686,7 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	var wantSeq int64 = 1
 	return l.store.RangeByTenantSeq(ctx, tenantID, func(e Entry) error {
 		if err := VerifyEntry(ctx, e, l.secrets); err != nil {
-			return fmt.Errorf("actionlog: entry verification failed: %w", err)
+			return redact.WrapError("actionlog: entry verification failed", err)
 		}
 		if e.Seq != wantSeq {
 			return fmt.Errorf("%w: expected seq %d, got %d", ErrChainBroken, wantSeq, e.Seq)
@@ -727,14 +728,14 @@ func SignEntry(ctx context.Context, e Entry, secrets SecretSource) (signature, k
 	}
 	keyID, err = secrets.CurrentKeyID(ctx)
 	if err != nil {
-		return "", "", fmt.Errorf("actionlog: resolve current key id: %w", err)
+		return "", "", redact.WrapError("actionlog: resolve current key id", err)
 	}
 	if keyID == "" {
-		return "", "", fmt.Errorf("actionlog: Secrets.CurrentKeyID returned empty string: %w", ErrUnknownKeyID)
+		return "", "", redact.WrapError("actionlog: Secrets.CurrentKeyID returned empty string", ErrUnknownKeyID)
 	}
 	secret, err := resolveSignatureSecret(ctx, secrets, keyID)
 	if err != nil {
-		return "", "", fmt.Errorf("actionlog: current key id: %w", err)
+		return "", "", redact.WrapError("actionlog: current key id", err)
 	}
 	e.SignatureKeyID = keyID
 	sig, err := computeSignature(e, secret)

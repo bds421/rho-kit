@@ -126,7 +126,7 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	}
 	body, err := json.Marshal(msg)
 	if err != nil {
-		return fmt.Errorf("marshal message: %w", err)
+		return redact.WrapError("marshal message", err)
 	}
 
 	pub := amqp.Publishing{
@@ -247,7 +247,7 @@ func publishOutcomeForError(err error) string {
 func (p *Publisher) publishConfirmed(ctx context.Context, exchange, routingKey string, pub amqp.Publishing) error {
 	ch, err := p.conn.Channel()
 	if err != nil {
-		return fmt.Errorf("open channel: %w", err)
+		return redact.WrapError("open channel", err)
 	}
 	defer func() {
 		if closeErr := ch.Close(); closeErr != nil {
@@ -261,19 +261,19 @@ func (p *Publisher) publishConfirmed(ctx context.Context, exchange, routingKey s
 	ch.NotifyReturn(returnCh)
 
 	if err := ch.Confirm(false); err != nil {
-		return fmt.Errorf("enable confirm mode: %w", err)
+		return redact.WrapError("enable confirm mode", err)
 	}
 
 	dc, err := ch.PublishWithDeferredConfirmWithContext(ctx,
 		exchange, routingKey, true /* mandatory */, false, pub,
 	)
 	if err != nil {
-		return fmt.Errorf("publish message: %w", err)
+		return redact.WrapError("publish message", err)
 	}
 
 	acked, err := dc.WaitContext(ctx)
 	if err != nil {
-		return fmt.Errorf("wait for confirm: %w", err)
+		return redact.WrapError("wait for confirm", err)
 	}
 	if !acked {
 		return fmt.Errorf("message was nacked by broker")

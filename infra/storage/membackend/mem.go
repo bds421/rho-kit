@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
@@ -154,10 +155,10 @@ func (b *Backend) Copy(ctx context.Context, srcKey, dstKey string) error {
 		return err
 	}
 	if err := storage.ValidateKey(srcKey); err != nil {
-		return fmt.Errorf("membackend: copy: invalid source key: %w", err)
+		return redact.WrapError("membackend: copy: invalid source key", err)
 	}
 	if err := storage.ValidateKey(dstKey); err != nil {
-		return fmt.Errorf("membackend: copy: invalid destination key: %w", err)
+		return redact.WrapError("membackend: copy: invalid destination key", err)
 	}
 
 	b.mu.Lock()
@@ -190,11 +191,11 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 			return
 		}
 		if err := storage.ValidatePrefix(prefix); err != nil {
-			yield(storage.ObjectInfo{}, fmt.Errorf("membackend: %w", err))
+			yield(storage.ObjectInfo{}, redact.WrapError("membackend", err))
 			return
 		}
 		if err := storage.ValidateListOptions(opts); err != nil {
-			yield(storage.ObjectInfo{}, fmt.Errorf("membackend: %w", err))
+			yield(storage.ObjectInfo{}, redact.WrapError("membackend", err))
 			return
 		}
 
