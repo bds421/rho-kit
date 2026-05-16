@@ -27,15 +27,16 @@
 //     service binding multiple "queues" to one Subscriber surfaces the
 //     configuration drift at startup rather than silently routing every
 //     delivery through the constructor-time group.
-//   - Binding.Retry / Binding.WithoutRetry → ignored by this backend.
-//     Kafka has no per-message redelivery primitive analogous to AMQP
-//     dead-letter exchanges; retries are the application's job. A
-//     handler that returns an error causes the subscriber to NOT commit
-//     the offset, so the message is redelivered after the consumer
-//     re-fetches from the last committed offset (typically on group
-//     rebalance or restart). For application-level retry, wrap the
-//     handler in [resilience/retry] or implement a dead-letter topic
-//     pattern at the producer level.
+//   - Binding.Retry → REJECTED with [messaging.ErrRetryUnsupported]
+//     at Consume entry (wave 141). Kafka has no per-message
+//     redelivery primitive analogous to AMQP dead-letter exchanges,
+//     so honouring a kit RetryPolicy would silently lie. Callers
+//     must set Binding.WithoutRetry=true (ack-and-discard semantics)
+//     or wrap the handler in [resilience/retry]. Returning an error
+//     from the handler still skips the offset commit, so the
+//     message is redelivered after group rebalance or restart — but
+//     that re-delivery is uncontrolled (no delay, no attempt cap)
+//     and must not be confused with kit RetryPolicy semantics.
 //   - Ack semantics → returning nil from the handler causes the
 //     subscriber to call kafka-go's [Reader.CommitMessages], advancing
 //     the committed offset for the partition. Returning a non-nil

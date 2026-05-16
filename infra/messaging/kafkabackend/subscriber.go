@@ -277,8 +277,13 @@ func (s *Subscriber) ready() error {
 // ([apperror.IsPermanent]) is treated as a poison pill: the offset IS
 // committed so the consumer can make forward progress.
 //
-// Binding.Retry is logged at WARN once at startup and otherwise
-// ignored — see the package doc for the rationale.
+// Binding.Retry is REJECTED at Consume entry — wave 141 turned the
+// previous silent log-warning into a hard refusal via
+// [messaging.ErrRetryUnsupported]. Kafka has no per-message TTL or
+// delayed-redelivery primitive that maps to the kit's RetryPolicy.
+// Callers must set [messaging.BindingSpec.WithoutRetry]=true (ack-and-
+// discard semantics) or wrap the handler in the kit's
+// [resilience/retry] package.
 func (s *Subscriber) Consume(ctx context.Context, b messaging.Binding, handler messaging.Handler) error {
 	if err := s.ready(); err != nil {
 		return err
@@ -297,14 +302,10 @@ func (s *Subscriber) Consume(ctx context.Context, b messaging.Binding, handler m
 	}
 	if b.Retry != nil {
 		// Kafka has no per-message redelivery primitive analogous to
-		// AMQP DLX, so Binding.Retry cannot be honoured. Surface a
-		// single actionable WARN at Consume entry pointing the
-		// operator at the documented workarounds.
-		s.logger.Warn("kafkabackend: Binding.Retry is not honoured by Kafka; set Binding.WithoutRetry=true to suppress this warning or wrap the handler in the kit's resilience/retry package",
-			redact.String("topic", b.Exchange),
-			slog.Int("max_retries", b.Retry.MaxRetries),
-			slog.Duration("delay", b.Retry.Delay),
-		)
+		// AMQP DLX. Fail fast so the operator must explicitly opt
+		// in to ack-and-discard (WithoutRetry=true) or implement
+		// retry in the handler.
+		return messaging.ErrRetryUnsupported
 	}
 	reader, err := s.newReader(b.Exchange)
 	if err != nil {
