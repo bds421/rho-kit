@@ -27,44 +27,14 @@ README points at.
 | **background-worker**  | Implemented    | `messaging.TypedSubscription`, `resilience/{retry,circuitbreaker}` |
 | **api-gateway**        | Implemented    | `httpx/middleware/ratelimit`, stubbed JWT auth, `resilience/{retry,circuitbreaker}` for downstream fan-out |
 | **realtime-broadcast** | Implemented    | `realtime/centrifuge`, `security/jwtutil`, `httpx` |
-| saga-coordinator       | Recipe below   | `runtime/saga`, `infra/outbox`, `data/idempotency`, `data/lock` |
+| **saga-coordinator**   | Implemented    | `runtime/saga`, `data/idempotency`, per-key exclusive section (in-memory; pgadvisory in production) |
 
-The first five ship as compileable modules in this directory.
-The last one is documented as a composition recipe — it shows
-the exact import set, the wiring order, and the rationale — so
-a coding agent can stand the pattern up against a fresh service
-skeleton.
-
-## Recipe: saga-coordinator
-
-Multi-step transactions across multiple downstream APIs with
-compensation. Crash-safe via outbox.
-
-```go
-import (
-    "github.com/bds421/rho-kit/runtime/v2/saga"
-    "github.com/bds421/rho-kit/infra/v2/outbox"
-    "github.com/bds421/rho-kit/data/v2/lock/pgadvisory"
-    idem "github.com/bds421/rho-kit/data/v2/idempotency/pgstore"
-)
-
-definition := saga.Definition{
-    Steps: []saga.Step{
-        {Name: "reserve-inventory", Forward: reserveInv, Compensate: releaseInv},
-        {Name: "charge-card",       Forward: charge,     Compensate: refund},
-        {Name: "ship",              Forward: ship,       Compensate: cancelShip},
-    },
-}
-// Idempotency around the entire saga handle so retries are safe.
-// Advisory lock around the saga key so concurrent retries don't race.
-// outbox.Publish enqueues the "saga started" / "step compensated"
-// events crash-safely; the relay drains to messaging.
-```
-
-The kit's `runtime/saga.Run` is in-memory in v2.0.0 — durability
-is provided externally by combining outbox + idempotency +
-advisory lock as shown. See the `runtime/saga` package preamble
-for the planned `Run` extension that absorbs this wiring directly.
+All six patterns now ship as compileable modules in this
+directory. Each has a smoke test that exercises the composition
+without external infrastructure, plus a README that documents
+both the demonstrated wiring and the production-wiring
+substitutions (Redis / Postgres backends, real IDP, real
+broker).
 
 ## Conventions
 

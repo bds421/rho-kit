@@ -146,6 +146,7 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/examples/api-gateway/v2` | Keep example | No rename/remove | Buildable smoke example for the public-facing ratelimit + JWT + downstream-fanout pattern. Wave 174 follow-up. |
 | `github.com/bds421/rho-kit/examples/background-worker/v2` | Keep example | No rename/remove | Buildable smoke example for the messaging.TypedSubscription + circuitbreaker + retry pattern. Wave 174. |
 | `github.com/bds421/rho-kit/examples/realtime-broadcast/v2` | Keep example | No rename/remove | Buildable smoke example for the centrifuge + jwtutil browser-realtime pattern. Wave 174 follow-up. |
+| `github.com/bds421/rho-kit/examples/saga-coordinator/v2` | Keep example | No rename/remove | Buildable smoke example for the saga.Run + idempotency + exclusive-section multi-step transaction pattern. Wave 174 closeout. |
 | `github.com/bds421/rho-kit/examples/webhook-receiver/v2` | Keep example | No rename/remove | Buildable smoke example for the signedrequest + idempotency middleware-chain pattern. Wave 174. |
 
 ## Release Rules After Freeze

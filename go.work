@@ -57,6 +57,7 @@ use (
 	./examples/api-gateway
 	./examples/background-worker
 	./examples/realtime-broadcast
+	./examples/saga-coordinator
 	./examples/webhook-receiver
 	./flags
 	./grpcx

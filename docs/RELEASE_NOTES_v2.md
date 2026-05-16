@@ -1414,19 +1414,21 @@ in v2.0.0.
   (WARNING, goroutine / fd DoS exposure), `centrifuge-missing-jwt-auth`
   (CRITICAL, unauthenticated realtime broadcast). All honour the
   standard `// kit-doctor:allow <rule>` suppression marker.
-- **Wave 174:** Four new reference services demonstrate canonical
+- **Wave 174:** Five new reference services demonstrate canonical
   kit compositions — `examples/webhook-receiver` (signedrequest →
   idempotency → typed handler), `examples/background-worker`
   (TypedSubscription → circuitbreaker → retry → typed handler),
   `examples/api-gateway` (ratelimit → JWT-auth → downstream
-  fan-out with circuitbreaker + retry), and
-  `examples/realtime-broadcast` (centrifuge.NewNode + WithJWTAuth
-  + WithChannelClassifier with an ECDSA self-signing demo so the
-  smoke test stands up without an external IDP). All four ship as
-  compileable Go modules with smoke tests; all pass
-  `kit-doctor -strict warning`. `examples/README.md` catalogs the
-  remaining `saga-coordinator` pattern as a detailed composition
-  recipe pointing at the kit packages it composes.
+  fan-out with circuitbreaker + retry), `examples/realtime-broadcast`
+  (centrifuge.NewNode + WithJWTAuth + WithChannelClassifier with
+  an ECDSA self-signing demo so the smoke test stands up without
+  an external IDP), and `examples/saga-coordinator` (saga.Run +
+  idempotency cache + per-key exclusive section; demonstrates
+  roll-forward, automatic compensation, idempotent retry safety,
+  and the 422 vs 500 error-routing distinction). All five ship
+  as compileable Go modules with smoke tests; all pass
+  `kit-doctor -strict warning`. The `examples/README.md` catalog
+  is the full set — no remaining recipe-only patterns.
 - **Wave 175:** Per-hot-path benchmark regression gate. Six
   benchmarks cover the kit's most-amplified-cost helpers
   (`redact.WrapError`, `promutil.OpaqueLabelValue`,
