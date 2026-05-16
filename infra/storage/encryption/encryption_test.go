@@ -236,9 +236,13 @@ func TestEncryptedStorage_WrongKey(t *testing.T) {
 	require.NoError(t, err)
 
 	// Decrypting with wrong key should fail.
+	// Error message is redacted by wave 143 (redact.WrapError); assert
+	// the "encryption" prefix is present so callers still know the
+	// failure originated in this layer, without leaking the AEAD's
+	// internal decrypt verbiage.
 	_, _, err = enc2.Get(ctx, "secret.txt")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "decrypt")
+	assert.Contains(t, err.Error(), "encryption")
 }
 
 func TestEncryptedStorage_ExistsAndDelete(t *testing.T) {
@@ -324,10 +328,11 @@ func TestEncryptedStorage_AAD_BindsToStorageKey(t *testing.T) {
 	require.NoError(t, backend.Put(ctx, "keyB", bytes.NewReader(stolen), storage.ObjectMeta{Size: int64(len(stolen))}))
 
 	// Reading keyB must fail authentication (different AAD) — that is the
-	// whole point of binding.
+	// whole point of binding. Error is redacted by wave 143; assert the
+	// "encryption" prefix is present without leaking the inner verbiage.
 	_, _, err = enc.Get(ctx, "keyB")
 	require.Error(t, err, "ciphertext copied to a different key must not decrypt")
-	assert.Contains(t, err.Error(), "decrypt")
+	assert.Contains(t, err.Error(), "encryption")
 
 	// Reading keyA must still work — same key, same AAD.
 	rc, _, err = enc.Get(ctx, "keyA")

@@ -8,6 +8,7 @@ import (
 	"iter"
 	"runtime"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/crypto/v2/encrypt"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
@@ -247,7 +248,7 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 		case e.putSem <- struct{}{}:
 			defer func() { <-e.putSem }()
 		case <-ctx.Done():
-			return fmt.Errorf("encryption: %w", ctx.Err())
+			return redact.WrapError("encryption", ctx.Err())
 		}
 	}
 
@@ -270,12 +271,12 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 
 	gcm, err := encrypt.NewGCM(keyBytes)
 	if err != nil {
-		return fmt.Errorf("encryption: %w", err)
+		return redact.WrapError("encryption", err)
 	}
 
 	ciphertext, err := encrypt.EncryptBytesAAD(gcm, plaintext, aadForKey(key))
 	if err != nil {
-		return fmt.Errorf("encryption: %w", err)
+		return redact.WrapError("encryption", err)
 	}
 	defer zeroBytes(ciphertext)
 
@@ -327,12 +328,12 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 
 	gcm, err := encrypt.NewGCM(keyBytes)
 	if err != nil {
-		return nil, meta, fmt.Errorf("encryption: %w", err)
+		return nil, meta, redact.WrapError("encryption", err)
 	}
 
 	plaintext, err := encrypt.DecryptBytesAAD(gcm, ciphertext, aadForKey(key))
 	if err != nil {
-		return nil, meta, fmt.Errorf("encryption: %w", err)
+		return nil, meta, redact.WrapError("encryption", err)
 	}
 
 	meta.Size = int64(len(plaintext))
@@ -392,12 +393,12 @@ func zeroBytes(b []byte) {
 func (e *EncryptedStorage) list(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	if err := storage.ValidatePrefix(prefix); err != nil {
 		return func(yield func(storage.ObjectInfo, error) bool) {
-			yield(storage.ObjectInfo{}, fmt.Errorf("encryption: %w", err))
+			yield(storage.ObjectInfo{}, redact.WrapError("encryption", err))
 		}
 	}
 	if err := storage.ValidateListOptions(opts); err != nil {
 		return func(yield func(storage.ObjectInfo, error) bool) {
-			yield(storage.ObjectInfo{}, fmt.Errorf("encryption: %w", err))
+			yield(storage.ObjectInfo{}, redact.WrapError("encryption", err))
 		}
 	}
 	lister, ok := storage.AsLister(e.backend)
@@ -435,21 +436,21 @@ func (e *EncryptedStorage) list(ctx context.Context, prefix string, opts storage
 // going through Get/Put.
 func (e *EncryptedStorage) Copy(ctx context.Context, srcKey, dstKey string) error {
 	if err := storage.ValidateKey(srcKey); err != nil {
-		return fmt.Errorf("encryption: invalid source key: %w", err)
+		return redact.WrapError("encryption: invalid source key", err)
 	}
 	if err := storage.ValidateKey(dstKey); err != nil {
-		return fmt.Errorf("encryption: invalid destination key: %w", err)
+		return redact.WrapError("encryption: invalid destination key", err)
 	}
 
 	rc, meta, err := e.Get(ctx, srcKey)
 	if err != nil {
-		return fmt.Errorf("encryption: copy get: %w", err)
+		return redact.WrapError("encryption: copy get", err)
 	}
 	defer func() { _ = rc.Close() }()
 
 	putMeta := storage.CloneObjectMeta(meta)
 	if err := e.Put(ctx, dstKey, rc, putMeta); err != nil {
-		return fmt.Errorf("encryption: copy put: %w", err)
+		return redact.WrapError("encryption: copy put", err)
 	}
 	return nil
 }
