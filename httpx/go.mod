@@ -3,6 +3,7 @@ module github.com/bds421/rho-kit/httpx/v2
 go 1.26.2
 
 require (
+	github.com/google/jsonschema-go v0.4.3
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jub0bs/cors v1.0.2
@@ -19,7 +20,6 @@ require (
 )
 
 require (
-	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect

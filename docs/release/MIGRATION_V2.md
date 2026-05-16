@@ -247,6 +247,28 @@ Three migration touchpoints exist:
 | `httpx.NewTracingHTTPClient` | Consolidated into a single variadic-options constructor accepting `TracingClientOption`. The old `NewTracingHTTPClientWithOptions` is removed. |
 | `httpx/reqsign` package | Removed. Use `httpx/sign` with `httpx/middleware/signedrequest` instead. The two formats intentionally froze separate canonical strings and key-ID header spellings. |
 
+#### New: OpenAPI 3.1 spec generation (wave 128)
+
+The new `httpx/openapigen` package builds an OpenAPI 3.1 document
+from kit-typed handlers and serves it via an opt-in `http.Handler`.
+Every typed handler already carries a statically known request +
+response type; `core/v2/validate.SchemaFor[T]` (wave 124) turns those
+into JSON Schemas; OpenAPI 3.1's JSON Schema 2020-12 alignment lets
+the kit embed those schemas directly into operations without a
+third-party openapi dep.
+
+| Area | Addition |
+|---|---|
+| `openapigen.NewSpec(title, version)` | Constructs an empty `Spec`. |
+| `openapigen.Handle[Req, Resp](mux, spec, method, path, logger, fn, opts...)` | Mux + spec registration in one call — uses `httpx.JSON[Req, Resp]` for the runtime handler. Sibling helpers cover the `JSONStatus` / `JSONNoBody` / `JSONNoBodyStatus` / `NoContent` shapes. |
+| `Spec.Register(method, path, opts...)` | Lower-level entry point for callers that wire the runtime handler separately. |
+| `Spec.Handler()` | Returns an `http.Handler` that serves the rendered document as `application/json` on GET / HEAD. Mount it explicitly via `mux.Handle("/openapi.json", spec.Handler())` — the kit does not pick the URL for you. |
+| `WithRequestType[T]() / WithResponseType[T](status)` | Generic options that pull the schema from `validate.SchemaFor[T]`. `WithRequestSchema` / `WithResponseSchema` accept an explicit `*jsonschema.Schema` for callers that want bespoke shapes. |
+| `WithParameter` | Attach query / path / header / cookie parameters. The kit does NOT auto-discover them from `net/http` pattern wildcards because the stdlib grammar does not expose typed parameter metadata. |
+| `WithSecurity` / `Spec.AddSecurityScheme` / `Spec.SetGlobalSecurity` | Per-operation + document-level security requirements; security schemes follow the OAS 3.1 `securitySchemes` object. |
+| Scope limits | The initial wave deliberately ships a narrow surface: single response per status code per route, no auto-discovered parameters, no per-operation example payloads, no tag-object emission (per-operation `tags` strings only). These are not architectural limits and will extend in later waves without breaking the present API. |
+| Public API stability | `httpx.JSON` / `httpx.Handle` and all sibling helpers retain identical signatures — the OpenAPI integration is additive and opt-in. Services already on the v2 typed handlers can adopt the spec generator by switching `httpx.Handle` for `openapigen.Handle` at registration time. |
+
 ### `httpx/middleware/auth`
 
 | Area | Migration |
@@ -330,6 +352,16 @@ wrapper around the SDK's `Server.AddTool` and
 |---|---|
 | `WithCallbackDrainTimeout` | Option removed. `holdLeadership` now blocks until `Callbacks.OnAcquired` returns, so the same process cannot run two overlapping leadership terms. The cancelled `OnAcquired` context is the only signal — your callback MUST observe `ctx.Done()` and return promptly. If you need a hard upper bound, wrap the callback body with your own `context.WithTimeout`. See `TestHoldLeadership_LossDoesNotReturnUntilCallbackDrains` in each adapter. |
 | Callback-drain visibility | Both adapters now expose `NewMetrics`, `WithMetrics`, and `WithCallbackDrainWarnInterval` so a stalled `OnAcquired` callback is operator-visible. The watchdog logs a warn and increments `leaderelection_callback_drain_warn_total{key}` every 30 seconds (override via `WithCallbackDrainWarnInterval`), and the terminal drain duration lands in `leaderelection_callback_drain_seconds{state="drained",key=...}` with `state="pending"` snapshots on each warn tick. Buckets: `[1, 5, 10, 30, 60, 120, 300]` seconds. |
+
+### `infra/leaderelection/k8slease` (new)
+
+| Area | Migration |
+|---|---|
+| New adapter | `infra/leaderelection/k8slease` (wave 127) implements `leaderelection.Elector` on top of `k8s.io/client-go/tools/leaderelection`. It competes for a Kubernetes `coordination.k8s.io/v1` Lease object so kubectl shows who currently leads — recommended when the service already runs on Kubernetes and the operator wants leader-election state to live in the same control plane as the workload. |
+| Construction | `k8slease.New(client kubernetes.Interface, namespace, name, identity string, opts ...Option)`. Identity MUST be unique per replica (typically `POD_NAME`). Options: `WithLeaseDuration` / `WithRenewDeadline` / `WithRetryPeriod` (defaults `15s / 10s / 2s` mirror client-go upstream), plus the same `WithLogger`, `WithMetrics`, `WithCallbackDrainWarnInterval`, and `WithCallbackDrainTimeout` shapes as the pgadvisory / redislock adapters. |
+| Heavy-SDK boundary | This is the only place inside the kit that depends on `k8s.io/client-go`. Consumers that do not run on Kubernetes never import this package and never pull the dep transitively — `make check-dependency-boundaries` enforces the same isolation that holds for the AMQP, NATS, pgx, and cloud-storage adapters. |
+| Run semantics | Unlike pgadvisory / redislock which loop the acquire path, client-go's `LeaderElector` already owns the acquire / renew / retry loop and is one-shot. `Run` delegates to it and returns once leadership ends (either ctx cancel or the Lease was taken by a peer). Callers that want continuous re-election should wrap `Run` in `lifecycle.Runner` (its restart policy handles this naturally). `ReleaseOnCancel` is enabled so an orderly shutdown hands the Lease back to peers immediately rather than forcing them to wait out the full lease duration. |
+| Metrics | `leaderelection_callback_drain_seconds{namespace,name,state}` and `leaderelection_callback_drain_warn_total{namespace,name}` — the Lease coordinates (namespace, name) replace `key` because they match the operator's mental model for Kubernetes objects. |
 
 ### `data/budget/memory`, `data/ratelimit/gcra`, `data/ratelimit/tokenbucket`
 
