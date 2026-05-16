@@ -143,6 +143,9 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/cmd/kit-new/v2` | Keep command API | No rename/remove | Service scaffold CLI; scaffold variants are compile-tested. |
 | `github.com/bds421/rho-kit/cmd/kit-verify/v2` | Keep command API | No rename/remove | Runtime endpoint verification CLI. |
 | `github.com/bds421/rho-kit/examples/agentic-service/v2` | Keep example | No rename/remove | Buildable smoke example. It is not production starter code; production starts from `app.Builder` or `kit-new`. |
+| `github.com/bds421/rho-kit/examples/api-gateway/v2` | Keep example | No rename/remove | Buildable smoke example for the public-facing ratelimit + JWT + downstream-fanout pattern. Wave 174 follow-up. |
+| `github.com/bds421/rho-kit/examples/background-worker/v2` | Keep example | No rename/remove | Buildable smoke example for the messaging.TypedSubscription + circuitbreaker + retry pattern. Wave 174. |
+| `github.com/bds421/rho-kit/examples/webhook-receiver/v2` | Keep example | No rename/remove | Buildable smoke example for the signedrequest + idempotency middleware-chain pattern. Wave 174. |
 
 ## Release Rules After Freeze
 

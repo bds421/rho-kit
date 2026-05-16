@@ -152,19 +152,16 @@ func (p *orderProcessor) snapshot() []OrderEvent {
 // ConsumeOnce / Consume. In a real service this is replaced with
 // the kit's amqp/kafka/nats/redis backend Consumer.
 type fakeConsumer struct {
-	mu       sync.Mutex
-	handler  messaging.Handler
-	binding  messaging.Binding
-	inbox    chan messaging.Delivery
-	running  atomic.Bool
-	stopOnce sync.Once
-	stopped  chan struct{}
+	mu      sync.Mutex
+	handler messaging.Handler
+	binding messaging.Binding
+	inbox   chan messaging.Delivery
+	running atomic.Bool
 }
 
 func newFakeConsumer() *fakeConsumer {
 	return &fakeConsumer{
-		inbox:   make(chan messaging.Delivery, 64),
-		stopped: make(chan struct{}),
+		inbox: make(chan messaging.Delivery, 64),
 	}
 }
 

@@ -25,12 +25,12 @@ README points at.
 | **agentic-service**    | Implemented    | `httpx/mcp`, `data/{actionlog,approval,budget}`, `tenant` middleware |
 | **webhook-receiver**   | Implemented    | `signedrequest`, `idempotency` middleware, typed handler |
 | **background-worker**  | Implemented    | `messaging.TypedSubscription`, `resilience/{retry,circuitbreaker}` |
+| **api-gateway**        | Implemented    | `httpx/middleware/ratelimit`, stubbed JWT auth, `resilience/{retry,circuitbreaker}` for downstream fan-out |
 | realtime-broadcast     | Recipe below   | `realtime/centrifuge`, `security/jwtutil`, `httpx/websocket` |
-| api-gateway            | Recipe below   | `httpx/middleware/{ratelimit,jwt,idempotency}`, `grpcx/interceptor`, `openapigen` |
 | saga-coordinator       | Recipe below   | `runtime/saga`, `infra/outbox`, `data/idempotency`, `data/lock` |
 
-The first three ship as compileable modules in this directory.
-The last three are documented as composition recipes — each
+The first four ship as compileable modules in this directory.
+The last two are documented as composition recipes — each
 shows the exact import set, the wiring order, and the rationale
 — so a coding agent can stand the pattern up against a fresh
 service skeleton.
@@ -64,39 +64,6 @@ projected through `promutil.OpaqueLabelValue` so a misbehaving
 classifier cannot inflate Prometheus cardinality. Dashboards
 under `observability/dashboards/grafana/centrifuge.json`. Runbook
 at `docs/ai/runbooks/centrifuge.md`.
-
-## Recipe: api-gateway
-
-Public-facing HTTP front door: rate limiting per IP and per
-tenant, JWT validation, request fan-out to downstream gRPC
-services with circuit breakers and retries, OpenAPI exposed.
-
-```go
-import (
-    "github.com/bds421/rho-kit/app/v2"
-    "github.com/bds421/rho-kit/app/ratelimit/v2"
-    "github.com/bds421/rho-kit/app/jwt/v2"
-    "github.com/bds421/rho-kit/grpcx/v2/interceptor"
-)
-
-builder := app.New(serviceName).
-    With(jwt.Module(jwksURL, jwt.WithIssuer(iss), jwt.WithAudience(aud))).
-    With(ratelimit.IP(100, time.Minute)).
-    With(ratelimit.Keyed("tenant", 1000, time.Minute, tenantKeyFn)).
-    With(/* downstream gRPC clients wrapped with resilience */)
-// builder.Run() enforces the kit's startup validator:
-// TLS configured, JWT issuer + audience set, no internal-host
-// non-loopback exposure, postgres sslmode tightened, tracing
-// sample rate sane.
-```
-
-For downstream gRPC fan-out, wrap the dial with
-`interceptor.MaxConcurrentStreamsServer` (server-side cap),
-`interceptor.StreamIdleTimeout` (client-side cleanup), and
-`resilience/circuitbreaker.NewCircuitBreaker` per downstream.
-`kit-doctor` flags `app.Builder.Run()` without a rate-limit
-declaration (`rate-limit-omission`, HIGH). Dashboards under
-`observability/dashboards/grafana/grpc-stream-limits.json`.
 
 ## Recipe: saga-coordinator
 

@@ -1414,16 +1414,17 @@ in v2.0.0.
   (WARNING, goroutine / fd DoS exposure), `centrifuge-missing-jwt-auth`
   (CRITICAL, unauthenticated realtime broadcast). All honour the
   standard `// kit-doctor:allow <rule>` suppression marker.
-- **Wave 174:** Two new reference services demonstrate canonical
+- **Wave 174:** Three new reference services demonstrate canonical
   kit compositions — `examples/webhook-receiver` (signedrequest →
-  idempotency → typed handler) and `examples/background-worker`
-  (TypedSubscription → circuitbreaker → retry → typed handler).
-  Both ship as compileable Go modules with smoke tests; both pass
-  `kit-doctor -strict warning`. `examples/README.md` catalogs all
-  five intended patterns: the three implemented examples plus
-  detailed composition recipes for realtime-broadcast,
-  api-gateway, and saga-coordinator that point at the kit packages
-  each pattern composes.
+  idempotency → typed handler), `examples/background-worker`
+  (TypedSubscription → circuitbreaker → retry → typed handler),
+  and `examples/api-gateway` (ratelimit → JWT-auth → downstream
+  fan-out with circuitbreaker + retry). All three ship as
+  compileable Go modules with smoke tests; all pass
+  `kit-doctor -strict warning`. `examples/README.md` catalogs the
+  remaining two patterns (realtime-broadcast, saga-coordinator)
+  as detailed composition recipes pointing at the kit packages
+  they compose.
 - **Wave 175:** Per-hot-path benchmark regression gate. Six
   benchmarks cover the kit's most-amplified-cost helpers
   (`redact.WrapError`, `promutil.OpaqueLabelValue`,
