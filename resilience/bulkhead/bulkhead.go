@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sync/atomic"
 	"time"
 
@@ -22,12 +24,13 @@ var ErrBulkheadFull = errors.New("bulkhead: full")
 // against a single downstream. Safe for concurrent use by any
 // number of goroutines.
 type Bulkhead struct {
-	name         string
-	max          int64
-	current      atomic.Int64
-	maxWait      time.Duration
-	semaphore    chan struct{}
-	metrics      *Metrics
+	name      string
+	max       int64
+	current   atomic.Int64
+	maxWait   time.Duration
+	semaphore chan struct{}
+	metrics   *Metrics
+	logger    *slog.Logger
 }
 
 // Option configures [New].
@@ -46,6 +49,18 @@ func WithMaxQueueWait(d time.Duration) Option {
 // counter. Pass nil to disable metrics (the default).
 func WithMetrics(m *Metrics) Option {
 	return func(b *Bulkhead) { b.metrics = m }
+}
+
+// WithLogger sets the *slog.Logger used by the bulkhead to record
+// panics observed inside fn before re-raising. When unset the
+// bulkhead falls back to [slog.Default]. Matches the kit's
+// per-package [WithLogger] convention.
+func WithLogger(l *slog.Logger) Option {
+	return func(b *Bulkhead) {
+		if l != nil {
+			b.logger = l
+		}
+	}
 }
 
 // New constructs a Bulkhead with the supplied name (used in
@@ -69,6 +84,9 @@ func New(name string, max int, opts ...Option) *Bulkhead {
 			panic("bulkhead: New option must not be nil")
 		}
 		opt(b)
+	}
+	if b.logger == nil {
+		b.logger = slog.Default()
 	}
 	return b
 }
@@ -111,6 +129,13 @@ func (b *Bulkhead) ExecuteCtx(ctx context.Context, fn func(ctx context.Context) 
 	defer func() {
 		b.release()
 		if r := recover(); r != nil {
+			// Record before re-raising so the panic is observable even
+			// when the caller's recover-middleware suppresses output.
+			b.logger.Error("bulkhead: fn panicked, releasing slot before re-raise",
+				"name", b.name,
+				redact.Panic(r),
+				"stack", string(debug.Stack()),
+			)
 			// Re-raise so consumer panic-recovery middleware sees it.
 			panic(r)
 		}

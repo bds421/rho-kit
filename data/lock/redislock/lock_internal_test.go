@@ -34,7 +34,7 @@ func TestReleaseAndJoinPreservesValuesAfterCancellation(t *testing.T) {
 
 	l := &recordingLock{}
 	var retErr error
-	releaseAndJoin(ctx, l, &retErr)
+	releaseAndJoin(ctx, l, &retErr, nil)
 
 	if retErr != nil {
 		t.Fatalf("retErr = %v, want nil", retErr)

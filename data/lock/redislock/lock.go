@@ -23,6 +23,7 @@ type options struct {
 	retryInterval time.Duration
 	maxAttempts   int
 	maxWait       time.Duration
+	logger        *slog.Logger
 }
 
 // WithTTL sets the lock expiration duration. Defaults to 30 seconds.
@@ -52,6 +53,18 @@ func WithRetry(interval time.Duration, maxAttempts int) Option {
 	return func(o *options) {
 		o.retryInterval = interval
 		o.maxAttempts = maxAttempts
+	}
+}
+
+// WithLogger sets the *slog.Logger the locker uses for the
+// post-WithLock release-failure log line. When unset the locker
+// falls back to [slog.Default]. Matches the kit's per-package
+// [WithLogger] convention.
+func WithLogger(l *slog.Logger) Option {
+	return func(o *options) {
+		if l != nil {
+			o.logger = l
+		}
 	}
 }
 
@@ -131,6 +144,9 @@ func NewLocker(client goredislib.UniversalClient, opts ...Option) *Locker {
 		}
 		fn(&o)
 	}
+	if o.logger == nil {
+		o.logger = slog.Default()
+	}
 	rs := redsync.New(goredis.NewPool(client))
 	return &Locker{client: client, rs: rs, opts: o}
 }
@@ -209,7 +225,7 @@ func (lc *Locker) WithLock(ctx context.Context, key string, fn func(ctx context.
 		return errors.New("lock: could not acquire lock")
 	}
 
-	defer releaseAndJoin(ctx, l, &retErr)
+	defer releaseAndJoin(ctx, l, &retErr, lc.opts.logger)
 	return fn(ctx)
 }
 
@@ -218,7 +234,7 @@ func (lc *Locker) WithLock(ctx context.Context, key string, fn func(ctx context.
 // normal return / error return. Backend Release errors that aren't
 // ErrLockLost are logged rather than returned, because fn's error (if any)
 // is more actionable for the caller and the lock will TTL out regardless.
-func releaseAndJoin(ctx context.Context, l lock.Lock, retErr *error) {
+func releaseAndJoin(ctx context.Context, l lock.Lock, retErr *error, logger *slog.Logger) {
 	relCtx, cancel := detachedReleaseContext(ctx, 5*time.Second)
 	defer cancel()
 	relErr := l.Release(relCtx)
@@ -231,7 +247,10 @@ func releaseAndJoin(ctx context.Context, l lock.Lock, retErr *error) {
 		return
 	}
 	if relErr != nil {
-		slog.Error("lock: failed to release after WithLock",
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Error("lock: failed to release after WithLock",
 			redact.Error(relErr),
 		)
 	}
@@ -267,7 +286,7 @@ func LockerWithValue[T any](ctx context.Context, lc *Locker, key string, fn func
 		return value, errors.New("lock: could not acquire lock")
 	}
 
-	defer releaseAndJoin(ctx, l, &retErr)
+	defer releaseAndJoin(ctx, l, &retErr, lc.opts.logger)
 	return fn(ctx)
 }
 
