@@ -5,15 +5,33 @@
 //	ratelimit.Middleware            (IP-keyed throttle)
 //	  → jwtAuthMiddleware           (bearer-token validation; STUB)
 //	    → downstream-fanout handler
-//	         → circuitbreaker.ExecuteCtx (fast-fail on broken downstream)
-//	           → retry.DoWith             (transient blip recovery)
-//	             → real downstream call
+//	         → timeoutbudget.New      (request-scoped time budget;
+//	                                   reserves 50ms for response-write)
+//	           → bulkhead.ExecuteCtx (caps concurrent in-flight
+//	                                   to the downstream)
+//	             → budget.WithRemaining (derive per-call deadline
+//	                                     from remaining budget)
+//	               → circuitbreaker.ExecuteCtx (fast-fail on broken
+//	                                            downstream)
+//	                 → retry.DoWith             (transient blip recovery)
+//	                   → real downstream call
 //
 // The order is the canonical kit pattern:
 //   - Rate-limit is OUTERMOST so DDoS shedding happens before any
 //     auth or downstream work.
 //   - JWT auth is SECOND so unauthenticated requests do not consume
 //     downstream budget.
+//   - timeoutbudget is OUTERMOST in the downstream chain so the
+//     request-total deadline is established before any concurrency
+//     control runs. The 50ms reservation guards response-write
+//     from being swallowed by a slow downstream that consumes the
+//     entire budget.
+//   - bulkhead sits OUTSIDE breaker so a flood does not consume
+//     breaker slots — the cap on concurrent in-flight applies
+//     regardless of breaker state.
+//   - budget.WithRemaining derives the per-call ctx INSIDE the
+//     bulkhead so each retry attempt inherits the shrinking
+//     deadline as the budget burns down.
 //   - The downstream fan-out wraps breaker(retry(call)) so a broken
 //     downstream rejects fast WITHOUT burning retries.
 //
@@ -45,8 +63,10 @@ import (
 	"github.com/bds421/rho-kit/app/v2"
 	apphttp "github.com/bds421/rho-kit/app/http/v2"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/ratelimit"
+	"github.com/bds421/rho-kit/resilience/v2/bulkhead"
 	"github.com/bds421/rho-kit/resilience/v2/circuitbreaker"
 	"github.com/bds421/rho-kit/resilience/v2/retry"
+	"github.com/bds421/rho-kit/resilience/v2/timeoutbudget"
 )
 
 const demoTokenEnv = "API_GATEWAY_DEMO_TOKEN"
@@ -98,12 +118,25 @@ func Run(ctx context.Context) error {
 		RunContext(ctx)
 }
 
+// requestBudget caps the total time any single inbound request
+// is allowed to spend in the downstream chain. Production
+// services tune this from inbound SLO budgets — a 1s public SLO
+// implies an internal budget tighter than 1s so the gateway has
+// headroom for response-write and observability emit.
+const (
+	requestBudget       = 800 * time.Millisecond
+	postCallReservation = 50 * time.Millisecond
+	bulkheadMaxInFlight = 8
+	bulkheadQueueWait   = 100 * time.Millisecond
+)
+
 // gateway groups the example's composition state. In a real
 // service this would hold downstream-service clients, the JWT
 // verifier, and connection pools.
 type gateway struct {
 	bearerToken string
 	downstream  downstreamFn
+	bulkhead    *bulkhead.Bulkhead
 	breaker     *circuitbreaker.CircuitBreaker
 	retryPolicy retry.Policy
 }
@@ -115,11 +148,16 @@ type downstreamFn func(ctx context.Context, tenant string) (string, error)
 
 // newGateway constructs the example gateway with a configurable
 // downstream callable so the smoke test can inject deterministic
-// failure shapes.
+// failure shapes. The bulkhead, breaker and retry policy are
+// constructed with the kit's defaults; production tunes them per
+// downstream SLO.
 func newGateway(token string, downstream downstreamFn) *gateway {
 	return &gateway{
 		bearerToken: token,
 		downstream:  downstream,
+		bulkhead: bulkhead.New("orders-downstream", bulkheadMaxInFlight,
+			bulkhead.WithMaxQueueWait(bulkheadQueueWait),
+		),
 		breaker: circuitbreaker.NewCircuitBreaker(
 			5 /* trip after 5 consecutive failures */,
 			500*time.Millisecond,
@@ -172,7 +210,14 @@ func (g *gateway) jwtAuthMiddleware(next http.Handler) http.HandlerFunc {
 }
 
 // handleListOrders fans out to the downstream service wrapped with
-// the canonical breaker(retry(call)) chain.
+// the canonical timeoutbudget → bulkhead → breaker(retry(call))
+// chain. Each layer translates failure into a distinct status code
+// so operators can route incidents correctly:
+//
+//   - 503 (circuit open)         — breaker rejected fast; downstream broken.
+//   - 503 (bulkhead full)        — concurrent in-flight cap exceeded.
+//   - 504 (deadline / budget)    — total request time expired before completion.
+//   - 502 (other)                — bottom of the chain returned an error.
 func (g *gateway) handleListOrders(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Header.Get("X-Tenant-Id")
 	if tenant == "" {
@@ -180,25 +225,41 @@ func (g *gateway) handleListOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Request-scoped time budget. The cancel func releases the
+	// underlying timer when the handler returns.
+	budgetCtx, budget, cancel := timeoutbudget.New(r.Context(), requestBudget)
+	defer cancel()
+
+	// Hold back a small slice of the budget for the response-write
+	// + observability emit so a slow downstream cannot consume the
+	// entire allocation and leave the response truncated.
+	restore := budget.WithReservation(postCallReservation)
+	defer restore()
+
 	var result string
-	err := g.breaker.ExecuteCtx(r.Context(), func(ctx context.Context) error {
-		return retry.DoWith(ctx, g.retryPolicy, func(ctx context.Context) error {
-			out, err := g.downstream(ctx, tenant)
-			if err != nil {
-				return err
-			}
-			result = out
-			return nil
+	err := g.bulkhead.ExecuteCtx(budgetCtx, func(ctx context.Context) error {
+		// Derive the per-call deadline from what is LEFT in the
+		// budget after the bulkhead acquisition. Each retry sees
+		// the same shrinking deadline.
+		callCtx, callCancel, err := budget.WithRemaining(ctx)
+		if err != nil {
+			return err // timeoutbudget.ErrBudgetExhausted
+		}
+		defer callCancel()
+
+		return g.breaker.ExecuteCtx(callCtx, func(ctx context.Context) error {
+			return retry.DoWith(ctx, g.retryPolicy, func(ctx context.Context) error {
+				out, err := g.downstream(ctx, tenant)
+				if err != nil {
+					return err
+				}
+				result = out
+				return nil
+			})
 		})
 	})
 	if err != nil {
-		if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
-			// Distinct status code so operators can tell "down" from
-			// "rejected by breaker for protection".
-			http.Error(w, "downstream unavailable (circuit open)", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, "downstream call failed", http.StatusBadGateway)
+		writeDownstreamError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -206,6 +267,26 @@ func (g *gateway) handleListOrders(w http.ResponseWriter, r *http.Request) {
 		"tenant": tenant,
 		"orders": result,
 	})
+}
+
+// writeDownstreamError translates the inner-chain error into the
+// status code that lets operators distinguish protection-driven
+// rejection (503) from budget exhaustion (504) from a downstream
+// failure (502). Order of checks matters — bulkhead and breaker
+// both surface 503 but with different operator semantics, so we
+// keep the messages distinct.
+func writeDownstreamError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, circuitbreaker.ErrCircuitOpen):
+		http.Error(w, "downstream unavailable (circuit open)", http.StatusServiceUnavailable)
+	case errors.Is(err, bulkhead.ErrBulkheadFull):
+		http.Error(w, "downstream busy (bulkhead full)", http.StatusServiceUnavailable)
+	case errors.Is(err, timeoutbudget.ErrBudgetExhausted),
+		errors.Is(err, context.DeadlineExceeded):
+		http.Error(w, "downstream timed out (budget exhausted)", http.StatusGatewayTimeout)
+	default:
+		http.Error(w, "downstream call failed", http.StatusBadGateway)
+	}
 }
 
 // callRealDownstream is the production stand-in. In a real gateway

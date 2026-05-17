@@ -5,8 +5,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -123,4 +125,104 @@ func TestGateway_TenantHeaderRequired(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestGateway_BulkheadFullReturns503 saturates the bulkhead with
+// slow in-flight calls and asserts the next caller is rejected
+// with 503 ("downstream busy"). The downstream blocks on a release
+// channel so the test deterministically observes the full state.
+func TestGateway_BulkheadFullReturns503(t *testing.T) {
+	release := make(chan struct{})
+
+	var inflight atomic.Int32
+	slowDownstream := func(ctx context.Context, _ string) (string, error) {
+		inflight.Add(1)
+		defer inflight.Add(-1)
+		select {
+		case <-release:
+			return "ok", nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+
+	gw := newGateway("demo-token-1234567890", slowDownstream)
+	srv := httptest.NewServer(gw.buildHandler(slog.Default()))
+	// Drain blocked handlers before srv.Close() — otherwise close
+	// races with the in-flight goroutines.
+	var wg sync.WaitGroup
+	defer func() {
+		close(release)
+		wg.Wait()
+		srv.Close()
+	}()
+
+	send := func() int {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/api/orders", nil)
+		req.Header.Set("Authorization", "Bearer demo-token-1234567890")
+		req.Header.Set("X-Tenant-Id", "acme")
+		resp, err := srv.Client().Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// Fill the bulkhead with bulkheadMaxInFlight concurrent calls.
+	// They block on `release` so the bulkhead stays saturated.
+	for i := 0; i < bulkheadMaxInFlight; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			send()
+		}()
+	}
+
+	// Wait until the bulkhead is actually full before firing the
+	// overflow caller.
+	deadline := time.Now().Add(2 * time.Second)
+	for inflight.Load() < int32(bulkheadMaxInFlight) {
+		if time.Now().After(deadline) {
+			t.Fatalf("bulkhead never saturated; inflight=%d", inflight.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// The bulkhead is now full. The next caller will wait up to
+	// bulkheadQueueWait (100ms) before being rejected with 503.
+	status := send()
+	assert.Equal(t, http.StatusServiceUnavailable, status,
+		"caller arriving while bulkhead is full must be rejected with 503")
+}
+
+// TestGateway_BudgetExhaustedReturns504 makes the downstream
+// slower than the per-call budget so the timeoutbudget context
+// cancels mid-call. The gateway must surface 504, not 502.
+func TestGateway_BudgetExhaustedReturns504(t *testing.T) {
+	slowDownstream := func(ctx context.Context, _ string) (string, error) {
+		select {
+		case <-time.After(2 * time.Second): // far longer than requestBudget
+			return "late", nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+
+	gw := newGateway("demo-token-1234567890", slowDownstream)
+	srv := httptest.NewServer(gw.buildHandler(slog.Default()))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/orders", nil)
+	req.Header.Set("Authorization", "Bearer demo-token-1234567890")
+	req.Header.Set("X-Tenant-Id", "acme")
+
+	start := time.Now()
+	resp, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	elapsed := time.Since(start)
+
+	assert.Equal(t, http.StatusGatewayTimeout, resp.StatusCode,
+		"a downstream slower than the budget must surface 504")
+	assert.Less(t, elapsed, 2*time.Second,
+		"the gateway must cancel the downstream before its natural completion")
 }

@@ -16,9 +16,13 @@ public-facing service composition:
 ratelimit.Middleware            (IP-keyed throttle)
   → jwtAuthMiddleware           (bearer-token validation; STUB)
     → downstream-fanout handler
-         → circuitbreaker.ExecuteCtx (fast-fail on broken downstream)
-           → retry.DoWith             (transient blip recovery)
-             → real downstream call
+         → timeoutbudget.New     (request-scoped time budget,
+                                  reserves 50ms for response-write)
+           → bulkhead.ExecuteCtx (cap concurrent in-flight to 8)
+             → budget.WithRemaining (derive per-call deadline)
+               → circuitbreaker.ExecuteCtx (fast-fail on broken downstream)
+                 → retry.DoWith             (transient blip recovery)
+                   → real downstream call
 ```
 
 The order is load-bearing:
@@ -30,13 +34,31 @@ The order is load-bearing:
    downstream budget. The example uses a constant-time bearer
    comparison via `crypto/subtle`; production wires
    `security/jwtutil` (or the `app/jwt` bridge module).
-3. **Breaker(retry(call)) for downstream.** Breaker is OUTER so
+3. **timeoutbudget WRAPS the chain.** A request-total deadline is
+   established once, then every retry inherits a shrinking child
+   deadline. A 50ms reservation guarantees the response-write +
+   observability emit cannot be starved by a slow downstream.
+4. **Bulkhead OUTSIDE breaker.** The cap on concurrent in-flight
+   applies regardless of breaker state, so a flood cannot consume
+   breaker slots or saturate the downstream. Callers arriving
+   while full wait up to 100ms before being rejected with 503.
+5. **Breaker(retry(call)) for downstream.** Breaker is OUTER so
    when downstream is broken, the breaker rejects fast (returning
    503) WITHOUT burning retries. Retry is INNER so transient
    blips inside a half-open breaker still get a couple of
    attempts. The kit's wave 169 OTel tracing records
    `ErrCircuitOpen` as an attribute (not a span error) — open
    circuits are steady-state, not exceptions.
+
+Each failure mode maps to a distinct status code so operators can
+route incidents correctly:
+
+| Layer | Outcome | Status |
+|-------|---------|--------|
+| circuitbreaker | open  | 503 `downstream unavailable (circuit open)` |
+| bulkhead       | full  | 503 `downstream busy (bulkhead full)` |
+| timeoutbudget  | expired | 504 `downstream timed out (budget exhausted)` |
+| downstream     | error | 502 `downstream call failed` |
 
 ## Run
 
@@ -84,13 +106,17 @@ Covers:
   of 502 — distinct status codes for "rejected by breaker" vs
   "downstream returned error").
 - Missing `X-Tenant-Id` header → 400 contract.
+- Bulkhead full while a flood of in-flight calls saturates the
+  cap → 503 with the "bulkhead full" message.
+- Downstream slower than the request budget → 504 (and the gateway
+  cancels the downstream before its natural completion).
 
 ## Production wiring
 
-The example uses `httpx.NewServer` + a hand-composed mux because
-the Builder requires real TLS + JWT issuer-audience + sslmode
-config that would obscure the composition pattern. Production
-services use the canonical Builder shape:
+The example already uses `app.Builder`, opting out of TLS and the
+Builder-level rate limit per-policy with inline kit-doctor:allow
+markers (curl/test convenience). Production wires the real
+infrastructure modules instead:
 
 ```go
 import (
@@ -108,7 +134,9 @@ builder := app.New("api-gateway", version, cfg).
     With(ratelimit.IP(60, time.Minute)).
     With(ratelimit.Keyed("tenant", 1000, time.Minute)).
     Router(func(infra app.Infrastructure) http.Handler {
-        // wire the downstream-fanout handler here
+        // wire the downstream-fanout handler here, with the SAME
+        // timeoutbudget → bulkhead → breaker → retry chain the
+        // example demonstrates.
         return mux
     })
 builder.Run() // installs the always-on production-safety validator
@@ -119,6 +147,12 @@ declaration (`rate-limit-omission`, HIGH). The Builder also runs
 the wave-128 validator at startup that rejects empty TLS, missing
 issuer/audience, exposed internal-host, weak sslmode, and
 excessive tracing sample rates.
+
+For bulkhead observability, wire `bulkhead.WithMetrics` against
+the kit's Prometheus registerer so the
+`bulkhead_acquisitions_total{name,outcome}` and
+`bulkhead_acquire_duration_seconds{name,outcome}` series surface
+on the operator dashboards.
 
 ## What's NOT in this example
 
