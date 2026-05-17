@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 	"unicode"
@@ -273,6 +274,7 @@ type MemoryStore struct {
 	items   map[string]memEntry
 	locks   map[string]memLock
 	clock   func() time.Time
+	logger  *slog.Logger
 	runMu   sync.Mutex
 	started bool
 
@@ -290,6 +292,20 @@ func WithMemoryStoreClock(fn func() time.Time) MemoryStoreOption {
 		panic("idempotency: WithMemoryStoreClock requires a non-nil time source")
 	}
 	return func(m *MemoryStore) { m.clock = fn }
+}
+
+// WithMemoryStoreLogger sets the *slog.Logger used by the store to
+// surface security-relevant signals: fingerprint mismatches (same
+// Idempotency-Key reused with a different request body — buggy retry
+// or replay-with-tampering) at INFO, and best-effort token-mismatch
+// Unlocks at DEBUG. When unset the store falls back to [slog.Default].
+// Matches the kit's per-package [WithLogger] convention.
+func WithMemoryStoreLogger(l *slog.Logger) MemoryStoreOption {
+	return func(m *MemoryStore) {
+		if l != nil {
+			m.logger = l
+		}
+	}
 }
 
 type memEntry struct {
@@ -316,6 +332,9 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 			panic("idempotency: NewMemoryStore option must not be nil")
 		}
 		o(m)
+	}
+	if m.logger == nil {
+		m.logger = slog.Default()
 	}
 	return m
 }
@@ -349,6 +368,15 @@ func (m *MemoryStore) Get(ctx context.Context, key string, fingerprint []byte) (
 		return nil, false, nil
 	}
 	if fingerprint != nil && entry.fingerprint != nil && !bytes.Equal(entry.fingerprint, fingerprint) {
+		// Same Idempotency-Key, different request body fingerprint.
+		// Almost always a buggy retry; occasionally a replay attempt
+		// with mutated body. Surface so security monitoring can spot
+		// the pattern. INFO because callers HTTP-translate this to
+		// 422 — the operator should know without dashboards lighting
+		// up.
+		m.logger.Info("idempotency: fingerprint mismatch on cached response",
+			redact.String("key", key),
+		)
 		return nil, true, nil
 	}
 	if err := ValidateCachedResponse(entry.resp); err != nil {
@@ -446,6 +474,9 @@ func (m *MemoryStore) TryLock(ctx context.Context, key string, fingerprint []byt
 	// fresh, the key has been *consumed* with different bytes — 422.
 	if entry, ok := m.items[key]; ok && now.Before(entry.expiresAt) {
 		if fingerprint != nil && entry.fingerprint != nil && !bytes.Equal(entry.fingerprint, fingerprint) {
+			m.logger.Info("idempotency: fingerprint mismatch on cached response (TryLock)",
+				redact.String("key", key),
+			)
 			return "", true, false, nil
 		}
 		// Cached response with matching fingerprint already exists; caller
@@ -456,6 +487,9 @@ func (m *MemoryStore) TryLock(ctx context.Context, key string, fingerprint []byt
 
 	if l, locked := m.locks[key]; locked && now.Before(l.expiresAt) {
 		if fingerprint != nil && l.fingerprint != nil && !bytes.Equal(l.fingerprint, fingerprint) {
+			m.logger.Info("idempotency: fingerprint mismatch on in-progress lock",
+				redact.String("key", key),
+			)
 			return "", true, false, nil
 		}
 		return "", false, false, nil
@@ -487,8 +521,18 @@ func (m *MemoryStore) Unlock(ctx context.Context, key, token string) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if l, ok := m.locks[key]; ok && l.token == token {
-		delete(m.locks, key)
+	if l, ok := m.locks[key]; ok {
+		if l.token == token {
+			delete(m.locks, key)
+		} else {
+			// Best-effort no-op: caller's token doesn't match the
+			// current holder. Usually means TTL expired and another
+			// caller now owns the lock. Debug-log so repeated
+			// occurrences are visible.
+			m.logger.Debug("idempotency: Unlock with non-matching token (lock taken over)",
+				redact.String("key", key),
+			)
+		}
 	}
 	return nil
 }

@@ -33,6 +33,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/data/v2/lock"
@@ -40,18 +41,48 @@ import (
 
 // Locker is a [lock.Locker] backed by Postgres advisory locks.
 type Locker struct {
-	db *sql.DB
+	db     *sql.DB
+	logger *slog.Logger
+}
+
+// Option configures a [Locker] at construction.
+type Option func(*Locker)
+
+// WithLogger sets the *slog.Logger used to record the double-release
+// and extend-on-released-lock recovery paths at debug level. Those
+// paths are contract-correct (Release returning ErrLockLost on a
+// closed conn; Extend returning (false, nil)) but they are also
+// signal-bearing — repeated occurrences indicate caller code is
+// double-releasing or extending a lost lock. When unset the locker
+// falls back to [slog.Default]. Matches the kit's per-package
+// [WithLogger] convention.
+func WithLogger(l *slog.Logger) Option {
+	return func(lc *Locker) {
+		if l != nil {
+			lc.logger = l
+		}
+	}
 }
 
 // New constructs a Locker from a Postgres *sql.DB. The pool's
 // MaxOpenConns must be sized to accommodate the expected number of
 // concurrent session-scoped locks plus the application's normal query
 // load.
-func New(db *sql.DB) *Locker {
+func New(db *sql.DB, opts ...Option) *Locker {
 	if db == nil {
 		panic("pgadvisory: New db must not be nil")
 	}
-	return &Locker{db: db}
+	lc := &Locker{db: db}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("pgadvisory: New option must not be nil")
+		}
+		opt(lc)
+	}
+	if lc.logger == nil {
+		lc.logger = slog.Default()
+	}
+	return lc
 }
 
 // Acquire takes a session-scoped advisory lock for the given key. The
@@ -88,7 +119,7 @@ func (l *Locker) doAcquire(ctx context.Context, key string) (lock.Lock, bool, er
 		_ = conn.Close()
 		return nil, false, nil
 	}
-	return &sessionLock{conn: conn, id: id}, true, nil
+	return &sessionLock{conn: conn, id: id, logger: l.logger}, true, nil
 }
 
 // AcquireTx takes a transaction-scoped advisory lock inside tx. The
@@ -118,8 +149,9 @@ func (l *Locker) AcquireTx(ctx context.Context, tx *sql.Tx, key string) (bool, e
 
 // sessionLock implements [lock.Lock] for a session-scoped advisory lock.
 type sessionLock struct {
-	conn *sql.Conn
-	id   int64
+	conn   *sql.Conn
+	id     int64
+	logger *slog.Logger
 }
 
 // Release releases the advisory lock and returns the dedicated
@@ -149,6 +181,12 @@ func (s *sessionLock) doRelease(ctx context.Context) error {
 		// would force every caller to special-case driver-level
 		// error text.
 		if errors.Is(err, sql.ErrConnDone) {
+			// Contract-correct ErrLockLost path; also log at debug
+			// so repeated occurrences are visible — they imply
+			// caller code is double-releasing.
+			s.logger.Debug("pgadvisory: Release on a closed conn (double-release)",
+				"lock_id", s.id,
+			)
 			return lock.ErrLockLost
 		}
 		return redact.WrapError("pgadvisory: pg_advisory_unlock", err)
@@ -183,6 +221,13 @@ func (s *sessionLock) doExtend(ctx context.Context) (bool, error) {
 		// distributed systems; the caller branches on the bool,
 		// not on err.
 		if errors.Is(err, sql.ErrConnDone) {
+			// Contract-correct (false, nil) path: the lock was
+			// already released before this Extend ran. Debug-log
+			// because repeated occurrences imply caller code is
+			// extending a lock it has already lost.
+			s.logger.Debug("pgadvisory: Extend on a closed conn (lock already released)",
+				"lock_id", s.id,
+			)
 			return false, nil
 		}
 		return false, redact.WrapError("pgadvisory: extend ping", err)

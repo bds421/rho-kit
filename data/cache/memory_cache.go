@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"runtime/debug"
 	"sync"
 	"time"
 	"weak"
@@ -27,6 +29,7 @@ type MemoryCache struct {
 	entryCost       bool
 	ignoreIntCost   bool
 	cleanupInterval time.Duration
+	logger          *slog.Logger
 
 	// setNXMu serialises SetNX operations for atomicity within this
 	// process. Ristretto's underlying SetWithTTL is not test-and-set, so
@@ -158,6 +161,21 @@ func WithCleanupInterval(d time.Duration) MemoryCacheOption {
 	}
 }
 
+// WithLogger sets the *slog.Logger used to record a panic inside the
+// background nxClaims-sweeper goroutine. The sweeper has no caller
+// to surface a panic to; without panic recovery + logging the
+// goroutine would silently exit and the unbounded-growth invariant
+// for nxClaims would silently break. When unset the cache falls back
+// to [slog.Default]. Matches the kit's per-package [WithLogger]
+// convention.
+func WithLogger(l *slog.Logger) MemoryCacheOption {
+	return func(mc *MemoryCache) {
+		if l != nil {
+			mc.logger = l
+		}
+	}
+}
+
 // NewMemoryCache creates an in-memory cache.
 //
 // Cost accounting: by default the cache is bounded by bytes — every entry
@@ -179,6 +197,9 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 			panic("cache: NewMemoryCache option must not be nil")
 		}
 		o(mc)
+	}
+	if mc.logger == nil {
+		mc.logger = slog.Default()
 	}
 
 	if mc.costFunc == nil && !mc.entryCost {
@@ -230,7 +251,9 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 	// Weak-ref sweeper: if a caller forgets Close, the goroutine
 	// noticing weak.Value() == nil exits on its own — see
 	// data/ratelimit/tokenbucket.runSweeper for the design rationale.
-	go runNXClaimsSweeper(weak.Make(mc), mc.stopSweeper)
+	// The logger is captured by value, not via the weak ref, so a
+	// sweeper panic still emits even if mc has already been GC'd.
+	go runNXClaimsSweeper(weak.Make(mc), mc.stopSweeper, mc.logger)
 
 	return mc, nil
 }
@@ -243,8 +266,22 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 // The function is package-private and takes a [weak.Pointer] so the
 // goroutine never holds a strong reference to the MemoryCache — a
 // forgotten Close cannot keep this loop alive past the cache's
-// reachability lifetime.
-func runNXClaimsSweeper(weakCache weak.Pointer[MemoryCache], stop <-chan struct{}) {
+// reachability lifetime. The logger is passed by value so a panic at
+// teardown can still surface even after mc has been GC'd.
+func runNXClaimsSweeper(weakCache weak.Pointer[MemoryCache], stop <-chan struct{}, logger *slog.Logger) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Without recovery the goroutine would silently die and
+			// nxClaims would grow unbounded — exactly the invariant
+			// this sweeper exists to maintain. Logging is the only
+			// observable signal because the caller has no handle on
+			// the goroutine.
+			logger.Error("cache: nxClaims sweeper panicked, unbounded-growth invariant broken",
+				redact.Panic(r),
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
 	t := time.NewTicker(60 * time.Second)
 	defer t.Stop()
 	for {

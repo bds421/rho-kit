@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -97,6 +98,7 @@ type Cache struct {
 	name         string // for metrics labeling
 	maxValueSize int    // max value size in bytes; 0 = no limit
 	metrics      *Metrics
+	logger       *slog.Logger
 }
 
 // CacheOption configures a Cache.
@@ -128,6 +130,21 @@ func WithMetricsRegisterer(reg prometheus.Registerer) CacheOption {
 	}
 }
 
+// WithLogger sets the *slog.Logger used by the cache to surface the
+// TOCTOU value-too-large race (a writer replaces the cached value
+// with one exceeding the configured cap between STRLEN and GET).
+// That race is rare but security-relevant — a hostile or legacy
+// writer can otherwise force allocations larger than the configured
+// cap. When unset the cache falls back to [slog.Default]. Matches
+// the kit's per-package [WithLogger] convention.
+func WithLogger(l *slog.Logger) CacheOption {
+	return func(rc *Cache) {
+		if l != nil {
+			rc.logger = l
+		}
+	}
+}
+
 // NewCache creates a Redis-backed cache. The name is used for
 // Prometheus metric labels to distinguish multiple cache instances.
 // Returns an error if name is invalid. Panics if client is nil — a
@@ -150,6 +167,9 @@ func NewCache(client goredis.UniversalClient, name string, opts ...CacheOption) 
 			panic("rediscache: NewCache option must not be nil")
 		}
 		o(rc)
+	}
+	if rc.logger == nil {
+		rc.logger = slog.Default()
 	}
 	return rc, nil
 }
@@ -196,6 +216,15 @@ func (rc *Cache) Get(ctx context.Context, key string) (val []byte, err error) {
 	// larger one between STRLEN and GET. The cap check is cheap and
 	// preserves the contract.
 	if rc.maxValueSize > 0 && len(val) > rc.maxValueSize {
+		// Surface the race so operators can correlate with writer
+		// audit logs — repeated occurrences suggest a misbehaving
+		// or hostile writer attempting to bypass the cap.
+		rc.logger.Warn("rediscache: TOCTOU value-too-large after STRLEN passed",
+			"cache", rc.name,
+			"size_bytes", len(val),
+			"max_bytes", rc.maxValueSize,
+			redact.String("key", key),
+		)
 		return nil, fmt.Errorf("redis cache get: %w", sharedcache.ErrValueTooLarge)
 	}
 	rc.metrics.hits.WithLabelValues(rc.name).Inc()
