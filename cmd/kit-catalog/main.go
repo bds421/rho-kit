@@ -76,8 +76,6 @@ import (
 	"time"
 )
 
-const kitImportPrefix = "github.com/bds421/rho-kit/"
-
 type service struct {
 	Module      string            `json:"module"`
 	Path        string            `json:"path"`

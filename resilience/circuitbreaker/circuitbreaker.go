@@ -11,6 +11,7 @@ import (
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // ErrCircuitOpen is returned when the circuit breaker is open and the call is
@@ -55,8 +56,22 @@ func defaultIsSuccessful(err error) bool {
 	return errors.Is(err, context.Canceled)
 }
 
-// WithName sets the breaker name (useful for metrics).
+// WithName sets the breaker name. The name flows into the
+// `kit.breaker.name` OTel attribute on every span the breaker
+// emits, so it must be a bounded, developer-defined identifier —
+// never a tenant id, customer id, or any caller-controlled value
+// that could inflate trace-backend cardinality.
+//
+// Panics on a value that fails
+// [promutil.ValidateStaticLabelValue] (empty, too long, or
+// containing whitespace/control runes) so misuse surfaces at
+// startup rather than as a silent observability budget burn.
+// Matches the validation siblings [bulkhead.New] and
+// [ratelimit.WithLimiterName] apply to their name fields.
 func WithName(name string) Option {
+	if err := promutil.ValidateStaticLabelValue("name", name); err != nil {
+		panic("circuitbreaker: " + err.Error())
+	}
 	return func(s *gobreaker.Settings) { s.Name = name }
 }
 

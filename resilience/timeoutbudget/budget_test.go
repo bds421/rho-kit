@@ -124,7 +124,7 @@ func TestFromContext_RetrievesAttachedBudget(t *testing.T) {
 
 func TestFromContext_NilOnPlainContext(t *testing.T) {
 	assert.Nil(t, FromContext(context.Background()))
-	assert.Nil(t, FromContext(nil))
+	assert.Nil(t, FromContext(nil)) //nolint:staticcheck // intentional nil-ctx contract test
 }
 
 func TestParentCancelPropagatesIntoBudgetCtx(t *testing.T) {

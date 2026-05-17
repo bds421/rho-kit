@@ -157,6 +157,32 @@ func TestNewCircuitBreaker_PanicsOnNilOption(t *testing.T) {
 	})
 }
 
+// TestWithName_RejectsUnboundedValues pins the contract that
+// CircuitBreaker matches the sibling primitives (bulkhead.New,
+// ratelimit.WithLimiterName) by panicking on names that would
+// inflate trace-backend cardinality. The breaker's name flows into
+// the kit.breaker.name OTel attribute, so caller-controlled values
+// (tenant id, customer id) must be rejected at startup.
+func TestWithName_RejectsUnboundedValues(t *testing.T) {
+	for _, name := range []string{
+		"",                       // empty
+		"has whitespace",         // space rune
+		"control\x00rune",        // control rune
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Panics(t, func() {
+				WithName(name)
+			})
+		})
+	}
+}
+
+func TestWithName_AcceptsValidName(t *testing.T) {
+	assert.NotPanics(t, func() {
+		WithName("orders-downstream")
+	})
+}
+
 func TestWithErrorRateThreshold_PanicDoesNotReflectValue(t *testing.T) {
 	assert.PanicsWithValue(t, "circuitbreaker: WithErrorRateThreshold requires 0 < rate <= 1", func() {
 		WithErrorRateThreshold(1.1, 1)
