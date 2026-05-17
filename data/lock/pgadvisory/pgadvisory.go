@@ -31,6 +31,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"fmt"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
@@ -140,6 +141,16 @@ func (s *sessionLock) doRelease(ctx context.Context) error {
 	defer func() { _ = s.conn.Close() }()
 	var ok bool
 	if err := s.conn.QueryRowContext(ctx, "SELECT pg_advisory_unlock($1)", s.id).Scan(&ok); err != nil {
+		// A second Release call hits a conn the first Release
+		// already closed. Per the lock.Locker contract,
+		// "Release on an already-released Lock" must return
+		// ErrLockLost so callers can errors.Is detect it;
+		// surfacing the raw "sql: connection is already closed"
+		// would force every caller to special-case driver-level
+		// error text.
+		if errors.Is(err, sql.ErrConnDone) {
+			return lock.ErrLockLost
+		}
 		return redact.WrapError("pgadvisory: pg_advisory_unlock", err)
 	}
 	if !ok {
@@ -166,6 +177,14 @@ func (s *sessionLock) doExtend(ctx context.Context) (bool, error) {
 		return false, redact.WrapError("pgadvisory: extend ping", err)
 	}
 	if _, err := s.conn.ExecContext(ctx, "SELECT 1"); err != nil {
+		// A previously-Released lock has a closed conn. The
+		// lock.Lock contract says Extend on a released lock
+		// returns (false, nil) — losing the race is normal in
+		// distributed systems; the caller branches on the bool,
+		// not on err.
+		if errors.Is(err, sql.ErrConnDone) {
+			return false, nil
+		}
 		return false, redact.WrapError("pgadvisory: extend ping", err)
 	}
 	return true, nil

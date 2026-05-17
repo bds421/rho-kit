@@ -281,7 +281,12 @@ func LockerWithValue[T any](ctx context.Context, lc *Locker, key string, fn func
 // [redsync.ErrNodeTaken]/[redsync.ErrTaken] wrapped multierror (key
 // still present but token mismatch); both map to [lock.ErrLockLost].
 //
-// Idempotent: a second Release on the same handle is a no-op.
+// A second Release on an already-released handle returns
+// [lock.ErrLockLost] so callers can errors.Is detect it — same
+// contract as pgadvisory.Release and what the kit's
+// locktest.RunConformance suite asserts. Callers that want
+// idempotent cleanup (e.g. WithLock helpers) catch the error
+// via errors.Is(err, lock.ErrLockLost) and treat it as success.
 func (l *handle) Release(ctx context.Context) error {
 	ctx, span := startSpan(ctx, "lock.Release")
 	defer span.End()
@@ -292,7 +297,7 @@ func (l *handle) Release(ctx context.Context) error {
 
 func (l *handle) doRelease(ctx context.Context) error {
 	if l.released {
-		return nil
+		return lock.ErrLockLost
 	}
 	ok, err := l.mutex.UnlockContext(ctx)
 	if ok {
