@@ -53,18 +53,27 @@ func NewStreamLimitMetrics(opts ...MetricsOption) *StreamLimitMetrics {
 		opt(&cfg)
 	}
 	reg := cfg.registerer
+	// Namespace="grpc", Subsystem="server": preserves wire-form
+	// names while aligning with the kit's Namespace+Subsystem+Name
+	// convention.
 	m := &StreamLimitMetrics{
 		active: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "grpc_server_active_streams",
-			Help: "Number of currently-open streaming RPCs handled by the server.",
+			Namespace: "grpc",
+			Subsystem: "server",
+			Name:      "active_streams",
+			Help:      "Number of currently-open streaming RPCs handled by the server.",
 		}),
 		rejected: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "grpc_server_streams_rejected_total",
-			Help: "Total streaming RPCs rejected before handler entry by reason (bounded reason enum).",
+			Namespace: "grpc",
+			Subsystem: "server",
+			Name:      "streams_rejected_total",
+			Help:      "Total streaming RPCs rejected before handler entry by reason (bounded reason enum).",
 		}, []string{"reason"}),
 		idleClose: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "grpc_server_streams_idle_closed_total",
-			Help: "Total streaming RPCs cancelled by the kit-level idle-timeout watchdog.",
+			Namespace: "grpc",
+			Subsystem: "server",
+			Name:      "streams_idle_closed_total",
+			Help:      "Total streaming RPCs cancelled by the kit-level idle-timeout watchdog.",
 		}),
 	}
 	m.active = promutil.MustRegisterOrGet(reg, m.active)

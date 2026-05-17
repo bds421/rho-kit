@@ -233,15 +233,23 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 		}
 		opt(&cfg)
 	}
+	// Namespace+Name (no Subsystem): the bulkhead is its own
+	// domain; splitting "bulkhead_acquisitions_total" into
+	// Namespace="bulkhead" + Name="acquisitions_total" preserves
+	// the wire form while aligning the Go struct shape with the
+	// kit-wide convention (cache/compute, redis/queue, http/ratelimit,
+	// etc.) audited in the wave-184 consistency review.
 	m := &Metrics{
 		acquisitions: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "bulkhead_acquisitions_total",
-			Help: "Total bulkhead acquisition attempts by name and outcome (acquired / full / ctx_cancelled).",
+			Namespace: "bulkhead",
+			Name:      "acquisitions_total",
+			Help:      "Total bulkhead acquisition attempts by name and outcome (acquired / full / ctx_cancelled).",
 		}, []string{"name", "outcome"}),
 		acquireDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    "bulkhead_acquire_duration_seconds",
-			Help:    "Time spent acquiring a bulkhead slot, by name and outcome.",
-			Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5},
+			Namespace: "bulkhead",
+			Name:      "acquire_duration_seconds",
+			Help:      "Time spent acquiring a bulkhead slot, by name and outcome.",
+			Buckets:   []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5},
 		}, []string{"name", "outcome"}),
 	}
 	m.acquisitions = promutil.MustRegisterOrGet(cfg.registerer, m.acquisitions)

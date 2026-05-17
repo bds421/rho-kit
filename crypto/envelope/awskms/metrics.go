@@ -49,10 +49,17 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 		}
 		opt(&cfg)
 	}
+	// Wave 184: the `kit_` prefix was a v1-era anomaly; every other
+	// kit metric uses Namespace=<domain>. Split as
+	// Namespace="awskms", Name="request_errors_total" — wire form
+	// shifts from kit_awskms_request_errors_total to
+	// awskms_request_errors_total. See MIGRATION_V2.md for the
+	// dashboard update.
 	requestErrors := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "kit_awskms_request_errors_total",
-			Help: "Total AWS KMS API errors observed by the awskms adapter, labeled by smithy error code and adapter operation.",
+			Namespace: "awskms",
+			Name:      "request_errors_total",
+			Help:      "Total AWS KMS API errors observed by the awskms adapter, labeled by smithy error code and adapter operation.",
 		},
 		[]string{"code", "operation"},
 	)

@@ -113,6 +113,21 @@ explicit-handler, slowloris-resistant posture as `httpx.NewServer`; a
 zero-value server would otherwise bind with surprising defaults or expose
 the process-global default mux.
 
+### Metric struct shape normalised to Namespace + (Subsystem +) Name
+
+Wave 184 normalised every kit-emitted Prometheus metric to declare
+its `Namespace` (and `Subsystem` where applicable) on the
+`prometheus.<Counter|Histogram|Gauge>Opts` struct instead of
+embedding the prefix in a flat `Name:` literal. This is a Go-code
+ergonomic change for downstream operators inspecting kit source;
+the **wire-form metric names are preserved** for every metric
+except `kit_awskms_request_errors_total`, which becomes
+`awskms_request_errors_total` (the `kit_` prefix was a v1-era
+anomaly — no other kit metric carries it). Update Prometheus
+recording rules, alert rules, and Grafana panels that reference
+the old `kit_awskms_*` name; everything else continues to scrape
+under the same series identity.
+
 ### Redis health checks are critical by default
 
 `infra/redis.HealthCheck` returns a critical dependency check. Services that can

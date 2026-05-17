@@ -55,19 +55,27 @@ func NewMetrics(opts ...MetricsOption) *GRPCMetrics {
 	}
 	reg := cfg.registerer
 
+	// Namespace="grpc", Subsystem="server" preserves the wire-form
+	// names (grpc_server_handled_total / grpc_server_handling_seconds)
+	// while aligning the Go struct shape with the kit's
+	// Namespace+Subsystem+Name convention.
 	m := &GRPCMetrics{
 		handledTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "grpc_server_handled_total",
-				Help: "Total number of gRPC calls handled by the server.",
+				Namespace: "grpc",
+				Subsystem: "server",
+				Name:      "handled_total",
+				Help:      "Total number of gRPC calls handled by the server.",
 			},
 			[]string{"grpc_method", "grpc_code"},
 		),
 		handlingSeconds: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "grpc_server_handling_seconds",
-				Help:    "Histogram of gRPC call handling duration in seconds.",
-				Buckets: prometheus.DefBuckets,
+				Namespace: "grpc",
+				Subsystem: "server",
+				Name:      "handling_seconds",
+				Help:      "Histogram of gRPC call handling duration in seconds.",
+				Buckets:   prometheus.DefBuckets,
 			},
 			[]string{"grpc_method"},
 		),

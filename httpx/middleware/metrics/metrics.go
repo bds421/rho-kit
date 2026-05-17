@@ -54,25 +54,35 @@ func NewHTTPMetrics(opts ...MetricsOption) *HTTPMetrics {
 	}
 	reg := cfg.registerer
 
+	// Namespace="http" preserves the ecosystem-conventional
+	// http_requests_total / http_request_duration_seconds /
+	// http_requests_in_flight wire-form names while aligning the
+	// Go struct shape with the kit's Namespace+Name convention.
+	// No Subsystem because adding one would shift the wire form to
+	// http_<sub>_requests_total and break every dashboard that
+	// queries the de-facto OpenMetrics names.
 	m := &HTTPMetrics{
 		requestsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "http_requests_total",
-				Help: "Total number of HTTP requests.",
+				Namespace: "http",
+				Name:      "requests_total",
+				Help:      "Total number of HTTP requests.",
 			},
 			[]string{"method", "route", "status"},
 		),
 		requestDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "http_request_duration_seconds",
-				Help:    "HTTP request duration in seconds.",
-				Buckets: prometheus.DefBuckets,
+				Namespace: "http",
+				Name:      "request_duration_seconds",
+				Help:      "HTTP request duration in seconds.",
+				Buckets:   prometheus.DefBuckets,
 			},
 			[]string{"method", "route"},
 		),
 		requestsInFlight: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "http_requests_in_flight",
-			Help: "Number of HTTP requests currently being processed.",
+			Namespace: "http",
+			Name:      "requests_in_flight",
+			Help:      "Number of HTTP requests currently being processed.",
 		}),
 	}
 
