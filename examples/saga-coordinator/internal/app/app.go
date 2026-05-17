@@ -50,22 +50,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/bds421/rho-kit/app/v2"
+	apphttp "github.com/bds421/rho-kit/app/http/v2"
 	idem "github.com/bds421/rho-kit/data/v2/idempotency"
-	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/runtime/v2/saga"
 )
 
 const (
-	defaultAddr     = ":8097"
-	idempotencyTTL  = 1 * time.Hour
-	idempotencyHdr  = "Idempotency-Key"
+	idempotencyTTL = 1 * time.Hour
+	idempotencyHdr = "Idempotency-Key"
 )
 
 // OrderRequest is the typed payload accepted by POST /orders. The
@@ -88,29 +87,34 @@ type OrderState struct {
 	StepsApplied []string
 }
 
-// Run boots the saga coordinator. Blocks until ctx is cancelled.
+// Run boots the saga coordinator via app.Builder so the example
+// demonstrates the canonical production wiring. Builder runs the
+// always-on validator at startup; the example opts out per-policy
+// (apphttp.WithoutTLS, WithoutRateLimit) for curl/test convenience.
+// kit-doctor flags each opt-out in production code.
 func Run(ctx context.Context) error {
 	logger := slog.Default()
 	coord := newCoordinator(realInventoryReserve, realCardCharge, realShipmentDispatch)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /orders", coord.handleOrder)
-	mux.HandleFunc("GET /orders", coord.handleListOrders)
-
-	srv := httpx.NewServer(defaultAddr, mux, httpx.WithErrorLog(
-		slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
-	))
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-	}()
-	logger.Info("saga-coordinator listening", "addr", defaultAddr)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("listen: %w", err)
+	cfg := app.BaseConfig{
+		Server:      app.ServerConfig{Host: "127.0.0.1", Port: 8097},
+		Internal:    app.InternalConfig{Host: "127.0.0.1", Port: 9097},
+		Environment: "example",
+		LogLevel:    "info",
 	}
-	return nil
+	return app.New("saga-coordinator", "0.0.0-example", cfg).
+		Logger(logger).
+		WithoutRateLimit().
+		// Example listens on plain http for curl/test convenience.
+		// kit-doctor:allow apphttp-without-tls
+		With(apphttp.Module(apphttp.WithoutTLS())).
+		Router(func(_ app.Infrastructure) http.Handler {
+			mux := http.NewServeMux()
+			mux.HandleFunc("POST /orders", coord.handleOrder)
+			mux.HandleFunc("GET /orders", coord.handleListOrders)
+			return mux
+		}).
+		RunContext(ctx)
 }
 
 // coordinator groups the saga definition with the idempotency

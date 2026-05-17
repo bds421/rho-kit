@@ -37,6 +37,7 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/resilience/v2/circuitbreaker"
 	"github.com/bds421/rho-kit/resilience/v2/retry"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 // OrderEvent is the typed payload the worker consumes. In a real
@@ -47,13 +48,25 @@ type OrderEvent struct {
 	Amount  float64 `json:"amount"   validate:"gte=0"`
 }
 
-// Run starts the worker subscription and blocks until ctx is
-// cancelled.
+// Run starts the worker via the kit's lifecycle.Runner so the
+// example demonstrates the canonical worker-service shape.
+//
+// Why Runner not app.Builder: a pure-consumer service has no HTTP
+// surface, and Builder mandates one (server + internal ops port).
+// Runner is the right primitive here — it composes any number of
+// lifecycle.Components (Subscriptions, periodic jobs, etc.) under
+// the kit's coordinated start/stop semantics with signal handling
+// and graceful shutdown.
+//
+// The Subscription itself satisfies lifecycle.Component (wave 165),
+// so registration is one line. Add more workers by chaining .Add
+// calls.
 func Run(ctx context.Context) error {
 	logger := slog.Default()
 
-	// In a production wiring, replace fakeConsumer with one of the
-	// kit's backend Consumers. The Subscription wiring is unchanged.
+	// In production wiring, replace fakeConsumer with one of the
+	// kit's backend Consumers (amqp/kafka/nats/redis). The
+	// Subscription wiring is unchanged.
 	consumer := newFakeConsumer()
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
@@ -77,9 +90,12 @@ func Run(ctx context.Context) error {
 		typed,
 		messaging.WithSubscriptionLogger(logger),
 	)
+
 	logger.Info("background-worker running; press Ctrl-C to stop")
-	if err := sub.Start(ctx); err != nil {
-		return fmt.Errorf("start subscription: %w", err)
+	if err := lifecycle.NewRunner(logger).
+		Add("orders-billing", sub).
+		Run(ctx); err != nil {
+		return fmt.Errorf("worker runner: %w", err)
 	}
 	return nil
 }

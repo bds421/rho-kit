@@ -42,8 +42,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bds421/rho-kit/app/v2"
+	apphttp "github.com/bds421/rho-kit/app/http/v2"
 	idem "github.com/bds421/rho-kit/data/v2/idempotency"
-	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/idempotency"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 )
@@ -51,40 +52,41 @@ import (
 const (
 	hmacKeyEnv      = "WEBHOOK_HMAC_KEY"
 	minHMACKeyChars = 32
-	defaultAddr     = ":8090"
 )
 
-// Run starts the webhook receiver on :8090 (or the test address
-// passed via [run]). Blocks until ctx is cancelled.
+// Run starts the webhook receiver via app.Builder so the
+// example demonstrates the canonical production wiring. The
+// Builder runs the always-on validator (TLS, internal-host
+// loopback, sslmode) at startup; the example opts out per-policy
+// for curl/test convenience. kit-doctor flags each opt-out in
+// production code.
 func Run(ctx context.Context) error {
-	return run(ctx, defaultAddr)
-}
-
-func run(ctx context.Context, addr string) error {
-	rawKey, err := hmacKeyFromEnv()
-	if err != nil {
+	logger := slog.Default()
+	if _, err := hmacKeyFromEnv(); err != nil {
 		return err
 	}
+	rawKey, _ := hmacKeyFromEnv()
 	receiver := newReceiver()
 
-	mux := http.NewServeMux()
-	mux.Handle("POST /webhook", buildWebhookHandler(rawKey, receiver))
-	mux.Handle("GET /received", receiver.listHandler())
-
-	srv := httpx.NewServer(addr, mux, httpx.WithErrorLog(
-		slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
-	))
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-	}()
-	slog.Default().Info("webhook-receiver listening", "addr", addr)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("listen: %w", err)
+	cfg := app.BaseConfig{
+		Server:      app.ServerConfig{Host: "127.0.0.1", Port: 8090},
+		Internal:    app.InternalConfig{Host: "127.0.0.1", Port: 9090},
+		Environment: "example",
+		LogLevel:    "info",
 	}
-	return nil
+	return app.New("webhook-receiver", "0.0.0-example", cfg).
+		Logger(logger).
+		WithoutRateLimit().
+		// Example listens on plain http for curl/test convenience.
+		// kit-doctor:allow apphttp-without-tls
+		With(apphttp.Module(apphttp.WithoutTLS())).
+		Router(func(_ app.Infrastructure) http.Handler {
+			mux := http.NewServeMux()
+			mux.Handle("POST /webhook", buildWebhookHandler(rawKey, receiver))
+			mux.Handle("GET /received", receiver.listHandler())
+			return mux
+		}).
+		RunContext(ctx)
 }
 
 // buildWebhookHandler wires the canonical signedrequest →

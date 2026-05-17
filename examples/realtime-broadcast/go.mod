@@ -3,8 +3,10 @@ module github.com/bds421/rho-kit/examples/realtime-broadcast/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/httpx/v2 v2.0.0
+	github.com/bds421/rho-kit/app/http/v2 v2.0.0-00010101000000-000000000000
+	github.com/bds421/rho-kit/app/v2 v2.0.0
 	github.com/bds421/rho-kit/realtime/centrifuge/v2 v2.0.0
+	github.com/bds421/rho-kit/runtime/v2 v2.0.0
 	github.com/bds421/rho-kit/security/v2 v2.0.0
 	github.com/lestrrat-go/jwx/v3 v3.1.1
 	github.com/stretchr/testify v1.11.1
@@ -13,6 +15,8 @@ require (
 require (
 	github.com/FZambia/eagle v0.1.0 // indirect
 	github.com/bds421/rho-kit/core/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/httpx/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/observability/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/resilience/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -83,3 +87,19 @@ replace github.com/bds421/rho-kit/httpx/v2 => ../../httpx
 replace github.com/bds421/rho-kit/realtime/centrifuge/v2 => ../../realtime/centrifuge
 
 replace github.com/bds421/rho-kit/security/v2 => ../../security
+
+replace github.com/bds421/rho-kit/app/v2 => ../../app
+
+replace github.com/bds421/rho-kit/app/http/v2 => ../../app/http
+
+replace github.com/bds421/rho-kit/authz/v2 => ../../authz
+
+replace github.com/bds421/rho-kit/crypto/v2 => ../../crypto
+
+replace github.com/bds421/rho-kit/infra/v2 => ../../infra
+
+replace github.com/bds421/rho-kit/io/v2 => ../../io
+
+replace github.com/bds421/rho-kit/runtime/v2 => ../../runtime
+
+replace github.com/bds421/rho-kit/flags/v2 => ../../flags

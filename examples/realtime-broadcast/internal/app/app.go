@@ -40,7 +40,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -51,38 +50,42 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwk"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 
-	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/app/v2"
+	apphttp "github.com/bds421/rho-kit/app/http/v2"
 	"github.com/bds421/rho-kit/realtime/centrifuge/v2"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )
 
 const (
-	defaultAddr     = ":8096"
-	demoIssuer      = "https://demo-issuer.example.com"
-	demoAudience    = "https://realtime.example.com"
-	demoKeyID       = "demo-kid"
-	defaultJWTTTL   = 5 * time.Minute
-	tokenPath       = "/demo/token"
-	jwksPath        = "/demo/jwks"
-	websocketPath   = "/connection/websocket"
+	demoIssuer    = "https://demo-issuer.example.com"
+	demoAudience  = "https://realtime.example.com"
+	demoKeyID     = "demo-kid"
+	defaultJWTTTL = 5 * time.Minute
+	tokenPath     = "/demo/token"
+	jwksPath      = "/demo/jwks"
+	websocketPath = "/connection/websocket"
 )
 
-// Run boots the realtime-broadcast service. Generates an ECDSA
-// keypair, constructs the kit jwtutil verifier against the
-// derived JWKS, wires it into centrifuge.NewNode, and serves the
-// composed mux. Blocks until ctx is cancelled.
+// Run boots the realtime-broadcast service via app.Builder.
+// The centrifuge Node is a lifecycle.Component, so it composes
+// alongside the HTTP server through Builder.With for the
+// centrifuge module and Router for the websocket handler.
+//
+// Builder runs the always-on validator at startup; the example
+// opts out per-policy (apphttp.WithoutTLS, WithoutRateLimit) for
+// curl/test convenience. kit-doctor flags each opt-out in
+// production code.
 func Run(ctx context.Context) error {
 	logger := slog.Default()
 	signing, err := newSigningKey()
 	if err != nil {
 		return fmt.Errorf("generate signing key: %w", err)
 	}
-
 	verifier, err := signing.newVerifier()
 	if err != nil {
 		return fmt.Errorf("build jwt verifier: %w", err)
 	}
-
 	node, err := centrifuge.NewNode(
 		centrifuge.WithJWTAuth(verifier),
 		centrifuge.WithChannelClassifier(classifyChannel),
@@ -92,43 +95,44 @@ func Run(ctx context.Context) error {
 		return fmt.Errorf("build centrifuge node: %w", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle("POST "+websocketPath, node.WebsocketHandler())
-	mux.Handle("GET "+websocketPath, node.WebsocketHandler())
-	mux.HandleFunc("GET "+tokenPath, signing.handleTokenIssue)
-	mux.HandleFunc("GET "+jwksPath, signing.handleJWKSExpose)
-
-	srv := httpx.NewServer(defaultAddr, mux, httpx.WithErrorLog(
-		slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
-	))
-
-	// Run the centrifuge node + HTTP server concurrently; either
-	// returning ends the service.
-	errCh := make(chan error, 2)
-	go func() { errCh <- node.Start(ctx) }()
-	go func() {
-		logger.Info("realtime-broadcast listening", "addr", defaultAddr)
-		err := srv.ListenAndServe()
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-		errCh <- err
-	}()
-
-	select {
-	case <-ctx.Done():
-	case err := <-errCh:
-		if err != nil {
-			return fmt.Errorf("component exited: %w", err)
-		}
+	cfg := app.BaseConfig{
+		Server:      app.ServerConfig{Host: "127.0.0.1", Port: 8096},
+		Internal:    app.InternalConfig{Host: "127.0.0.1", Port: 9096},
+		Environment: "example",
+		LogLevel:    "info",
 	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = srv.Shutdown(shutdownCtx)
-	_ = node.Stop(shutdownCtx)
-	return nil
+	return app.New("realtime-broadcast", "0.0.0-example", cfg).
+		Logger(logger).
+		WithoutRateLimit().
+		// Example listens on plain http for curl/test convenience.
+		// kit-doctor:allow apphttp-without-tls
+		With(apphttp.Module(apphttp.WithoutTLS())).
+		// Centrifuge.Node is a lifecycle.Component; register it
+		// via Background so Builder coordinates Start/Stop with
+		// the HTTP server. Builder enforces graceful shutdown
+		// ordering: HTTP server stops first (no new connections),
+		// then centrifuge drains.
+		Background("centrifuge", func(bgCtx context.Context) error {
+			return node.Start(bgCtx)
+		}).
+		OnShutdown(func(shutdownCtx context.Context) {
+			_ = node.Stop(shutdownCtx)
+		}).
+		Router(func(_ app.Infrastructure) http.Handler {
+			mux := http.NewServeMux()
+			mux.Handle("POST "+websocketPath, node.WebsocketHandler())
+			mux.Handle("GET "+websocketPath, node.WebsocketHandler())
+			mux.HandleFunc("GET "+tokenPath, signing.handleTokenIssue)
+			mux.HandleFunc("GET "+jwksPath, signing.handleJWKSExpose)
+			return mux
+		}).
+		RunContext(ctx)
 }
+
+// Suppress an "imported and not used" warning when the example's
+// own helpers are stripped during refactor. lifecycle is still
+// referenced in tests + the documentation comment.
+var _ = lifecycle.NewRunner
 
 // classifyChannel maps centrifuge channel names to bounded
 // cardinality "class" labels. The kit projects this through
