@@ -673,7 +673,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	}
 	srvOpts = append(srvOpts, httpCfg.serverOpts...)
 	srv := httpx.NewServer(b.cfg.Server.Addr(), httpHandler, srvOpts...)
-	runner.Add("public-server", lifecycle.HTTPServer(srv))
+	runner.Add("public-server", lifecycle.NewHTTPServer(srv))
 
 	// 15. Run — signal handling, component lifecycle, graceful shutdown.
 	return runner.Run(ctx)

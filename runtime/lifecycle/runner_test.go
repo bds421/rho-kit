@@ -215,13 +215,13 @@ func TestWithStopTimeout_PanicsOnNonPositive(t *testing.T) {
 	}
 }
 
-func TestHTTPServer_NilPanics(t *testing.T) {
+func TestNewHTTPServer_NilPanics(t *testing.T) {
 	assert.Panics(t, func() {
-		HTTPServer(nil)
+		NewHTTPServer(nil)
 	})
 }
 
-func TestHTTPServer_PanicsOnUnsafeServer(t *testing.T) {
+func TestNewHTTPServer_PanicsOnUnsafeServer(t *testing.T) {
 	safe := func() *http.Server {
 		return &http.Server{
 			Addr:              "127.0.0.1:0",
@@ -240,15 +240,15 @@ func TestHTTPServer_PanicsOnUnsafeServer(t *testing.T) {
 			srv := safe()
 			mutate(srv)
 			assert.Panics(t, func() {
-				HTTPServer(srv)
+				NewHTTPServer(srv)
 			})
 		})
 	}
 }
 
-func TestHTTPServer_StopRejectsNilContext(t *testing.T) {
+func TestNewHTTPServer_StopRejectsNilContext(t *testing.T) {
 	var ctx context.Context
-	err := HTTPServer(&http.Server{
+	err := NewHTTPServer(&http.Server{
 		Addr:              "127.0.0.1:0",
 		Handler:           http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
 		ReadHeaderTimeout: time.Second,

@@ -49,7 +49,7 @@
 //	// Stop() shuts it down gracefully.
 //	runner := lifecycle.NewRunner(slog.Default())
 //	runner.Add("centrifuge", node)
-//	runner.Add("http", lifecycle.HTTPServer(srv))
+//	runner.Add("http", lifecycle.NewHTTPServer(srv))
 //	runner.Run(ctx)
 //
 // # Channel classifiers and cardinality

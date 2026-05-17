@@ -240,7 +240,7 @@ func main() {
 
         runner := lifecycle.NewRunner(logger)
         serverLog := slog.NewLogLogger(logger.Handler(), slog.LevelWarn)
-        runner.Add("http", lifecycle.HTTPServer(httpx.NewServer(":8080", handler, httpx.WithErrorLog(serverLog))))
+        runner.Add("http", lifecycle.NewHTTPServer(httpx.NewServer(":8080", handler, httpx.WithErrorLog(serverLog))))
         runner.AddFunc("worker", func(ctx context.Context) error {
             return myWorker(ctx, redisConn)
         })

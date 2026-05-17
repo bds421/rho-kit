@@ -23,7 +23,7 @@
 //
 // Two adapters are provided out of the box:
 //
-//   - [HTTPServer] wraps a configured *http.Server so its ListenAndServe /
+//   - [NewHTTPServer] wraps a configured *http.Server so its ListenAndServe /
 //     Shutdown lifecycle plugs straight into a Runner.
 //   - [FuncComponent] / [NewFuncComponent] / [Runner.AddFunc] adapt a single
 //     blocking function (typically a worker loop) into a Component.

@@ -23,25 +23,25 @@ type httpServerComponent struct {
 	srv *http.Server
 }
 
-// HTTPServer adapts an *http.Server to a Component.
+// NewHTTPServer adapts an *http.Server to a Component.
 // Start calls ListenAndServe (or ListenAndServeTLS if TLSConfig is set).
 // Stop calls Shutdown for graceful draining.
 //
 // Panics if srv is nil, srv.Addr is empty, srv.Handler is nil, or
 // srv.ReadHeaderTimeout is zero — all wiring mistakes caught at
 // construction so a misconfigured server never reaches Start.
-func HTTPServer(srv *http.Server) Component {
+func NewHTTPServer(srv *http.Server) Component {
 	if srv == nil {
-		panic("lifecycle: HTTPServer requires a non-nil *http.Server")
+		panic("lifecycle: NewHTTPServer requires a non-nil *http.Server")
 	}
 	if srv.Addr == "" {
-		panic("lifecycle: HTTPServer requires http.Server.Addr to be set")
+		panic("lifecycle: NewHTTPServer requires http.Server.Addr to be set")
 	}
 	if srv.Handler == nil {
-		panic("lifecycle: HTTPServer requires a non-nil Handler")
+		panic("lifecycle: NewHTTPServer requires a non-nil Handler")
 	}
 	if srv.ReadHeaderTimeout <= 0 {
-		panic("lifecycle: HTTPServer requires ReadHeaderTimeout > 0")
+		panic("lifecycle: NewHTTPServer requires ReadHeaderTimeout > 0")
 	}
 	return &httpServerComponent{srv: srv}
 }
@@ -55,7 +55,7 @@ func (h *httpServerComponent) Start(_ context.Context) error {
 
 func (h *httpServerComponent) Stop(ctx context.Context) error {
 	if ctx == nil {
-		return errors.New("lifecycle: HTTPServer.Stop requires a non-nil context")
+		return errors.New("lifecycle: NewHTTPServer.Stop requires a non-nil context")
 	}
 	return h.srv.Shutdown(ctx)
 }

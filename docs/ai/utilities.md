@@ -196,7 +196,7 @@ The `lifecycle.Runner` manages concurrent components with coordinated shutdown. 
 
 ```go
 runner := lifecycle.NewRunner(logger, lifecycle.WithStopTimeout(30*time.Second))
-runner.Add("http", lifecycle.HTTPServer(srv))
+runner.Add("http", lifecycle.NewHTTPServer(srv))
 runner.AddFunc("worker", func(ctx context.Context) error {
     worker.Run(ctx)
     return nil

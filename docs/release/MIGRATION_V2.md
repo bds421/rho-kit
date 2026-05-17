@@ -508,7 +508,7 @@ preserved; the LIST+heartbeat machinery underneath is replaced.
 | Area | Migration |
 |---|---|
 | `lifecycle.FuncComponent` | The exported `StartFn` field is removed. Construct via `lifecycle.NewFuncComponent(fn)`. |
-| `runtime/lifecycle.HTTPServer` | Supply explicit `Addr`, non-nil `Handler`, and non-zero `ReadHeaderTimeout`; zero-value `http.Server` now panics. |
+| `runtime/lifecycle.HTTPServer` | Renamed to `lifecycle.NewHTTPServer` to align with the kit-wide `New<Type>` constructor convention. Behaviour unchanged: still requires explicit `Addr`, non-nil `Handler`, and non-zero `ReadHeaderTimeout`; zero-value `http.Server` panics. |
 
 ### Other
 

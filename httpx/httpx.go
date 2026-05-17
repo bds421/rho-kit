@@ -226,7 +226,7 @@ func WithWriteTimeout(d time.Duration) ServerOption {
 
 // WithTLSConfig sets the server TLS configuration for mTLS. The config is
 // cloned and normalized to the kit TLS floor before installation.
-// When set, lifecycle.HTTPServer uses ListenAndServeTLS instead of ListenAndServe.
+// When set, lifecycle.NewHTTPServer uses ListenAndServeTLS instead of ListenAndServe.
 func WithTLSConfig(cfg *tls.Config) ServerOption {
 	if cfg == nil {
 		panic("httpx: WithTLSConfig requires a non-nil tls.Config")

@@ -102,13 +102,16 @@ shutdown, propagating any returned error.
 `infra/messaging.BufferedPublisher.Run` now returns `error`; manual wiring
 should log or return it from the goroutine that owns the drain loop.
 
-### Manual lifecycle HTTP servers must be safe
+### Manual lifecycle HTTP servers must be safe (and were renamed)
 
-`runtime/lifecycle.HTTPServer` now panics when the supplied `*http.Server`
-has an empty `Addr`, nil `Handler`, or zero `ReadHeaderTimeout`. Manual wiring
-must use the same explicit-address, explicit-handler, slowloris-resistant
-posture as `httpx.NewServer`; a zero-value server would otherwise bind with
-surprising defaults or expose the process-global default mux.
+`runtime/lifecycle.HTTPServer` was renamed to `lifecycle.NewHTTPServer`
+so the constructor name matches the kit-wide `New<Type>` convention used
+by `NewRunner`, `NewFuncComponent`, etc. The function continues to panic
+when the supplied `*http.Server` has an empty `Addr`, nil `Handler`, or
+zero `ReadHeaderTimeout`. Manual wiring must use the same explicit-address,
+explicit-handler, slowloris-resistant posture as `httpx.NewServer`; a
+zero-value server would otherwise bind with surprising defaults or expose
+the process-global default mux.
 
 ### Redis health checks are critical by default
 
