@@ -28,13 +28,21 @@ const (
 	StateUnknown  State = "unknown"
 )
 
+// breakerConfig carries everything an Option might want to set:
+// the gobreaker.Settings the breaker is constructed with, plus the
+// kit-side metrics handle (if WithMetrics is used).
+type breakerConfig struct {
+	settings *gobreaker.Settings
+	metrics  *Metrics
+}
+
 // Option customizes the circuit breaker settings.
-type Option func(*gobreaker.Settings)
+type Option func(*breakerConfig)
 
 // WithIsSuccessful overrides the success predicate used to decide whether
 // an error should count as a failure. Returning true treats the call as success.
 func WithIsSuccessful(fn func(err error) bool) Option {
-	return func(s *gobreaker.Settings) { s.IsSuccessful = fn }
+	return func(c *breakerConfig) { c.settings.IsSuccessful = fn }
 }
 
 // WithPermanentSuccess treats apperror.Permanent as successful calls, preventing
@@ -72,17 +80,17 @@ func WithName(name string) Option {
 	if err := promutil.ValidateStaticLabelValue("name", name); err != nil {
 		panic("circuitbreaker: " + err.Error())
 	}
-	return func(s *gobreaker.Settings) { s.Name = name }
+	return func(c *breakerConfig) { c.settings.Name = name }
 }
 
 // WithInterval sets the rolling window for clearing counts.
 func WithInterval(d time.Duration) Option {
-	return func(s *gobreaker.Settings) { s.Interval = d }
+	return func(c *breakerConfig) { c.settings.Interval = d }
 }
 
 // WithMaxRequests sets the number of allowed requests in half-open state.
 func WithMaxRequests(n uint32) Option {
-	return func(s *gobreaker.Settings) { s.MaxRequests = n }
+	return func(c *breakerConfig) { c.settings.MaxRequests = n }
 }
 
 // WithReadyToTrip replaces the trip predicate. The default predicate
@@ -98,16 +106,16 @@ func WithMaxRequests(n uint32) Option {
 //	})
 func WithReadyToTrip(fn func(Counts) bool) Option {
 	if fn == nil {
-		return func(*gobreaker.Settings) {}
+		return func(*breakerConfig) {}
 	}
-	return func(s *gobreaker.Settings) {
-		s.ReadyToTrip = func(c gobreaker.Counts) bool {
+	return func(c *breakerConfig) {
+		c.settings.ReadyToTrip = func(gc gobreaker.Counts) bool {
 			return fn(Counts{
-				Requests:             c.Requests,
-				TotalSuccesses:       c.TotalSuccesses,
-				TotalFailures:        c.TotalFailures,
-				ConsecutiveSuccesses: c.ConsecutiveSuccesses,
-				ConsecutiveFailures:  c.ConsecutiveFailures,
+				Requests:             gc.Requests,
+				TotalSuccesses:       gc.TotalSuccesses,
+				TotalFailures:        gc.TotalFailures,
+				ConsecutiveSuccesses: gc.ConsecutiveSuccesses,
+				ConsecutiveFailures:  gc.ConsecutiveFailures,
 			})
 		}
 	}
@@ -153,13 +161,27 @@ type Counts struct {
 // between states. The name is empty unless WithName is used.
 func WithOnStateChange(fn func(name string, from, to State)) Option {
 	if fn == nil {
-		return func(*gobreaker.Settings) {}
+		return func(*breakerConfig) {}
 	}
-	return func(s *gobreaker.Settings) {
-		s.OnStateChange = func(name string, from gobreaker.State, to gobreaker.State) {
+	return func(c *breakerConfig) {
+		c.settings.OnStateChange = func(name string, from gobreaker.State, to gobreaker.State) {
 			callOnStateChange(fn, name, mapState(from), mapState(to))
 		}
 	}
+}
+
+// WithMetrics wires a constructed [*Metrics] so the breaker records
+// state transitions and per-call outcomes without the consumer having
+// to hand-wire counters through WithOnStateChange. Pass nil to
+// disable metrics (the default).
+//
+// The kit's wave-167 OTel tracing remains unchanged; metrics are
+// additive. When both WithMetrics and WithOnStateChange are set,
+// the metric record runs FIRST and the caller's callback runs after
+// — so a caller's panic in OnStateChange does not prevent the
+// metric from being recorded.
+func WithMetrics(m *Metrics) Option {
+	return func(c *breakerConfig) { c.metrics = m }
 }
 
 func callOnStateChange(fn func(name string, from, to State), name string, from, to State) {
@@ -181,7 +203,9 @@ func callOnStateChange(fn func(name string, from, to State), name string, from, 
 // Safe for concurrent use — the embedded gobreaker.CircuitBreaker
 // serialises state transitions and per-call counter updates internally.
 type CircuitBreaker struct {
-	cb *gobreaker.CircuitBreaker[any]
+	cb      *gobreaker.CircuitBreaker[any]
+	metrics *Metrics
+	name    string
 }
 
 // NewCircuitBreaker creates a circuit breaker that opens after threshold
@@ -204,15 +228,32 @@ func NewCircuitBreaker(threshold int, cooldownPeriod time.Duration, opts ...Opti
 		// remain failures.
 		IsSuccessful: defaultIsSuccessful,
 	}
+	cfg := &breakerConfig{settings: &settings}
 	for _, opt := range opts {
 		if opt == nil {
 			panic("circuitbreaker: NewCircuitBreaker option must not be nil")
 		}
-		opt(&settings)
+		opt(cfg)
+	}
+
+	// When metrics are wired, install a state-change hook that records
+	// the transition counter BEFORE invoking the caller's OnStateChange
+	// (if any). Recording first guarantees a panicking caller callback
+	// cannot suppress the metric.
+	if cfg.metrics != nil {
+		userOnStateChange := settings.OnStateChange
+		settings.OnStateChange = func(name string, from, to gobreaker.State) {
+			cfg.metrics.recordStateChange(name, mapState(from), mapState(to))
+			if userOnStateChange != nil {
+				userOnStateChange(name, from, to)
+			}
+		}
 	}
 
 	return &CircuitBreaker{
-		cb: gobreaker.NewCircuitBreaker[any](settings),
+		cb:      gobreaker.NewCircuitBreaker[any](settings),
+		metrics: cfg.metrics,
+		name:    settings.Name,
 	}
 }
 
@@ -236,6 +277,7 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 		err = ErrCircuitOpen
 	}
 	recordResult(span, err)
+	cb.metrics.recordCall(cb.name, callOutcome(err))
 	return err
 }
 
@@ -269,6 +311,7 @@ func (cb *CircuitBreaker) ExecuteCtx(ctx context.Context, fn func(ctx context.Co
 		err = ErrCircuitOpen
 	}
 	recordResult(span, err)
+	cb.metrics.recordCall(cb.name, callOutcome(err))
 	return err
 }
 

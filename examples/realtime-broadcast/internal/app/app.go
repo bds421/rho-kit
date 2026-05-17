@@ -53,7 +53,6 @@ import (
 	"github.com/bds421/rho-kit/app/v2"
 	apphttp "github.com/bds421/rho-kit/app/http/v2"
 	"github.com/bds421/rho-kit/realtime/centrifuge/v2"
-	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )
 
@@ -128,11 +127,6 @@ func Run(ctx context.Context) error {
 		}).
 		RunContext(ctx)
 }
-
-// Suppress an "imported and not used" warning when the example's
-// own helpers are stripped during refactor. lifecycle is still
-// referenced in tests + the documentation comment.
-var _ = lifecycle.NewRunner
 
 // classifyChannel maps centrifuge channel names to bounded
 // cardinality "class" labels. The kit projects this through

@@ -76,6 +76,31 @@ type Policy struct {
 	// Retry-After header. Return zero from the callback to fall back
 	// to the policy's exponential delay.
 	DelayOverride func(err error) time.Duration
+
+	// Logger receives diagnostic events from Do/DoWith — RetryIf /
+	// DelayOverride / OnRetry callback panics, and the per-attempt
+	// fields when those callbacks themselves want context. When nil,
+	// the package falls back to [slog.Default]. Matches the kit's
+	// per-package WithLogger convention; provided as a struct field
+	// rather than an option because Policy is the canonical
+	// configuration carrier for Do/DoWith. The Loop entry point still
+	// takes its logger positionally for backwards compatibility.
+	Logger *slog.Logger
+
+	// Name identifies this Policy in Prometheus metric labels (with
+	// Metrics set). Bounded developer-defined identifier, validated
+	// via [promutil.ValidateStaticLabelValue] at metric-emit time;
+	// empty maps to "unnamed". Independent of [retry.Loop]'s
+	// component arg (Loop continues to use its positional component
+	// for log lines).
+	Name string
+
+	// Metrics, when non-nil, records per-call outcome and
+	// attempts-until-terminal histogram. See [NewMetrics] for the
+	// label taxonomy. Independent of OnRetry — callers can wire
+	// both: OnRetry surfaces per-attempt details, Metrics records
+	// aggregates suitable for alerting.
+	Metrics *Metrics
 }
 
 // DefaultPolicy returns a sensible default: 3 retries, 1s base, 30s max, 2x factor,
@@ -409,11 +434,22 @@ func (p Policy) Delay(attempt int) time.Duration {
 	return wait
 }
 
-func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) error) error {
+func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) error) (retErr error) {
 	mustValidatePolicy("retry: Do policy", p)
+	logger := p.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	bo := newBackOff(p)
 	attempt := 0
+	// totalAttempts is the all-attempts-since-start counter the metric
+	// histograms emit. It never resets, unlike `attempt` which restarts
+	// on StableReset cycles.
+	totalAttempts := 0
 	loopStart := time.Now()
+	defer func() {
+		p.Metrics.recordOutcome(p.Name, classifyRetryOutcome(retErr, ctx), totalAttempts)
+	}()
 
 	for {
 		// Honor a pre-cancelled ctx — otherwise the caller pays one full
@@ -423,6 +459,7 @@ func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) er
 		}
 
 		start := time.Now()
+		totalAttempts++
 		err := fn(ctx)
 		if err == nil {
 			// fn succeeded — only surface a cancelled ctx if it
@@ -437,7 +474,7 @@ func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) er
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return errors.Join(err, ctxErr)
 		}
-		if p.RetryIf != nil && !callRetryIf(slog.Default(), "retry", p.RetryIf, err) {
+		if p.RetryIf != nil && !callRetryIf(logger, "retry", p.RetryIf, err) {
 			return err
 		}
 
@@ -460,13 +497,13 @@ func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) er
 
 		wait := bo.NextBackOff()
 		if p.DelayOverride != nil {
-			if override := callDelayOverride(slog.Default(), "retry", p.DelayOverride, err); override > 0 {
+			if override := callDelayOverride(logger, "retry", p.DelayOverride, err); override > 0 {
 				wait = override
 			}
 		}
 
 		if p.OnRetry != nil {
-			callOnRetry(slog.Default(), "retry", p.OnRetry, err, attempt+1, wait)
+			callOnRetry(logger, "retry", p.OnRetry, err, attempt+1, wait)
 		}
 
 		timer := time.NewTimer(wait)
