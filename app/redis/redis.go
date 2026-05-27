@@ -65,19 +65,19 @@ func WithoutTLS() Option {
 //	redis.Module(opts, redis.WithoutTLS())
 //	redis.Module(opts, redis.WithConn(kitredis.WithInstance("primary")))
 //
-// Panics if opts is nil or any option is nil.
-func Module(opts *goredis.Options, mopts ...Option) app.Module {
-	if opts == nil {
-		panic("redis: Module requires non-nil options")
+// Panics if cfg is nil or any option is nil.
+func Module(cfg *goredis.Options, opts ...Option) app.Module {
+	if cfg == nil {
+		panic("redis: Module requires non-nil cfg")
 	}
 	mc := moduleConfig{}
-	for _, opt := range mopts {
+	for _, opt := range opts {
 		if opt == nil {
 			panic("redis: Module option must not be nil")
 		}
 		opt(&mc)
 	}
-	return moduleWithOptions(opts, mc.allowPlaintext, mc.connOpts...)
+	return moduleWithOptions(cfg, mc.allowPlaintext, mc.connOpts...)
 }
 
 // WithConn appends [kitredis.ConnOption] values to the underlying

@@ -16,8 +16,8 @@ import (
 func TestModule_PanicsOnNilOpts(t *testing.T) {
 	defer func() {
 		r := recover()
-		require.NotNil(t, r, "expected panic for nil redis options")
-		assert.Contains(t, r, "non-nil options")
+		require.NotNil(t, r, "expected panic for nil redis cfg")
+		assert.Contains(t, r, "non-nil cfg")
 	}()
 	_ = Module(nil)
 }

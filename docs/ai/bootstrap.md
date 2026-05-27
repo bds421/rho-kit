@@ -118,7 +118,7 @@ lives in per-adapter sub-modules under `app/` and is registered via
 | Sub-package | Module constructor | Getter | Notes |
 |---|---|---|---|
 | `app/postgres/v2` | `postgres.Module(cfg, opts…)` | `postgres.Pool(infra)` | `postgres.WithMigrations(fs)` runs goose SQL migrations on startup |
-| `app/redis/v2` | `redis.Module(opts, mopts…)` | `redis.Connection(infra)` | `redis.Module(opts, redis.WithoutTLS())` opts out of FR-077; `redis.WithConn(kitredis.WithX())` passes connection-level options |
+| `app/redis/v2` | `redis.Module(cfg, opts…)` | `redis.Connection(infra)` | `redis.Module(cfg, redis.WithoutTLS())` opts out of FR-077; `redis.WithConn(kitredis.WithX())` passes connection-level options |
 | `app/amqp/v2` | `amqp.Module(url, opts…)` | `amqp.Connection/Publisher/Consumer(infra)` | Non-loopback `amqp://` panics; use `amqps://` or `amqp.WithoutTLS()`. `amqp.WithURLProvider(fn)` rotates credentials; `amqp.WithCriticalBroker()` flips health to 503 |
 | `app/nats/v2` | `nats.Module(cfg, opts…)` | `nats.Connection/Publisher(infra)` | `nats.WithMessageSizeLimiter(...)` caps publisher payloads |
 | `app/tracing/v2` | `tracing.Module(cfg)` | (auto-wires the HTTP client) | `cfg.SampleRate > 0.1` panics at construction |
