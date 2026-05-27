@@ -236,6 +236,7 @@ row you start from:
 | MCP-compatible HTTP handlers | `httpx/mcp` (NewServer, Register[In,Out]) | [http](docs/ai/http.md) |
 | HMAC request signing | `httpx/sign`, `httpx/middleware/signedrequest` | [security](docs/ai/security.md) |
 | Send outbound HMAC-signed webhooks (with retry on 5xx, no-retry on 4xx, auto delivery-id) | `httpx/webhook` (Dispatcher.Send; pairs with `httpx/middleware/signedrequest` on the receiver side) | [security](docs/ai/security.md) |
+| Send user-facing notifications (email / SMS / push / chat) — NOT a kit package | Use the audited ecosystem libraries directly: [github.com/nikoksr/notify](https://github.com/nikoksr/notify) for the multi-channel umbrella (email, SMS, push, Discord, Slack, Telegram, MS Teams, Pushbullet, ~25 channels); [github.com/wneessen/go-mail](https://github.com/wneessen/go-mail) for email-only use cases (modern API over net/smtp). The kit deliberately does NOT ship its own notify umbrella — same rationale as OAuth2: a custom protocol/IO layer would trade dep weight for a security-bug surface that no single project can match against established libraries. | — |
 | Safe URL helpers and redirects | `httpx/urlutil`, `httpx.SafeRedirect` | [http](docs/ai/http.md) |
 | HTTP request budget enforcement | `httpx/budget`, `httpx/middleware/budget` | [http](docs/ai/http.md) |
 | Postgres-backed idempotency | `data/idempotency/pgstore` | [database](docs/ai/sqldb.md) |

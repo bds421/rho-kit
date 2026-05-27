@@ -26,7 +26,10 @@ Status legend:
 9. **T4.2** webhook dispatcher (outbound)
 10. **T3.2** `runtime/saga` persistence — most complex, needs state-machine design
 11. **T4.1** OAuth2/OIDC client
-12. **T4.3** notify package + backends
+12. **T4.3** notifications — **recommend existing**: docs pointer at
+    [nikoksr/notify](https://github.com/nikoksr/notify) and
+    [wneessen/go-mail](https://github.com/wneessen/go-mail); no kit
+    code under `notify/` (same rationale as T4.1.5 OAuth2 refactor).
 
 ---
 
@@ -757,48 +760,34 @@ httpx/webhook/
 
 ---
 
-## T4.3 — `notify` package + backends [planned]
+## T4.3 — notifications (email / SMS / push / chat) [recommend-existing]
 
-**Goal.** Unified `notify.Sender` interface so service code doesn't pick a
-provider; backends pull SDKs in separate modules.
+**Decision.** The kit does NOT ship its own notify umbrella. Use the
+audited ecosystem libraries directly:
 
-**Public API.**
-```go
-package notify
+  - [github.com/nikoksr/notify](https://github.com/nikoksr/notify)
+    — multi-channel Notifier umbrella + ~25 service backends (email,
+    SMS, push, Discord, Slack, Telegram, MS Teams, Pushbullet, etc).
+  - [github.com/wneessen/go-mail](https://github.com/wneessen/go-mail)
+    — modern email-only library on top of net/smtp, with stronger
+    MIME handling, DKIM, and explicit TLS controls than the stdlib.
+  - Provider-native SDKs (aws-sdk-go-v2 SES/SNS, sendgrid-go, twilio-go,
+    firebase.google.com/go/messaging, sideshow/apns2) for callers
+    needing per-message delivery feedback or provider-specific features.
 
-type Message struct {
-    To       []string                // emails / phone numbers / push tokens
-    Subject  string                  // email only
-    Body     string                  // plain text
-    HTMLBody string                  // email only
-    Metadata map[string]string       // headers / per-recipient context
-}
+**Rationale.** Same as T4.1.5 (the OAuth2 refactor): writing a custom
+notify umbrella would re-implement message composition, SMTP/HTTP
+quirks, retry semantics, MIME, transport security, and provider-specific
+auth — every line of that is a security-bug surface that no single
+project can match against established, audited libraries.
 
-type Sender interface {
-    Send(ctx context.Context, msg Message) error
-}
+**Kit value-add (documentation only).** The root AGENTS.md decision
+tree row points callers at nikoksr/notify or go-mail with the trade-off
+notes. No kit code ships under `notify/`. Services wire whichever
+library matches their channel set and own the dep weight.
 
-// MultiSender fans out to multiple backends (e.g. SMS + email
-// fallback) and returns the first success / aggregated error.
-type MultiSender []Sender
-```
-
-Backends:
-```
-notify/smtp/         ← stdlib net/smtp
-notify/sendgrid/     ← github.com/sendgrid/sendgrid-go
-notify/ses/          ← github.com/aws/aws-sdk-go-v2/service/sesv2
-notify/sns/          ← github.com/aws/aws-sdk-go-v2/service/sns (SMS)
-notify/twilio/       ← github.com/twilio/twilio-go
-notify/fcm/          ← firebase.google.com/go/messaging (push)
-notify/apns/         ← github.com/sideshow/apns2
-```
-
-**External deps.** Each backend pulls its SDK. Add to allowlist when
-landing.
-
-**Effort.** Interface + 1 backend (smtp): 4 hours. Each additional
-backend: 3-4 hours. Total ~25 hours for the full set.
+**Effort.** ~30 minutes (documentation only — done in commit that
+adopts this approach).
 
 ---
 
@@ -835,9 +824,8 @@ The kit's existing `make release-candidate` target enforces most of these.
 | T4.2 webhook dispatcher |  500 |  8    |
 | T3.2 saga persistence   |  800 | 12-16 |
 | T4.1 oauth2/oidc        |  700 | 12    |
-| T4.3 notify + 1 backend |  400 |  4    |
-| T4.3 notify extra back. | 2400 | 20    |
-| **TOTAL**               | **~8200** | **~110-130** |
+| T4.3 notify (docs only — recommend nikoksr/notify + wneessen/go-mail) | 0 | ~0.5 |
+| **TOTAL**               | **~5400** | **~86-106** |
 
 That's ~3 weeks of sustained focused work for a single experienced
 engineer, or 6-8 weeks alongside other responsibilities. This document
