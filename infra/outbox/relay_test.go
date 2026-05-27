@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -234,8 +235,11 @@ func TestRelay_HandlesPublisherPanicAsPublishError(t *testing.T) {
 func TestRelay_StoreErrorLogRedactsBackendError(t *testing.T) {
 	store := &fakeStore{fetchPendingErr: errors.New("database token=tenant-secret")}
 	pub := &fakePublisher{}
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	// syncBuffer is goroutine-safe; the relay's poll-loop goroutine
+	// writes while the Eventually-poll below reads. A plain bytes.Buffer
+	// would race here.
+	logs := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(logs, nil))
 
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
@@ -247,7 +251,12 @@ func TestRelay_StoreErrorLogRedactsBackendError(t *testing.T) {
 		done <- relay.Start(relayCtx)
 	}()
 
-	time.Sleep(25 * time.Millisecond)
+	// Poll for the log assertion rather than sleeping a guess-interval.
+	// The relay's poll loop ticks every 10ms (WithPollInterval above);
+	// under heavy CI load a fixed 25ms wait was tight enough to flake.
+	require.Eventually(t, func() bool {
+		return strings.Contains(logs.String(), "outbox relay: fetch pending failed")
+	}, 2*time.Second, 10*time.Millisecond, "expected fetch-failure log within 2s")
 	cancel()
 	require.NoError(t, <-done)
 
@@ -793,4 +802,27 @@ func TestRelay_RecoverAfterPublisherError(t *testing.T) {
 	entry := store.entries[0]
 	store.mu.Unlock()
 	assert.Equal(t, outbox.StatusPublished, entry.Status)
+}
+
+// syncBuffer is a goroutine-safe bytes.Buffer wrapper for capturing
+// logs across the relay's poll-loop goroutine and the test's polling
+// assertions. A plain bytes.Buffer is documented as non-safe for
+// concurrent Read/Write — without this wrapper, require.Eventually
+// polling logs.String() while the relay still writes triggers a real
+// data race under -race.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
 }

@@ -74,6 +74,12 @@ func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(p
 	if err != nil {
 		return actionlog.Entry{}, redact.WrapError("actionlog/postgres: begin", err)
 	}
+	// Rollback-after-Commit is a documented no-op in pgx (returns
+	// pgx.ErrTxClosed which signals "tx already finalised"); ignoring
+	// the error keeps the panic-cleanup path tidy without masking real
+	// rollback failures — a genuine rollback failure on a not-yet-
+	// committed tx still surfaces via the caller's err return from
+	// Commit or the preceding statement.
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// pg_advisory_xact_lock serialises concurrent first-appends for the

@@ -103,12 +103,19 @@ func WithChannelClassifier(fn ChannelClassifier) Option {
 	return func(c *config) { c.classifier = fn }
 }
 
-// WithRegisterer pins the Prometheus registerer. Defaults to
+// WithMetricsRegisterer pins the Prometheus registerer the node
+// will thread through to its kit-side metric set. Defaults to
 // [prometheus.DefaultRegisterer]. Passing nil panics so a
 // miswired-but-configured caller surfaces at startup.
-func WithRegisterer(reg prometheus.Registerer) Option {
+//
+// Naming: per the root AGENTS.md "Metrics" convention,
+// WithMetricsRegisterer is the OUTER module-Option spelling
+// (`func(...) Option`); WithRegisterer (in metrics.go) is the INNER
+// MetricsOption spelling. Two earlier versions of this package had
+// the names swapped; the convention is now consistent.
+func WithMetricsRegisterer(reg prometheus.Registerer) Option {
 	if reg == nil {
-		panic("realtime/centrifuge: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+		panic("realtime/centrifuge: WithMetricsRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
 	return func(c *config) { c.registerer = reg }
 }

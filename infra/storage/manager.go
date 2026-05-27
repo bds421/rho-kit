@@ -108,8 +108,25 @@ func (m *Manager) MustBackend(name string) Storage {
 }
 
 // SetDefault sets the default backend name. The name must already be
-// registered. Returns the Manager for fluent chaining. Panics if the
-// Manager is closed — post-shutdown reconfiguration is a wiring bug.
+// registered. Returns the Manager for fluent chaining.
+//
+// # Lifecycle contract
+//
+// SetDefault is intended for the startup wiring phase: register
+// backends, set the default, then start serving traffic. The kit does
+// not enforce a Freeze() call because the cost of a config-time
+// mutation is borne by the operator who wrote the wiring, not the
+// runtime path. But:
+//
+//   - Calling SetDefault from a request handler is a wiring bug. The
+//     pattern is "construct the Manager → Register all backends →
+//     SetDefault once → hand the Manager to the rest of the kit".
+//   - SetDefault is concurrency-safe but NOT atomic with respect to
+//     concurrent Acquire / Backend calls — a Backend lookup racing
+//     with a SetDefault may see either the old or new default. Do not
+//     rely on cross-handler synchronisation.
+//   - Panics if the Manager is closed (post-shutdown reconfiguration
+//     is unambiguously a wiring bug) or the name isn't registered.
 func (m *Manager) SetDefault(name string) *Manager {
 	m.mu.Lock()
 	defer m.mu.Unlock()

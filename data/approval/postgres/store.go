@@ -242,6 +242,12 @@ func (s *Store) decide(ctx context.Context, id, decidedBy, reason string, approv
 	if err != nil {
 		return approval.Request{}, redact.WrapError("approval/postgres: begin", err)
 	}
+	// Rollback-after-Commit is a documented no-op in pgx (returns
+	// pgx.ErrTxClosed which signals "tx already finalised"); ignoring
+	// the error keeps the panic-cleanup path tidy without masking real
+	// rollback failures — a genuine rollback failure on a not-yet-
+	// committed tx still surfaces via the caller's err return from
+	// Commit or the preceding statement.
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	const selectForUpdate = `
@@ -313,6 +319,12 @@ func (s *Store) MarkExecuted(ctx context.Context, id string) (approval.Request, 
 	if err != nil {
 		return approval.Request{}, redact.WrapError("approval/postgres: begin", err)
 	}
+	// Rollback-after-Commit is a documented no-op in pgx (returns
+	// pgx.ErrTxClosed which signals "tx already finalised"); ignoring
+	// the error keeps the panic-cleanup path tidy without masking real
+	// rollback failures — a genuine rollback failure on a not-yet-
+	// committed tx still surfaces via the caller's err return from
+	// Commit or the preceding statement.
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	const selectForUpdate = `

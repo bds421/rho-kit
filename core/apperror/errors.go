@@ -28,6 +28,20 @@ const (
 	// error is retryable: capacity may free up after some operator-managed
 	// interval. Transport adapters map it to HTTP 507 Insufficient Storage.
 	CodeStorageFull Code = "STORAGE_FULL"
+	// CodeTimeout indicates the operation did not complete inside the
+	// deadline the caller granted. Distinct from [CodeUnavailable]
+	// (dependency down) and [CodeOperationFailed] (non-retryable server
+	// fault): timeout MAY succeed on a retry with a longer deadline.
+	// Transport adapters map it to HTTP 408 Request Timeout and gRPC
+	// DEADLINE_EXCEEDED. Retryable.
+	CodeTimeout Code = "TIMEOUT"
+	// CodePayloadTooLarge indicates the request body / message exceeded
+	// the kit-enforced size limit (httpx/middleware/maxbody, messaging
+	// MaxMessageBytes, etc). Distinct from [CodeValidation] because the
+	// shape of the payload may be perfectly valid — it's just too big.
+	// Transport adapters map it to HTTP 413 Payload Too Large and gRPC
+	// RESOURCE_EXHAUSTED. Non-retryable (caller must reduce payload).
+	CodePayloadTooLarge Code = "PAYLOAD_TOO_LARGE"
 )
 
 // AllCodes returns every kit-defined error Code in a stable order.
@@ -45,9 +59,11 @@ func AllCodes() []Code {
 		CodeForbidden,
 		CodeNotFound,
 		CodeOperationFailed,
+		CodePayloadTooLarge,
 		CodePermanent,
 		CodeRateLimit,
 		CodeStorageFull,
+		CodeTimeout,
 		CodeUnavailable,
 		CodeValidation,
 	}
@@ -217,6 +233,46 @@ func (e *StorageFullError) Unwrap() error   { return e.cause }
 func (e *StorageFullError) ErrorCode() Code { return CodeStorageFull }
 func (e *StorageFullError) Retryable() bool { return true }
 
+// TimeoutError indicates the operation did not complete within the
+// caller-supplied deadline. Distinct from UnavailableError (dependency
+// down) and OperationFailedError (non-retryable server fault): a retry
+// with a longer deadline may succeed. Transport adapters map this to
+// HTTP 408 Request Timeout and gRPC DEADLINE_EXCEEDED.
+//
+// Use [NewTimeout] / [NewTimeoutWithCause]; check via [IsTimeout].
+type TimeoutError struct {
+	Message string
+	cause   error
+}
+
+func (e *TimeoutError) Error() string   { return e.Message }
+func (e *TimeoutError) Unwrap() error   { return e.cause }
+func (e *TimeoutError) ErrorCode() Code { return CodeTimeout }
+func (e *TimeoutError) Retryable() bool { return true }
+
+// PayloadTooLargeError indicates the request body or message exceeded
+// the kit-enforced size limit. Distinct from ValidationError because
+// the payload shape may be perfectly valid — it's just too big. Caller
+// must reduce payload (non-retryable).
+//
+// Transport adapters map this to HTTP 413 Payload Too Large and gRPC
+// RESOURCE_EXHAUSTED.
+//
+// Use [NewPayloadTooLarge] / [NewPayloadTooLargeWithCause]; check via
+// [IsPayloadTooLarge].
+type PayloadTooLargeError struct {
+	Message string
+	// Limit is the byte cap that was exceeded. Optional but useful in
+	// the response body so the caller knows what to aim for.
+	Limit int64
+	cause error
+}
+
+func (e *PayloadTooLargeError) Error() string   { return e.Message }
+func (e *PayloadTooLargeError) Unwrap() error   { return e.cause }
+func (e *PayloadTooLargeError) ErrorCode() Code { return CodePayloadTooLarge }
+func (e *PayloadTooLargeError) Retryable() bool { return false }
+
 // UnavailableError indicates an upstream dependency is unreachable or not ready.
 // Use this when a service cannot fulfill a request because a dependency it relies
 // on is down, overloaded, or not responding.
@@ -364,6 +420,31 @@ func NewOperationFailedWithCause(msg string, cause error) error {
 	return &OperationFailedError{Message: msg, cause: cause}
 }
 
+// NewTimeout creates a TimeoutError with a client-safe message.
+// Use when the operation didn't complete within the caller's deadline
+// — distinct from "dependency down" (use NewUnavailable for that).
+func NewTimeout(msg string) error {
+	return &TimeoutError{Message: msg}
+}
+
+// NewTimeoutWithCause is [NewTimeout] preserving the underlying cause
+// (typically context.DeadlineExceeded or the driver's timeout error).
+func NewTimeoutWithCause(msg string, cause error) error {
+	return &TimeoutError{Message: msg, cause: cause}
+}
+
+// NewPayloadTooLarge creates a PayloadTooLargeError. limit is the
+// byte cap that was exceeded; pass 0 to omit it from the surface.
+func NewPayloadTooLarge(msg string, limit int64) error {
+	return &PayloadTooLargeError{Message: msg, Limit: limit}
+}
+
+// NewPayloadTooLargeWithCause is [NewPayloadTooLarge] preserving the
+// underlying cause (typically the io.LimitReader-derived error).
+func NewPayloadTooLargeWithCause(msg string, limit int64, cause error) error {
+	return &PayloadTooLargeError{Message: msg, Limit: limit, cause: cause}
+}
+
 // NewStorageFull creates a StorageFullError with a client-safe message.
 // Use this when a backend write fails because the underlying medium has
 // no remaining capacity (disk full, bucket quota exhausted, partition
@@ -472,6 +553,21 @@ func IsUnavailable(err error) bool {
 // IsStorageFull reports whether err contains a StorageFullError.
 func IsStorageFull(err error) bool {
 	var target *StorageFullError
+	return errors.As(err, &target)
+}
+
+// IsTimeout reports whether err contains a TimeoutError. Use to
+// distinguish a deadline-exceeded from a true server unavailability;
+// useful in retry middleware that may want a longer per-attempt
+// timeout on the next try.
+func IsTimeout(err error) bool {
+	var target *TimeoutError
+	return errors.As(err, &target)
+}
+
+// IsPayloadTooLarge reports whether err contains a PayloadTooLargeError.
+func IsPayloadTooLarge(err error) bool {
+	var target *PayloadTooLargeError
 	return errors.As(err, &target)
 }
 

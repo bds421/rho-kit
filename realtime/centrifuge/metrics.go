@@ -34,12 +34,19 @@ type metricsConfig struct {
 	registerer prometheus.Registerer
 }
 
-// WithMetricsRegisterer pins the Prometheus registerer for the
-// kit-side metric set. Nil panics so a misconfigured-but-configured
-// caller surfaces at startup. Omit for [prometheus.DefaultRegisterer].
-func WithMetricsRegisterer(reg prometheus.Registerer) MetricsOption {
+// WithRegisterer pins the Prometheus registerer for the kit-side
+// metric set. Nil panics so a misconfigured-but-configured caller
+// surfaces at startup. Omit for [prometheus.DefaultRegisterer].
+//
+// Naming: per the root AGENTS.md "Metrics" convention, every inner
+// MetricsOption uses WithRegisterer; WithMetricsRegisterer is
+// reserved for the outer module-Option wrappers
+// (ConnOption/ServerOption/etc.) that thread a registerer through to
+// the inner metrics builder. Use WithRegisterer here when passing to
+// [NewMetrics]; outer wiring lives at the centrifuge module level.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		panic("realtime/centrifuge: WithMetricsRegisterer requires a non-nil registerer")
+		panic("realtime/centrifuge: WithRegisterer requires a non-nil registerer")
 	}
 	return func(c *metricsConfig) { c.registerer = reg }
 }

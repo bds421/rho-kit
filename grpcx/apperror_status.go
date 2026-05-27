@@ -25,6 +25,14 @@ var defaultGRPCCode = map[apperror.Code]codes.Code{
 	// ResourceExhausted) only in the cause string, but the kit chose
 	// the same gRPC code so clients can apply uniform backoff.
 	apperror.CodeStorageFull: codes.ResourceExhausted,
+	// CodeTimeout maps to DeadlineExceeded — gRPC's canonical
+	// "deadline expired" code; matches HTTP 408 on the other transport.
+	apperror.CodeTimeout: codes.DeadlineExceeded,
+	// CodePayloadTooLarge maps to ResourceExhausted (no per-payload
+	// gRPC code exists). Same code as CodeStorageFull but the cause
+	// message distinguishes "your payload is too big" from "the
+	// backend is full". Matches HTTP 413 on the other transport.
+	apperror.CodePayloadTooLarge: codes.ResourceExhausted,
 }
 
 // GRPCCode returns the gRPC status code for the given error.

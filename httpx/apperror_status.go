@@ -19,6 +19,8 @@ var defaultHTTPStatus = map[apperror.Code]int{
 	apperror.CodeForbidden:       http.StatusForbidden,
 	apperror.CodeUnavailable:     http.StatusBadGateway,
 	apperror.CodeStorageFull:     http.StatusInsufficientStorage,
+	apperror.CodeTimeout:         http.StatusRequestTimeout,
+	apperror.CodePayloadTooLarge: http.StatusRequestEntityTooLarge,
 }
 
 // HTTPStatus returns the HTTP status code for the given error.

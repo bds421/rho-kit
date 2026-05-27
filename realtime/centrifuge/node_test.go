@@ -42,7 +42,6 @@ func TestOptionPanics(t *testing.T) {
 		{"WithJWTAuth(nil)", func() { rtcentrifuge.WithJWTAuth(nil) }},
 		{"WithChannelClassifier(nil)", func() { rtcentrifuge.WithChannelClassifier(nil) }},
 		{"WithRegisterer(nil)", func() { rtcentrifuge.WithRegisterer(nil) }},
-		{"WithMetricsRegisterer(nil)", func() { rtcentrifuge.WithMetricsRegisterer(nil) }},
 		{"NewMetrics(nil-option)", func() { rtcentrifuge.NewMetrics(nil) }},
 	}
 	for _, tc := range cases {
@@ -168,7 +167,7 @@ func TestChannelClassifier_CustomMapsCorrectly(t *testing.T) {
 
 func TestNewMetrics_RegistersCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := rtcentrifuge.NewMetrics(rtcentrifuge.WithMetricsRegisterer(reg))
+	m := rtcentrifuge.NewMetrics(rtcentrifuge.WithRegisterer(reg))
 	require.NotNil(t, m)
 
 	families, err := reg.Gather()

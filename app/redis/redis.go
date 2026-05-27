@@ -81,7 +81,19 @@ func Module(cfg *goredis.Options, opts ...Option) app.Module {
 }
 
 // WithConn appends [kitredis.ConnOption] values to the underlying
-// [kitredis.Connect] call. Use it with [ModuleWithOptions].
+// [kitredis.Connect] call. Use with [Module].
+//
+// Multiple calls ACCUMULATE rather than overwrite — calling
+//
+//	redis.Module(cfg, redis.WithConn(opt1, opt2), redis.WithConn(opt3))
+//
+// is equivalent to
+//
+//	redis.Module(cfg, redis.WithConn(opt1, opt2, opt3))
+//
+// with the connection options applied in declaration order. Mirrors the
+// kit's With*-with-...args convention; pass everything in one call for
+// readability when ordering matters.
 func WithConn(opts ...kitredis.ConnOption) Option {
 	for _, opt := range opts {
 		if opt == nil {
