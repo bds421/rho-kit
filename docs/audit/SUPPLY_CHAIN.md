@@ -656,6 +656,7 @@ direct and transitive deps:
 | License | Status | Notes |
 |---|---|---|
 | MIT | ✅ allowed |  |
+| MIT-0 (MIT No Attribution) | ✅ allowed | SPDX `MIT-0`. Strict superset of MIT (drops the attribution requirement) so anything MIT-allowed is MIT-0-allowed. go-licenses (≤ v1.6) does not classify the SPDX `MIT-0` header and reports `Unknown`; the gate exempts known MIT-0 modules in `tools/check-licenses.sh` (`SKIP_MODULE_PATTERNS`). Current MIT-0 transitive deps: `github.com/segmentio/asm` (assembly-optimised helpers under `segmentio/encoding`). |
 | Apache-2.0 | ✅ allowed | Preferred for new direct deps (patent grant) |
 | BSD-2-Clause | ✅ allowed |  |
 | BSD-3-Clause | ✅ allowed |  |

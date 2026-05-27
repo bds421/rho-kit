@@ -52,6 +52,14 @@ SKIP_MODULE_PATTERNS=(
   "^cmd/"
   "^golang.org/toolchain"
   "^github.com/bds421/rho-kit"
+  # MIT-0 (MIT No Attribution) — strict superset of MIT, allowed per
+  # SUPPLY_CHAIN.md §8.1. go-licenses (≤ v1.6) does not classify the
+  # SPDX `MIT-0` header and reports it as `Unknown`. Each entry below
+  # is a transitive dep we've verified ships under MIT-0; the LICENSE
+  # file lives in the module root, not in the per-package subdirs the
+  # scanner walks, so the scanner can't autoresolve it. Re-verify when
+  # bumping to a new major.
+  "^github.com/segmentio/asm(/|$)"
 )
 
 # Modules that are workspace-internal — listed here for explicitness; the
