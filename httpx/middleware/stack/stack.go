@@ -7,6 +7,7 @@ import (
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
 	mwauditlog "github.com/bds421/rho-kit/httpx/v2/middleware/auditlog"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/compress"
 	mwcorrelationid "github.com/bds421/rho-kit/httpx/v2/middleware/correlationid"
 	mwlogging "github.com/bds421/rho-kit/httpx/v2/middleware/logging"
 	mwmetrics "github.com/bds421/rho-kit/httpx/v2/middleware/metrics"
@@ -50,6 +51,16 @@ type Config struct {
 	AuditLogger *auditlog.Logger
 	// AuditLogOptions forwards arbitrary options to the audit-log middleware.
 	AuditLogOptions []mwauditlog.Option
+	// EnableCompress turns on the response-compression middleware
+	// ([middleware/compress]). Off by default — compression surprises
+	// clients that expect identity bytes (Range requests, length-prefixed
+	// protocols), so it is opt-in via [WithCompress]. When enabled the
+	// middleware sits between Inner+AuditLog and the request logger so
+	// the handler always emits uncompressed bytes; everything outside
+	// the compress layer (request logger, timeout, access log, tracing
+	// span) sees the compressed wire bytes.
+	EnableCompress   bool
+	CompressOptions  []compress.Option
 }
 
 // Option mutates the Config.
@@ -122,6 +133,15 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 
 	for i := len(cfg.Inner) - 1; i >= 0; i-- {
 		h = cfg.Inner[i](h)
+	}
+
+	// Compression wraps handler + Inner + AuditLog so the handler always
+	// emits uncompressed bytes (auditlog records the response status, not
+	// the compressed body bytes; that stays accurate). Everything outside
+	// — request logger, timeout, access log, tracing — sees the
+	// compressed wire bytes, matching what the client receives.
+	if cfg.EnableCompress {
+		h = compress.Middleware(cfg.CompressOptions...)(h)
 	}
 
 	// Both the access-log Logger (via extraAttrs below) and the per-handler
@@ -308,6 +328,26 @@ func WithOuter(mw ...func(http.Handler) http.Handler) Option {
 func WithInner(mw ...func(http.Handler) http.Handler) Option {
 	copied := append([]func(http.Handler) http.Handler(nil), mw...)
 	return func(cfg *Config) { cfg.Inner = append(cfg.Inner, copied...) }
+}
+
+// WithCompress enables the response-compression middleware
+// ([middleware/compress.Middleware]). Off by default because compression
+// surprises some clients (Range requests, length-prefixed protocols), so
+// services opt in explicitly. Pass any [compress.Option] values
+// (WithGzipLevel, WithMinSize, WithContentTypes, WithEncoder for brotli)
+// to tune the chain.
+//
+// Layout: compression wraps handler + Inner + AuditLog so the handler
+// emits uncompressed bytes (auditlog still records the response status
+// correctly), while everything outside compression — request logger,
+// timeout, access log, tracing span — sees the compressed wire bytes
+// that match what the client actually receives.
+func WithCompress(opts ...compress.Option) Option {
+	copied := append([]compress.Option(nil), opts...)
+	return func(cfg *Config) {
+		cfg.EnableCompress = true
+		cfg.CompressOptions = append(cfg.CompressOptions, copied...)
+	}
 }
 
 // WithAuditLog wires the tamper-evident audit-log middleware into the chain

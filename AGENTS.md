@@ -171,6 +171,7 @@ row you start from:
 | Rate-limit requests | `httpx/middleware/ratelimit` | [http](docs/ai/http.md) |
 | Typed HTTP handlers (reduce boilerplate) | `httpx.JSON[Req,Resp](logger, func(ctx, *http.Request, Req) (Resp, error))`; siblings `JSONNoBody[Resp](logger, func(ctx, *http.Request) (Resp, error))`, `JSONStatus[Req,Resp](logger, func(ctx, *http.Request, Req) (int, Resp, error))`, `JSONNoBodyStatus[Resp](logger, func(ctx, *http.Request) (int, Resp, error))`, `NoContent(logger, func(ctx, *http.Request) error)`. Mux-bound wrappers: `httpx.Handle/HandleNoBody/HandleStatus/HandleNoBodyStatus`. | [http](docs/ai/http.md) |
 | Idempotent HTTP requests | `httpx/middleware/idempotency` | [http](docs/ai/http.md) |
+| Compress HTTP responses (gzip) | `httpx/middleware/compress` (opt-in via `stack.WithCompress()`; pluggable `Encoder` admits brotli/zstd) | [http](docs/ai/http.md) |
 | Distributed locking | `data/lock/redislock` | [redis](docs/ai/redis.md) |
 | Fan-out N tasks concurrently | `runtime/concurrency` (FanOut, FanOutSettled) | [utilities](docs/ai/utilities.md) |
 | Composable lifecycle | `runtime/lifecycle` (Runner, Component) | [utilities](docs/ai/utilities.md) |
