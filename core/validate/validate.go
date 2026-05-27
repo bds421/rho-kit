@@ -165,8 +165,7 @@ func (v *Validator) Struct(s any) error {
 // already served traffic, so a panic here would be a runtime crash
 // rather than a startup crash; (b) existing callers branch on the
 // error to surface "duplicate format" / "validator already frozen"
-// through ops dashboards. See `core/validate/doc.go` and the
-// `validate.RegisterFormat` entry in `docs/release/MIGRATION_V2.md`.
+// through ops dashboards. See `core/validate/doc.go`.
 func (v *Validator) RegisterFormat(name string, fn FormatFunc) error {
 	if name == "" {
 		return errors.New("validate: RegisterFormat name must not be empty")

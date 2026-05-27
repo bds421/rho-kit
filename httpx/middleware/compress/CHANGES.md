@@ -12,6 +12,5 @@
   - `Content-Length` cleared on compressed responses (chunked transfer)
   - HEAD / Range / If-Range / no-transform / already-encoded pass-through
   - Hijack passes through cleanly for WebSocket upgrade
-- Pluggable `Encoder` interface admits brotli and zstd sub-modules
-  (planned, see V2_X_IMPLEMENTATION_PLAN.md §T1.1).
+- Pluggable `Encoder` interface admits brotli and zstd sub-modules.
 - Stack opt-in via `stack.WithCompress(...)`.

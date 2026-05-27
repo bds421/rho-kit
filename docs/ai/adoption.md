@@ -78,8 +78,7 @@ go mod tidy
 
 Subpackages live under the module root, e.g.
 `github.com/bds421/rho-kit/httpx/v2/middleware/stack`, not
-`httpx/middleware/stack/v2`. See
-[MIGRATION_V2.md §1](../release/MIGRATION_V2.md#1-move-imports-to-v2-module-paths).
+`httpx/middleware/stack/v2`.
 
 ## 2. Minimal Working Program
 
@@ -230,8 +229,7 @@ Reviews keep catching the same five mistakes in downstream services:
    `app.Module.Stop(ctx context.Context) error` is the v2 method.
    Services migrating from v1 must rename their `Close()` to
    `Stop(ctx context.Context) error` (or embed `app.BaseModule` whose
-   default `Stop` returns nil). See
-   [MIGRATION_V2.md §6 `app`](../release/MIGRATION_V2.md#app).
+   default `Stop` returns nil).
 
 5. **Direct `net/http.Server` or `http.DefaultClient`.**
    Both are rejected by `kit-doctor`. Use `httpx.NewServer(addr,

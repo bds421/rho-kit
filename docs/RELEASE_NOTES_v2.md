@@ -21,8 +21,8 @@ public gRPC) moved out of `app/v2` into per-adapter sub-modules under
 
 `app/v2` no longer transitively pulls pgx, go-redis, amqp091, nats.go,
 otelgrpc, or grpc-go. Services declare each adapter they need via
-`Builder.With(<adapter>.Module(...))`. See `docs/release/MIGRATION_V2.md`
-§8 for the complete `Before → After` migration table.
+`Builder.With(<adapter>.Module(...))`. See the "Upgrading from v1.x"
+section below for the complete `Before → After` migration table.
 
 Snippet status: code blocks in these release notes are illustrative migration
 fragments unless explicitly introduced as commands. Buildable golden-path
@@ -50,19 +50,13 @@ allowlist CI (closes GAP-10), heavy optional SDK boundary CI, and the
 `examples/agentic-service` reference binary that wires the entire v2
 stack in one file.
 
-Release-candidate artifacts are maintained under `docs/release/`: the
-module-level public API freeze, the operational migration guide, and the
-RC evidence checklist.
-
 Downstream onboarding (minimum `go.mod`, the smallest compilable program,
 and the common first-mistake checklist) lives in
 [ai/adoption.md](ai/adoption.md). v2.0.0 ships the lazy-adapter split:
 `app/v2` itself imports no heavy SDKs, and services pull in
 `app/postgres/v2`, `app/redis/v2`, `app/amqp/v2`, `app/nats/v2`,
 `app/tracing/v2`, and `app/grpc/v2` only for the adapters they actually
-use, registered via `Builder.With(<adapter>.Module(cfg))`. See
-[release/MIGRATION_V2.md §8](release/MIGRATION_V2.md#8-adopter-onboarding-and-the-lazy-adapter-architecture-shipped-in-v200)
-for the full mechanical mapping from the removed Builder shortcuts.
+use, registered via `Builder.With(<adapter>.Module(cfg))`.
 
 ## Breaking changes
 
@@ -78,8 +72,7 @@ section). Most remaining v2.0.0 surface is additive over v1.x. New
 signatures. The v1.x adapter shortcuts `WithPostgres`, `WithRedis`,
 `WithRabbitMQ`, and `WithNATS` are removed; their replacement is
 `Builder.With(<adapter>.Module(cfg))` from the `app/postgres`,
-`app/redis`, `app/amqp`, and `app/nats` adapter modules — see
-[Lazy adapter migration](release/MIGRATION_V2.md#8-adopter-onboarding-and-the-lazy-adapter-architecture-shipped-in-v200).
+`app/redis`, `app/amqp`, and `app/nats` adapter modules.
 
 ### Background components are one-shot
 
@@ -207,15 +200,6 @@ through `WithSecrets`; and outbound signed requests can use
 `sign.WrapKeyStore`. AMQP URL providers and SFTP password providers receive
 bounded contexts so secret-manager stalls do not silently stretch startup or
 reconnect paths.
-
-### Operational readiness review is explicit
-
-`docs/release/OPERATIONAL_READINESS_V2.md` records the v2 operational review
-across every module in `go.work`: credential rotation, TLS material rotation
-contracts, startup/configuration bounds, shutdown/draining, bounded work,
-observability, health/readiness, migrations, and dependency/runtime gates.
-`make check-operational-readiness` fails if a workspace module is missing from
-that matrix.
 
 ### Key-management errors avoid reflecting key IDs
 
@@ -1405,12 +1389,6 @@ in v2.0.0.
   inflate exporter load. `http.ErrServerClosed` and `ErrCircuitOpen` are
   normal control flow and do not light up trace-error dashboards.
 
-### Documentation cleanup
-- `MIGRATION_V2.md` §9 ("Things Not Migrated") now lists only one item:
-  KMS adapters beyond the four shipped. The previously-deferred etcd
-  leader-election and messaging consume-labels entries were resolved
-  in waves 160 and 140 respectively.
-
 ### Post-implementation gates (waves 170–173)
 - **Wave 170:** Per-package `AGENTS.md` sweep — coding agents picking
   the kit see "when to use / when to use something else / common
@@ -1544,9 +1522,7 @@ file an issue with a concrete use case before assuming we will add them.
   `tracing`, `grpc`) replace the v1 Builder shortcuts and keep heavy SDKs
   out of `app/v2` itself.
 - New top-level packages under `data/`, `httpx/`, and `observability/` —
-  see the per-package sections above and the API freeze in
-  [`docs/release/API_FREEZE_V2.md`](release/API_FREEZE_V2.md) for the
-  authoritative inventory.
+  see the per-package sections above for the authoritative inventory.
 - Package-relevant docs cover threat modeling, supply-chain policy,
   release notes, migration, dashboards, and runbooks. See
   [`docs/ai/`](ai/) for the AI-agent recipe set and
@@ -1555,9 +1531,7 @@ file an issue with a concrete use case before assuming we will add them.
 ## Upgrading from v1.x
 
 v2 is a breaking release. v1.x services MUST update import paths
-(`/v2` suffix) and migrate Builder calls before upgrading. See
-[docs/release/MIGRATION_V2.md](release/MIGRATION_V2.md) for the
-full mapping table.
+(`/v2` suffix) and migrate Builder calls before upgrading.
 
 1. **Update import paths.** Every kit import now carries the `/v2`
    module-path suffix (e.g. `github.com/bds421/rho-kit/httpx/v2`).

@@ -25,7 +25,7 @@
 // without an operator-driven drain is a strong signal of a poison
 // message in the pipeline.
 //
-// Migration from pre-v2: see docs/release/MIGRATION_V2.md. In-flight
-// tasks from the pre-v2 LIST/heartbeat scheme are NOT readable by the v2
-// asynq-backed queue — operators must drain or manually migrate.
+// Migration from pre-v2: in-flight tasks from the pre-v2 LIST/heartbeat
+// scheme are NOT readable by the v2 asynq-backed queue — operators must
+// drain or manually migrate.
 package redisqueue

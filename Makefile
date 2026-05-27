@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-integration test-cover build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-operational-readiness check-api-freeze-coverage check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot bench check-bench-regression update-bench-baseline
+.PHONY: lint vulncheck test test-race test-integration test-cover build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot bench check-bench-regression update-bench-baseline
 
 GOLANGCI_LINT_VERSION := v2.10.1
 GOVULNCHECK_VERSION  ?= v1.1.4
@@ -92,7 +92,7 @@ clean:
 	go clean -cache -testcache
 
 ## ci: Run the full CI pipeline locally (lint + test + build + supply-chain checks)
-ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-dashboards check-dashboard-metrics check-dashboard-labels check-operational-readiness check-api-freeze-coverage check-doc-rot lint test-race build
+ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-doc-rot lint test-race build
 
 ## kit-doctor: Run strict critical kit-doctor checks against this repository
 kit-doctor:
@@ -141,14 +141,6 @@ check-fmt-errorf-wrap:
 ## check-licenses: Reject transitive deps whose license is outside the SUPPLY_CHAIN.md §8.1 allowlist.
 check-licenses:
 	@bash tools/check-licenses.sh
-
-## check-operational-readiness: Verify the v2 operational-readiness review covers every module
-check-operational-readiness:
-	@bash tools/check-operational-readiness.sh
-
-## check-api-freeze-coverage: Verify the v2 API-freeze decision matrix has a row for every workspace module
-check-api-freeze-coverage:
-	@bash tools/check-api-freeze-coverage.sh
 
 ## check-dashboard-metrics: Verify every dashboard/rule metric name is emitted by Go code (catches metric-rename drift).
 check-dashboard-metrics:

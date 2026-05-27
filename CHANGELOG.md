@@ -9,9 +9,8 @@ _(no entries yet)_
 The agentic-AI service backend release. Every `go.work` module is tagged at
 `/v2` using Go semantic import versioning. Public API breaks vs. v1.x are
 intentional — see [`docs/RELEASE_NOTES_v2.md`](docs/RELEASE_NOTES_v2.md) for
-the full enumeration of breaking changes and
-[`docs/release/MIGRATION_V2.md`](docs/release/MIGRATION_V2.md) for the
-operational migration sequence.
+the full enumeration of breaking changes and the operational migration
+sequence.
 
 ### Themes
 
@@ -60,4 +59,4 @@ enumeration of breaking changes, new primitives, and verification commands.
 
 For the per-symbol break list grouped by package (renames, signature changes,
 removed APIs, wire-format changes), see
-[`docs/release/MIGRATION_V2.md`](docs/release/MIGRATION_V2.md) section 6.
+[`docs/RELEASE_NOTES_v2.md`](docs/RELEASE_NOTES_v2.md).

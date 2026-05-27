@@ -1,11 +1,10 @@
 // Command check-doc-rot validates wave-N claims in release docs
-// (MIGRATION_V2.md, RELEASE_NOTES_v2.md, OPERATIONAL_READINESS_V2.md,
-// API_FREEZE_V2.md, RC_CHECKLIST_V2.md, and any other *.md under
-// docs/release/) against the actual git commit log.
+// (RELEASE_NOTES_v2.md and any other *.md under docs/) against the
+// actual git commit log.
 //
 // # Why this exists
 //
-// Wave 158 surfaced a real failure mode: MIGRATION_V2.md claimed
+// Wave 158 surfaced a real failure mode: a release doc claimed
 // `WithOpaqueConsumeLabels` was deferred to a "future wave", but
 // wave 140 had already shipped it. The doc was 18 days stale and
 // the only reason a human caught it was a grep at release-prep

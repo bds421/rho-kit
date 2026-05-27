@@ -53,5 +53,3 @@ than pre-allocating a gzip writer to throw away.
 - `httpx/middleware/stack` — opt in via `stack.WithCompress()` (not in
   default chain; compression is opt-in)
 - `httpx/websocket` — owns its own per-message-deflate; do not stack
-- v2.x roadmap: brotli sub-module + zstd are tracked in
-  `docs/release/V2_X_IMPLEMENTATION_PLAN.md` (T1.1)

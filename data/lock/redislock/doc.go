@@ -21,8 +21,9 @@
 //     due to a GC pause or slow I/O), a second process can acquire
 //     the lock and both may write to shared resources concurrently.
 //   - Single-node: if Redis restarts, all locks are lost. Redlock
-//     quorum is intentionally not adopted; see [REUSE_AUDIT.md] for
-//     the rationale.
+//     quorum is intentionally not adopted: the consensus argument is
+//     contested and the kit prefers a single, well-understood failure
+//     mode over a quorum that masks correctness gaps.
 //   - Clock-dependent: TTL accuracy depends on Redis and client clocks
 //     agreeing within reasonable bounds.
 //

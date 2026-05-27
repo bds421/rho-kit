@@ -53,8 +53,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	// kit metric uses Namespace=<domain>. Split as
 	// Namespace="awskms", Name="request_errors_total" — wire form
 	// shifts from kit_awskms_request_errors_total to
-	// awskms_request_errors_total. See MIGRATION_V2.md for the
-	// dashboard update.
+	// awskms_request_errors_total.
 	requestErrors := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "awskms",

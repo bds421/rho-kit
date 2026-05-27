@@ -30,7 +30,7 @@
 //     Replicas pgx.Pool.
 //   - [app/postgres]       — Builder adapter. A future
 //     [postgres.WithReadReplicas] option threads a RoutingPool through
-//     the kit's lifecycle (planned in V2_X_IMPLEMENTATION_PLAN §T1.3).
+//     the kit's lifecycle.
 //
 // # Quick start
 //

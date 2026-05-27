@@ -6,16 +6,36 @@
 infrastructure patterns every service needs so teams can focus on domain logic
 while staying consistent, secure, and observable.
 
-Release-candidate artifacts for v2.0.0 live under [docs/release](docs/release/):
-the public API freeze, migration guide, and RC evidence checklist.
+## Release
 
-## Release & Migration
-
-- [docs/release/MIGRATION_V2.md](docs/release/MIGRATION_V2.md) — operational
-  steps to move a downstream service from v1.x to v2.0.0.
-- [docs/RELEASE_NOTES_v2.md](docs/RELEASE_NOTES_v2.md) — full v2.0.0 release
-  notes, including the enumeration of breaking changes.
+- [docs/RELEASE_NOTES_v2.md](docs/RELEASE_NOTES_v2.md) — v2.0.0 release notes
+  body and breaking-changes enumeration; published verbatim as the GitHub
+  Release body.
 - [CHANGELOG.md](CHANGELOG.md) — per-release summary.
+
+### How to publish a release
+
+1. **Validate locally.** `make release-candidate` runs the full pre-release
+   gate (lint, race tests, supply-chain, vulncheck, integration tests,
+   coverage, kit-doctor).
+2. **Trigger Release Readiness CI.** Run the `Release Readiness` workflow
+   via `workflow_dispatch` on `main` (or push to a `release/**` branch). It
+   re-runs the gates and rehearses the dependency-ordered release against a
+   temporary bare repository via `tools/rehearse-v2-release.sh`.
+3. **Compute dependency-ordered tag plan.**
+   ```bash
+   EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
+   RELEASE_MODE=all make release-plan
+   ```
+4. **Drop internal `replace` directives** on the release branch and re-run
+   `FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make
+   check-publishable`. Downstream consumers resolve the versions in each
+   module's `require` lines; published tags must match those versions.
+5. **Tag in dependency order** using the planner output. Each dependent
+   level is tidied only after its dependency-level tags exist so committed
+   `go.sum` files record real internal checksums.
+6. **Push tags.** `git push --tags origin`.
+7. **Publish GitHub Release** with `docs/RELEASE_NOTES_v2.md` as the body.
 
 ## Adoption
 

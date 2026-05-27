@@ -75,5 +75,5 @@ jobs:
             echo "Release readiness passed."
             echo
             echo "This workflow does not create tags or GitHub releases."
-            echo "When the release owner is ready, follow docs/release/FINAL_RELEASE_RUNBOOK_V2.md."
+            echo "When the release owner is ready, follow the 'How to publish a release' section in README.md."
           } >> "$GITHUB_STEP_SUMMARY"

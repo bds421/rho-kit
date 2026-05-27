@@ -246,7 +246,7 @@ func TestServer_UnknownTool_ReturnsErrorResponse(t *testing.T) {
 	// (`unknown tool "<name>"`) and we surface it verbatim — the
 	// tool name is not a kit-controlled secret, so accepting the
 	// spec-compliant text is the v2.0.0 trade-off. This regression
-	// only asserts the error surfaces; see MIGRATION_V2.md.
+	// only asserts the error surfaces.
 	s := newTestServer(t)
 	res, rpc := callTool(t, s.HTTP(), "unknown-tool-xyz", map[string]any{}, nil)
 	if rpc.Error != nil {

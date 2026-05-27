@@ -21,11 +21,9 @@ make check-publishable
 make release-plan
 ```
 
-Release preparation for v2.0.0 is documented under `docs/release/`.
-Preparation is not permission to tag or publish. Future release owners should
-follow `docs/release/FINAL_RELEASE_RUNBOOK_V2.md` and
-`docs/release/TAGGING_PLAN_V2.md` only after explicitly entering the tagging
-phase.
+Release preparation is not permission to tag or publish. Future release
+owners should follow the "How to publish a release" section in `README.md`
+only after explicitly entering the tagging phase.
 
 For workspace dependencies, compute the dependency levels before tagging:
 

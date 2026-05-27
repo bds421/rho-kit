@@ -31,7 +31,7 @@
 // Heavy-SDK boundary: this module is the only place inside the kit
 // that depends on k8s.io/client-go. Consumers that do not run on
 // Kubernetes never import this package and never pull the dep
-// transitively. See docs/release/REUSE_AUDIT.md for the policy.
+// transitively.
 package k8slease
 
 import (
