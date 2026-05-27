@@ -18,6 +18,14 @@ cmd/kit-verify/kit-verify
 /kit-new
 /kit-verify
 
+# Example service binaries (each examples/<name>/<name> after `go build`).
+examples/agentic-service/agentic-service
+examples/api-gateway/api-gateway
+examples/background-worker/background-worker
+examples/realtime-broadcast/realtime-broadcast
+examples/saga-coordinator/saga-coordinator
+examples/webhook-receiver/webhook-receiver
+
 # Scratch task / review prompt files used during release prep.
 /task.md
 
