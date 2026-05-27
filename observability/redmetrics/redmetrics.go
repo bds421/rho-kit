@@ -16,10 +16,25 @@
 // gRPC RED metrics are intentionally not in this package to avoid
 // pulling the grpc dependency into observability/. Use the same
 // pattern in a thin gRPC interceptor when needed.
+//
+// # Exemplars
+//
+// Pass [WithHTTPExemplars] / [WithBatchExemplars] to enable Prometheus
+// exemplars on the Duration histograms. When an OTel SpanContext is
+// active on the request (HTTP) or the supplied context
+// ([BatchMetrics.ObserveDuration]), the histogram observation is
+// annotated with {trace_id, span_id} so Grafana panels can deep-link a
+// slow-tail bar to its exact trace.
+//
+// Exemplars are best-effort and backwards-compatible: the prom client
+// throttles storage internally, observations without an active span
+// fall back to plain Observe, and omitting the option leaves the
+// metric set behaving exactly as it always has.
 package redmetrics
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -74,6 +89,12 @@ type HTTPMetrics struct {
 	Errors   *prometheus.CounterVec
 	Duration *prometheus.HistogramVec
 	InFlight prometheus.Gauge
+
+	// exemplars is non-nil when [WithHTTPExemplars] was passed. The
+	// Middleware uses it to attach trace_id+span_id exemplars to every
+	// Duration observation that has an active OTel span on the request
+	// context. Nil → no exemplars; Duration.Observe is called directly.
+	exemplars *ExemplarObserver
 }
 
 // HTTPOption configures the [NewHTTP] constructor.
@@ -84,6 +105,7 @@ type httpConfig struct {
 	subsystem  string
 	buckets    []float64
 	registerer prometheus.Registerer
+	exemplars  bool
 }
 
 // WithHTTPNamespace sets the Prometheus metric namespace prefix.
@@ -118,6 +140,19 @@ func WithHTTPRegisterer(reg prometheus.Registerer) HTTPOption {
 		panic("redmetrics: WithHTTPRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
 	return func(c *httpConfig) { c.registerer = reg }
+}
+
+// WithHTTPExemplars enables Prometheus exemplars on the Duration
+// histogram. When the active request carries an OTel SpanContext, the
+// histogram observation is annotated with {trace_id, span_id} so a
+// Grafana panel can deep-link from a slow-tail bar to the exact trace.
+//
+// Backwards-compatible: omitting this option leaves the metric set
+// behaving exactly as before (plain Observe with no exemplar overhead).
+// Exemplars are sampled to the prom-client's bounded exemplar storage,
+// so very high cardinality (millions of trace IDs/sec) self-throttles.
+func WithHTTPExemplars() HTTPOption {
+	return func(c *httpConfig) { c.exemplars = true }
 }
 
 // NewHTTP constructs the standard HTTP RED metric set and registers it
@@ -175,12 +210,16 @@ func NewHTTP(opts ...HTTPOption) *HTTPMetrics {
 		inflight = promutil.MustRegisterOrGet(reg, inflight)
 	}
 
-	return &HTTPMetrics{
+	m := &HTTPMetrics{
 		Requests: requests,
 		Errors:   errs,
 		Duration: duration,
 		InFlight: inflight,
 	}
+	if cfg.exemplars {
+		m.exemplars = NewExemplarObserver()
+	}
+	return m
 }
 
 // Middleware records the four RED metrics around next.
@@ -222,7 +261,11 @@ func (m *HTTPMetrics) Middleware(routeFor func(*http.Request) string) func(http.
 
 				elapsed := time.Since(start)
 				m.Requests.WithLabelValues(route, method, strconv.Itoa(status)).Inc()
-				m.Duration.WithLabelValues(route, method).Observe(elapsed.Seconds())
+				if m.exemplars != nil {
+					m.exemplars.Observe(r.Context(), m.Duration.WithLabelValues(route, method), elapsed.Seconds())
+				} else {
+					m.Duration.WithLabelValues(route, method).Observe(elapsed.Seconds())
+				}
 				if status >= 400 {
 					m.Errors.WithLabelValues(route, method, statusClass(status)).Inc()
 				}
@@ -360,6 +403,26 @@ type BatchMetrics struct {
 	Runs     *prometheus.CounterVec   // labels: name, status
 	Duration *prometheus.HistogramVec // labels: name
 	InFlight prometheus.Gauge
+
+	// exemplars is non-nil when [WithBatchExemplars] was passed. Callers
+	// that wrap batch runs in an OTel span can pass that ctx to
+	// [BatchMetrics.ObserveDuration] to attach trace_id+span_id
+	// exemplars to the Duration histogram.
+	exemplars *ExemplarObserver
+}
+
+// ObserveDuration records elapsed on the Duration histogram for name.
+// When the BatchMetrics was constructed with [WithBatchExemplars] AND
+// ctx carries an active OTel span, an exemplar is attached. Use this
+// helper instead of m.Duration.WithLabelValues(name).Observe so the
+// exemplar path is used uniformly.
+func (m *BatchMetrics) ObserveDuration(ctx context.Context, name string, seconds float64) {
+	obs := m.Duration.WithLabelValues(name)
+	if m.exemplars != nil {
+		m.exemplars.Observe(ctx, obs, seconds)
+		return
+	}
+	obs.Observe(seconds)
 }
 
 // BatchOption configures [NewBatch].
@@ -370,6 +433,7 @@ type batchConfig struct {
 	subsystem  string
 	buckets    []float64
 	registerer prometheus.Registerer
+	exemplars  bool
 }
 
 // WithBatchRegisterer pins the Prometheus registerer used to register
@@ -402,6 +466,18 @@ func WithBatchBuckets(buckets []float64) BatchOption {
 	validateBuckets(buckets)
 	buckets = append([]float64(nil), buckets...)
 	return func(c *batchConfig) { c.buckets = append([]float64(nil), buckets...) }
+}
+
+// WithBatchExemplars enables Prometheus exemplars on the batch Duration
+// histogram. Callers must use [BatchMetrics.ObserveDuration] (passing
+// the ctx that carries the active OTel span) for the exemplar to be
+// attached. Without an active span the observation falls back to plain
+// Observe — exemplars are best-effort, never required.
+//
+// Backwards-compatible: omitting this option leaves the metric set
+// behaving exactly as before.
+func WithBatchExemplars() BatchOption {
+	return func(c *batchConfig) { c.exemplars = true }
 }
 
 // validateBuckets enforces the invariants Prometheus assumes for histogram
@@ -472,7 +548,11 @@ func NewBatch(name string, opts ...BatchOption) *BatchMetrics {
 		inflight = promutil.MustRegisterOrGet(reg, inflight)
 	}
 
-	return &BatchMetrics{Runs: runs, Duration: duration, InFlight: inflight}
+	m := &BatchMetrics{Runs: runs, Duration: duration, InFlight: inflight}
+	if cfg.exemplars {
+		m.exemplars = NewExemplarObserver()
+	}
+	return m
 }
 
 func validateMetricNamePart(field, value string) {
