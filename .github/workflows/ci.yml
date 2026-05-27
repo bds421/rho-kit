@@ -3,11 +3,25 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'CHANGELOG.md'
+      - 'NOTICE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'CHANGELOG.md'
+      - 'NOTICE'
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   GOTOOLCHAIN: local
@@ -19,6 +33,7 @@ jobs:
   ci:
     name: Lint, Test & Build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
         with:

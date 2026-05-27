@@ -1,35 +1,51 @@
-# Continuous vulnerability scanning for the workspace.
+# Continuous supply-chain scanning for the workspace.
 #
-# Two complementary scanners:
+# Three complementary jobs run in parallel:
 #
-#   govulncheck - Go-aware. Cross-references the Go vulnerability
-#                 database against imported call sites, not just dep
-#                 manifests.
+#   govulncheck   - Go-aware. Cross-references the Go vulnerability
+#                   database against imported call sites, not just dep
+#                   manifests.
 #
-#   osv-scanner - Manifest-aware, multi-ecosystem. We use it for
-#                 GitHub Actions metadata, Dockerfiles, and lockfile
-#                 style inputs that govulncheck does not inspect.
+#   osv-scanner   - Manifest-aware, multi-ecosystem. We use it for
+#                   GitHub Actions metadata, Dockerfiles, and lockfile-
+#                   style inputs that govulncheck does not inspect.
+#
+#   check-licenses - Walks every workspace module declared in go.work,
+#                    runs go-licenses over each module's transitive dep
+#                    graph, and asserts each declared license is on the
+#                    SUPPLY_CHAIN.md §8.1 allowlist.
 #
 # Failure threshold:
 #
-#   Both jobs fail on findings whose severity is >= the value of the
-#   `VULN_FAIL_LEVEL` repository variable (default: HIGH). To adjust
-#   for the entire repo set `VULN_FAIL_LEVEL` under
-#   Settings -> Secrets and variables -> Actions -> Variables. Allowed
-#   values: LOW, MEDIUM, HIGH, CRITICAL. Setting it to CRITICAL makes
-#   the workflow informational only - do not do this without filing
-#   a tracked exception in docs/audit/.
+#   The vuln jobs fail on findings whose severity is >= the value of the
+#   VULN_FAIL_LEVEL repository variable (default: HIGH). License check
+#   hard-fails on any license outside the allowlist (no severity bucket
+#   because a license violation is a distribution-time problem).
+#
+# Path-filtered: docs-only commits do not trigger this workflow. The
+# weekly cron is the safety net for transitive dep drift that did not
+# accompany a code change.
 
-name: Vuln Scan
+name: Supply Chain
 
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'CHANGELOG.md'
+      - 'NOTICE'
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'CHANGELOG.md'
+      - 'NOTICE'
   schedule:
-    # Weekly Monday 00:00 UTC. Catches CVEs published since the last
-    # CI run. The schedule run scans all modules.
+    # Weekly Monday 00:00 UTC. Catches CVEs and license drift since the
+    # last commit. The schedule run scans all modules.
     - cron: "0 0 * * 1"
   workflow_dispatch:
 
@@ -39,6 +55,10 @@ permissions:
   # Security tab. Code-scanning ingestion is required for the
   # findings-history view; without it we only get workflow logs.
   security-events: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   GOTOOLCHAIN: local
@@ -51,6 +71,7 @@ jobs:
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -78,8 +99,16 @@ jobs:
         run: |
           set -euo pipefail
           modules_file="$(mktemp)"
+          # tools/* modules are stdlib-only CI helpers (no external deps,
+          # not shipped to consumers). They cannot host a meaningful CVE
+          # and they fail govulncheck when GOWORK is on because they are
+          # outside go.work. Skip them.
           while IFS= read -r modfile; do
-            dirname "$modfile" >> "$modules_file"
+            dir="$(dirname "$modfile")"
+            case "$dir" in
+              tools/*) continue ;;
+            esac
+            echo "$dir" >> "$modules_file"
           done < <(git ls-files | awk '/(^|\/)go\.mod$/')
           sort -u "$modules_file" -o "$modules_file"
           echo "Modules selected for govulncheck:"
@@ -105,13 +134,11 @@ jobs:
             # govulncheck returns 3 when called vulnerabilities are found,
             # 0 otherwise. Anything else is a tooling failure.
             #
-            # GOWORK=off per module: tool modules under tools/ (e.g.
-            # tools/check-doc-rot) are tracked Go modules but are NOT in
-            # go.work. With GOWORK=on, govulncheck's `./...` pattern fails
-            # with "directory prefix . does not contain modules listed in
-            # go.work". Disabling GOWORK lets each module's replace
-            # directives resolve the same in-tree code that go.work would.
-            if (cd "$module_dir" && GOWORK=off govulncheck -json -mode source ./...) > "$json_out" 2> "${json_out}.err"; then
+            # GOWORK stays inherited (on) so cross-module imports resolve
+            # through go.work; this is what kit modules' go.sum assumes.
+            # Tool modules outside go.work are filtered in the discover
+            # step above.
+            if (cd "$module_dir" && govulncheck -json -mode source ./...) > "$json_out" 2> "${json_out}.err"; then
               echo "clean: $module_dir"
             else
               rc=$?
@@ -180,6 +207,7 @@ jobs:
   osv-scanner:
     name: osv-scanner
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -246,8 +274,32 @@ jobs:
           PY
 
       - name: Upload SARIF to code scanning
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('osv-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: osv-results.sarif
           category: osv-scanner
+
+  check-licenses:
+    name: check-licenses
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.2"
+          cache-dependency-path: "**/go.sum"
+
+      - name: Configure git for private modules
+        env:
+          TOKEN: ${{ github.token }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Check transitive licenses against SUPPLY_CHAIN.md section 8.1 allowlist
+        run: bash tools/check-licenses.sh
