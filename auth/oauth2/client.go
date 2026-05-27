@@ -2,23 +2,27 @@ package oauth2
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+	xoauth2 "golang.org/x/oauth2"
 
 	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
-// Client is the kit's OAuth2/OIDC relying-party client. Construct with
-// [NewClient]. Concurrency-safe after construction.
+// Client is the kit's OAuth2/OIDC relying-party client. Composes
+// [golang.org/x/oauth2.Config] for the OAuth2 dance and
+// [github.com/coreos/go-oidc/v3/oidc.Provider] for issuer discovery +
+// ID-token verification. Concurrency-safe after construction.
 type Client struct {
 	cfg          Config
-	meta         providerMetadata
+	provider     *oidc.Provider
+	oauth        *xoauth2.Config
+	verifier     *oidc.IDTokenVerifier
 	httpClient   *http.Client
 	sessions     SessionStore
 	state        StateStore
@@ -34,9 +38,9 @@ type Client struct {
 // Option configures a [Client].
 type Option func(*Client)
 
-// WithHTTPClient overrides the http.Client used for issuer discovery,
-// token-endpoint exchange, and userinfo. Defaults to a client with
-// 10s timeout and TLS-12 minimum.
+// WithHTTPClient overrides the http.Client used for discovery + token
+// + userinfo. Default: 10s timeout. Threaded through go-oidc via
+// [oidc.ClientContext].
 func WithHTTPClient(c *http.Client) Option {
 	if c == nil {
 		panic("oauth2: WithHTTPClient requires non-nil client")
@@ -45,8 +49,7 @@ func WithHTTPClient(c *http.Client) Option {
 }
 
 // WithSessionStore wires the persistence backend for logged-in
-// sessions. Required for a usable client (the handlers panic on
-// callback without one).
+// sessions. Required.
 func WithSessionStore(s SessionStore) Option {
 	if s == nil {
 		panic("oauth2: WithSessionStore requires non-nil store")
@@ -69,13 +72,13 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // WithoutPKCE disables PKCE. Allowed only for confidential clients
-// with a client secret on providers that don't support PKCE — most
-// modern providers do. Discouraged.
+// on providers that don't support PKCE — most modern providers do.
+// Discouraged.
 func WithoutPKCE() Option {
 	return func(cl *Client) { cl.usePKCE = false }
 }
 
-// WithSessionTTL overrides the session-store TTL. Default 24h.
+// WithSessionTTL overrides the session TTL (default 24h).
 func WithSessionTTL(d time.Duration) Option {
 	if d <= 0 {
 		panic("oauth2: WithSessionTTL requires positive duration")
@@ -83,8 +86,7 @@ func WithSessionTTL(d time.Duration) Option {
 	return func(cl *Client) { cl.sessionTTL = d }
 }
 
-// WithStateTTL overrides the in-flight login state TTL. Default 10m
-// (a user typing in MFA shouldn't expire the login).
+// WithStateTTL overrides the in-flight state TTL (default 10m).
 func WithStateTTL(d time.Duration) Option {
 	if d <= 0 {
 		panic("oauth2: WithStateTTL requires positive duration")
@@ -92,8 +94,7 @@ func WithStateTTL(d time.Duration) Option {
 	return func(cl *Client) { cl.stateTTL = d }
 }
 
-// WithCookieName overrides the session cookie name. Default
-// "kit_oauth_session".
+// WithCookieName overrides "kit_oauth_session".
 func WithCookieName(name string) Option {
 	if name == "" {
 		panic("oauth2: WithCookieName requires non-empty name")
@@ -101,22 +102,20 @@ func WithCookieName(name string) Option {
 	return func(cl *Client) { cl.cookieName = name }
 }
 
-// WithCookieDomain restricts the session cookie to a domain. Optional.
+// WithCookieDomain restricts the cookie to a domain.
 func WithCookieDomain(d string) Option {
 	return func(cl *Client) { cl.cookieDomain = d }
 }
 
-// WithInsecureCookie disables the Secure cookie attribute for local
-// development over plain HTTP. Production should always serve over
-// TLS so the default Secure=true wins.
+// WithInsecureCookie disables Secure for local-dev over plain HTTP.
 func WithInsecureCookie() Option {
 	return func(cl *Client) { cl.cookieSecure = false }
 }
 
-// NewClient constructs a Client. Fetches /.well-known/openid-configuration
-// from cfg.Issuer at construction time (returns ErrIssuerDiscovery on
-// failure so the service fails fast at startup rather than at first
-// login).
+// NewClient constructs a Client. Performs OIDC discovery via go-oidc
+// (which validates the discovered issuer matches the configured one
+// per RFC 8414 §3.3) and constructs the underlying oauth2.Config +
+// IDTokenVerifier. Fails fast on bad config OR unreachable issuer.
 func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	if cfg.Issuer == "" {
 		return nil, errors.New("oauth2: Config.Issuer is required")
@@ -126,9 +125,6 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 	}
 	if cfg.RedirectURL == "" {
 		return nil, errors.New("oauth2: Config.RedirectURL is required")
-	}
-	if _, err := url.Parse(cfg.RedirectURL); err != nil {
-		return nil, fmt.Errorf("oauth2: invalid RedirectURL: %w", err)
 	}
 	c := &Client{
 		cfg:          cfg,
@@ -156,15 +152,34 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 	if c.httpClient == nil {
 		c.httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
-	// Ensure openid scope (required by OIDC).
-	if !containsScope(cfg.Scopes, "openid") {
-		c.cfg.Scopes = append([]string{"openid"}, cfg.Scopes...)
-	}
-	meta, err := discoverProvider(ctx, c.httpClient, cfg.Issuer)
+
+	// go-oidc honours the http.Client stashed on ctx via
+	// oidc.ClientContext (which it forwards into its internal
+	// discovery + JWKS fetcher).
+	discoveryCtx := oidc.ClientContext(ctx, c.httpClient)
+	provider, err := oidc.NewProvider(discoveryCtx, cfg.Issuer)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrIssuerDiscovery, err)
 	}
-	c.meta = meta
+	c.provider = provider
+
+	scopes := cfg.Scopes
+	if !containsScope(scopes, oidc.ScopeOpenID) {
+		scopes = append([]string{oidc.ScopeOpenID}, scopes...)
+	}
+
+	var secretStr string
+	if cfg.ClientSecret != nil && !cfg.ClientSecret.IsEmpty() {
+		secretStr = cfg.ClientSecret.RevealString()
+	}
+	c.oauth = &xoauth2.Config{
+		ClientID:     cfg.ClientID,
+		ClientSecret: secretStr,
+		RedirectURL:  cfg.RedirectURL,
+		Endpoint:     provider.Endpoint(),
+		Scopes:       scopes,
+	}
+	c.verifier = provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
 	return c, nil
 }
 
@@ -178,16 +193,7 @@ func containsScope(scopes []string, want string) bool {
 }
 
 // Handlers returns the http.Handler that serves /login, /callback,
-// /logout under a path prefix. Mount with mux.Handle(prefix+"/", ...).
-//
-// The default handler paths are:
-//
-//	/login    GET  — redirect to issuer
-//	/callback GET  — exchange code, set session cookie
-//	/logout   POST — drop session, optionally redirect to end_session_endpoint
-//
-// The handlers strip the prefix when routing, so mounting under
-// /oauth/ works.
+// /logout under a path prefix. Mount with mux.Handle("/oauth/", ...).
 func (c *Client) Handlers() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", c.handleLogin)
@@ -196,8 +202,10 @@ func (c *Client) Handlers() http.Handler {
 	return http.StripPrefix("/oauth", mux)
 }
 
-// handleLogin generates state + (optional) PKCE verifier, persists
-// them, and redirects to the issuer's authorization endpoint.
+// handleLogin generates state + nonce (+ PKCE verifier when enabled),
+// persists them, and redirects to the issuer's authorization endpoint
+// via golang.org/x/oauth2.AuthCodeURL — which handles encoding,
+// scope joining, and PKCE challenge construction.
 func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 	state, err := generateRandomToken()
 	if err != nil {
@@ -214,23 +222,16 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 		entry.RedirectTo = redirectTo
 	}
 
-	params := url.Values{
-		"response_type": {"code"},
-		"client_id":     {c.cfg.ClientID},
-		"redirect_uri":  {c.cfg.RedirectURL},
-		"scope":         {strings.Join(c.cfg.Scopes, " ")},
-		"state":         {state},
-		"nonce":         {nonce},
+	authOpts := []xoauth2.AuthCodeOption{
+		oidc.Nonce(nonce),
 	}
 	if c.usePKCE {
-		verifier, err := generateCodeVerifier()
-		if err != nil {
-			http.Error(w, "oauth2: pkce verifier failed", http.StatusInternalServerError)
-			return
-		}
+		// golang.org/x/oauth2 mints the verifier + paired S256
+		// challenge for us. The verifier rides in the StateStore
+		// so the callback can complete the exchange.
+		verifier := xoauth2.GenerateVerifier()
 		entry.CodeVerifier = verifier
-		params.Set("code_challenge", codeChallengeS256(verifier))
-		params.Set("code_challenge_method", "S256")
+		authOpts = append(authOpts, xoauth2.S256ChallengeOption(verifier))
 	}
 
 	if err := c.state.Put(r.Context(), state, entry, c.stateTTL); err != nil {
@@ -238,13 +239,12 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "oauth2: state persistence failed", http.StatusInternalServerError)
 		return
 	}
-
-	target := c.meta.AuthorizationEndpoint + "?" + params.Encode()
-	http.Redirect(w, r, target, http.StatusFound)
+	http.Redirect(w, r, c.oauth.AuthCodeURL(state, authOpts...), http.StatusFound)
 }
 
 // handleCallback exchanges the authorization code for tokens, verifies
-// the ID token's nonce, creates a session, and sets the cookie.
+// the ID token via go-oidc (signature + alg + exp + audience + iss),
+// double-checks the nonce, persists the session, and sets the cookie.
 func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if errParam := q.Get("error"); errParam != "" {
@@ -258,30 +258,45 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "oauth2: missing state or code", http.StatusBadRequest)
 		return
 	}
-
 	entry, err := c.state.Get(r.Context(), stateToken)
 	if err != nil {
 		c.logger.WarnContext(r.Context(), "oauth2: callback state lookup failed", slog.String("error", err.Error()))
 		http.Error(w, ErrStateMismatch.Error(), http.StatusBadRequest)
 		return
 	}
-	// Single-use: delete state before exchange so a replay can't be
-	// repeated even on a slow code-exchange path.
+	// Single-use state: delete before exchange so a replay can't
+	// succeed even on a slow exchange.
 	_ = c.state.Delete(r.Context(), stateToken)
 
-	tokens, err := c.exchangeCode(r.Context(), code, entry.CodeVerifier)
+	exchangeCtx := oidc.ClientContext(r.Context(), c.httpClient)
+	exchangeOpts := []xoauth2.AuthCodeOption{}
+	if c.usePKCE && entry.CodeVerifier != "" {
+		exchangeOpts = append(exchangeOpts, xoauth2.VerifierOption(entry.CodeVerifier))
+	}
+	token, err := c.oauth.Exchange(exchangeCtx, code, exchangeOpts...)
 	if err != nil {
+		c.logger.WarnContext(r.Context(), "oauth2: code exchange failed", slog.String("error", err.Error()))
 		http.Error(w, ErrCodeExchange.Error(), http.StatusBadGateway)
 		return
 	}
-
-	// ID-token verification (nonce + sub + exp) — we do a minimal
-	// inline check here. Callers wanting deeper validation (claims
-	// like aud/iss) should plug security/jwtutil.Provider into a
-	// custom handler chain. The kit's default verifies nonce + that
-	// sub exists; everything else is provider-specific.
-	if err := verifyIDToken(tokens.IDToken, entry.Nonce); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	rawIDToken, ok := token.Extra("id_token").(string)
+	if !ok || rawIDToken == "" {
+		http.Error(w, "oauth2: token response missing id_token", http.StatusBadGateway)
+		return
+	}
+	idToken, err := c.verifier.Verify(exchangeCtx, rawIDToken)
+	if err != nil {
+		c.logger.WarnContext(r.Context(), "oauth2: id_token verify failed", slog.String("error", err.Error()))
+		http.Error(w, fmt.Sprintf("%s: %v", ErrCodeExchange, err), http.StatusBadRequest)
+		return
+	}
+	if idToken.Nonce != entry.Nonce {
+		http.Error(w, ErrNonceMismatch.Error(), http.StatusBadRequest)
+		return
+	}
+	var claims map[string]any
+	if err := idToken.Claims(&claims); err != nil {
+		http.Error(w, fmt.Sprintf("oauth2: id_token claims: %v", err), http.StatusBadGateway)
 		return
 	}
 
@@ -292,11 +307,11 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	sess := Session{
 		SessionID:    sessionID,
-		UserID:       extractSubFromIDToken(tokens.IDToken),
-		AccessToken:  secret.NewFromString(tokens.AccessToken),
-		RefreshToken: secret.NewFromString(tokens.RefreshToken),
-		Expiry:       time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second),
-		Claims:       extractClaims(tokens.IDToken),
+		UserID:       idToken.Subject,
+		AccessToken:  secret.NewFromString(token.AccessToken),
+		RefreshToken: secret.NewFromString(token.RefreshToken),
+		Expiry:       token.Expiry,
+		Claims:       claims,
 	}
 	if err := c.sessions.Put(r.Context(), sessionID, sess, c.sessionTTL); err != nil {
 		http.Error(w, "oauth2: session persistence failed", http.StatusInternalServerError)
@@ -341,47 +356,12 @@ func (c *Client) sessionCookie(sessionID string) *http.Cookie {
 	}
 }
 
-// tokenResponse mirrors the token-endpoint JSON shape.
-type tokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int    `json:"expires_in"`
-	IDToken      string `json:"id_token"`
-	Scope        string `json:"scope"`
-}
+// OAuth2Config returns the underlying *xoauth2.Config so callers can
+// build refresh-token transports (oauth2.Token{RefreshToken: ...}.
+// Client(ctx)) or per-request OAuth2 transports without re-discovering
+// endpoints. Returned value MUST NOT be mutated.
+func (c *Client) OAuth2Config() *xoauth2.Config { return c.oauth }
 
-func (c *Client) exchangeCode(ctx context.Context, code, codeVerifier string) (tokenResponse, error) {
-	form := url.Values{
-		"grant_type":   {"authorization_code"},
-		"code":         {code},
-		"redirect_uri": {c.cfg.RedirectURL},
-		"client_id":    {c.cfg.ClientID},
-	}
-	if c.cfg.ClientSecret != nil && !c.cfg.ClientSecret.IsEmpty() {
-		form.Set("client_secret", c.cfg.ClientSecret.RevealString())
-	}
-	if codeVerifier != "" {
-		form.Set("code_verifier", codeVerifier)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.meta.TokenEndpoint,
-		strings.NewReader(form.Encode()))
-	if err != nil {
-		return tokenResponse{}, fmt.Errorf("%w: build request: %v", ErrCodeExchange, err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return tokenResponse{}, fmt.Errorf("%w: do: %v", ErrCodeExchange, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return tokenResponse{}, fmt.Errorf("%w: HTTP %d", ErrCodeExchange, resp.StatusCode)
-	}
-	var out tokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return tokenResponse{}, fmt.Errorf("%w: decode: %v", ErrCodeExchange, err)
-	}
-	return out, nil
-}
+// Provider returns the underlying *oidc.Provider for callers needing
+// UserInfo or non-standard discovery fields.
+func (c *Client) Provider() *oidc.Provider { return c.provider }

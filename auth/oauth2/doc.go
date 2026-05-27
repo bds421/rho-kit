@@ -3,6 +3,16 @@
 // package ISSUES login redirects, EXCHANGES authorization codes, and
 // REFRESHES access/refresh tokens against an upstream OIDC issuer.
 //
+// Built on the ecosystem-standard [golang.org/x/oauth2] (for the
+// OAuth2 dance and PKCE helpers) and
+// [github.com/coreos/go-oidc/v3] (for issuer discovery, JWKS
+// rotation, and ID-token signature + claims verification). The kit
+// adds the session/state persistence interfaces, sensible cookie
+// defaults, and the wrap-into-an-http.Handler ergonomics — but the
+// security-critical primitives (signature checks, nonce/state CSRF
+// guards, PKCE challenge/verifier pairing) come from the audited
+// libraries, NOT the kit.
+//
 // # Use this package when
 //
 //   - Your service authenticates end-users via an external OIDC

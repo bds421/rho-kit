@@ -69,6 +69,9 @@ github.com/aws/aws-sdk-go-v2/service/secretsmanager
 github.com/aws/smithy-go
 github.com/hashicorp/vault/api
 cloud.google.com/go/secretmanager
+github.com/coreos/go-oidc/v3
+github.com/go-jose/go-jose/v4
+golang.org/x/oauth2
 google.golang.org/api
 
 # Observability.

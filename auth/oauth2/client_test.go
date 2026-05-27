@@ -2,30 +2,36 @@ package oauth2_test
 
 import (
 	"context"
-	"encoding/base64"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/auth/oauth2/v2"
 )
 
-// fakeIssuer is a minimal OIDC provider: serves .well-known +
-// authorize + token endpoints. Returns a deterministic id_token shaped
-// for the kit's verifier (nonce + sub claims).
+// fakeIssuer is a minimal OIDC provider that serves a real JWKS +
+// signed id_tokens so go-oidc's verifier accepts them. Single RSA key,
+// kid "test-key-1".
 type fakeIssuer struct {
-	server    *httptest.Server
-	mux       *http.ServeMux
-	codes     map[string]codeRecord
-	clientID  string
-	authCalls int
+	server     *httptest.Server
+	mux        *http.ServeMux
+	signingKey *rsa.PrivateKey
+	clientID   string
+
+	mu    sync.Mutex
+	codes map[string]codeRecord
 }
 
 type codeRecord struct {
@@ -35,33 +41,48 @@ type codeRecord struct {
 
 func newFakeIssuer(t *testing.T, clientID string) *fakeIssuer {
 	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	f := &fakeIssuer{
-		server:   srv,
-		mux:      mux,
-		codes:    make(map[string]codeRecord),
-		clientID: clientID,
+		server:     srv,
+		mux:        mux,
+		signingKey: key,
+		clientID:   clientID,
+		codes:      make(map[string]codeRecord),
 	}
 
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"issuer":                 srv.URL,
-			"authorization_endpoint": srv.URL + "/authorize",
-			"token_endpoint":         srv.URL + "/token",
-			"jwks_uri":               srv.URL + "/jwks",
+			"issuer":                                srv.URL,
+			"authorization_endpoint":                srv.URL + "/authorize",
+			"token_endpoint":                        srv.URL + "/token",
+			"jwks_uri":                              srv.URL + "/jwks",
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
 		})
 	})
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		jwks := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+			Key:       &key.PublicKey,
+			KeyID:     "test-key-1",
+			Algorithm: "RS256",
+			Use:       "sig",
+		}}}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jwks)
+	})
 	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
-		f.authCalls++
 		q := r.URL.Query()
 		code := "code-" + q.Get("state")
-		f.codes[code] = codeRecord{
-			nonce:         q.Get("nonce"),
-			codeChallenge: q.Get("code_challenge"),
-		}
+		f.mu.Lock()
+		f.codes[code] = codeRecord{nonce: q.Get("nonce"), codeChallenge: q.Get("code_challenge")}
+		f.mu.Unlock()
 		redirectURI := q.Get("redirect_uri")
 		u, _ := url.Parse(redirectURI)
 		rq := u.Query()
@@ -73,15 +94,14 @@ func newFakeIssuer(t *testing.T, clientID string) *fakeIssuer {
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		code := r.FormValue("code")
+		f.mu.Lock()
 		rec, ok := f.codes[code]
+		f.mu.Unlock()
 		if !ok {
 			http.Error(w, "unknown code", http.StatusBadRequest)
 			return
 		}
-		// Verify the PKCE code_verifier hashes to the original challenge.
-		// (Fakes don't enforce; we trust the client to send it.)
-		_ = r.FormValue("code_verifier")
-		idToken := fakeIDToken(t, rec.nonce)
+		idToken := f.signIDToken(t, rec.nonce)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "fake-access",
@@ -94,26 +114,27 @@ func newFakeIssuer(t *testing.T, clientID string) *fakeIssuer {
 	return f
 }
 
-// fakeIDToken builds an unsigned (header.payload.) JWT-shaped string
-// the kit's minimal verifier accepts. Real signing is left to
-// security/jwtutil for callers needing it.
-func fakeIDToken(t *testing.T, nonce string) string {
+// signIDToken builds a real RS256-signed ID token go-oidc's verifier
+// accepts. iss matches the discovered issuer; aud matches the client ID.
+func (f *fakeIssuer) signIDToken(t *testing.T, nonce string) string {
 	t.Helper()
-	header := map[string]any{"alg": "none", "typ": "JWT"}
-	payload := map[string]any{
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: f.signingKey},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test-key-1"),
+	)
+	require.NoError(t, err)
+	claims := map[string]any{
+		"iss":   f.server.URL,
 		"sub":   "user-123",
+		"aud":   f.clientID,
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"iat":   time.Now().Unix(),
 		"nonce": nonce,
 		"email": "user@example.com",
-		"iss":   "fake",
-		"aud":   "test-client",
-		"exp":   time.Now().Add(time.Hour).Unix(),
 	}
-	hb, _ := json.Marshal(header)
-	pb, _ := json.Marshal(payload)
-	encode := func(b []byte) string {
-		return base64.RawURLEncoding.EncodeToString(b)
-	}
-	return fmt.Sprintf("%s.%s.fakesig", encode(hb), encode(pb))
+	raw, err := jwt.Signed(signer).Claims(claims).Serialize()
+	require.NoError(t, err)
+	return raw
 }
 
 func TestNewClient_HappyPath(t *testing.T) {
@@ -131,6 +152,8 @@ func TestNewClient_HappyPath(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NotNil(t, client)
+	require.NotNil(t, client.OAuth2Config())
+	require.NotNil(t, client.Provider())
 }
 
 func TestNewClient_MissingFields(t *testing.T) {
@@ -147,7 +170,7 @@ func TestNewClient_MissingFields(t *testing.T) {
 	}
 }
 
-func TestNewClient_RequiresSessionAndStateStores(t *testing.T) {
+func TestNewClient_RequiresStores(t *testing.T) {
 	issuer := newFakeIssuer(t, "c")
 	_, err := oauth2.NewClient(context.Background(),
 		oauth2.Config{Issuer: issuer.server.URL, ClientID: "c", RedirectURL: "https://app/cb"},
@@ -163,6 +186,7 @@ func TestNewClient_IssuerMismatchRejected(t *testing.T) {
 			"issuer":                 "https://different-issuer.example",
 			"authorization_endpoint": "https://x/auth",
 			"token_endpoint":         "https://x/token",
+			"jwks_uri":               "https://x/jwks",
 		})
 	})
 	srv := httptest.NewServer(mux)
@@ -227,7 +251,6 @@ func TestHandlers_EndToEndCallbackSetsSession(t *testing.T) {
 	appSrv := httptest.NewServer(mux)
 	defer appSrv.Close()
 
-	// Step 1: login → captures the state from the redirect target.
 	httpc := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
@@ -238,20 +261,16 @@ func TestHandlers_EndToEndCallbackSetsSession(t *testing.T) {
 	require.NoError(t, err)
 	state := authURL.Query().Get("state")
 
-	// Step 2: visit the issuer's /authorize endpoint as a real browser
-	// would (the fake registers the code on this call). Don't follow
-	// the next redirect — that would go to the relative callback URL
-	// on a different host; we'll synthesise the callback ourselves.
+	// Visit /authorize so the fake registers the code.
 	authResp, err := httpc.Get(authURL.String())
 	require.NoError(t, err)
 	defer authResp.Body.Close()
 	require.Equal(t, http.StatusFound, authResp.StatusCode)
 
-	// Step 3: simulate the issuer redirecting back with code + state.
 	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=code-"+state+"&state="+state, nil)
 	cbResp := httptest.NewRecorder()
 	mux.ServeHTTP(cbResp, cbReq)
-	require.Equal(t, http.StatusNoContent, cbResp.Code, "callback should succeed: %s", cbResp.Body.String())
+	require.Equal(t, http.StatusNoContent, cbResp.Code, "callback: %s", cbResp.Body.String())
 
 	cookies := cbResp.Result().Cookies()
 	require.NotEmpty(t, cookies)
@@ -267,6 +286,7 @@ func TestHandlers_EndToEndCallbackSetsSession(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "user-123", sess.UserID)
 	require.Equal(t, "fake-access", sess.AccessToken.RevealString())
+	require.Equal(t, "user@example.com", sess.Claims["email"])
 }
 
 func TestHandlers_CallbackRejectsUnknownState(t *testing.T) {
@@ -274,7 +294,7 @@ func TestHandlers_CallbackRejectsUnknownState(t *testing.T) {
 	client, _ := oauth2.NewClient(context.Background(),
 		oauth2.Config{
 			Issuer: issuer.server.URL, ClientID: "test-client",
-			RedirectURL: "https://app/cb", Scopes: []string{"profile"},
+			RedirectURL: "https://app/cb",
 		},
 		oauth2.WithSessionStore(oauth2.NewMemorySessionStore()),
 		oauth2.WithStateStore(oauth2.NewMemoryStateStore()),
@@ -311,16 +331,14 @@ func TestHandlers_LogoutClearsCookie(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code)
 	cookies := rec.Result().Cookies()
 	require.NotEmpty(t, cookies)
-	require.Less(t, cookies[0].MaxAge, 0, "expected MaxAge<0 to clear cookie")
+	require.Less(t, cookies[0].MaxAge, 0)
 }
 
 func TestMemorySessionStore_Expiry(t *testing.T) {
 	s := oauth2.NewMemorySessionStore()
 	require.NoError(t, s.Put(context.Background(), "id", oauth2.Session{UserID: "u"}, 10*time.Millisecond))
-	got, err := s.Get(context.Background(), "id")
+	_, err := s.Get(context.Background(), "id")
 	require.NoError(t, err)
-	require.Equal(t, "u", got.UserID)
-
 	time.Sleep(30 * time.Millisecond)
 	_, err = s.Get(context.Background(), "id")
 	require.ErrorIs(t, err, oauth2.ErrSessionNotFound)

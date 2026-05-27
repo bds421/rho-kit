@@ -6,6 +6,22 @@ OAuth2 / OIDC relying-party client. Companion to `security/jwtutil`
 (which verifies inbound JWTs); this package handles the upstream-
 provider side: login redirects, code exchange, refresh, session.
 
+## Built on standard libraries
+
+- **`golang.org/x/oauth2`** drives the OAuth2 dance: AuthCodeURL,
+  Exchange, PKCE helpers (`GenerateVerifier` + `S256ChallengeOption`),
+  refresh-token transport.
+- **`github.com/coreos/go-oidc/v3`** drives OIDC: provider discovery
+  with issuer-match validation (RFC 8414 §3.3), JWKS fetch + rotation,
+  ID-token verification (signature, alg, exp, audience, issuer).
+
+The kit adds session/state persistence interfaces, sensible cookie
+defaults, and the wrap-into-an-http.Handler ergonomics. Security-
+critical primitives come from the audited libraries above, NOT
+hand-rolled. `Client.OAuth2Config()` and `Client.Provider()` expose
+the underlying types for callers needing refresh-token transports
+or UserInfo without re-discovering endpoints.
+
 ## Public API
 
 - `NewClient(ctx, cfg, opts...) (*Client, error)` — fetches well-known
