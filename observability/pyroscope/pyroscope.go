@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/grafana/pyroscope-go"
@@ -98,12 +99,18 @@ func Component(cfg Config, opts ...Option) (*Profiler, error) {
 	return &Profiler{cfg: cfg, logger: cc.logger}, nil
 }
 
-// Profiler implements the kit's lifecycle.Component contract. Not
-// goroutine-safe — Start/Stop are intended to be called once per
-// process lifetime by the Runner.
+// Profiler implements the kit's lifecycle.Component contract.
+// Start/Stop are goroutine-safe — a double-Start cleanly returns the
+// "already started" error, and concurrent Start+Stop don't race on
+// the underlying pyroscope-go session reference.
 type Profiler struct {
-	cfg     Config
-	logger  *slog.Logger
+	cfg    Config
+	logger *slog.Logger
+	// mu guards session. The lifecycle.Runner calls Start/Stop from
+	// a single goroutine in production, but tests (and resilience-
+	// pattern callers that wrap Component in a supervised goroutine)
+	// can race Start vs. another Start, or Start vs. Stop.
+	mu      sync.Mutex
 	session *pyroscope.Profiler
 }
 
@@ -112,8 +119,13 @@ type Profiler struct {
 // until ctx is cancelled, then returns. This matches the kit's
 // lifecycle.Component contract ("Start blocks until done or ctx
 // cancelled").
+//
+// Concurrent Start calls: the first wins; the second returns
+// "already started" without disturbing the running session.
 func (p *Profiler) Start(ctx context.Context) error {
+	p.mu.Lock()
 	if p.session != nil {
+		p.mu.Unlock()
 		return errors.New("pyroscope: Start called more than once")
 	}
 	cfg := pyroscope.Config{
@@ -128,9 +140,11 @@ func (p *Profiler) Start(ctx context.Context) error {
 	}
 	session, err := pyroscope.Start(cfg)
 	if err != nil {
+		p.mu.Unlock()
 		return fmt.Errorf("pyroscope: Start: %w", err)
 	}
 	p.session = session
+	p.mu.Unlock()
 	p.logger.Info("pyroscope profiler started",
 		slog.String("app", p.cfg.AppName),
 		slog.String("server", p.cfg.ServerAddress),
@@ -141,13 +155,16 @@ func (p *Profiler) Start(ctx context.Context) error {
 }
 
 // Stop ends the pyroscope session and flushes the final profile batch.
-// Idempotent.
+// Idempotent and concurrency-safe with concurrent Start.
 func (p *Profiler) Stop(_ context.Context) error {
+	p.mu.Lock()
 	if p.session == nil {
+		p.mu.Unlock()
 		return nil
 	}
 	session := p.session
 	p.session = nil
+	p.mu.Unlock()
 	if err := session.Stop(); err != nil {
 		return fmt.Errorf("pyroscope: Stop: %w", err)
 	}

@@ -132,7 +132,9 @@ func TestConfigWithFloor_DropsDeprecatedNameToCertificate(t *testing.T) {
 		t.Fatalf("ConfigWithFloor: %v", err)
 	}
 	//nolint:staticcheck // Reading the deprecated field for the assertion.
+	//lint:ignore SA1019 reading the deprecated field for the assertion.
 	if cloned.NameToCertificate != nil {
+		//lint:ignore SA1019 message formatting reads the deprecated field for the assertion.
 		t.Fatalf("NameToCertificate = %+v, want nil — kit must not inherit the deprecated SNI map", cloned.NameToCertificate)
 	}
 }

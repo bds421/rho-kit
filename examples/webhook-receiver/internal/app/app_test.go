@@ -39,7 +39,7 @@ func TestWebhookHandler_SignedRequestAccepted(t *testing.T) {
 
 	resp, err := srv.Client().Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusAccepted {
 		bodyBytes, _ := readAll(resp.Body)
@@ -62,7 +62,7 @@ func TestWebhookHandler_UnsignedRejected(t *testing.T) {
 
 	resp, err := http.Post(srv.URL+"/", "application/json", strings.NewReader(`{"id":"x"}`))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.GreaterOrEqual(t, resp.StatusCode, 400)
 	assert.Less(t, resp.StatusCode, 500)
@@ -90,7 +90,7 @@ func TestWebhookHandler_IdempotentRetry(t *testing.T) {
 		req.Header.Set("Idempotency-Key", "retry-token-001")
 		resp, err := srv.Client().Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusAccepted {
 			bodyBytes, _ := readAll(resp.Body)
 			t.Fatalf("expected 202, got %d. body=%q", resp.StatusCode, string(bodyBytes))
@@ -170,7 +170,7 @@ func TestListHandler_ReturnsEvents(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.listHandler()(w, httptest.NewRequest(http.MethodGet, "/received", nil))
 	resp := w.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	body, _ := readAll(resp.Body)
 	assert.Contains(t, string(body), `"id":"a"`)

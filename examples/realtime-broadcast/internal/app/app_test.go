@@ -135,7 +135,7 @@ func TestTokenEndpoint_IssuesVerifiableToken(t *testing.T) {
 
 	resp, err := http.Get(srv.URL + "?sub=alice")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var body struct {
@@ -164,7 +164,7 @@ func TestJWKSEndpoint_ExposesPublicKey(t *testing.T) {
 
 	resp, err := http.Get(srv.URL)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	body := make([]byte, 4096)
@@ -203,7 +203,7 @@ func TestTokenEndpoint_DefaultsSubWhenMissing(t *testing.T) {
 
 	resp, err := http.Get(srv.URL) // no ?sub=
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	body, _ := readAll(resp.Body)

@@ -29,7 +29,7 @@ func TestGateway_HappyPath(t *testing.T) {
 
 	resp, err := srv.Client().Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -51,7 +51,7 @@ func TestGateway_UnauthorizedRejectedBeforeDownstream(t *testing.T) {
 
 	resp, err := srv.Client().Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	assert.Equal(t, int32(0), downstreamCalled.Load(),
 		"downstream must not be invoked when auth fails")
@@ -73,7 +73,7 @@ func TestGateway_RetryRecoversTransientFailure(t *testing.T) {
 
 	resp, err := srv.Client().Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode,
 		"retry must recover from a single transient failure")
 }
@@ -93,7 +93,7 @@ func TestGateway_BreakerOpensAfterSustainedFailures(t *testing.T) {
 		req.Header.Set("X-Tenant-Id", "acme")
 		resp, err := srv.Client().Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		return resp.StatusCode
 	}
 
@@ -123,7 +123,7 @@ func TestGateway_TenantHeaderRequired(t *testing.T) {
 
 	resp, err := srv.Client().Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
@@ -163,7 +163,7 @@ func TestGateway_BulkheadFullReturns503(t *testing.T) {
 		req.Header.Set("X-Tenant-Id", "acme")
 		resp, err := srv.Client().Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		return resp.StatusCode
 	}
 
@@ -218,7 +218,7 @@ func TestGateway_BudgetExhaustedReturns504(t *testing.T) {
 	start := time.Now()
 	resp, err := srv.Client().Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	elapsed := time.Since(start)
 
 	assert.Equal(t, http.StatusGatewayTimeout, resp.StatusCode,

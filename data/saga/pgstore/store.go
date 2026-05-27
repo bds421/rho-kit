@@ -177,7 +177,7 @@ func (s *Store) ListResumable(ctx context.Context, olderThan time.Duration) ([]s
 	if err != nil {
 		return nil, redact.WrapError("pgstore: ListResumable", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []saga.Instance
 	for rows.Next() {
 		inst, err := s.scanRow(rows)

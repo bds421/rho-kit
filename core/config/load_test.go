@@ -457,8 +457,10 @@ func TestLoad_SecretTypedParseErrorsDoNotEchoValue(t *testing.T) {
 
 func TestLoad_UnexportedFieldsSkipped(t *testing.T) {
 	type cfg struct {
-		Public  string `env:"TEST_PUBLIC" default:"yes"`
-		private string `env:"TEST_PRIVATE" default:"no"` //nolint:unused
+		Public string `env:"TEST_PUBLIC" default:"yes"`
+		//nolint:unused
+		//lint:ignore U1000 verifies Load skips this unexported field
+		private string `env:"TEST_PRIVATE" default:"no"`
 	}
 	c, err := Load[cfg]()
 	require.NoError(t, err)

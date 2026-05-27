@@ -50,12 +50,6 @@ func (f *fakeAcquirer) Ping(_ context.Context) error {
 
 func (f *fakeAcquirer) Close() {}
 
-func (f *fakeAcquirer) setFailAcquire(err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.failAcquire = err
-}
-
 func (f *fakeAcquirer) setFailPing(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

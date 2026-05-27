@@ -164,7 +164,7 @@ func (s *Store) List(ctx context.Context) ([]ScheduleRecord, error) {
 	if err != nil {
 		return nil, redact.WrapError("pgstore: List", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []ScheduleRecord
 	for rows.Next() {
 		var rec ScheduleRecord

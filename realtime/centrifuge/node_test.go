@@ -123,6 +123,7 @@ func TestNode_StartRejectsNilContext(t *testing.T) {
 	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithLogger(newQuietLogger()))
 	require.NoError(t, err)
 	//nolint:staticcheck // SA1012: testing the nil-ctx rejection path on purpose.
+	//lint:ignore SA1012 nil-ctx rejection contract test
 	err = node.Start(nil)
 	require.Error(t, err)
 }
@@ -131,6 +132,7 @@ func TestNode_StopRejectsNilContext(t *testing.T) {
 	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithLogger(newQuietLogger()))
 	require.NoError(t, err)
 	//nolint:staticcheck // SA1012: testing the nil-ctx rejection path on purpose.
+	//lint:ignore SA1012 nil-ctx rejection contract test
 	err = node.Stop(nil)
 	require.Error(t, err)
 }

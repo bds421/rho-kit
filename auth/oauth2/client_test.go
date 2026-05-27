@@ -220,7 +220,7 @@ func TestHandlers_LoginRedirectsWithStateAndPKCE(t *testing.T) {
 	}
 	resp, err := httpc.Get(srv.URL + "/oauth/login")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusFound, resp.StatusCode)
 	loc, err := url.Parse(resp.Header.Get("Location"))
 	require.NoError(t, err)
@@ -256,7 +256,7 @@ func TestHandlers_EndToEndCallbackSetsSession(t *testing.T) {
 	}
 	loginResp, err := httpc.Get(appSrv.URL + "/oauth/login")
 	require.NoError(t, err)
-	defer loginResp.Body.Close()
+	defer func() { _ = loginResp.Body.Close() }()
 	authURL, err := url.Parse(loginResp.Header.Get("Location"))
 	require.NoError(t, err)
 	state := authURL.Query().Get("state")
@@ -264,7 +264,7 @@ func TestHandlers_EndToEndCallbackSetsSession(t *testing.T) {
 	// Visit /authorize so the fake registers the code.
 	authResp, err := httpc.Get(authURL.String())
 	require.NoError(t, err)
-	defer authResp.Body.Close()
+	defer func() { _ = authResp.Body.Close() }()
 	require.Equal(t, http.StatusFound, authResp.StatusCode)
 
 	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=code-"+state+"&state="+state, nil)

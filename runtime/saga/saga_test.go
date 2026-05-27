@@ -191,6 +191,7 @@ func TestRun_NilDefinitionReturnsError(t *testing.T) {
 func TestRun_NilContextReturnsError(t *testing.T) {
 	def := saga.MustDefinition(saga.Step{Name: "a", Forward: func(context.Context, any) error { return nil }})
 	//nolint:staticcheck // SA1012 — deliberately exercising the nil-ctx guard.
+	//lint:ignore SA1012 nil-ctx rejection contract test
 	err := saga.Run(nil, def, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "non-nil context")

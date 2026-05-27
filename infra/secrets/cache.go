@@ -89,11 +89,6 @@ func WithCacheMetricsRegisterer(reg prometheus.Registerer) CacheOption {
 	return func(c *cacheConfig) { c.registerer = reg }
 }
 
-// withClock overrides time.Now for tests. Not exported.
-func withClock(fn func() time.Time) CacheOption {
-	return func(c *cacheConfig) { c.now = fn }
-}
-
 // NewCachedLoader wraps inner with a cache. Returns an error if inner
 // is nil or config validation fails.
 func NewCachedLoader(inner Loader, opts ...CacheOption) (*CachedLoader, error) {

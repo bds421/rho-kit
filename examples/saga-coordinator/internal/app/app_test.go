@@ -169,7 +169,7 @@ func TestHandleOrder_HappyPath(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := srv.Client().Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -183,7 +183,7 @@ func TestHandleOrder_MissingIdempotencyKeyRejected(t *testing.T) {
 	body, _ := json.Marshal(OrderRequest{OrderID: "ord-http-2", Amount: 99.99})
 	resp, err := srv.Client().Post(srv.URL+"/orders", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
@@ -204,6 +204,6 @@ func TestHandleOrder_SagaFailureReturns422(t *testing.T) {
 	req.Header.Set("Idempotency-Key", "fail-http")
 	resp, err := srv.Client().Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 }

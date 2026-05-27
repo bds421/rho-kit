@@ -2,6 +2,11 @@ package apperror
 
 import (
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -321,4 +326,83 @@ func TestShouldRetry(t *testing.T) {
 
 	// Nil errors return false.
 	assert.False(t, ShouldRetry(nil))
+}
+
+// TestAllCodes_Complete enforces that every package-level `Code*`
+// constant is present in [AllCodes]. Adding a new Code without
+// adding it to AllCodes would otherwise drift silently — the
+// transport-adapter exhaustiveness tests (grpcx, httpx) consume
+// AllCodes, so an omission here cascades into "the new code is
+// real but the maps don't know it".
+//
+// Reflection over package-level constants isn't available in Go, so
+// we parse the source file with go/ast. The test runs alongside the
+// errors.go file in the same package, which keeps the AST scan
+// trivially scoped.
+func TestAllCodes_Complete(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "errors.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse errors.go: %v", err)
+	}
+
+	var declared []Code
+	for _, decl := range f.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			// Each constant in this file follows `CodeX Code = "..."`;
+			// the const block declares the same Code type explicitly so
+			// we look for one Name per ValueSpec.
+			for _, name := range vs.Names {
+				if !strings.HasPrefix(name.Name, "Code") {
+					continue
+				}
+				// The constant's runtime value is reachable by looking
+				// the name up via the declared package — but a test in
+				// the same package can just type-switch on the literal.
+				if len(vs.Values) != 1 {
+					continue
+				}
+				lit, ok := vs.Values[0].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				// Strip the surrounding quotes from the string literal.
+				raw, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("unquote %s: %v", lit.Value, err)
+				}
+				declared = append(declared, Code(raw))
+			}
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("AST scan found zero Code constants — parser broken or file moved")
+	}
+
+	got := AllCodes()
+	gotSet := make(map[Code]struct{}, len(got))
+	for _, c := range got {
+		gotSet[c] = struct{}{}
+	}
+	var missing []Code
+	for _, c := range declared {
+		if _, ok := gotSet[c]; !ok {
+			missing = append(missing, c)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("AllCodes() missing entries: %v (declared constants: %v)", missing, declared)
+	}
+	if len(got) != len(declared) {
+		t.Fatalf("AllCodes() has %d entries but %d Code constants are declared (extras or duplicates)",
+			len(got), len(declared))
+	}
 }

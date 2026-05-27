@@ -1495,6 +1495,39 @@ in v2.0.0.
   the concurrency check by passing a fresh `Instance{}` with an
   existing ID.
 
+- **`core/apperror` gains `CodeTimeout` and `CodePayloadTooLarge`** —
+  HTTP 408 and HTTP 413 are now first-class kit codes (with matching
+  gRPC `DeadlineExceeded` and `ResourceExhausted` mappings) instead
+  of being surfaced as raw HTTP-name strings from `httpStatusToCode`.
+  New error types: `TimeoutError` (retryable, distinct from
+  `UnavailableError`'s "dependency down" meaning) and
+  `PayloadTooLargeError` (non-retryable, carries a `Limit` field for
+  the byte cap that was exceeded). Constructors: `NewTimeout`,
+  `NewTimeoutWithCause`, `NewPayloadTooLarge`,
+  `NewPayloadTooLargeWithCause`. Predicates: `IsTimeout`,
+  `IsPayloadTooLarge`. `AllCodes()` returns the expanded set.
+
+  **JSON wire-format change:** problem-details bodies for HTTP 408
+  responses now carry `{"code":"TIMEOUT", ...}` instead of
+  `{"code":"REQUEST_TIMEOUT", ...}`. PAYLOAD_TOO_LARGE wire string
+  stays identical. Downstream callers parsing the `code` field on
+  408 responses must update their expected token. (HTTP status code
+  itself is unchanged — only the JSON `code` field's value differs.)
+
+- **`realtime/centrifuge` registerer-option naming corrected** —
+  pre-v2.0.0 the package shipped `WithRegisterer(reg) Option` (the
+  OUTER, returning the node's `Option` type) and
+  `WithMetricsRegisterer(reg) MetricsOption` (the INNER, returning
+  the metrics builder's `MetricsOption` type). The two were
+  swapped relative to the kit-wide convention documented in root
+  `AGENTS.md` ("Metrics"): `WithRegisterer` is the inner spelling;
+  `WithMetricsRegisterer` is the outer spelling. The names are now
+  swapped to match — `centrifuge.WithMetricsRegisterer` is the
+  `Option`, `centrifuge.WithRegisterer` is the `MetricsOption`.
+  This is breaking for any pre-tag consumer that imported either
+  name; v2.0.0 ships with the corrected spelling. No published v1
+  tag carries this surface so consumer impact is zero.
+
 ## What's deliberately NOT shipped
 
 The kit intentionally does not include these. None are on a roadmap;

@@ -130,6 +130,7 @@ func detachTLSConfig(cfg *tls.Config) {
 	// silently shadow modern certificate-selection logic on the
 	// kit-owned config — drop it once cloning is complete.
 	//nolint:staticcheck // Reset the deprecated map intentionally.
+	//lint:ignore SA1019 deliberately zeroing the deprecated field
 	cfg.NameToCertificate = nil
 	if cfg.RootCAs != nil {
 		cfg.RootCAs = cfg.RootCAs.Clone()

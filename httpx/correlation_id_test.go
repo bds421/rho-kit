@@ -52,6 +52,7 @@ func TestPropagateHTTP_NilContextNoops(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 
 	//nolint:staticcheck // Deliberately exercises the nil-safe propagation path.
+	//lint:ignore SA1012 nil-safety contract test
 	PropagateHTTP(nil, req)
 
 	if got := req.Header.Get("X-Correlation-Id"); got != "" {
