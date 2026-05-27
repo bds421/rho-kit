@@ -104,7 +104,14 @@ jobs:
             json_out="${findings_dir}/$(echo "$module_dir" | tr '/' '_').json"
             # govulncheck returns 3 when called vulnerabilities are found,
             # 0 otherwise. Anything else is a tooling failure.
-            if (cd "$module_dir" && govulncheck -json -mode source ./...) > "$json_out" 2> "${json_out}.err"; then
+            #
+            # GOWORK=off per module: tool modules under tools/ (e.g.
+            # tools/check-doc-rot) are tracked Go modules but are NOT in
+            # go.work. With GOWORK=on, govulncheck's `./...` pattern fails
+            # with "directory prefix . does not contain modules listed in
+            # go.work". Disabling GOWORK lets each module's replace
+            # directives resolve the same in-tree code that go.work would.
+            if (cd "$module_dir" && GOWORK=off govulncheck -json -mode source ./...) > "$json_out" 2> "${json_out}.err"; then
               echo "clean: $module_dir"
             else
               rc=$?
@@ -180,7 +187,8 @@ jobs:
           fetch-depth: 0
 
       - name: Run osv-scanner
-        uses: google/osv-scanner-action/osv-scanner-action@v2.0.2
+        id: osv
+        uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
         with:
           scan-args: |-
             --recursive
@@ -193,10 +201,12 @@ jobs:
       - name: Filter findings by severity threshold
         env:
           FAIL_LEVEL: ${{ env.VULN_FAIL_LEVEL }}
+          OSV_OUTCOME: ${{ steps.osv.outcome }}
         run: |
           set -euo pipefail
           if [ ! -f osv-results.sarif ]; then
-            echo "no SARIF output - scanner failed"
+            echo "::error::osv-scanner did not emit osv-results.sarif (action outcome: ${OSV_OUTCOME})."
+            echo "Check the 'Run osv-scanner' step log for the scanner-side error."
             exit 1
           fi
           python3 - "$FAIL_LEVEL" <<'PY'
