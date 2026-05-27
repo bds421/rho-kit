@@ -65,8 +65,10 @@ github.com/aws/aws-sdk-go-v2/config
 github.com/aws/aws-sdk-go-v2/credentials
 github.com/aws/aws-sdk-go-v2/service/kms
 github.com/aws/aws-sdk-go-v2/service/s3
+github.com/aws/aws-sdk-go-v2/service/secretsmanager
 github.com/aws/smithy-go
 github.com/hashicorp/vault/api
+cloud.google.com/go/secretmanager
 google.golang.org/api
 
 # Observability.

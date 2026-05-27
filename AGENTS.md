@@ -272,6 +272,7 @@ row you start from:
 | mTLS identity (peer cert claims) | `security/mtlsidentity` | [security](docs/ai/security.md) |
 | CSRF helpers (token mint/verify) | `security/csrf` | [security](docs/ai/security.md) |
 | Rotate infrastructure credentials | `pgxbackend.PasswordProvider`, Redis credential providers, AMQP/NATS auth providers, storage provider credentials, CSRF/signed-request key rings | [credential rotation](docs/ai/credential-rotation.md) |
+| Load secrets-as-values from a secret manager (DB passwords, API tokens, signing keys) | `infra/secrets` (Loader + CachedLoader with stale-while-revalidate) + backend: `infra/secrets/awssm` / `infra/secrets/gcpsm` / `infra/secrets/vaultkv` | [security](docs/ai/security.md) |
 
 ## Key Conventions
 

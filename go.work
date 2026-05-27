@@ -78,6 +78,10 @@ use (
 	./infra/outbox/postgres
 	./infra/redis
 	./infra/redis/redistest
+	./infra/secrets
+	./infra/secrets/awssm
+	./infra/secrets/gcpsm
+	./infra/secrets/vaultkv
 	./infra/sqldb/dbtest
 	./infra/sqldb/pgx
 	./infra/sqldb/readreplica
