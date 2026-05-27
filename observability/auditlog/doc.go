@@ -1,6 +1,35 @@
 // Package auditlog provides an append-only event ledger for compliance and
 // debugging. It records who did what, when, and what the outcome was.
 //
+// # Use this package when
+//
+//   - You need a tamper-evident, HMAC-chained record of security-relevant
+//     actions (auth decisions, permission grants, data exports, admin actions).
+//   - A regulator or auditor will read the records later and you must prove
+//     the chain has not been mutated.
+//   - You need pagination cursors that cannot be forged.
+//
+// # Do NOT use this package for
+//
+//   - Plain application logging — use [log/slog] with the kit's field
+//     vocabulary in [github.com/bds421/rho-kit/observability/v2/logattr].
+//     This package is heavyweight: every Append computes an HMAC and writes
+//     to a Store. Use it only for events that genuinely need the chain.
+//
+// # Sibling packages — pick the right one
+//
+//   - [github.com/bds421/rho-kit/observability/v2/auditlog]  — THIS package.
+//     The implementation: tamper-evident store + Logger + chain verifier.
+//     Import this when you call [Logger.LogE] directly, define a custom
+//     Store, or run [VerifyChain].
+//   - [github.com/bds421/rho-kit/app/v2/auditlog]            — Builder
+//     bridge. A 90-line app.Module that constructs a *Logger from a Store
+//     and publishes it on app.Infrastructure. Import this only when wiring
+//     into the app.Builder lifecycle.
+//   - [github.com/bds421/rho-kit/observability/v2/logattr]   — slog.Attr
+//     field constructors for *general* structured logging. Unrelated to
+//     audit; named "logattr" not "auditattr" for that reason.
+//
 // The package follows the kit's pluggable store pattern: a [Store] interface
 // defines the persistence contract, with [NewMemoryStore] for testing and
 // local development. Production services should provide a durable [Store]

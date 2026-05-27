@@ -204,7 +204,7 @@ row you start from:
 | Cursor pagination | `httpx/pagination` | [utilities](docs/ai/utilities.md) |
 | Typed application errors | `core/apperror` | [utilities](docs/ai/utilities.md) |
 | Authorize requests (RBAC/ABAC) | `authz` | [http](docs/ai/http.md) |
-| Consistent structured logging | `observability/logattr` | [utilities](docs/ai/utilities.md) |
+| Consistent structured logging (slog field names) — NOT an audit log | `observability/logattr` (the constructors `Error/Component/RequestID/...`; use audit-log packages above when you need a tamper-evident chain) | [utilities](docs/ai/utilities.md) |
 | Outbound HTTP client (mTLS-aware, no resilience) | `httpx.NewHTTPClient` / `httpx.NewTracingHTTPClient` | [http](docs/ai/http.md) |
 | Resilient outbound HTTP calls | `httpx.NewResilientHTTPClient` | [http](docs/ai/http.md) |
 | Request-scoped logging | `httpx/middleware/logging.WithRequestLogger`, `httpx.Logger` | [http](docs/ai/http.md) |
@@ -245,7 +245,8 @@ row you start from:
 | pprof profiling endpoint (internal port only) | `observability/pprof` | [observability](docs/ai/observability.md) |
 | Service health check binary | `app.Main` `--health` flag (invokes `observability/health.RunHealthCheck`) | [observability](docs/ai/observability.md) |
 | Per-request health endpoints | `httpx/healthhttp` | [observability](docs/ai/observability.md) |
-| Tamper-evident audit log | `observability/auditlog` (in-process `MemoryStore`) → `observability/auditlog/postgres` (durable, schema via `cmd/kit-migrate auditlog`) | [observability](docs/ai/observability.md) |
+| Tamper-evident audit log (implementation: HMAC chain, Store, VerifyChain) | `observability/auditlog` (in-process `MemoryStore`) → `observability/auditlog/postgres` (durable, schema via `cmd/kit-migrate auditlog`) | [observability](docs/ai/observability.md) |
+| Tamper-evident audit log (Builder wiring as an app.Module) | `app/auditlog` (thin bridge; pass to `app.Builder.With(...)`) | [observability](docs/ai/observability.md) |
 | Transactional outbox (at-least-once messaging, DB + broker) | `infra/outbox` (Relay) + `infra/outbox/postgres` (durable Store; schema via `cmd/kit-migrate outbox`; `WithTx`/`RequireTx` for caller-tx atomicity) | [messaging](docs/ai/messaging.md) |
 | Distributed tracing helpers | `observability/tracing` | [observability](docs/ai/observability.md) |
 | RFC 7807 problem-details responses | `httpx/problemdetails` | [http](docs/ai/http.md) |

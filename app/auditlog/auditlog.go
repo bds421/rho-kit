@@ -1,13 +1,40 @@
 // Package auditlog is the lazy app-module wrapper for the kit's
 // [github.com/bds421/rho-kit/observability/v2/auditlog] logger.
-// Services pass [auditlog.Module] to [app.Builder.With] to wire an
-// audit logger backed by the supplied store; handlers access the
-// resulting *auditlog.Logger via [auditlog.Logger].
+//
+// # Use this package when
+//
+//   - You are building a service on [app.Builder] and want the audit
+//     logger registered as an adapter module (parallel to app/postgres,
+//     app/redis, etc.).
+//
+// # Do NOT use this package for
+//
+//   - Computing or verifying the audit chain — that lives in the
+//     implementation package [observability/v2/auditlog].
+//   - General structured logging — use slog directly with
+//     [observability/v2/logattr] for kit-standard field names.
+//
+// # Sibling packages — pick the right one
+//
+//   - [github.com/bds421/rho-kit/app/v2/auditlog]            — THIS package.
+//     The Builder bridge. ~90 lines of glue that turns a Store into a
+//     registered Module and exposes [Logger] for router code.
+//   - [github.com/bds421/rho-kit/observability/v2/auditlog]  — the
+//     implementation (HMAC-chained Logger, Store interface, VerifyChain).
+//     Import this when you need the *types* (auditlog.Event, auditlog.Store).
+//   - [github.com/bds421/rho-kit/observability/v2/logattr]   — slog.Attr
+//     field constructors for *general* structured logging. Not related
+//     to audit; do not confuse the names.
+//
+// # Typical wiring
 //
 //	app.New(name, ver, cfg).
-//	    With(auditlog.Module(auditlog.NewMemoryStore())).
+//	    With(appauditlog.Module(kitauditlog.NewMemoryStore(),
+//	        kitauditlog.WithChainKey(chainKey),
+//	        kitauditlog.WithCursorKey(cursorKey),
+//	    )).
 //	    Router(func(infra app.Infrastructure) http.Handler {
-//	        logger := auditlog.Logger(infra)
+//	        logger := appauditlog.Logger(infra)
 //	        // attach to handlers, middleware, or domain events
 //	        return router(infra)
 //	    }).
