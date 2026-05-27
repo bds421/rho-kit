@@ -200,6 +200,7 @@ row you start from:
 | Sign/verify webhooks (HMAC) | `crypto/signing` | [security](docs/ai/security.md) |
 | Verify JWTs (JWKS) | `security/jwtutil` | [security](docs/ai/security.md) |
 | Revoke JWTs after logout | `security/jwtutil/revocation` | [security](docs/ai/security.md) |
+| OAuth2 / OIDC relying-party client (login via Auth0 / Keycloak / Cognito / Google / Okta) | `auth/oauth2` (NewClient + Handlers; PKCE on by default; state/nonce CSRF guards; stdlib-only) | [security](docs/ai/security.md) |
 | mTLS between services | `security/netutil` | [security](docs/ai/security.md) |
 | Prevent SSRF | `security/netutil` | [security](docs/ai/security.md) |
 | Validate structs | `core/validate` | [utilities](docs/ai/utilities.md) |

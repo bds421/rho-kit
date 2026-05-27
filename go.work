@@ -27,6 +27,7 @@ use (
 	./app/storage
 	./app/tenant
 	./app/tracing
+	./auth/oauth2
 	./authz
 	./authz/openfga
 	./cmd/kit-catalog
