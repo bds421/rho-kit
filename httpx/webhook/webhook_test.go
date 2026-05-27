@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -97,6 +98,48 @@ func TestSend_RetriesOn5xxThenSucceeds(t *testing.T) {
 	)
 	require.NoError(t, d.Send(context.Background(), webhook.Delivery{URL: srv.URL}))
 	require.GreaterOrEqual(t, attempts.Load(), int32(3))
+}
+
+// TestSend_TimestampFreshPerAttempt verifies the B1 fix: each retry
+// re-signs with a NEW timestamp so a slow retry stays inside the
+// receiver's signing.Verify maxAge window. Otherwise a single-sign
+// dispatcher would silently rot past 30s+ of cumulative backoff.
+func TestSend_TimestampFreshPerAttempt(t *testing.T) {
+	var (
+		mu         sync.Mutex
+		timestamps []string
+		attempts   atomic.Int32
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		timestamps = append(timestamps, r.Header.Get("X-Kit-Timestamp"))
+		mu.Unlock()
+		n := attempts.Add(1)
+		if n < 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	d := newDispatcher(t, srv.Client(),
+		// Use a tiny base + factor so the test runs fast but still
+		// guarantees ≥1s span between first and last attempt — that's
+		// long enough for time.Now() to advance the Unix-second tick.
+		webhook.WithRetryPolicy(retry.DefaultPolicy()),
+	)
+	require.NoError(t, d.Send(context.Background(), webhook.Delivery{URL: srv.URL}))
+	mu.Lock()
+	defer mu.Unlock()
+	require.GreaterOrEqual(t, len(timestamps), 3)
+	// The whole point: timestamps must NOT all be identical. If the
+	// sign was outside the loop, every retry would carry the same
+	// X-Kit-Timestamp and we'd see len(unique)=1.
+	unique := map[string]struct{}{}
+	for _, ts := range timestamps {
+		unique[ts] = struct{}{}
+	}
+	require.Greater(t, len(unique), 1, "retries reused the same timestamp; got %v — sign moved outside the closure?", timestamps)
 }
 
 func TestSend_4xxGivesUpImmediately(t *testing.T) {

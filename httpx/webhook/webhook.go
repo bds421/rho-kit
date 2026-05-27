@@ -142,6 +142,12 @@ type Delivery struct {
 //
 // The retry policy supplied via WithRetryPolicy bounds the total
 // attempts; ctx cancellation halts the loop immediately.
+//
+// Each attempt re-signs with a FRESH timestamp so a retry that lands
+// minutes after the original Send still sits inside the receiver's
+// signing.Verify maxAge window. Signing once outside the loop would
+// silently get rejected as "expired signature" past the first 30s
+// (signing's default future-skew) on retries with long backoff.
 func (d *Dispatcher) Send(ctx context.Context, del Delivery) error {
 	if del.URL == "" {
 		return errors.New("webhook: Delivery.URL is required")
@@ -152,12 +158,14 @@ func (d *Dispatcher) Send(ctx context.Context, del Delivery) error {
 	if del.ContentType == "" {
 		del.ContentType = "application/json"
 	}
-	signature, timestamp, err := d.cfg.Signer.Sign(d.cfg.Secret, del.Body)
-	if err != nil {
-		return fmt.Errorf("webhook: sign: %w", err)
-	}
 
 	return retry.DoWith(ctx, d.retryPolicy, func(ctx context.Context) error {
+		signature, timestamp, err := d.cfg.Signer.Sign(d.cfg.Secret, del.Body)
+		if err != nil {
+			// Signing failures are permanent (programmer bug — bad
+			// secret, broken signer). Mark non-retryable.
+			return permanent(fmt.Errorf("webhook: sign: %w", err))
+		}
 		return d.attempt(ctx, del, signature, timestamp)
 	}, retry.WithRetryIf(isRetryable))
 }

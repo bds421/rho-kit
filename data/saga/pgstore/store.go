@@ -53,9 +53,21 @@ func New(db *sql.DB, opts ...Option) *Store {
 	return s
 }
 
-// Put implements [saga.StateStore]. Creates the row on first call;
-// subsequent calls upsert with an updated_at check that surfaces
-// [ErrConcurrentUpdate] when another replica wrote first.
+// Put implements [saga.StateStore]. Routes to two distinct SQL paths
+// based on whether the caller's Instance carries a non-zero UpdatedAt:
+//
+//   - UpdatedAt zero → INSERT ... ON CONFLICT (id) DO NOTHING. A row
+//     with the same ID already existing surfaces as ErrConcurrentUpdate
+//     (the executor will re-read and re-decide). NEVER overwrites.
+//   - UpdatedAt non-zero → UPDATE ... WHERE updated_at = $old. Strict
+//     optimistic concurrency: any other replica's write since the
+//     caller read state surfaces as ErrConcurrentUpdate.
+//
+// Splitting the paths closes the v2.0 blocker B2: a single
+// INSERT…ON CONFLICT DO UPDATE WHERE (updated_at=$9 OR $9 IS NULL)
+// had a `IS NULL` escape that let a misbehaving caller bypass the
+// concurrency check by passing a fresh Instance{} with an existing
+// ID. Two-path implementation has no such escape.
 func (s *Store) Put(ctx context.Context, inst saga.Instance) error {
 	if inst.ID == "" {
 		return errors.New("pgstore: Put requires Instance.ID")
@@ -69,37 +81,61 @@ func (s *Store) Put(ctx context.Context, inst saga.Instance) error {
 		return redact.WrapError("pgstore: marshal step_results", err)
 	}
 
-	// Try INSERT first; on conflict do the optimistic UPDATE that
-	// checks updated_at matches what we read.
-	insertQ := fmt.Sprintf(`INSERT INTO %s
+	if inst.UpdatedAt.IsZero() {
+		return s.putInsertOnly(ctx, inst, compensatedJSON, resultsJSON)
+	}
+	return s.putUpdateOptimistic(ctx, inst, compensatedJSON, resultsJSON)
+}
+
+// putInsertOnly handles first-write semantics: insert when the row
+// doesn't exist; surface ErrConcurrentUpdate if it does (the row was
+// written by another replica between the caller's decision and now).
+func (s *Store) putInsertOnly(ctx context.Context, inst saga.Instance, compensatedJSON, resultsJSON []byte) error {
+	query := fmt.Sprintf(`INSERT INTO %s
 		(id, definition, state, current_step, compensated, input, step_results, last_error, updated_at)
 		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, now())
-		ON CONFLICT (id) DO UPDATE SET
-		  state         = EXCLUDED.state,
-		  current_step  = EXCLUDED.current_step,
-		  compensated   = EXCLUDED.compensated,
-		  step_results  = EXCLUDED.step_results,
-		  last_error    = EXCLUDED.last_error,
-		  updated_at    = now()
-		WHERE %s.updated_at = $9 OR $9 IS NULL`,
-		s.table, s.table)
-
-	var ifMatch any
-	if !inst.UpdatedAt.IsZero() {
-		ifMatch = inst.UpdatedAt
-	}
-
-	res, err := s.db.ExecContext(ctx, insertQ,
+		ON CONFLICT (id) DO NOTHING`,
+		s.table)
+	res, err := s.db.ExecContext(ctx, query,
 		inst.ID, inst.Definition, string(inst.State), inst.CurrentStep,
 		string(compensatedJSON), inst.Input, string(resultsJSON), inst.LastError,
-		ifMatch,
 	)
 	if err != nil {
-		return redact.WrapError("pgstore: Put", err)
+		return redact.WrapError("pgstore: Put insert", err)
 	}
 	rows, err := res.RowsAffected()
 	if err != nil {
-		return redact.WrapError("pgstore: Put rows", err)
+		return redact.WrapError("pgstore: Put insert rows", err)
+	}
+	if rows == 0 {
+		return ErrConcurrentUpdate
+	}
+	return nil
+}
+
+// putUpdateOptimistic handles state-advance semantics: UPDATE only
+// when updated_at still matches what the caller read. No NULL escape.
+func (s *Store) putUpdateOptimistic(ctx context.Context, inst saga.Instance, compensatedJSON, resultsJSON []byte) error {
+	query := fmt.Sprintf(`UPDATE %s SET
+		  state         = $1,
+		  current_step  = $2,
+		  compensated   = $3::jsonb,
+		  step_results  = $4::jsonb,
+		  last_error    = $5,
+		  updated_at    = now()
+		WHERE id = $6 AND updated_at = $7`,
+		s.table)
+	res, err := s.db.ExecContext(ctx, query,
+		string(inst.State), inst.CurrentStep,
+		string(compensatedJSON), string(resultsJSON), inst.LastError,
+		inst.ID, inst.UpdatedAt,
+	)
+	if err != nil {
+		return redact.WrapError("pgstore: Put update", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return redact.WrapError("pgstore: Put update rows", err)
 	}
 	if rows == 0 {
 		return ErrConcurrentUpdate

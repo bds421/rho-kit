@@ -8,3 +8,7 @@
 - Auto delivery-id (UUIDv7) for receiver-side replay protection.
 - Kit headers (signature / timestamp / delivery-id) overwrite
   caller-supplied entries to prevent accidental suppression.
+- Signature + timestamp are computed PER ATTEMPT inside the retry
+  loop (not once before the loop), so a retry that lands minutes
+  after the original Send stays inside the receiver's signing.Verify
+  maxAge window. Long-backoff retry policies are now safe.
