@@ -235,6 +235,7 @@ row you start from:
 | Postgres advisory lock | `data/lock/pgadvisory` | [database](docs/ai/sqldb.md) |
 | MCP-compatible HTTP handlers | `httpx/mcp` (NewServer, Register[In,Out]) | [http](docs/ai/http.md) |
 | HMAC request signing | `httpx/sign`, `httpx/middleware/signedrequest` | [security](docs/ai/security.md) |
+| Send outbound HMAC-signed webhooks (with retry on 5xx, no-retry on 4xx, auto delivery-id) | `httpx/webhook` (Dispatcher.Send; pairs with `httpx/middleware/signedrequest` on the receiver side) | [security](docs/ai/security.md) |
 | Safe URL helpers and redirects | `httpx/urlutil`, `httpx.SafeRedirect` | [http](docs/ai/http.md) |
 | HTTP request budget enforcement | `httpx/budget`, `httpx/middleware/budget` | [http](docs/ai/http.md) |
 | Postgres-backed idempotency | `data/idempotency/pgstore` | [database](docs/ai/sqldb.md) |

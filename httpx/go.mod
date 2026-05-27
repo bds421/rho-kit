@@ -3,6 +3,7 @@ module github.com/bds421/rho-kit/httpx/v2
 go 1.26.2
 
 require (
+	github.com/bds421/rho-kit/crypto/v2 v2.0.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
