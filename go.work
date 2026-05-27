@@ -45,6 +45,7 @@ use (
 	./data/approval/postgres
 	./data/budget/redis
 	./data/cache/rediscache
+	./data/cron/pgstore
 	./data/idempotency/pgstore
 	./data/idempotency/redisstore
 	./data/lock/pgadvisory

@@ -263,6 +263,7 @@ row you start from:
 | Postgres-backed durable job queue | `data/queue/riverqueue` | [database](docs/ai/sqldb.md) |
 | Leader election | `infra/leaderelection` (`pgadvisory`/`redislock`) | [redis](docs/ai/redis.md) |
 | Run scheduled tasks (cron) | `runtime/cron` (Scheduler) | [utilities](docs/ai/utilities.md) |
+| Persist cron schedules across restarts (operator-editable) | `data/cron/pgstore` (Add/Upsert/Remove/Enable/List + ApplyTo wires enabled records to a runtime/cron.Scheduler given a jobs map) | [database](docs/ai/sqldb.md) |
 | Batched background workers | `runtime/batchworker` (Worker) | [utilities](docs/ai/utilities.md) |
 | In-process event bus (domain events) | `runtime/eventbus` (Bus, Publish, Subscribe) | [utilities](docs/ai/utilities.md) |
 | Feature flags / runtime toggles | `flags` (register via `app/flags`) | [utilities](docs/ai/utilities.md) |
