@@ -253,6 +253,7 @@ row you start from:
 | RFC 7807 problem-details responses | `httpx/problemdetails` | [http](docs/ai/http.md) |
 | OpenAPI helpers | `httpx/openapi` | [http](docs/ai/http.md) |
 | Run a gRPC service | `grpcx` (Server, RegisterServices) | [http](docs/ai/http.md) |
+| Dial a gRPC service (kit-hardened client) | `grpcx/client` (NewClient with TLS or loopback-insecure, chained recovery/logging/metrics/retry/deadline, mirrors server option vocabulary) | [http](docs/ai/http.md) |
 | Scaffold a new service | `cmd/kit-new` (`-tenant` for tenant-aware Redis/cache/idempotency) | — |
 | Audit a service for security regressions | `cmd/kit-doctor` (`-interactive` prompts to apply safe, idempotent fixes per finding; default `[y/N/skip-all]` is "no") | [observability](docs/ai/observability.md) |
 | Verify a running service's ASVS controls | `cmd/kit-verify` | [security](docs/ai/security.md) |
