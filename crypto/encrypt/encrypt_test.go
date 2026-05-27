@@ -295,12 +295,47 @@ func TestFieldEncryptor_DecryptsLegacyV2Format(t *testing.T) {
 	}
 }
 
+func TestFieldEncryptor_DecryptsLegacyV1Format(t *testing.T) {
+	// kit v1 wrote ciphertext with the printable-ASCII "enc:v1:"
+	// prefix (no leading NUL). v2 added the NUL guard; v3 dropped
+	// it because the NUL broke Postgres TEXT columns. The body
+	// (12-byte IV ‖ ciphertext ‖ 16-byte tag) is identical across
+	// all three framings, so v1 ciphertext under the current key
+	// MUST decrypt unchanged — otherwise customers with v1-encrypted
+	// fields lose access to their data on upgrade.
+	//
+	// Note: Encrypt never WRITES the v1 prefix. The legacy shortcut
+	// where input starting with "enc:v1:" was returned unchanged
+	// (the one-byte plaintext bypass) is gone — Encrypt always
+	// emits fresh v3 ciphertext.
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+	original := "alice@example.com"
+	v3Ciphertext, err := enc.Encrypt(original)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	body := v3Ciphertext[len("enc:v3:"):]
+	legacyV1Ciphertext := "enc:v1:" + body
+
+	got, err := enc.Decrypt(legacyV1Ciphertext)
+	if err != nil {
+		t.Fatalf("decrypt legacy v1: %v", err)
+	}
+	if got != original {
+		t.Fatalf("legacy v1 decrypt: got %q, want %q", got, original)
+	}
+}
+
 func TestFieldEncryptor_DecryptRejectsNoNullV2Format(t *testing.T) {
-	// A "v2 without the leading null byte" prefix is the format we
-	// briefly considered but rejected because it overlaps with the
-	// deleted enc:v1: namespace and the same-shape-as-legacy-v2 is
-	// confusing. Decrypt must reject it so operators don't accidentally
-	// roll a hand-rolled migration that mints rows in a third format.
+	// `enc:v2:` (no NUL) was never a written format — v1 used
+	// `enc:v1:`, v2 used `\x00enc:v2:`, v3 uses `enc:v3:`. Decrypt
+	// must reject any made-up `enc:v2:` framing so operators don't
+	// accidentally roll a hand-rolled migration that mints rows in
+	// a fourth format. Only enc:v3:, \x00enc:v2:, and enc:v1: are
+	// recognised.
 	enc, err := NewFieldEncryptor(testKey(t))
 	if err != nil {
 		t.Fatalf("new encryptor: %v", err)
@@ -312,7 +347,7 @@ func TestFieldEncryptor_DecryptRejectsNoNullV2Format(t *testing.T) {
 	body := v3Ciphertext[len("enc:v3:"):]
 	bogus := "enc:v2:" + body
 	if _, err := enc.Decrypt(bogus); err == nil {
-		t.Fatal("Decrypt must reject the no-NUL enc:v2: shape (only enc:v3: and \\x00enc:v2: are recognised)")
+		t.Fatal("Decrypt must reject the no-NUL enc:v2: shape (only enc:v3:, \\x00enc:v2:, and enc:v1: are recognised)")
 	}
 }
 

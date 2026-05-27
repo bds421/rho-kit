@@ -30,6 +30,27 @@ const encryptedV3Prefix = "enc:v3:"
 // stored data is fully re-encrypted.
 const legacyEncryptedV2Prefix = "\x00enc:v2:"
 
+// legacyEncryptedV1Prefix is the original kit-v1 wire format. Decrypt
+// accepts it READ-ONLY for backward compatibility with very old
+// databases that contain rows written before the v2 (NUL-prefixed)
+// format existed. The ciphertext body layout (12-byte IV ‖ ciphertext
+// ‖ 16-byte tag) is identical across v1/v2/v3 — only the framing
+// prefix differs — so existing rows under the current key decrypt
+// unchanged.
+//
+// The historical concern with v1 was that *Encrypt* used to return
+// caller input UNCHANGED when it already began with "enc:v1:". That
+// shortcut let a user submit a plaintext value starting with
+// "enc:v1:" and have it stored verbatim — a one-byte bypass of every
+// encrypted field. Encrypt no longer does that — it always writes
+// fresh v3 ciphertext. Read-only acceptance here re-introduces the
+// v1 prefix WITHOUT the unsafe Encrypt shortcut, so old rows decrypt
+// while new writes stay v3.
+//
+// Operators completing the v3 migration may drop legacy reads in a
+// future release once their stored data is fully re-encrypted.
+const legacyEncryptedV1Prefix = "enc:v1:"
+
 // FieldEncryptor provides transparent AES-256-GCM encryption for
 // database fields. The key must be exactly 32 bytes (256 bits).
 //
@@ -346,15 +367,19 @@ func (e *FieldEncryptor) validate() error {
 
 // stripEncryptedPrefix returns the base64-encoded body of a
 // recognised ciphertext and ok=true; ok=false for inputs without a
-// recognised prefix. Accepts the current "enc:v3:" prefix and the
-// legacy "\x00enc:v2:" prefix (read-only — Encrypt never writes the
-// legacy form).
+// recognised prefix. Accepts the current "enc:v3:" prefix plus the
+// legacy "\x00enc:v2:" and "enc:v1:" prefixes (read-only — Encrypt
+// never writes the legacy forms; the body layout is byte-identical
+// across all three so existing rows under the current key decrypt
+// unchanged).
 func stripEncryptedPrefix(s string) (string, bool) {
 	switch {
 	case strings.HasPrefix(s, encryptedV3Prefix):
 		return strings.TrimPrefix(s, encryptedV3Prefix), true
 	case strings.HasPrefix(s, legacyEncryptedV2Prefix):
 		return strings.TrimPrefix(s, legacyEncryptedV2Prefix), true
+	case strings.HasPrefix(s, legacyEncryptedV1Prefix):
+		return strings.TrimPrefix(s, legacyEncryptedV1Prefix), true
 	default:
 		return "", false
 	}

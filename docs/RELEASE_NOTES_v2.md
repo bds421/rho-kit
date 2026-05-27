@@ -1460,6 +1460,41 @@ in v2.0.0.
   default — benchmark noise across CI runners is too high; the
   gate is intended for local pre-PR + dedicated nightly runners.
 
+### Late fixes pre-tag
+
+- **crypto/encrypt v1 read-only backward compat restored** —
+  `FieldEncryptor.Decrypt` now accepts the historical `enc:v1:`
+  prefix (in addition to the current `enc:v3:` and the v2-era
+  `\x00enc:v2:`). v1 was dropped in the early v2 churn because the
+  *Encrypt* shortcut associated with v1 (where caller input starting
+  with `enc:v1:` was returned unchanged — a one-byte plaintext
+  bypass) was a real exploit. The Encrypt shortcut stayed gone;
+  only the *read* path is restored. The ciphertext body layout
+  (12-byte IV ‖ ciphertext ‖ 16-byte tag) is byte-identical across
+  all three framings, so v1 rows under the current key decrypt
+  unchanged. Without this fix, customers with v1-encrypted database
+  columns lost access to their data on upgrade. Encrypt still emits
+  v3; v1 reads are intended for one-shot migration. Operators
+  re-encrypting on read may drop v1 acceptance in a future release.
+
+- **httpx/webhook signs per-attempt (not once before retry)** —
+  fix for a silent-rejection bug on long-backoff retry policies.
+  Original implementation computed signature + timestamp once
+  before the `retry.DoWith` closure; every retry re-sent the same
+  `X-Kit-Timestamp`. With the default receiver skew window (30s
+  future + caller-defined `maxAge`), retries that landed minutes
+  after the original Send were rejected as stale signatures. The
+  signer is now invoked inside the retry closure so each attempt
+  carries a fresh timestamp.
+
+- **data/saga/pgstore strict optimistic concurrency** — replaced
+  `INSERT…ON CONFLICT DO UPDATE WHERE (updated_at = $9 OR $9 IS NULL)`
+  with two distinct SQL paths: `INSERT…ON CONFLICT DO NOTHING` for
+  first-write, and `UPDATE…WHERE updated_at = $old` for state
+  advancement. The `IS NULL` escape let a misbehaving caller bypass
+  the concurrency check by passing a fresh `Instance{}` with an
+  existing ID.
+
 ## What's deliberately NOT shipped
 
 The kit intentionally does not include these. None are on a roadmap;
