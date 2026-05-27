@@ -52,6 +52,7 @@ use (
 	./data/lock/redislock
 	./data/queue/redisqueue
 	./data/queue/riverqueue
+	./data/saga/pgstore
 	./data/ratelimit/redis
 	./data/stream/redisstream
 	./data/tenant
