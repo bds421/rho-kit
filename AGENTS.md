@@ -245,6 +245,7 @@ row you start from:
 | Go runtime metrics | `observability/runtimemetrics` | [observability](docs/ai/observability.md) |
 | SLO checker (latency, error/success rate) | `observability/slo` | [observability](docs/ai/observability.md) |
 | pprof profiling endpoint (internal port only) | `observability/pprof` | [observability](docs/ai/observability.md) |
+| Continuous profiling (Pyroscope / Phlare) | `observability/pyroscope` (Component wraps pyroscope-go as lifecycle.Component; ~1% CPU overhead, opt-in) | [observability](docs/ai/observability.md) |
 | Service health check binary | `app.Main` `--health` flag (invokes `observability/health.RunHealthCheck`) | [observability](docs/ai/observability.md) |
 | Per-request health endpoints | `httpx/healthhttp` | [observability](docs/ai/observability.md) |
 | Tamper-evident audit log (implementation: HMAC chain, Store, VerifyChain) | `observability/auditlog` (in-process `MemoryStore`) → `observability/auditlog/postgres` (durable, schema via `cmd/kit-migrate auditlog`) | [observability](docs/ai/observability.md) |

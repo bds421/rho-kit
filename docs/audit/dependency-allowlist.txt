@@ -72,6 +72,7 @@ cloud.google.com/go/secretmanager
 google.golang.org/api
 
 # Observability.
+github.com/grafana/pyroscope-go
 github.com/prometheus/client_golang
 github.com/prometheus/client_model
 go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc

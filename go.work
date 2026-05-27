@@ -94,6 +94,7 @@ use (
 	./io
 	./observability
 	./observability/auditlog/postgres
+	./observability/pyroscope
 	./realtime/centrifuge
 	./resilience
 	./runtime
