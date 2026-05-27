@@ -20,7 +20,20 @@ import (
 )
 
 // Config controls the default middleware stack.
-// Boolean fields are ordered to match middleware execution order (outermost first).
+//
+// The 10 Enable* booleans mirror the 10 stages of the middleware chain
+// in execution order (outermost first). Each toggle has a corresponding
+// `Without*` Option (e.g. WithoutMetrics, WithoutTracing) — that's the
+// public API. Callers don't construct Config directly; they call
+// [Default] with options. The struct is exported only because the
+// Options need a target to mutate.
+//
+// Flat-bool shape vs. nested-struct (RecoveryConfig + SecurityConfig +
+// LoggingConfig + …) is a deliberate v2.0 design choice: the chain
+// itself is flat, so a flat config mirrors it 1-to-1 and the Without*
+// options stay one-liners. A nested-struct refactor is a v2.x
+// candidate that buys nothing the current shape doesn't already give
+// the typical caller.
 type Config struct {
 	Logger              *slog.Logger
 	QuietPaths          []string

@@ -63,6 +63,39 @@ type Module interface {
 	HealthChecks() []health.DependencyCheck
 }
 
+// # Optional capability interfaces
+//
+// Module is intentionally narrow — Name + Init + Populate + Stop +
+// HealthChecks cover every adapter the kit ships. Capabilities that
+// only SOME adapters care about (server TLS, health-checker handle,
+// internal-handler wrapping, lifecycle attachment, middleware
+// installation, leader-elector / SLO-checker / tenant-policy /
+// rate-limit-declaration / HTTP-config provision) are exposed as
+// SEPARATE single-method interfaces below. The Builder type-switches
+// each registered module against them at Run time and threads the
+// relevant data through when present.
+//
+// Why not a single `ModuleCapabilities` struct with optional fields?
+// Two reasons:
+//
+//   - Adapters that don't care about a capability don't have to
+//     mention it at all (vs. setting `caps.TLSReceiver = nil` on
+//     every constructor). Adding a capability to the kit means adding
+//     one interface here; no adapter signature changes.
+//   - The Builder's type-assert chain is exhaustive at compile time
+//     for the adapter author: missing method = interface unsatisfied
+//     = the Builder silently skips that capability for that adapter,
+//     which is the desired behaviour.
+//
+// The cost is type-switch hell in builder.go (12 assertions in the
+// Run loop). That's been called out as "bad taste" in v2 reviews;
+// the answer is "yes, intentional". A v2.x candidate is to fold the
+// optional interfaces into a `ModuleFeatures` struct that adapters
+// fill in alongside Populate(), which would let the Builder read
+// fields directly without type assertions. That's an additive change
+// (current interfaces stay; new path supersedes type-switch); it
+// doesn't block v2.0.0.
+
 // ServerTLSReceiver is the optional capability that adapter modules implement
 // when they need the Builder's resolved server-side *tls.Config (mirroring the
 // public HTTP listener's TLS surface). [Builder.Run] hands the resolved config

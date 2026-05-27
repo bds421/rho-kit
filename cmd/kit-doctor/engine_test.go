@@ -1406,6 +1406,66 @@ func wire() {
 		"inline suppression marker must silence the rule, got %+v", findings)
 }
 
+func TestScan_FlagsKitPrimitiveCollision_Clock(t *testing.T) {
+	// Consumer service writes its own `package clock` even though
+	// the kit ships core/clock. Flag it.
+	dir := t.TempDir()
+	writeFile(t, dir, "clock.go", `package clock
+
+import "time"
+
+func Now() time.Time { return time.Now() }
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	if !hasRule(findings, "kit-primitive-collision") {
+		t.Fatalf("expected kit-primitive-collision finding for `package clock`, got %+v", findings)
+	}
+}
+
+func TestScan_FlagsKitPrimitiveCollision_Retry(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "retry.go", `package retry
+
+func Do() error { return nil }
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	if !hasRule(findings, "kit-primitive-collision") {
+		t.Fatalf("expected kit-primitive-collision finding for `package retry`, got %+v", findings)
+	}
+}
+
+func TestScan_KitPrimitiveCollision_IgnoresNonColliding(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "service.go", `package myservice
+
+func Run() {}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	if hasRule(findings, "kit-primitive-collision") {
+		t.Fatalf("expected NO kit-primitive-collision finding for non-colliding package, got %+v", findings)
+	}
+}
+
+func TestScan_KitPrimitiveCollision_IgnoresTestFiles(t *testing.T) {
+	dir := t.TempDir()
+	// External test package convention `clock_test` should not be flagged
+	// — same file basename rule used elsewhere in kit-doctor.
+	writeFile(t, dir, "clock_test.go", `package clock_test
+
+import "testing"
+
+func TestX(t *testing.T) {}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	if hasRule(findings, "kit-primitive-collision") {
+		t.Fatalf("test files must not trigger collision findings, got %+v", findings)
+	}
+}
+
 func hasRule(findings []rules.Finding, name string) bool {
 	for _, f := range findings {
 		if f.Rule == name {

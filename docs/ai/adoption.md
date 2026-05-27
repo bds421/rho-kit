@@ -238,6 +238,43 @@ Reviews keep catching the same five mistakes in downstream services:
    handler, ...)` and `httpx.NewHTTPClient(...)` (or the Builder's
    `app.HTTPClient(infra)`).
 
+6. **Reinventing a kit primitive.**
+   If your service grows a `clock/`, `retry/`, `lock/`, `idempotency/`,
+   `cache/`, `queue/`, `signing/`, `secret/`, `validate/` (etc.)
+   package, the kit already has one. `kit-doctor`'s
+   `kit-primitive-collision` rule flags consumer package names that
+   match a kit primitive — the finding is INFO-level (collisions are
+   sometimes intentional; the rule names the kit equivalent so the
+   reviewer can confirm). Before writing one, check the **Package
+   Decision Tree** in the root `AGENTS.md` — every primitive the kit
+   ships has a row. The shortest list of primitives to know about:
+
+   | I want to… | Kit primitive |
+   |---|---|
+   | Get current time (mockable in tests) | `core/clock` |
+   | Retry with backoff | `resilience/retry` |
+   | Distributed lock | `data/lock/{pgadvisory,redislock}` |
+   | HTTP idempotency / typed cache | `data/idempotency`, `data/cache` |
+   | Background queue / job | `data/queue/{redisqueue,riverqueue}` |
+   | Cron schedule | `runtime/cron` (+ `data/cron/pgstore` for persistence) |
+   | HMAC sign / verify | `crypto/signing` |
+   | Hash a password | `crypto/passhash` |
+   | Encrypt a DB field | `crypto/encrypt` |
+   | Zeroable secret holder | `core/secret` |
+   | Validate input struct | `core/validate` |
+   | Redact errors / values | `core/redact` |
+   | Crypto-random string / ID | `core/randstr` / `core/id` |
+   | Tenant-aware context | `core/tenant` |
+   | Typed errors w/ HTTP+gRPC mapping | `core/apperror` |
+   | Slog field constructors | `observability/logattr` |
+   | OAuth2 / OIDC login | `auth/oauth2` |
+   | Outbound webhook | `httpx/webhook` |
+   | HTTP-response compression | `httpx/middleware/compress` |
+
+   If you genuinely need a domain-specific concept that happens to
+   share a name with a kit primitive, rename your package (e.g.
+   `mylock`, `domainqueue`) to keep the distinction explicit.
+
 ## 6. Programs That Outgrow The Builder
 
 When a service needs custom transports or non-standard shutdown order,

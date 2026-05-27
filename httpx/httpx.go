@@ -156,6 +156,13 @@ func NewHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...ClientO
 // TracingClientOption configures the kit-tracing HTTP client. It accepts
 // either a kit-level [ClientOption] (e.g. [WithIdleConnTimeout]) via
 // [WithKitOption], or an OpenTelemetry transport option via [WithOTel].
+//
+// Why the wrapper? NewTracingHTTPClient threads two distinct option
+// families through one variadic tail: the kit's [ClientOption] and
+// the otel-http [otelhttp.Option]. The alternative — two separate
+// slice arguments — would break the kit-wide options-only convention
+// every other constructor uses. The wrapper adds one extra symbol
+// per call site but keeps the constructor signature uniform.
 type TracingClientOption func(*tracingClientConfig)
 
 type tracingClientConfig struct {

@@ -90,5 +90,6 @@ func Registered() []Rule {
 		websocketMissingMaxConnectionsRule{},
 		centrifugeMissingJWTAuthRule{},
 		apphttpWithoutTLSRule{},
+		kitPrimitiveCollisionRule{},
 	}
 }
