@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -101,6 +102,24 @@ func TestNewClient_PanicsOnNilTLSConfig(t *testing.T) {
 		}
 	}()
 	_ = client.WithTLSConfig(nil)
+}
+
+func TestNewClient_RejectsInsecureSkipVerifyTLSConfig(t *testing.T) {
+	// The TLS floor helper (tlsclone.ConfigWithFloor) rejects any
+	// caller-supplied *tls.Config that sets InsecureSkipVerify=true.
+	// Verify NewClient surfaces that error instead of silently dialing
+	// an unverified peer.
+	_, err := client.NewClient("api.example.com:443",
+		client.WithTLSConfig(&tls.Config{
+			MinVersion:         tls.VersionTLS13,
+			InsecureSkipVerify: true,
+		}),
+		client.WithoutLogging(),
+		client.WithoutMetrics(),
+	)
+	require.Error(t, err, "InsecureSkipVerify=true must be rejected; NewClient returned no error")
+	require.Contains(t, err.Error(), "InsecureSkipVerify",
+		"expected the rejection to mention InsecureSkipVerify, got %v", err)
 }
 
 func TestNewClient_AcceptsTLSConfigWithFloor(t *testing.T) {

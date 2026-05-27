@@ -334,6 +334,89 @@ func TestHandlers_LogoutClearsCookie(t *testing.T) {
 	require.Less(t, cookies[0].MaxAge, 0)
 }
 
+// TestHandlers_CallbackCtxCancelDuringExchange forces the
+// token-endpoint exchange to hang, then cancels the inbound request
+// context. Verifies the callback handler:
+//   - propagates ctx cancellation into go-oidc's exchange path
+//   - does NOT crash or leak the goroutine
+//   - does NOT set a session cookie when the exchange aborted
+//
+// The fake issuer's /token handler blocks on r.Context().Done() with
+// a fallback timer so test-harness death can't deadlock.
+func TestHandlers_CallbackCtxCancelDuringExchange(t *testing.T) {
+	// Build the fake issuer first so we know its URL before serving
+	// the .well-known/openid-configuration body (which must echo
+	// `issuer` matching the URL go-oidc was given — RFC 8414 §3.3).
+	var srvURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                srvURL,
+			"authorization_endpoint":                srvURL + "/auth",
+			"token_endpoint":                        srvURL + "/token",
+			"jwks_uri":                              srvURL + "/jwks",
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+		})
+	})
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"keys":[]}`)) // never reached — exchange hangs first
+	})
+	mux.HandleFunc("/token", func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	srvURL = srv.URL
+
+	stateStore := oauth2.NewMemoryStateStore()
+	client, err := oauth2.NewClient(context.Background(),
+		oauth2.Config{
+			Issuer: srv.URL, ClientID: "ctxcancel",
+			RedirectURL: "https://app/cb",
+		},
+		oauth2.WithSessionStore(oauth2.NewMemorySessionStore()),
+		oauth2.WithStateStore(stateStore),
+		oauth2.WithInsecureCookie(),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, stateStore.Put(context.Background(), "s1",
+		oauth2.StateEntry{Nonce: "n1", CodeVerifier: "v1"}, time.Minute))
+
+	handler := client.Handlers()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=c1&state=s1", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond) // let the exchange start
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("handler did not return after ctx cancel — exchange likely ignored ctx")
+	}
+
+	require.NotEqual(t, http.StatusNoContent, rec.Code,
+		"successful callback should be impossible when exchange was cancelled")
+	for _, ck := range rec.Result().Cookies() {
+		require.NotEqual(t, "kit_oauth_session", ck.Name,
+			"no session cookie may be set when exchange failed")
+	}
+}
+
 func TestMemorySessionStore_Expiry(t *testing.T) {
 	s := oauth2.NewMemorySessionStore()
 	require.NoError(t, s.Put(context.Background(), "id", oauth2.Session{UserID: "u"}, 10*time.Millisecond))

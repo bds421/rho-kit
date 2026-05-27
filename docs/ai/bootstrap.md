@@ -216,6 +216,7 @@ Migrations are goose SQL migrations. They run whenever `postgres.Module` is cons
 | `TLS_CERT` | - | Server/client cert path |
 | `TLS_KEY` | - | Private key path |
 | `DATABASE_URL` | - | PostgreSQL URI; takes precedence over individual DB vars |
+| `APP_VERSION` | build-time `version` ldflag | Read by `observability/health.ResolveVersion`; overrides the compile-time `version` variable that `app.Main(name, version, ...)` passes in. Useful when the container ships with a generic binary and the version is injected at deploy time (e.g. Kubernetes pod env from a Helm chart). When unset, the build-time value wins; when set, it wins over the build-time value. |
 
 PostgreSQL field configuration comes from `sqldb.LoadFields`. RabbitMQ URL handling is in `infra/messaging/amqpbackend`.
 

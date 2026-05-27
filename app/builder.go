@@ -167,11 +167,13 @@ func (b *Builder) AddHealthCheck(check health.DependencyCheck) *Builder {
 // Background registers a managed goroutine that starts before the
 // router. If fn returns a non-nil error, the entire service shuts down.
 //
-// v2.0.0 rename: this method was previously `Builder.Background`. The
-// `With*` prefix matches every other registration method on the Builder
-// (`WithJWT`, `Storage`, `AuditLog`, `WithIPRateLimit`, ...) so
-// IDE autocomplete on `app.New(...).With` reliably surfaces the
-// background-worker primitive.
+// Name kept (NOT `WithBackground`) because Background is a noun in
+// the kit's vocabulary — alongside `Storage`, `AuditLog`, `Router` —
+// rather than an option being attached. The `With*` prefix is reserved
+// for opts that toggle an existing primitive (`WithJWT`, `WithIPRateLimit`).
+// Reuse via `Builder.Background(name, fn)` at the Builder seam, OR via
+// `infra.Background(name, fn)` inside the RouterFunc closure for
+// goroutines that need access to wired infrastructure.
 func (b *Builder) Background(name string, fn func(ctx context.Context) error) *Builder {
 	validateBackgroundSpec(name, fn)
 	b.earlyBgs = append(b.earlyBgs, bgSpec{name: name, fn: fn})

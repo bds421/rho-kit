@@ -9,7 +9,9 @@ require (
 	github.com/bds421/rho-kit/data/approval/postgres/v2 v2.0.0
 	github.com/bds421/rho-kit/data/budget/redis/v2 v2.0.0
 	github.com/bds421/rho-kit/data/cache/rediscache/v2 v2.0.0
+	github.com/bds421/rho-kit/data/cron/pgstore/v2 v2.0.0
 	github.com/bds421/rho-kit/data/idempotency/pgstore/v2 v2.0.0
+	github.com/bds421/rho-kit/data/saga/pgstore/v2 v2.0.0
 	github.com/bds421/rho-kit/data/idempotency/redisstore/v2 v2.0.0
 	github.com/bds421/rho-kit/data/lock/pgadvisory/v2 v2.0.0
 	github.com/bds421/rho-kit/data/lock/redislock/v2 v2.0.0
@@ -195,7 +197,11 @@ replace github.com/bds421/rho-kit/data/budget/redis/v2 => ../../data/budget/redi
 
 replace github.com/bds421/rho-kit/data/cache/rediscache/v2 => ../../data/cache/rediscache
 
+replace github.com/bds421/rho-kit/data/cron/pgstore/v2 => ../../data/cron/pgstore
+
 replace github.com/bds421/rho-kit/data/idempotency/pgstore/v2 => ../../data/idempotency/pgstore
+
+replace github.com/bds421/rho-kit/data/saga/pgstore/v2 => ../../data/saga/pgstore
 
 replace github.com/bds421/rho-kit/data/idempotency/redisstore/v2 => ../../data/idempotency/redisstore
 

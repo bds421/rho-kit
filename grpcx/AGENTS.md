@@ -15,11 +15,11 @@
 
 - `NewServer(opts...)` — returns a configured `*grpc.Server`. Defaults: recovery + metrics + logging + apperror translation interceptors.
 - `WithUnaryInterceptors(...)` / `WithStreamInterceptors(...)` — prepend custom interceptors.
-- `WithDefaultDeadline(d)` — server-side default per-RPC deadline (wave 119 / threat-model GAP-03 mitigation). Without it, clients can hold streams open forever.
+- `WithDefaultTimeout(d)` — overrides `DefaultRPCDeadline` (30s) for the auto-applied per-RPC deadline interceptor (wave 119 / threat-model GAP-03 mitigation). Without a server-side cap, clients can hold streams open forever. Opt out via `WithoutDefaultDeadline()` (discouraged outside tests).
 
 ## Common mistakes
 
-- **No default deadline** — `WithDefaultDeadline` is opt-in but should always be set in production. The threat-model GAP-03 fix landed only because every kit server should run with it.
+- **Disabling the default deadline in production** — `NewServer` installs the per-RPC deadline interceptor by default; `WithoutDefaultDeadline()` removes it. The threat-model GAP-03 fix landed only because every kit server should run with a per-RPC cap. Use `WithDefaultTimeout(d)` to tune the duration, not the opt-out.
 - **Mixing kit interceptors with foreign apperror translators** — the kit's `apperror_status.go` converts every `apperror.*` type to the right gRPC status code. A second translator that catches anything else would compete.
 - **Skipping `interceptor.MaxConcurrentStreamsServer` on streaming services** — gRPC's built-in `MaxConcurrentStreams` is per-HTTP/2-connection, not server-wide. A fleet of well-behaved clients can collectively saturate a server even when each respects the per-conn cap. Pair with `StreamIdleTimeout` for full coverage.
 

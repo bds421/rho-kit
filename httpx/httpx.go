@@ -460,37 +460,37 @@ func IsJSONContentType(value string) bool {
 	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
 }
 
+// statusCodeStrings maps an HTTP status code to the kit error-code
+// string used in JSON problem-details bodies. The forward direction
+// (apperror.Code → status) is canonicalised in
+// [defaultHTTPStatus]; this is the reverse direction PLUS extra
+// status codes the kit recognises but doesn't model as an apperror
+// (MethodNotAllowed, RequestTimeout, PayloadTooLarge, etc).
+//
+// Table-driven so adding a status is one row, not an extra switch
+// arm. Values stay consistent with the forward map: where an apperror
+// Code exists for the status, we reuse string(apperror.Code...) so
+// the two directions can't drift.
+var statusCodeStrings = map[int]string{
+	http.StatusBadRequest:            string(apperror.CodeValidation),
+	http.StatusUnauthorized:          string(apperror.CodeAuthRequired),
+	http.StatusForbidden:             string(apperror.CodeForbidden),
+	http.StatusNotFound:              string(apperror.CodeNotFound),
+	http.StatusMethodNotAllowed:      "METHOD_NOT_ALLOWED",
+	http.StatusConflict:              string(apperror.CodeConflict),
+	http.StatusRequestTimeout:        "REQUEST_TIMEOUT",
+	http.StatusRequestEntityTooLarge: "PAYLOAD_TOO_LARGE",
+	http.StatusUnsupportedMediaType:  "UNSUPPORTED_MEDIA_TYPE",
+	http.StatusUnprocessableEntity:   string(apperror.CodePermanent),
+	http.StatusTooManyRequests:       string(apperror.CodeRateLimit),
+	http.StatusBadGateway:            "BAD_GATEWAY",
+	http.StatusServiceUnavailable:    string(apperror.CodeUnavailable),
+	http.StatusInsufficientStorage:   string(apperror.CodeStorageFull),
+}
+
 func httpStatusToCode(status int) string {
-	switch status {
-	case http.StatusBadRequest:
-		return string(apperror.CodeValidation)
-	case http.StatusUnauthorized:
-		return string(apperror.CodeAuthRequired)
-	case http.StatusForbidden:
-		return string(apperror.CodeForbidden)
-	case http.StatusNotFound:
-		return string(apperror.CodeNotFound)
-	case http.StatusMethodNotAllowed:
-		return "METHOD_NOT_ALLOWED"
-	case http.StatusConflict:
-		return string(apperror.CodeConflict)
-	case http.StatusRequestTimeout:
-		return "REQUEST_TIMEOUT"
-	case http.StatusRequestEntityTooLarge:
-		return "PAYLOAD_TOO_LARGE"
-	case http.StatusUnsupportedMediaType:
-		return "UNSUPPORTED_MEDIA_TYPE"
-	case http.StatusUnprocessableEntity:
-		return string(apperror.CodePermanent)
-	case http.StatusTooManyRequests:
-		return string(apperror.CodeRateLimit)
-	case http.StatusBadGateway:
-		return "BAD_GATEWAY"
-	case http.StatusServiceUnavailable:
-		return string(apperror.CodeUnavailable)
-	case http.StatusInsufficientStorage:
-		return string(apperror.CodeStorageFull)
-	default:
-		return "INTERNAL"
+	if s, ok := statusCodeStrings[status]; ok {
+		return s
 	}
+	return "INTERNAL"
 }
