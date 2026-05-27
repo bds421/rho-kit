@@ -80,6 +80,7 @@ use (
 	./infra/redis/redistest
 	./infra/sqldb/dbtest
 	./infra/sqldb/pgx
+	./infra/sqldb/readreplica
 	./infra/storage/azurebackend
 	./infra/storage/gcsbackend
 	./infra/storage/s3backend
