@@ -3,7 +3,6 @@ package messaging
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
@@ -83,7 +82,7 @@ func NewTypedSubscription[T any](
 					redact.String("name", name),
 					redact.Error(err),
 				)
-				return fmt.Errorf("messaging/subscription: validate: %w", err)
+				return redact.WrapError("messaging/subscription: validate", err)
 			}
 		}
 		return handler(ctx, msg, d)

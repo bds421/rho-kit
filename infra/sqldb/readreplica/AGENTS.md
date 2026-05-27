@@ -39,6 +39,20 @@ removes failing replicas from rotation and re-adds them on recovery.
 - The background health loop (default 30s ticker) re-probes unhealthy
   replicas; one successful Ping re-adds.
 
+## Shutdown
+
+`Close()` stops the background probe loop, waits for any in-flight
+probes to complete, then closes every owned pool (primary + replicas)
+exactly once. The wait is bounded by `WithProbeTimeout` per replica
+— a `Close()` called while three replicas are mid-Ping waits at most
+`probeTimeout` (default 5s) total, because probes run serially in the
+loop. If you tune `WithProbeTimeout` upward for high-latency networks,
+remember that `Close()` shutdown time scales with it.
+
+`Close()` is idempotent. The caller MUST NOT reuse the supplied
+Primary / Replicas pools after `Close()` — they're closed too, per
+pgxpool's "Close once per pool" contract.
+
 ## Metrics (Prometheus)
 
 - `sqldb_readreplica_primary_acquires_total`

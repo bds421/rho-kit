@@ -30,6 +30,13 @@ Each layer has a documented opt-out (`WithoutRecovery`, `WithoutLogging`,
 - TLS `MinVersion` is floored to TLS 1.2 via `tlsclone.ConfigWithFloor`;
   `InsecureSkipVerify=true` panics inside the floor helper.
 - `WithInsecure` panics if `target` is not a loopback address.
+- **Keepalive is non-overridable from caller `DialOptions`.** The kit
+  appends `grpc.WithKeepaliveParams(defaults)` AFTER any caller-supplied
+  `WithDialOptions(...)`, and gRPC's last-writer-wins for non-additive
+  setters means the kit defaults win. Mirrors `grpcx.NewServer`'s
+  hardening pattern (see `grpcx/server.go` final-append section).
+  Override the keepalive intentionally via `WithKeepaliveParams(...)` —
+  that knob is set INSIDE the kit-hardened block and stays effective.
 - Caller-supplied `DialOptions` go AFTER kit-hardened options so callers
   can extend (service config, custom resolver) but cannot silently undo
   credentials or keepalive.

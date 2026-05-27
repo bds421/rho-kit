@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/vault/api"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/secrets/v2"
 )
 
@@ -67,7 +68,8 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 		if isNotFound(err) {
 			return secrets.Secret{}, secrets.ErrSecretNotFound
 		}
-		return secrets.Secret{}, fmt.Errorf("vaultkv: Get %s: %w (%v)", key, secrets.ErrLoaderUnavailable, err)
+		return secrets.Secret{}, redact.WrapSentinel(secrets.ErrLoaderUnavailable,
+			redact.WrapError("vaultkv: Get "+key, err))
 	}
 	if resp == nil || resp.Data == nil {
 		return secrets.Secret{}, secrets.ErrSecretNotFound

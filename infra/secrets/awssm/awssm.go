@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/secrets/v2"
 )
 
@@ -65,7 +66,8 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 		if errors.As(err, &nf) {
 			return secrets.Secret{}, secrets.ErrSecretNotFound
 		}
-		return secrets.Secret{}, fmt.Errorf("awssm: GetSecretValue %s: %w (%v)", key, secrets.ErrLoaderUnavailable, err)
+		return secrets.Secret{}, redact.WrapSentinel(secrets.ErrLoaderUnavailable,
+			redact.WrapError("awssm: GetSecretValue "+key, err))
 	}
 	var raw []byte
 	switch {

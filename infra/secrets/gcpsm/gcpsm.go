@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/secrets/v2"
 )
 
@@ -75,7 +76,8 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 		if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
 			return secrets.Secret{}, secrets.ErrSecretNotFound
 		}
-		return secrets.Secret{}, fmt.Errorf("gcpsm: AccessSecretVersion %s: %w (%v)", key, secrets.ErrLoaderUnavailable, err)
+		return secrets.Secret{}, redact.WrapSentinel(secrets.ErrLoaderUnavailable,
+			redact.WrapError("gcpsm: AccessSecretVersion "+key, err))
 	}
 	if resp.Payload == nil || len(resp.Payload.Data) == 0 {
 		return secrets.Secret{}, errors.New("gcpsm: empty payload")

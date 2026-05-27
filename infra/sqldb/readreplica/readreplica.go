@@ -3,7 +3,6 @@ package readreplica
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -11,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Acquirer is the minimal surface RoutingPool needs from each backend
@@ -169,7 +170,7 @@ func New(cfg Config, opts ...Option) (*RoutingPool, error) {
 	}
 	m, err := newRoutingMetrics(rc.registerer)
 	if err != nil {
-		return nil, fmt.Errorf("readreplica: metrics: %w", err)
+		return nil, redact.WrapError("readreplica: metrics", err)
 	}
 	rp.metrics = m
 	rp.metrics.replicaCount.Set(float64(len(rp.replicas)))

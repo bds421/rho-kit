@@ -36,7 +36,10 @@ func NewRotatingProvider(loader Loader, key string, timeout time.Duration) func(
 		s, err := loader.Get(ctx, key)
 		if err != nil {
 			if errors.Is(err, ErrSecretNotFound) {
-				return "", fmt.Errorf("secrets: %s: %w", key, err)
+				// Annotating a kit sentinel with key context is the
+				// canonical use of fmt.Errorf %w — the wrapped value
+				// is the sentinel itself, nothing to redact.
+				return "", fmt.Errorf("secrets: %s: %w", key, err) // kit:ok-fmt-errorf-wrap
 			}
 			return "", err
 		}

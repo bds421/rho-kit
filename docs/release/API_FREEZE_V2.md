@@ -71,6 +71,7 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/io/v2` | Keep | No rename/remove | Atomic file and progress helpers. |
 | `github.com/bds421/rho-kit/flags/v2` | Keep | No rename/remove | Feature flag interfaces and in-memory provider. |
 | `github.com/bds421/rho-kit/authz/v2` | Keep | No rename/remove | Authorization contracts and memory policy. |
+| `github.com/bds421/rho-kit/auth/oauth2/v2` | Keep | No rename/remove | OAuth2/OIDC relying-party client built on `golang.org/x/oauth2` + `coreos/go-oidc/v3`; PKCE on by default, state+nonce CSRF guards, pluggable SessionStore/StateStore. Companion to `security/jwtutil` (which verifies inbound JWTs). Frozen for v2.0.0. |
 
 ## Data And Infrastructure Runtime Modules
 
@@ -78,7 +79,15 @@ freezes `redis_stream_messages_produced_total`,
 |---|---|---|---|
 | `github.com/bds421/rho-kit/data/v2` | Keep | No rename/remove | Data contracts plus memory implementations for action log, approval, budget, cache, idempotency, queue, stream, locks, rate limits. |
 | `github.com/bds421/rho-kit/infra/v2` | Keep | No rename/remove | Infrastructure contracts: messaging, Redis, SQL DB, storage, outbox, leader election. |
+| `github.com/bds421/rho-kit/data/cron/pgstore/v2` | Adapter | No rename/remove | Postgres-backed cron schedule persistence: Add/Upsert/Remove/Enable/Get/List + ApplyTo wires enabled records to a runtime/cron.Scheduler given a jobs map. Owns its `cron_schedules` migration. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/data/saga/pgstore/v2` | Adapter | No rename/remove | Postgres saga StateStore: two-path Put (INSERT…ON CONFLICT DO NOTHING for first-write, UPDATE…WHERE updated_at=$old for state-advance, no IS NULL escape), partial index for ListResumable, JSONB step results. Owns its `saga_instances` migration. Frozen for v2.0.0. |
 | `github.com/bds421/rho-kit/data/idempotency/pgstore/v2` | Adapter | No rename/remove | Postgres idempotency store; owns its migration surface. |
+| `github.com/bds421/rho-kit/infra/secrets/v2` | Keep | No rename/remove | Pluggable secret-loader umbrella: Loader contract, CachedLoader (TTL + stale-while-revalidate + single-flight + stale-on-error), NewRotatingProvider callback adapter for SDK credential hooks. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/infra/secrets/awssm/v2` | Adapter | No rename/remove | AWS Secrets Manager backend for `secrets.Loader`. Caller owns the *secretsmanager.Client lifecycle. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/infra/secrets/gcpsm/v2` | Adapter | No rename/remove | GCP Secret Manager backend for `secrets.Loader`. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/infra/secrets/vaultkv/v2` | Adapter | No rename/remove | HashiCorp Vault KV v2 backend for `secrets.Loader`. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/infra/sqldb/readreplica/v2` | Adapter | No rename/remove | Postgres primary+N-replicas RoutingPool with round-robin Acquire, WithReadOnly hint, all-unhealthy fallback to primary, background health-probe loop. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/observability/pyroscope/v2` | Adapter | No rename/remove | Continuous profiling adapter wrapping `grafana/pyroscope-go` as a `lifecycle.Component`. Frozen for v2.0.0. |
 | `github.com/bds421/rho-kit/data/idempotency/redisstore/v2` | Adapter | No rename/remove | Redis idempotency store. |
 | `github.com/bds421/rho-kit/data/cache/rediscache/v2` | Adapter | No rename/remove | Redis cache backend with bulk limits and degraded-mode wrapper. |
 | `github.com/bds421/rho-kit/data/budget/redis/v2` | Adapter | No rename/remove | Redis-backed tenant budget ledger. |

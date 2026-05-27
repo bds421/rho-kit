@@ -77,10 +77,13 @@ allowed_for_boundary_dep() {
                 data/idempotency/pgstore/go.mod|\
                 data/lock/pgadvisory/go.mod|\
                 data/queue/riverqueue/go.mod|\
+                data/cron/pgstore/go.mod|\
+                data/saga/pgstore/go.mod|\
                 infra/leaderelection/pgadvisory/go.mod|\
                 infra/outbox/postgres/go.mod|\
                 infra/sqldb/dbtest/go.mod|\
                 infra/sqldb/pgx/go.mod|\
+                infra/sqldb/readreplica/go.mod|\
                 observability/auditlog/postgres/go.mod|\
                 testing/kittest/go.mod|\
                 */integrationtest/go.mod|\
@@ -168,9 +171,10 @@ allowed_for_boundary_dep() {
             return 1
             ;;
 
-        github.com/aws/aws-sdk-go-v2|github.com/aws/aws-sdk-go-v2/service/kms|github.com/bds421/rho-kit/crypto/envelope/awskms/v2)
+        github.com/aws/aws-sdk-go-v2|github.com/aws/aws-sdk-go-v2/service/kms|github.com/aws/aws-sdk-go-v2/service/secretsmanager|github.com/bds421/rho-kit/crypto/envelope/awskms/v2)
             case "$gomod" in
                 crypto/envelope/awskms/go.mod|\
+                infra/secrets/awssm/go.mod|\
                 infra/storage/s3backend/go.mod|\
                 */integrationtest/go.mod|\
                 testing/integrationtest/go.mod)
@@ -214,7 +218,9 @@ allowed_for_boundary_dep() {
 
         github.com/hashicorp/vault/api|github.com/bds421/rho-kit/crypto/envelope/vaulttransit/v2)
             case "$gomod" in
-                crypto/envelope/vaulttransit/go.mod|*/integrationtest/go.mod|\
+                crypto/envelope/vaulttransit/go.mod|\
+                infra/secrets/vaultkv/go.mod|\
+                */integrationtest/go.mod|\
                 testing/integrationtest/go.mod)
                     return 0
                     ;;

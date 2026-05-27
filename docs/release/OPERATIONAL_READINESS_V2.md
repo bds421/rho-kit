@@ -142,6 +142,7 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/app/slo/v2` | Adapter | SLO module wiring: registry attachment, burn-rate alert fan-out, lifecycle attachment. |
 | `github.com/bds421/rho-kit/app/storage/v2` | Adapter | Storage module wiring: backend selection, upload validator stack, lifecycle attachment. |
 | `github.com/bds421/rho-kit/app/tenant/v2` | Adapter | Tenant module wiring: tenant extractor attachment, fail-closed defaults, lifecycle drain. |
+| `github.com/bds421/rho-kit/auth/oauth2/v2` | Runtime | OAuth2 / OIDC relying-party client built on `golang.org/x/oauth2` + `coreos/go-oidc/v3`: well-known discovery with issuer-match validation, PKCE on by default (S256), single-use state + nonce CSRF guards, ID-token signature/aud/iss/exp verified via go-oidc's JWKS-backed verifier, HttpOnly+Secure+SameSite=Lax cookie defaults. Pluggable SessionStore / StateStore (in-memory backends for tests / single-process). |
 | `github.com/bds421/rho-kit/authz/v2` | Runtime | Policy defaults, fail-closed authorization, low-cardinality audit behavior. |
 | `github.com/bds421/rho-kit/authz/openfga/v2` | Adapter | External authz dependency configuration, client deadlines, optional dependency isolation. |
 | `github.com/bds421/rho-kit/cmd/kit-catalog/v2` | Tool | Fleet inventory: scans a service tree (single or fleet) and emits JSON / table / CSV manifest of which kit packages each service composes, with module version pins. Filterable by import path. |
@@ -160,6 +161,7 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/data/approval/postgres/v2` | Adapter | Durable approval workflow migrations, replay safety, idempotent state transitions. |
 | `github.com/bds421/rho-kit/data/budget/redis/v2` | Adapter | Redis script atomicity, retry-after accuracy, tenant key safety, Redis dependency readiness. |
 | `github.com/bds421/rho-kit/data/cache/rediscache/v2` | Adapter | Redis cache size limits, degraded behavior, Redis credential provider delegation. |
+| `github.com/bds421/rho-kit/data/cron/pgstore/v2` | Adapter | Postgres-backed cron-schedule persistence: `cron_schedules` migration, name+spec validation regex (no SQL injection via table name), idempotent Add/Upsert/Remove/Enable, ApplyTo intersects persisted records with the in-process jobs map and reports stored-but-unknown names so a binary version skew surfaces rather than runs the wrong handler. |
 | `github.com/bds421/rho-kit/data/idempotency/pgstore/v2` | Adapter | Postgres idempotency migrations, lock ownership, replay safety. |
 | `github.com/bds421/rho-kit/data/idempotency/redisstore/v2` | Adapter | Redis lock ownership, TTL behavior, retry/cancellation handling. |
 | `github.com/bds421/rho-kit/data/lock/pgadvisory/v2` | Adapter | Session health detection, lock release, split-brain prevention. |
@@ -167,6 +169,7 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/data/queue/redisqueue/v2` | Adapter | Heartbeats, reaper behavior, processing-list ownership, retry/DLX semantics. |
 | `github.com/bds421/rho-kit/data/queue/riverqueue/v2` | Adapter | Postgres-backed queue lifecycle, migrations, shutdown behavior. |
 | `github.com/bds421/rho-kit/data/ratelimit/redis/v2` | Adapter | Redis GCRA atomicity, retry-after precision, Redis outage behavior. |
+| `github.com/bds421/rho-kit/data/saga/pgstore/v2` | Adapter | Postgres saga-instance store: `saga_instances` migration with partial index on `(state, updated_at)` for ListResumable; two-path Put (INSERT…ON CONFLICT DO NOTHING for first-write, UPDATE…WHERE updated_at=$old for state-advance) — no IS NULL escape — so two replicas advancing the same instance ID get one ErrConcurrentUpdate. JSONB columns default `[]::jsonb` so nil slices marshal cleanly. |
 | `github.com/bds421/rho-kit/data/stream/redisstream/v2` | Adapter | Consumer group ownership, pending/dead-letter metrics, Redis outage behavior. |
 | `github.com/bds421/rho-kit/data/tenant/v2` | Runtime | Per-tenant data-isolation primitives: Scope value type, WhereClause SQL helper, tenant-prefixed cache/idempotency keys. |
 | `github.com/bds421/rho-kit/examples/agentic-service/v2` | Example | Golden-path smoke coverage and generated-service operational defaults. |
@@ -193,8 +196,13 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/infra/messaging/redisbackend/v2` | Adapter | Redis Streams direct messaging, size limits, pending/dead-letter behavior. |
 | `github.com/bds421/rho-kit/infra/redis/v2` | Adapter | Redis credential providers, TLS, health loop, reconnect callback bounds. |
 | `github.com/bds421/rho-kit/infra/redis/redistest/v2` | Integration helper | Redis Testcontainers helper coverage only. |
+| `github.com/bds421/rho-kit/infra/secrets/v2` | Runtime | Pluggable secret-loader umbrella: Loader contract + CachedLoader (TTL + stale-while-revalidate background refresh + single-flight on miss + stale-on-error fallback within MaxStale) + NewRotatingProvider callback for SDK credential hooks (pgx PasswordProvider, go-redis CredentialsProvider). Secrets carried in `secret.String` for zeroizable memory hygiene. |
+| `github.com/bds421/rho-kit/infra/secrets/awssm/v2` | Adapter | AWS Secrets Manager backend: VersionStage filter, ResourceNotFoundException → ErrSecretNotFound, other errors → ErrLoaderUnavailable (redacted). Caller owns the *secretsmanager.Client session lifecycle. |
+| `github.com/bds421/rho-kit/infra/secrets/gcpsm/v2` | Adapter | GCP Secret Manager backend: project + version pinning, codes.NotFound → ErrSecretNotFound, other errors → ErrLoaderUnavailable (redacted). Caller owns the secretmanager.Client lifecycle. |
+| `github.com/bds421/rho-kit/infra/secrets/vaultkv/v2` | Adapter | HashiCorp Vault KV v2 backend: configurable field, 404 → ErrSecretNotFound, other errors → ErrLoaderUnavailable (redacted). Caller owns the *vault.Client and KV mount selection. |
 | `github.com/bds421/rho-kit/infra/sqldb/dbtest/v2` | Integration helper | Postgres Testcontainers helper coverage only. |
 | `github.com/bds421/rho-kit/infra/sqldb/pgx/v2` | Adapter | Password provider rotation, pool reset, TLS/sslmode, migrations, COPY helper. |
+| `github.com/bds421/rho-kit/infra/sqldb/readreplica/v2` | Adapter | Postgres read/write routing across primary + N replicas: round-robin Acquire on `WithReadOnly()`, fallback to primary with `sqldb_readreplica_replica_fallback_total` counter + warn log on all-unhealthy, background health-probe loop with bounded `WithProbeTimeout`, replica auto-remove after `WithMaxConsecutiveFailures`, auto re-add on probe success. `Close()` waits up to N×probeTimeout for in-flight probes. |
 | `github.com/bds421/rho-kit/infra/storage/azurebackend/v2` | Adapter | Azure credentials, account-key static path, token credential path, storage metrics. |
 | `github.com/bds421/rho-kit/infra/storage/gcsbackend/v2` | Adapter | ADC/client options, storage metrics, operation cancellation. |
 | `github.com/bds421/rho-kit/infra/storage/s3backend/v2` | Adapter | AWS credential providers/default chain, static key validation, storage metrics. |
@@ -205,6 +213,7 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/io/v2` | Runtime | Atomic file writes, progress accounting, file cleanup behavior. |
 | `github.com/bds421/rho-kit/observability/v2` | Runtime | Health, metrics, dashboards, runbooks, pprof, tracing, audit logs. |
 | `github.com/bds421/rho-kit/observability/auditlog/postgres/v2` | Adapter | Postgres audit-log Store: tamper-evident chain via `pg_advisory_xact_lock` + tail `FOR UPDATE`, append-order verification through `seq BIGSERIAL`, signed-cursor pagination. Migrations ship via `cmd/kit-migrate`. |
+| `github.com/bds421/rho-kit/observability/pyroscope/v2` | Adapter | Continuous-profiling adapter wrapping `grafana/pyroscope-go` as a `lifecycle.Component`: Start/Stop drain, double-Start rejection, slog→pyroscope-go logger bridge, default ProfileTypes (CPU + alloc + inuse), 15s upload tick. Documented ~1% CPU overhead; tags loud-warned against user-ID / request-ID cardinality blowup. |
 | `github.com/bds421/rho-kit/resilience/v2` | Runtime | Retry/circuit-breaker defaults, context/error precedence, bounded retries. |
 | `github.com/bds421/rho-kit/runtime/v2` | Runtime | Lifecycle, cron, eventbus, batchworker, fanout, cancellation and drain behavior; saga compensable-workflow primitive (roll-forward + reverse-order best-effort rollback). |
 | `github.com/bds421/rho-kit/runtime/temporal/v2` | Adapter | Temporal dependency isolation, workflow scaffold, operational dependency caveat. |
