@@ -12,7 +12,9 @@ go 1.26.2
 
 require (
 	cloud.google.com/go/kms v1.31.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0-20260528051432-7b0621ad0c8e
 	github.com/bds421/rho-kit/crypto/v2 v2.0.0
+	google.golang.org/grpc v1.81.0
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -48,5 +50,4 @@ require (
 	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260427160629-7cedc36a6bc4 // indirect
-	google.golang.org/grpc v1.81.0 // indirect
 )
