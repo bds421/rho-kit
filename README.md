@@ -29,17 +29,42 @@ subsequent releases just bump version numbers and tag.
    `release/**` branch). It re-runs the gates and rehearses the
    dependency-ordered release against a temporary bare repository
    via `tools/rehearse-v2-release.sh`.
-3. **Compute dependency-ordered tag plan.**
+3. **Rehearse locally (safe, no real origin touched).**
    ```bash
-   FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.x.y make check-publishable
-   RELEASE_VERSION=v2.x.y RELEASE_MODE=all make release-plan
+   RELEASE_VERSION=v2.x.y bash tools/rehearse-v2-release.sh
    ```
-4. **Tag in dependency order** using the planner output. Each
-   dependent level is tidied only after its dependency-level tags
-   exist on origin so committed `go.sum` files record real internal
-   checksums. The rehearse script encodes this dance; do not improvise.
-5. **Push tags.** `git push --tags origin`.
-6. **Publish GitHub Release** with `docs/RELEASE_NOTES_v2.md` as the body.
+   Runs the entire dance against a temp bare repo. Must reach
+   "Rehearsal passed." before touching origin.
+4. **Temporarily disable PR-review branch protection** (the dance
+   pushes ~7 commits + tag batches directly to main; main is
+   normally PR-only):
+   ```bash
+   gh api -X DELETE repos/<owner>/<repo>/branches/main/protection/required_pull_request_reviews
+   ```
+5. **Run the real release.**
+   ```bash
+   RELEASE_VERSION=v2.x.y bash tools/release-version.sh
+   ```
+   Per-level: bumps internal kit requires to the target version,
+   tidies, commits, tags every module in the level, pushes tags
+   atomically. After all levels: pushes coordination tag
+   `release/v2.x.y`.
+6. **Restore branch protection.**
+   ```bash
+   gh api -X PATCH repos/<owner>/<repo>/branches/main/protection/required_pull_request_reviews \
+     --input - <<EOF
+   {"dismiss_stale_reviews": true, "require_code_owner_reviews": true,
+    "require_last_push_approval": false, "required_approving_review_count": 1}
+   EOF
+   ```
+7. **Smoke-test downstream resolution.**
+   ```bash
+   tmpdir=$(mktemp -d); cd "$tmpdir"
+   go mod init verify
+   go get github.com/bds421/rho-kit/app/v2@v2.x.y
+   go list -m all | grep rho-kit   # all should show v2.x.y
+   ```
+8. **Publish GitHub Release** with `docs/RELEASE_NOTES_v2.md` as the body.
 
 ## Adoption
 
