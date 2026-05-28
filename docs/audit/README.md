@@ -13,8 +13,13 @@ for API-freeze, migration, and final tag evidence.
 | File | Purpose |
 |---|---|
 | [THREAT_MODEL.md](THREAT_MODEL.md) | STRIDE-style threat surface; assets, adversaries, mitigations, shipped gap closures, and remaining follow-up list. Updated whenever a new threat ID lands. |
-| [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md) | Pinning policy, direct dependency source allowlist, heavy SDK boundary guard, dependabot cadence, build flags, CycloneDX SBOM, vulnerability response SLO, license allowlist. |
 | [dependency-allowlist.txt](dependency-allowlist.txt) | Exact review ledger for direct external Go module dependencies; enforced by `make check-dependency-allowlist`. |
+
+Supply-chain policy lives in the code that enforces it:
+- `tools/check-direct-dependency-allowlist.sh` — direct-dep allowlist gate
+- `tools/check-heavy-dependency-boundaries.sh` — adapter-boundary gate
+- `tools/check-licenses.sh` — license allowlist gate
+- `.github/workflows/supply-chain.yml` — runs the gates on PR/push + weekly cron
 
 ## How Findings Flow Now
 
@@ -23,5 +28,5 @@ for API-freeze, migration, and final tag evidence.
    the §8 gap list if no in-kit mitigation exists yet.
 2. Implementation work is tracked in conventional-commit messages
    and PR descriptions, not in dated markdown artifacts.
-3. The vulnerability-response SLO in [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md)
-   §"Vulnerability response" governs HIGH/CRITICAL response time.
+3. The vulnerability-response SLO in [`../../SECURITY.md`](../../SECURITY.md)
+   governs HIGH/CRITICAL response time.

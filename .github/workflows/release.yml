@@ -59,7 +59,7 @@ jobs:
 
       - name: Reproducible build sample
         # Evidence-gathering: not a gate. Produces dist/cmd/kit-doctor/kit-doctor
-        # with the flag set documented in docs/audit/SUPPLY_CHAIN.md §4.1 and
+        # with the flag set documented in tools/verify-reproducible-build.sh and
         # prints its sha256 so the release rehearsal log captures it.
         run: make release-bin BIN=kit-doctor
 

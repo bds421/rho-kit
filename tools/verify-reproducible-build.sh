@@ -10,11 +10,10 @@
 #   2. Runs `make release-bin BIN=<bin>` in each.
 #   3. Compares the resulting sha256 hashes.
 #
-# This is intentionally opt-in: `cp -R` over the 67-module workspace is not
-# cheap. Use it before pushing a change that could affect determinism (Go
-# toolchain bump, ldflags edit, switch to CGo, etc.) — or to convince
-# yourself the reproducibility promise in docs/audit/SUPPLY_CHAIN.md §4
-# still holds on your platform.
+# This is intentionally opt-in: `cp -R` over the workspace is not cheap.
+# Use it before pushing a change that could affect determinism (Go
+# toolchain bump, ldflags edit, switch to CGo, etc.) to confirm the
+# reproducibility property still holds on your platform.
 set -euo pipefail
 
 BIN="${1:-kit-doctor}"

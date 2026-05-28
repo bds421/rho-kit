@@ -13,7 +13,7 @@
 #   check-licenses - Walks every workspace module declared in go.work,
 #                    runs go-licenses over each module's transitive dep
 #                    graph, and asserts each declared license is on the
-#                    SUPPLY_CHAIN.md §8.1 allowlist.
+#                    allowlist documented in tools/check-licenses.sh.
 #
 # Inform-only:
 #
@@ -223,5 +223,5 @@ jobs:
           TOKEN: ${{ github.token }}
         run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
 
-      - name: Check transitive licenses against SUPPLY_CHAIN.md section 8.1 allowlist
+      - name: Check transitive licenses against the kit allowlist
         run: bash tools/check-licenses.sh

@@ -17,8 +17,6 @@ SLO window listed below.
 
 ## Response SLA
 
-Quoted from [`docs/audit/SUPPLY_CHAIN.md`](docs/audit/SUPPLY_CHAIN.md) §7.1:
-
 | Severity (CVSS / GHSA) | Time to patch | Time to release | Consumer notification |
 |---|---|---|---|
 | CRITICAL (9.0+) | 48 hours from disclosure to merge | 24 hours from merge to tagged release | Public advisory + GHSA watchers notified within 24h of release |
@@ -39,7 +37,8 @@ the issue on `main`.
 
 ## Further Reading
 
-- [`docs/audit/SUPPLY_CHAIN.md`](docs/audit/SUPPLY_CHAIN.md) — dependency
-  pinning, SBOM, vulnerability response, key inventory, license policy.
 - [`docs/audit/THREAT_MODEL.md`](docs/audit/THREAT_MODEL.md) — kit-level
   threat model and known gaps.
+- [`docs/audit/dependency-allowlist.txt`](docs/audit/dependency-allowlist.txt)
+  — direct external Go dependency allowlist (enforced by
+  `make check-dependency-allowlist`).

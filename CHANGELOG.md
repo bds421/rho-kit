@@ -21,11 +21,10 @@ sequence.
   approval workflow.
 - **MCP helpers.** Typed handlers as JSON-RPC tools with schema
   auto-generation; reuse the kit's full middleware stack.
-- **Supply-chain hardening.** CycloneDX SBOM, `govulncheck` + `osv-scanner`
-  CI, direct dependency allowlist, heavy-SDK boundary gate, threat model and
-  supply-chain policy in `docs/audit/`. See
-  [`docs/audit/THREAT_MODEL.md`](docs/audit/THREAT_MODEL.md) and
-  [`docs/audit/SUPPLY_CHAIN.md`](docs/audit/SUPPLY_CHAIN.md).
+- **Supply-chain hardening.** `govulncheck` + `osv-scanner`
+  CI, direct dependency allowlist, heavy-SDK boundary gate, and threat
+  model in `docs/audit/`. See
+  [`docs/audit/THREAT_MODEL.md`](docs/audit/THREAT_MODEL.md).
 - **Operational primitives.** RED metrics, Grafana dashboards (HTTP, gRPC, DB,
   Redis, Outbox, AMQP, rate-limit, storage), runbooks, `promtool` CI, and an
   operational-readiness coverage gate for every workspace module.

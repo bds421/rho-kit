@@ -36,7 +36,7 @@ evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
 | 2 | Per-tenant cost budgets (memory + Redis backends, inbound middleware, outbound RoundTripper) | The thing that prevents a misbehaving tenant's LLM bill from blowing past five figures overnight |
 | 3 | Append-only signed action log + approval workflow | "What did the agent do this hour against tenant X" becomes a SQL query, not a log grep |
 | 4 | MCP helpers — typed handlers as JSON-RPC tools, schema auto-generation | Expose any kit handler as an MCP tool with the kit's full middleware stack reused |
-| 5 | SBOM (CycloneDX), `govulncheck` + `osv-scanner` CI, direct dependency allowlist, heavy SDK boundary gate, `THREAT_MODEL.md`, `SUPPLY_CHAIN.md` | "Trusted library" claim is auditable, not marketing |
+| 5 | `govulncheck` CI, direct dependency allowlist, heavy SDK boundary gate, `THREAT_MODEL.md` | "Trusted library" claim is auditable, not marketing |
 | 6 | Builder integrations for every new primitive | The kit's golden path (`app.Builder`) reaches the new primitives without each consumer wiring middleware by hand |
 | 7 | gRPC RED, DB pool, Redis, Outbox, AMQP, NATS JetStream, Redis Streams, Rate-limit, Storage overview, S3, GCS, Azure, and SFTP Grafana dashboards + 11 runbooks + `promtool` CI | Operations teams stop rebuilding the same panels per service |
 | 8 | AWS KMS, Azure Key Vault, GCP KMS, and HashiCorp Vault Transit envelope KEK adapters | Production encryption surfaces are concrete before the API freeze |
@@ -1182,12 +1182,10 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 
 ### Trust signals
 - `.github/workflows/sbom.yml` — CycloneDX SBOM on tag push
-- `.github/workflows/vuln.yml` — `govulncheck` + `osv-scanner` on PR / push / weekly
+- `.github/workflows/supply-chain.yml` — `govulncheck` + license check on PR / push / weekly
 - `docs/audit/dependency-allowlist.txt` + `make check-dependency-allowlist` — exact source ledger for direct external Go dependencies
 - `make check-dependency-boundaries` — keeps Redis, pgx, cloud, messaging, KMS, OpenFGA, Temporal, River, and Testcontainers deps behind adapter/test boundaries
-- `make check-operational-readiness` — verifies the release operational review covers every workspace module
 - `docs/audit/THREAT_MODEL.md` — STRIDE threat ledger tracking shipped mitigations. GAP-01 through GAP-10 are closed in v2.0.0; three LOW residual doc-fidelity follow-ups (GAP-11 typed auditlog tenant field, GAP-12 messaging buffer-full sentinel, GAP-13 binary marshaler on secret.String) remain open and are tracked in §8 of the threat model.
-- `docs/audit/SUPPLY_CHAIN.md` — pinning policy, direct dependency allowlist, heavy SDK boundary guard, release provenance, key rotation, vuln SLO
 - `security/asvs.Lookup` uses stable unknown-control errors instead of echoing
   the rejected control ID.
 

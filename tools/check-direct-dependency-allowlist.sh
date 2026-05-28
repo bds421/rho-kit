@@ -3,7 +3,7 @@
 #
 # GAP-10 prevention. Every non-rho-kit direct require across workspace
 # go.mod files must be listed in docs/audit/dependency-allowlist.txt.
-# Transitive deps are still covered by govulncheck/osv/SBOM; this guard
+# Transitive deps are still covered by govulncheck; this guard
 # keeps new direct trust roots from appearing without an explicit policy diff.
 set -euo pipefail
 

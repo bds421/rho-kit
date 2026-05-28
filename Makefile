@@ -138,7 +138,7 @@ check-dependency-boundaries:
 check-fmt-errorf-wrap:
 	@bash tools/check-fmt-errorf-wrap.sh
 
-## check-licenses: Reject transitive deps whose license is outside the SUPPLY_CHAIN.md §8.1 allowlist.
+## check-licenses: Reject transitive deps whose license is outside the allowlist documented in tools/check-licenses.sh.
 check-licenses:
 	@bash tools/check-licenses.sh
 

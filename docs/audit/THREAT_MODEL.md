@@ -1,10 +1,10 @@
 # rho-kit threat model — v2.0.0
 
 > **Status:** living document. Update this file in lockstep with any
-> change to a public security-relevant interface. The accompanying
-> [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md) covers dependency, signing and
-> provenance threats; this file covers the kit's runtime attack
-> surface.
+> change to a public security-relevant interface. Dependency, signing
+> and provenance threats are mitigated by the kit's supply-chain gates
+> (see [README.md](README.md)); this file covers the kit's runtime
+> attack surface.
 
 Snippet status: code blocks in this threat model are illustrative attack or
 mitigation fragments unless a section explicitly labels a command as runnable.
@@ -119,9 +119,9 @@ assumed beyond it.
 - Capability: arbitrary code execution within the service process,
   possibly on package init.
 - Primary defences (kit side): exact direct-dependency source
-  allowlist in CI, `govulncheck`, CycloneDX SBOM published per release,
-  dependency pinning policy
-  (see [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md)).
+  allowlist in CI, `govulncheck`, license allowlist in CI,
+  dependency pinning policy (see the supply-chain gates listed in
+  [README.md](README.md)).
 - Note: the kit cannot fully prevent this — it can only narrow the
   blast radius and shorten time-to-detect.
 
@@ -162,7 +162,7 @@ assumed beyond it.
 - Primary defences: `core/secret` to make accidental leakage
   visible; key rotation hooks (`crypto/envelope` for KEK rotation,
   JWKS rotation in `security/jwtutil`); incident response procedure
-  in [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md) §"Vulnerability response".
+  in [`../../SECURITY.md`](../../SECURITY.md) ("Response SLA" section).
 
 ---
 
@@ -888,7 +888,7 @@ upstream layer or a major redesign.
 | OS-04 | **Side channels in Go's runtime** (timing attacks on `crypto/subtle.ConstantTimeCompare`, GC timing) | The kit uses `crypto/subtle` for HMAC comparisons and Argon2id for password hashing. Beyond these, side-channel resistance is the upstream Go team's responsibility. |
 | OS-05 | **Hardware tampering / cold-boot attacks on running hosts** | Out of scope for any pure-Go library. KMS-managed keys mitigate the offline-disk variant (see asset [5]). |
 | OS-06 | **Compromised KMS / Vault** | If the KMS root is compromised, every kit-encrypted record is at risk. The kit's job is to make rotation cheap; preventing KMS compromise is the deployment's job. |
-| OS-07 | **Compromised CI runner during release** | Tracked as supply-chain risk in [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md). The kit cannot defend itself from a runner that has been root'd; CI hardening (ephemeral runners, SLSA attestation) is the deployment's responsibility. |
+| OS-07 | **Compromised CI runner during release** | Tracked as supply-chain risk. The kit cannot defend itself from a runner that has been root'd; CI hardening (ephemeral runners, SLSA attestation) is the deployment's responsibility. |
 | OS-08 | **Application-layer authorisation logic** (RBAC / ABAC policy decisions) | The kit ships `httpx/authz` primitives but the policy is service code. Mis-modelled permissions are not a kit bug. |
 | OS-09 | **Browser-side XSS via service-rendered HTML** | The kit serves JSON; if a service emits HTML, the service author is responsible for escaping. CSP nonce middleware is provided as a partial mitigation. |
 | OS-10 | **Cryptographic primitives we do not implement** (custom asymmetric, post-quantum) | The kit uses `crypto/...` from Go stdlib and `paseto.v3` only. We do not ship our own primitives. |
@@ -936,9 +936,9 @@ small code-level enhancement would strengthen the surface area.
    panics, or interface invariants are.
 5. **Open a PR** that updates this file (the §4 sub-section and the
    §8 gap list as appropriate) and a test that demonstrates the
-   mitigation. CI's `vuln.yml` and `sbom.yml` runs gate the merge.
-6. **For HIGH/CRITICAL findings**, follow the response SLO in
-   [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md) §"Vulnerability response".
+   mitigation. CI's `supply-chain.yml` run gates the merge.
+6. **For HIGH/CRITICAL findings**, follow the response SLA in
+   [`../../SECURITY.md`](../../SECURITY.md).
 
 ---
 

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Walk the workspace's transitive Go dependency graph and assert that every
-# resolved module's license declaration is on the SUPPLY_CHAIN.md §8.1
-# allowlist. Runs from CI (.github/workflows/licenses.yml) and locally via
-# `make check-licenses`.
+# resolved module's license declaration is on the kit's allowlist (defined
+# below). Runs from CI (supply-chain.yml) and locally via `make check-licenses`.
 #
 # Design choices:
 #   * `go-licenses` is pinned. We invoke it via `go run` so contributors do
@@ -12,12 +11,10 @@
 #     occur for indirect modules whose source has not been vendored. Hard
 #     failures still surface because the resulting CSV will be empty / short
 #     and the allowlist check is invoked on whatever is emitted.
-#   * The script is the single source of truth for the allowlist contents.
-#     The values below MUST match the table in docs/audit/SUPPLY_CHAIN.md
-#     §8.1. Changing one without the other will be caught in review.
-#   * Forbidden categories from §8.1 (GPL / AGPL / proprietary / unknown)
-#     are not enumerated here — any license string outside the allowlist
-#     fails the gate, which is the intended behaviour.
+#   * This script is the single source of truth for the allowlist contents.
+#   * Forbidden categories (GPL / AGPL / proprietary / unknown) are not
+#     enumerated here — any license string outside the allowlist below fails
+#     the gate, which is the intended behaviour.
 
 set -euo pipefail
 
@@ -26,14 +23,11 @@ cd "$REPO_ROOT"
 
 GO_LICENSES_VERSION="v1.6.0"
 
-# Allowlist from docs/audit/SUPPLY_CHAIN.md §8.1.
 # MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC are unconditionally
-# allowed. MPL-2.0 is "case-by-case" per the policy but is currently
-# in use by `github.com/hashicorp/*` style modules the kit ships with;
-# we accept it here and document the case-by-case review caveat in
-# SUPPLY_CHAIN.md §8.1. LGPL is policy-allowed but not in the current
-# graph; if it appears the reviewer must extend the allowlist
-# deliberately, with a corresponding §8.1 update in the same PR.
+# allowed. MPL-2.0 is case-by-case but currently in use by
+# `github.com/hashicorp/*` style modules the kit ships with; accepted
+# here. LGPL is policy-allowed but not in the current graph; if it
+# appears the reviewer must extend the allowlist deliberately.
 ALLOWED=(
   "Apache-2.0"
   "MIT"
@@ -45,15 +39,15 @@ ALLOWED=(
 
 # Skip patterns. go-licenses occasionally classifies the standard library
 # (or a vendored Go toolchain module) as "Unknown". We never need to gate
-# on those because the toolchain itself is BSD-3-Clause and is verified at
-# the supply-chain level (§4 / §6 of SUPPLY_CHAIN.md), not via go-licenses.
+# on those because the toolchain itself is BSD-3-Clause and is verified
+# at the build-flag/reproducibility level, not via go-licenses.
 SKIP_MODULE_PATTERNS=(
   "^std$"
   "^cmd/"
   "^golang.org/toolchain"
   "^github.com/bds421/rho-kit"
   # MIT-0 (MIT No Attribution) — strict superset of MIT, allowed per
-  # SUPPLY_CHAIN.md §8.1. go-licenses (≤ v1.6) does not classify the
+  # this script's allowlist. go-licenses (≤ v1.6) does not classify the
   # SPDX `MIT-0` header and reports it as `Unknown`. Each entry below
   # is a transitive dep we've verified ships under MIT-0; the LICENSE
   # file lives in the module root, not in the per-package subdirs the
@@ -155,7 +149,7 @@ while IFS=, read -r module url license; do
   done
 
   if [[ "$matched" == 0 ]]; then
-    echo "FAIL: ${module} — license '${license}' not in SUPPLY_CHAIN.md §8.1 allowlist" >&2
+    echo "FAIL: ${module} — license '${license}' not in this script's allowlist allowlist" >&2
     fail=1
   fi
 done < "$CSV_OUT"
@@ -169,7 +163,7 @@ if [[ "$fail" == 1 ]]; then
   echo "" >&2
   echo "License gate failed. Either:" >&2
   echo "  - bump / replace the offending dep with an allowlisted license, or" >&2
-  echo "  - extend the allowlist in docs/audit/SUPPLY_CHAIN.md §8.1 and" >&2
+  echo "  - extend the ALLOWED list at the top of tools/check-licenses.sh and" >&2
   echo "    tools/check-licenses.sh in the same PR (security review required)." >&2
   exit 1
 fi
