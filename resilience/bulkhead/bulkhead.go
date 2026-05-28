@@ -180,8 +180,14 @@ func (b *Bulkhead) acquire(ctx context.Context) error {
 }
 
 func (b *Bulkhead) release() {
-	<-b.semaphore
+	// Decrement current BEFORE returning the semaphore slot so the
+	// invariant `current <= capacity` holds at every observation.
+	// If we returned the slot first, another goroutine could acquire
+	// it and increment current to capacity+1 before this Add(-1)
+	// landed. The momentary undershoot (current < actual in-flight)
+	// is harmless because the semaphore is the authoritative cap.
 	b.current.Add(-1)
+	<-b.semaphore
 }
 
 const (
