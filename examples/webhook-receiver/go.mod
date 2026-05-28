@@ -3,7 +3,7 @@ module github.com/bds421/rho-kit/examples/webhook-receiver/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/app/http/v2 v2.0.0-00010101000000-000000000000
+	github.com/bds421/rho-kit/app/http/v2 v2.0.0
 	github.com/bds421/rho-kit/app/v2 v2.0.0
 	github.com/bds421/rho-kit/data/v2 v2.0.0
 	github.com/bds421/rho-kit/httpx/v2 v2.0.0

@@ -1,14 +1,14 @@
 # Continuous supply-chain scanning for the workspace.
 #
-# Three complementary jobs run in parallel:
+# Two jobs run in parallel:
 #
 #   govulncheck   - Go-aware. Cross-references the Go vulnerability
-#                   database against imported call sites, not just dep
-#                   manifests.
-#
-#   osv-scanner   - Manifest-aware, multi-ecosystem. We use it for
-#                   GitHub Actions metadata, Dockerfiles, and lockfile-
-#                   style inputs that govulncheck does not inspect.
+#                   database against imported call sites with
+#                   reachability analysis, not just dep manifests.
+#                   Sufficient for a Go-only library; the kit ships no
+#                   Dockerfiles or other-ecosystem lockfiles that
+#                   warrant a multi-ecosystem scanner. (Dependabot
+#                   covers GitHub Actions vuln flagging.)
 #
 #   check-licenses - Walks every workspace module declared in go.work,
 #                    runs go-licenses over each module's transitive dep
@@ -17,14 +17,12 @@
 #
 # Inform-only:
 #
-#   This workflow is informational for a library at v2 — consumers run
-#   their own scans before deploying, so the kit's vuln/license signal
-#   is a maintenance prompt, not a release gate. All three jobs set
-#   continue-on-error so a finding shows up in the run UI and the
-#   Security tab (via SARIF upload), but the workflow conclusion stays
-#   green and the workflow is not a required merge check. Triage at
-#   your own cadence; the weekly cron is the safety net for transitive
-#   drift that didn't accompany a code change.
+#   Both jobs set continue-on-error so a finding shows up in the run
+#   UI but the workflow conclusion stays green and is not a required
+#   merge check. The kit is a library — consumers run their own scans
+#   before deploying. Triage at your own cadence; the weekly cron is
+#   the safety net for transitive drift that didn't accompany a code
+#   change.
 #
 # Path-filtered: docs-only commits do not trigger this workflow.
 
@@ -53,10 +51,6 @@ on:
 
 permissions:
   contents: read
-  # Needed by osv-scanner-action to upload SARIF results to the
-  # Security tab. Code-scanning ingestion is required for the
-  # findings-history view; without it we only get workflow logs.
-  security-events: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -206,83 +200,6 @@ jobs:
             echo "::error::govulncheck found at least one >= $FAIL_LEVEL finding"
             exit 1
           fi
-
-  osv-scanner:
-    name: osv-scanner
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    continue-on-error: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Run osv-scanner
-        id: osv
-        uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
-        with:
-          scan-args: |-
-            --recursive
-            --skip-git
-            --format=sarif
-            --output=osv-results.sarif
-            ./
-        continue-on-error: true
-
-      - name: Filter findings by severity threshold
-        env:
-          FAIL_LEVEL: ${{ env.VULN_FAIL_LEVEL }}
-          OSV_OUTCOME: ${{ steps.osv.outcome }}
-        run: |
-          set -euo pipefail
-          if [ ! -f osv-results.sarif ]; then
-            echo "::error::osv-scanner did not emit osv-results.sarif (action outcome: ${OSV_OUTCOME})."
-            echo "Check the 'Run osv-scanner' step log for the scanner-side error."
-            exit 1
-          fi
-          python3 - "$FAIL_LEVEL" <<'PY'
-          import json, sys
-          fail_level = sys.argv[1].upper()
-          order = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
-          threshold = order.index(fail_level)
-          with open("osv-results.sarif") as f:
-              sarif = json.load(f)
-          fatal = 0
-          for run in sarif.get("runs", []):
-              rules = {r["id"]: r for r in run.get("tool", {}).get("driver", {}).get("rules", [])}
-              for result in run.get("results", []):
-                  rid = result.get("ruleId", "?")
-                  rule = rules.get(rid, {})
-                  cvss = rule.get("properties", {}).get("security-severity", "")
-                  try:
-                      score = float(cvss)
-                  except (TypeError, ValueError):
-                      score = 0.0
-                  if score >= 9.0:
-                      sev = "CRITICAL"
-                  elif score >= 7.0:
-                      sev = "HIGH"
-                  elif score >= 4.0:
-                      sev = "MEDIUM"
-                  else:
-                      sev = "LOW"
-                  marker = "FAIL" if order.index(sev) >= threshold else "warn"
-                  msg = result.get("message", {}).get("text", "")[:160]
-                  print(f"  [{marker}] {rid} ({sev}, cvss={score}): {msg}")
-                  if order.index(sev) >= threshold:
-                      fatal += 1
-          if fatal:
-              print(f"::error::osv-scanner found {fatal} finding(s) >= {fail_level}")
-              sys.exit(1)
-          PY
-
-      - name: Upload SARIF to code scanning
-        if: always() && hashFiles('osv-results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: osv-results.sarif
-          category: osv-scanner
 
   check-licenses:
     name: check-licenses
