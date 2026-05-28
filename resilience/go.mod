@@ -7,7 +7,7 @@ module github.com/bds421/rho-kit/resilience/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/observability/v2 v2.0.0-20260528051443-7545173b2b2c
+	github.com/bds421/rho-kit/observability/v2 v2.0.0
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/prometheus/client_golang v1.23.2
 	github.com/sony/gobreaker/v2 v2.4.0
