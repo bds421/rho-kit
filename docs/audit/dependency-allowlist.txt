@@ -11,6 +11,7 @@
 
 # Core crypto / token / validation primitives.
 aidanwoods.dev/go-paseto
+github.com/go-jose/go-jose/v4
 github.com/google/jsonschema-go
 github.com/lestrrat-go/jwx/v3
 github.com/tink-crypto/tink-go/v2
