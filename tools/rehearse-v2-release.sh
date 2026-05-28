@@ -119,15 +119,7 @@ git config --global --add url."file://$origin".insteadOf "git@github.com:bds421/
 git config --global --add url."file://$origin".insteadOf "git@github.com:bds421/rho-kit.git"
 
 echo
-echo "==> Drop local internal replaces in rehearsal repo"
-tools/drop-internal-replaces.sh
-git add -A
-if git diff --cached --quiet; then
-  echo "No replace-removal changes to commit."
-else
-  git commit -q -m "rehearsal: drop internal replaces"
-fi
-
+echo "==> Verify no local internal replaces (one-time drop was done at v2.0.0)"
 FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION="$VERSION" make check-publishable
 
 echo

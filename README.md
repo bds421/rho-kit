@@ -15,27 +15,31 @@ while staying consistent, secure, and observable.
 
 ### How to publish a release
 
-1. **Validate locally.** `make release-candidate` runs the full pre-release
-   gate (lint, race tests, supply-chain, vulncheck, integration tests,
-   coverage, kit-doctor).
-2. **Trigger Release Readiness CI.** Run the `Release Readiness` workflow
-   via `workflow_dispatch` on `main` (or push to a `release/**` branch). It
-   re-runs the gates and rehearses the dependency-ordered release against a
-   temporary bare repository via `tools/rehearse-v2-release.sh`.
+The kit is a Go multi-module workspace; releases use `go.work` as the
+sole cross-module-resolution mechanism (no `replace` directives in
+`go.mod` files). The one-time `replace`-drop was done at v2.0.0;
+subsequent releases just bump version numbers and tag.
+
+1. **Validate locally.** `make ci` (lint + race tests + build +
+   supply-chain + tidy gate) must be green. Then
+   `make release-candidate` runs the full pre-release gate
+   (vulncheck, integration tests, coverage, kit-doctor).
+2. **Trigger Release Readiness CI.** Run the `Release Readiness`
+   workflow via `workflow_dispatch` on `main` (or push to a
+   `release/**` branch). It re-runs the gates and rehearses the
+   dependency-ordered release against a temporary bare repository
+   via `tools/rehearse-v2-release.sh`.
 3. **Compute dependency-ordered tag plan.**
    ```bash
-   EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
-   RELEASE_MODE=all make release-plan
+   FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.x.y make check-publishable
+   RELEASE_VERSION=v2.x.y RELEASE_MODE=all make release-plan
    ```
-4. **Drop internal `replace` directives** on the release branch and re-run
-   `FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make
-   check-publishable`. Downstream consumers resolve the versions in each
-   module's `require` lines; published tags must match those versions.
-5. **Tag in dependency order** using the planner output. Each dependent
-   level is tidied only after its dependency-level tags exist so committed
-   `go.sum` files record real internal checksums.
-6. **Push tags.** `git push --tags origin`.
-7. **Publish GitHub Release** with `docs/RELEASE_NOTES_v2.md` as the body.
+4. **Tag in dependency order** using the planner output. Each
+   dependent level is tidied only after its dependency-level tags
+   exist on origin so committed `go.sum` files record real internal
+   checksums. The rehearse script encodes this dance; do not improvise.
+5. **Push tags.** `git push --tags origin`.
+6. **Publish GitHub Release** with `docs/RELEASE_NOTES_v2.md` as the body.
 
 ## Adoption
 

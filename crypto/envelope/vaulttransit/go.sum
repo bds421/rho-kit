@@ -1,5 +1,5 @@
-github.com/bds421/rho-kit/core/v2 v2.0.0-20260528051432-7b0621ad0c8e h1:A5IJWJfpKa2Oe3sDLI/V6bLksIRmfutwQBajj/1TO20=
-github.com/bds421/rho-kit/core/v2 v2.0.0-20260528051432-7b0621ad0c8e/go.mod h1:3rSGZTDAkNbZeYl3EQzS+7Lr+blGPaHRc5ccZR2uNNg=
+github.com/bds421/rho-kit/core/v2 v2.0.0 h1:4/5ZkZuGCm361PfQLf6m6kgwrbK+ps+9ECZSjNQZ9nc=
+github.com/bds421/rho-kit/core/v2 v2.0.0/go.mod h1:3rSGZTDAkNbZeYl3EQzS+7Lr+blGPaHRc5ccZR2uNNg=
 github.com/bds421/rho-kit/crypto/v2 v2.0.0 h1:Gf3xPuIJvg71NURpJny9pFW9mqc+HM0BEYtrObuHMi8=
 github.com/bds421/rho-kit/crypto/v2 v2.0.0/go.mod h1:zjp2zyNyjKQdNFr/vmULJTQcm2kHflOQVz30/NTc1Xc=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
