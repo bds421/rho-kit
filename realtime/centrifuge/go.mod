@@ -3,9 +3,9 @@ module github.com/bds421/rho-kit/realtime/centrifuge/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.0.0
-	github.com/bds421/rho-kit/observability/v2 v2.0.0
-	github.com/bds421/rho-kit/security/v2 v2.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.1
+	github.com/bds421/rho-kit/observability/v2 v2.0.1
+	github.com/bds421/rho-kit/security/v2 v2.0.1
 	github.com/centrifugal/centrifuge v0.34.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
@@ -13,7 +13,7 @@ require (
 
 require (
 	github.com/FZambia/eagle v0.1.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/centrifugal/protocol v0.14.0 // indirect
