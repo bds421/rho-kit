@@ -1,7 +1,7 @@
-github.com/bds421/rho-kit/authz/v2 v2.0.0 h1:7RYLE0fMC9L0mU2gefPV9sAed3Nsm4ANYx/Sa1Vakno=
-github.com/bds421/rho-kit/authz/v2 v2.0.0/go.mod h1:zCeD3XXBw42/sM34EvilGBQCQqTYPsCeVVGjt95Ws38=
-github.com/bds421/rho-kit/core/v2 v2.0.0 h1:4/5ZkZuGCm361PfQLf6m6kgwrbK+ps+9ECZSjNQZ9nc=
-github.com/bds421/rho-kit/core/v2 v2.0.0/go.mod h1:3rSGZTDAkNbZeYl3EQzS+7Lr+blGPaHRc5ccZR2uNNg=
+github.com/bds421/rho-kit/authz/v2 v2.0.1 h1:T6EV1NQ9JwgulZ/3uebALnuxLt5Y9c3merRje12VsZc=
+github.com/bds421/rho-kit/authz/v2 v2.0.1/go.mod h1:TknuFyZQd0ClOuR8sPjH8gL+Eqa+3WAjQla0wAHo/+I=
+github.com/bds421/rho-kit/core/v2 v2.0.1 h1:05nYsiRpJ7Hw1qKjx8RUQhTJe41k3F8SIFv2BJLPlnY=
+github.com/bds421/rho-kit/core/v2 v2.0.1/go.mod h1:3rSGZTDAkNbZeYl3EQzS+7Lr+blGPaHRc5ccZR2uNNg=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=

@@ -1,7 +1,7 @@
-github.com/bds421/rho-kit/core/v2 v2.0.0 h1:4/5ZkZuGCm361PfQLf6m6kgwrbK+ps+9ECZSjNQZ9nc=
-github.com/bds421/rho-kit/core/v2 v2.0.0/go.mod h1:3rSGZTDAkNbZeYl3EQzS+7Lr+blGPaHRc5ccZR2uNNg=
-github.com/bds421/rho-kit/crypto/v2 v2.0.0 h1:Gf3xPuIJvg71NURpJny9pFW9mqc+HM0BEYtrObuHMi8=
-github.com/bds421/rho-kit/crypto/v2 v2.0.0/go.mod h1:zjp2zyNyjKQdNFr/vmULJTQcm2kHflOQVz30/NTc1Xc=
+github.com/bds421/rho-kit/core/v2 v2.0.1 h1:05nYsiRpJ7Hw1qKjx8RUQhTJe41k3F8SIFv2BJLPlnY=
+github.com/bds421/rho-kit/core/v2 v2.0.1/go.mod h1:3rSGZTDAkNbZeYl3EQzS+7Lr+blGPaHRc5ccZR2uNNg=
+github.com/bds421/rho-kit/crypto/v2 v2.0.1 h1:V/UqlTljmUDukeq0B7TnWZextNsb/OVGArG5p2GwBqI=
+github.com/bds421/rho-kit/crypto/v2 v2.0.1/go.mod h1:4XbCyzL7AD6fLju53Um5/zYOw7hk3iFB2JjoQb7hyTQ=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
 github.com/cenkalti/backoff/v4 v4.3.0/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

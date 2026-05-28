@@ -3,13 +3,13 @@ module github.com/bds421/rho-kit/observability/auditlog/postgres/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/observability/v2 v2.0.0
+	github.com/bds421/rho-kit/observability/v2 v2.0.1
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
