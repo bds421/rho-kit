@@ -50,7 +50,7 @@ jobs:
       # commits where the bulk of code is unchanged cuts test/build time
       # significantly (~24m → ~6m on incremental commits).
       - name: Cache Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/go-build
           key: ${{ runner.os }}-gobuild-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
