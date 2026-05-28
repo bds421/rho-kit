@@ -12,7 +12,7 @@ require (
 	github.com/bds421/rho-kit/infra/secrets/v2 v2.0.1
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/api v0.229.0
-	google.golang.org/grpc v1.79.0-dev
+	google.golang.org/grpc v1.79.3
 )
 
 require (
@@ -33,8 +33,8 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/crypto v0.45.0 // indirect
-	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/crypto v0.46.0 // indirect
+	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
