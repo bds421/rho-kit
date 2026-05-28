@@ -230,7 +230,10 @@ allowed_for_boundary_dep() {
 
         cloud.google.com/go/storage|google.golang.org/api|github.com/bds421/rho-kit/infra/storage/gcsbackend/v2)
             case "$gomod" in
-                infra/storage/gcsbackend/go.mod|*/integrationtest/go.mod|\
+                infra/storage/gcsbackend/go.mod|\
+                infra/secrets/gcpsm/go.mod|\
+                crypto/envelope/gcpkms/go.mod|\
+                */integrationtest/go.mod|\
                 testing/integrationtest/go.mod)
                     return 0
                     ;;
