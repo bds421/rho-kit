@@ -22,5 +22,3 @@ require (
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/oauth2 v0.30.0
 )
-
-replace github.com/bds421/rho-kit/core/v2 => ../../core

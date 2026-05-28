@@ -23,5 +23,3 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/bds421/rho-kit/data/v2 => ../../../data

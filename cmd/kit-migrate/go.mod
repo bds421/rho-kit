@@ -40,31 +40,3 @@ require (
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
-
-replace github.com/bds421/rho-kit/data/v2 => ../../data
-
-replace github.com/bds421/rho-kit/data/actionlog/postgres/v2 => ../../data/actionlog/postgres
-
-replace github.com/bds421/rho-kit/data/approval/postgres/v2 => ../../data/approval/postgres
-
-replace github.com/bds421/rho-kit/data/idempotency/pgstore/v2 => ../../data/idempotency/pgstore
-
-replace github.com/bds421/rho-kit/observability/auditlog/postgres/v2 => ../../observability/auditlog/postgres
-
-replace github.com/bds421/rho-kit/observability/v2 => ../../observability
-
-replace github.com/bds421/rho-kit/infra/outbox/postgres/v2 => ../../infra/outbox/postgres
-
-replace github.com/bds421/rho-kit/infra/v2 => ../../infra
-
-replace github.com/bds421/rho-kit/core/v2 => ../../core
-
-replace github.com/bds421/rho-kit/io/v2 => ../../io
-
-replace github.com/bds421/rho-kit/resilience/v2 => ../../resilience
-
-replace github.com/bds421/rho-kit/crypto/v2 => ../../crypto
-
-replace github.com/bds421/rho-kit/security/v2 => ../../security
-
-replace github.com/bds421/rho-kit/infra/sqldb/pgx/v2 => ../../infra/sqldb/pgx

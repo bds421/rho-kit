@@ -38,17 +38,3 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/bds421/rho-kit/core/v2 => ../../../core
-
-replace github.com/bds421/rho-kit/resilience/v2 => ../../../resilience
-
-replace github.com/bds421/rho-kit/observability/v2 => ../../../observability
-
-replace github.com/bds421/rho-kit/data/v2 => ../../../data
-
-replace github.com/bds421/rho-kit/infra/v2 => ../../../infra
-
-replace github.com/bds421/rho-kit/data/lock/redislock/v2 => ../../../data/lock/redislock
-
-replace github.com/bds421/rho-kit/infra/redis/v2 => ../../redis

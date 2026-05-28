@@ -11,7 +11,3 @@ require (
 	github.com/bds421/rho-kit/runtime/v2 v2.0.0
 	github.com/stretchr/testify v1.11.1
 )
-
-replace github.com/bds421/rho-kit/core/v2 => ../../../core
-
-replace github.com/bds421/rho-kit/runtime/v2 => ../../../runtime

@@ -24,15 +24,3 @@ require (
 	golang.org/x/sys v0.44.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
-
-replace github.com/bds421/rho-kit/core/v2 => ../../../../../core
-
-replace github.com/bds421/rho-kit/crypto/v2 => ../../../../../crypto
-
-replace github.com/bds421/rho-kit/infra/v2 => ../../../..
-
-replace github.com/bds421/rho-kit/io/v2 => ../../../../../io
-
-replace github.com/bds421/rho-kit/observability/v2 => ../../../../../observability
-
-replace github.com/bds421/rho-kit/resilience/v2 => ../../../../../resilience

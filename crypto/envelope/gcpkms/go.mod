@@ -50,5 +50,3 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260427160629-7cedc36a6bc4 // indirect
 	google.golang.org/grpc v1.81.0 // indirect
 )
-
-replace github.com/bds421/rho-kit/crypto/v2 => ../../

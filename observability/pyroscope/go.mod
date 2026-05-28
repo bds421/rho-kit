@@ -11,5 +11,3 @@ require (
 	github.com/grafana/pyroscope-go v1.2.0
 	github.com/stretchr/testify v1.11.1
 )
-
-replace github.com/bds421/rho-kit/core/v2 => ../../core

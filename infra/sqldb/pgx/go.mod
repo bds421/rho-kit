@@ -9,8 +9,6 @@ require (
 	github.com/stretchr/testify v1.11.1
 )
 
-replace github.com/bds421/rho-kit/core/v2 => ../../../core
-
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

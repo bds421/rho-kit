@@ -32,5 +32,3 @@ require (
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 )
-
-replace github.com/bds421/rho-kit/httpx/v2 => ../../../../httpx

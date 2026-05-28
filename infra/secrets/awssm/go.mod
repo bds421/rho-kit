@@ -16,10 +16,3 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.32.0
 	github.com/aws/smithy-go v1.22.0 // indirect
 )
-
-// Local-dev replaces. Mirrors the kit's existing split-module pattern
-// (see crypto/envelope/awskms/go.mod). Stripped at release time by the
-// FORBID_INTERNAL_REPLACES=1 make check-publishable gate before tagging.
-replace github.com/bds421/rho-kit/infra/secrets/v2 => ../
-
-replace github.com/bds421/rho-kit/core/v2 => ../../../core

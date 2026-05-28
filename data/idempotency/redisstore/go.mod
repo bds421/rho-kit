@@ -19,7 +19,3 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 )
-
-replace github.com/bds421/rho-kit/data/v2 => ../../../data
-
-replace github.com/bds421/rho-kit/core/v2 => ../../../core

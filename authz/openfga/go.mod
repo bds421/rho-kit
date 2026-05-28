@@ -28,7 +28,3 @@ require (
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 )
-
-replace github.com/bds421/rho-kit/authz/v2 => ../
-
-replace github.com/bds421/rho-kit/core/v2 => ../../core

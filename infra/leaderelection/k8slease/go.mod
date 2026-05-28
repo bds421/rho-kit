@@ -59,9 +59,3 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-replace github.com/bds421/rho-kit/core/v2 => ../../../core
-
-replace github.com/bds421/rho-kit/infra/v2 => ../../../infra
-
-replace github.com/bds421/rho-kit/observability/v2 => ../../../observability

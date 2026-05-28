@@ -28,7 +28,3 @@ require (
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
-
-replace github.com/bds421/rho-kit/observability/v2 => ../..
-
-replace github.com/bds421/rho-kit/core/v2 => ../../../core

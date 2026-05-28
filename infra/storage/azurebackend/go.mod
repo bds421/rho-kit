@@ -42,11 +42,3 @@ require (
 	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 )
-
-replace github.com/bds421/rho-kit/core/v2 => ../../../core
-
-replace github.com/bds421/rho-kit/infra/v2 => ../../../infra
-
-replace github.com/bds421/rho-kit/io/v2 => ../../../io
-
-replace github.com/bds421/rho-kit/observability/v2 => ../../../observability

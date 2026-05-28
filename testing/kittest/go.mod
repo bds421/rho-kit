@@ -107,29 +107,3 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/bds421/rho-kit/core/v2 => ../../core
-
-replace github.com/bds421/rho-kit/crypto/v2 => ../../crypto
-
-replace github.com/bds421/rho-kit/infra/v2 => ../../infra
-
-replace github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 => ../../infra/messaging/amqpbackend
-
-replace github.com/bds421/rho-kit/infra/redis/v2 => ../../infra/redis
-
-replace github.com/bds421/rho-kit/infra/redis/redistest/v2 => ../../infra/redis/redistest
-
-replace github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 => ../../infra/sqldb/dbtest
-
-replace github.com/bds421/rho-kit/infra/storage/s3backend/v2 => ../../infra/storage/s3backend
-
-replace github.com/bds421/rho-kit/infra/storage/sftpbackend/v2 => ../../infra/storage/sftpbackend
-
-replace github.com/bds421/rho-kit/infra/storage/storagetest/v2 => ../../infra/storage/storagetest
-
-replace github.com/bds421/rho-kit/io/v2 => ../../io
-
-replace github.com/bds421/rho-kit/observability/v2 => ../../observability
-
-replace github.com/bds421/rho-kit/resilience/v2 => ../../resilience

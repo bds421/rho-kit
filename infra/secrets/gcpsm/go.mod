@@ -13,7 +13,3 @@ require (
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/grpc v1.81.0
 )
-
-replace github.com/bds421/rho-kit/infra/secrets/v2 => ../
-
-replace github.com/bds421/rho-kit/core/v2 => ../../../core

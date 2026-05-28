@@ -39,13 +39,3 @@ require (
 	golang.org/x/text v0.37.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/bds421/rho-kit/core/v2 => ../../core
-
-replace github.com/bds421/rho-kit/resilience/v2 => ../../resilience
-
-replace github.com/bds421/rho-kit/observability/v2 => ../../observability
-
-replace github.com/bds421/rho-kit/data/v2 => ../../data
-
-replace github.com/bds421/rho-kit/httpx/v2 => ../../httpx

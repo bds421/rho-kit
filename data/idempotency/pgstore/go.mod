@@ -6,7 +6,3 @@ require (
 	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/bds421/rho-kit/data/v2 v2.0.0
 )
-
-replace github.com/bds421/rho-kit/core/v2 => ../../../core
-
-replace github.com/bds421/rho-kit/data/v2 => ../../../data

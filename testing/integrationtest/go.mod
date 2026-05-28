@@ -11,13 +11,13 @@ require (
 	github.com/bds421/rho-kit/data/cache/rediscache/v2 v2.0.0
 	github.com/bds421/rho-kit/data/cron/pgstore/v2 v2.0.0
 	github.com/bds421/rho-kit/data/idempotency/pgstore/v2 v2.0.0
-	github.com/bds421/rho-kit/data/saga/pgstore/v2 v2.0.0
 	github.com/bds421/rho-kit/data/idempotency/redisstore/v2 v2.0.0
 	github.com/bds421/rho-kit/data/lock/pgadvisory/v2 v2.0.0
 	github.com/bds421/rho-kit/data/lock/redislock/v2 v2.0.0
 	github.com/bds421/rho-kit/data/queue/redisqueue/v2 v2.0.0
 	github.com/bds421/rho-kit/data/queue/riverqueue/v2 v2.0.0
 	github.com/bds421/rho-kit/data/ratelimit/redis/v2 v2.0.0
+	github.com/bds421/rho-kit/data/saga/pgstore/v2 v2.0.0
 	github.com/bds421/rho-kit/data/stream/redisstream/v2 v2.0.0
 	github.com/bds421/rho-kit/data/v2 v2.0.0
 	github.com/bds421/rho-kit/httpx/websocket/v2 v2.0.0
@@ -182,85 +182,3 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-replace github.com/bds421/rho-kit/core/v2 => ../../core
-
-replace github.com/bds421/rho-kit/crypto/v2 => ../../crypto
-
-replace github.com/bds421/rho-kit/data/v2 => ../../data
-
-replace github.com/bds421/rho-kit/data/actionlog/postgres/v2 => ../../data/actionlog/postgres
-
-replace github.com/bds421/rho-kit/data/approval/postgres/v2 => ../../data/approval/postgres
-
-replace github.com/bds421/rho-kit/data/budget/redis/v2 => ../../data/budget/redis
-
-replace github.com/bds421/rho-kit/data/cache/rediscache/v2 => ../../data/cache/rediscache
-
-replace github.com/bds421/rho-kit/data/cron/pgstore/v2 => ../../data/cron/pgstore
-
-replace github.com/bds421/rho-kit/data/idempotency/pgstore/v2 => ../../data/idempotency/pgstore
-
-replace github.com/bds421/rho-kit/data/saga/pgstore/v2 => ../../data/saga/pgstore
-
-replace github.com/bds421/rho-kit/data/idempotency/redisstore/v2 => ../../data/idempotency/redisstore
-
-replace github.com/bds421/rho-kit/data/lock/pgadvisory/v2 => ../../data/lock/pgadvisory
-
-replace github.com/bds421/rho-kit/data/lock/redislock/v2 => ../../data/lock/redislock
-
-replace github.com/bds421/rho-kit/data/queue/redisqueue/v2 => ../../data/queue/redisqueue
-
-replace github.com/bds421/rho-kit/data/queue/riverqueue/v2 => ../../data/queue/riverqueue
-
-replace github.com/bds421/rho-kit/data/ratelimit/redis/v2 => ../../data/ratelimit/redis
-
-replace github.com/bds421/rho-kit/data/stream/redisstream/v2 => ../../data/stream/redisstream
-
-replace github.com/bds421/rho-kit/httpx/websocket/v2 => ../../httpx/websocket
-
-replace github.com/bds421/rho-kit/infra/v2 => ../../infra
-
-replace github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2 => ../../infra/leaderelection/k8slease
-
-replace github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2 => ../../infra/leaderelection/pgadvisory
-
-replace github.com/bds421/rho-kit/infra/leaderelection/redislock/v2 => ../../infra/leaderelection/redislock
-
-replace github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 => ../../infra/messaging/amqpbackend
-
-replace github.com/bds421/rho-kit/infra/messaging/kafkabackend/v2 => ../../infra/messaging/kafkabackend
-
-replace github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 => ../../infra/messaging/natsbackend
-
-replace github.com/bds421/rho-kit/infra/messaging/redisbackend/v2 => ../../infra/messaging/redisbackend
-
-replace github.com/bds421/rho-kit/infra/outbox/postgres/v2 => ../../infra/outbox/postgres
-
-replace github.com/bds421/rho-kit/infra/redis/v2 => ../../infra/redis
-
-replace github.com/bds421/rho-kit/infra/redis/redistest/v2 => ../../infra/redis/redistest
-
-replace github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 => ../../infra/sqldb/dbtest
-
-replace github.com/bds421/rho-kit/infra/sqldb/pgx/v2 => ../../infra/sqldb/pgx
-
-replace github.com/bds421/rho-kit/io/v2 => ../../io
-
-replace github.com/bds421/rho-kit/observability/v2 => ../../observability
-
-replace github.com/bds421/rho-kit/observability/auditlog/postgres/v2 => ../../observability/auditlog/postgres
-
-replace github.com/bds421/rho-kit/resilience/v2 => ../../resilience
-
-replace github.com/bds421/rho-kit/runtime/v2 => ../../runtime
-
-replace github.com/bds421/rho-kit/infra/storage/s3backend/v2 => ../../infra/storage/s3backend
-
-replace github.com/bds421/rho-kit/infra/storage/sftpbackend/v2 => ../../infra/storage/sftpbackend
-
-replace github.com/bds421/rho-kit/infra/storage/storagetest/v2 => ../../infra/storage/storagetest
-
-replace github.com/bds421/rho-kit/security/v2 => ../../security
-
-replace github.com/bds421/rho-kit/testing/kittest/v2 => ../kittest
