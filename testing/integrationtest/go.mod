@@ -51,8 +51,8 @@ require (
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.42.0
-	github.com/testcontainers/testcontainers-go/modules/kafka v0.42.0
-	github.com/testcontainers/testcontainers-go/modules/nats v0.42.0
+	github.com/testcontainers/testcontainers-go/modules/kafka v0.40.0
+	github.com/testcontainers/testcontainers-go/modules/nats v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.42.0
 	k8s.io/apimachinery v0.36.1
 	k8s.io/client-go v0.36.1

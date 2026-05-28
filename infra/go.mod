@@ -21,7 +21,7 @@ require (
 	github.com/bds421/rho-kit/resilience/v2 v2.0.1
 	github.com/gabriel-vasile/mimetype v1.4.13
 	github.com/google/uuid v1.6.0
-	github.com/pressly/goose/v3 v3.27.1
+	github.com/pressly/goose/v3 v3.26.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.11.1

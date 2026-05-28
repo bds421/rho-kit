@@ -10,7 +10,7 @@ require (
 	github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.0.1
 	github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 v2.0.1
 	github.com/bds421/rho-kit/infra/storage/storagetest/v2 v2.0.1
-	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.42.0
+	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.40.0
 )
 
 require (

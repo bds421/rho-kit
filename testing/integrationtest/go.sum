@@ -357,10 +357,10 @@ github.com/stvp/tempredis v0.0.0-20181119212430-b82af8480203 h1:QVqDTf3h2WHt08Yu
 github.com/stvp/tempredis v0.0.0-20181119212430-b82af8480203/go.mod h1:oqN97ltKNihBbwlX8dLpwxCl3+HnXKV/R0e+sRLd9C8=
 github.com/testcontainers/testcontainers-go v0.42.0 h1:He3IhTzTZOygSXLJPMX7n44XtK+qhjat1nI9cneBbUY=
 github.com/testcontainers/testcontainers-go v0.42.0/go.mod h1:vZjdY1YmUA1qEForxOIOazfsrdyORJAbhi0bp8plN30=
-github.com/testcontainers/testcontainers-go/modules/kafka v0.42.0 h1:b3plW+MUoF6ZaVOAlLjNQMJsigPLsJFIOqHdzMFv/w4=
-github.com/testcontainers/testcontainers-go/modules/kafka v0.42.0/go.mod h1:U0K+PapjOOVJrQCpvRYe6gKk0Oqh+ffl+J80Ln4EKzg=
-github.com/testcontainers/testcontainers-go/modules/nats v0.42.0 h1:WQR0+1r4GkM5QgOBoLxlP41empovt5PxtaiDpC0G7ow=
-github.com/testcontainers/testcontainers-go/modules/nats v0.42.0/go.mod h1:ZAI9iisjDNJmcRcycQFKSLpiBN9u2g1v9AJRq1afriE=
+github.com/testcontainers/testcontainers-go/modules/kafka v0.40.0 h1:BW4CMO6rYLvJRC7UF4l0rudnwm7IX/kJPvGd9MCJM6I=
+github.com/testcontainers/testcontainers-go/modules/kafka v0.40.0/go.mod h1:O4U0SUR8blhkRLLfIFHQqNRKzee7fOxzya2H+rnl4OY=
+github.com/testcontainers/testcontainers-go/modules/nats v0.40.0 h1:IfMgeVI7Mg7CIu0R9N0c85XYMjai7e4OCCmHvkmG6Hg=
+github.com/testcontainers/testcontainers-go/modules/nats v0.40.0/go.mod h1:HpKiTohLxK5QGdCkF0W57nEUDzOR5aZsazH1uo8nqso=
 github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0 h1:GCbb1ndrF7OTDiIvxXyItaDab4qkzTFJ48LKFdM7EIo=
 github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0/go.mod h1:IRPBaI8jXdrNfD0e4Zm7Fbcgaz5shKxOQv4axiL09xs=
 github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.42.0 h1:Psvaug2WredXSbKfw5dBOgqlGe8L8jxPAQYuRp5H7Rs=
