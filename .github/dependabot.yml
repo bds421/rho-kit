@@ -1,0 +1,146 @@
+# Dependabot configuration for rho-kit.
+#
+# Two ecosystems:
+#   - gomod: every workspace module declared in go.work (101 modules);
+#     weekly check, patches and minors grouped into one PR per module
+#     to reduce review volume; majors opened individually.
+#   - github-actions: monthly check of all workflow action versions.
+#
+# Security updates (auto-PR for CVEs in any tracked dep) are enabled
+# separately at the repo level via /automated-security-fixes.
+#
+# To regenerate the gomod `directories:` list when go.work changes:
+#   awk '/^use \(/,/^\)/ {if ($1 ~ /^\.\//) {sub(/^\.\//, "", $1); print $1}}' go.work | sort -u
+
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directories:
+      - "/app"
+      - "/app/actionlog"
+      - "/app/amqp"
+      - "/app/approval"
+      - "/app/auditlog"
+      - "/app/authz"
+      - "/app/budget"
+      - "/app/cron"
+      - "/app/eventbus"
+      - "/app/flags"
+      - "/app/grpc"
+      - "/app/http"
+      - "/app/jwt"
+      - "/app/leader"
+      - "/app/nats"
+      - "/app/paseto"
+      - "/app/postgres"
+      - "/app/ratelimit"
+      - "/app/redis"
+      - "/app/signedrequest"
+      - "/app/slo"
+      - "/app/storage"
+      - "/app/tenant"
+      - "/app/tracing"
+      - "/auth/oauth2"
+      - "/authz"
+      - "/authz/openfga"
+      - "/cmd/kit-catalog"
+      - "/cmd/kit-doctor"
+      - "/cmd/kit-migrate"
+      - "/cmd/kit-new"
+      - "/cmd/kit-verify"
+      - "/core"
+      - "/crypto"
+      - "/crypto/envelope/awskms"
+      - "/crypto/envelope/azurekeyvault"
+      - "/crypto/envelope/gcpkms"
+      - "/crypto/envelope/vaulttransit"
+      - "/data"
+      - "/data/actionlog/postgres"
+      - "/data/approval/postgres"
+      - "/data/budget/redis"
+      - "/data/cache/rediscache"
+      - "/data/cron/pgstore"
+      - "/data/idempotency/pgstore"
+      - "/data/idempotency/redisstore"
+      - "/data/lock/pgadvisory"
+      - "/data/lock/redislock"
+      - "/data/queue/redisqueue"
+      - "/data/queue/riverqueue"
+      - "/data/ratelimit/redis"
+      - "/data/saga/pgstore"
+      - "/data/stream/redisstream"
+      - "/data/tenant"
+      - "/examples/agentic-service"
+      - "/examples/api-gateway"
+      - "/examples/background-worker"
+      - "/examples/realtime-broadcast"
+      - "/examples/saga-coordinator"
+      - "/examples/webhook-receiver"
+      - "/flags"
+      - "/grpcx"
+      - "/httpx"
+      - "/httpx/middleware/signedrequest/redis"
+      - "/httpx/websocket"
+      - "/infra"
+      - "/infra/leaderelection/etcd"
+      - "/infra/leaderelection/k8slease"
+      - "/infra/leaderelection/pgadvisory"
+      - "/infra/leaderelection/redislock"
+      - "/infra/messaging/amqpbackend"
+      - "/infra/messaging/amqpbackend/debughttp"
+      - "/infra/messaging/kafkabackend"
+      - "/infra/messaging/natsbackend"
+      - "/infra/messaging/redisbackend"
+      - "/infra/outbox/postgres"
+      - "/infra/redis"
+      - "/infra/redis/redistest"
+      - "/infra/secrets"
+      - "/infra/secrets/awssm"
+      - "/infra/secrets/gcpsm"
+      - "/infra/secrets/vaultkv"
+      - "/infra/sqldb/dbtest"
+      - "/infra/sqldb/pgx"
+      - "/infra/sqldb/readreplica"
+      - "/infra/storage/azurebackend"
+      - "/infra/storage/gcsbackend"
+      - "/infra/storage/s3backend"
+      - "/infra/storage/sftpbackend"
+      - "/infra/storage/storagehttp/uploadsec/clamav"
+      - "/infra/storage/storagetest"
+      - "/io"
+      - "/observability"
+      - "/observability/auditlog/postgres"
+      - "/observability/pyroscope"
+      - "/realtime/centrifuge"
+      - "/resilience"
+      - "/runtime"
+      - "/security"
+      - "/testing/integrationtest"
+      - "/testing/kittest"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: "Etc/UTC"
+    groups:
+      go-deps-minor-patch:
+        patterns: ["*"]
+        update-types: ["patch", "minor"]
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+      day: monday
+      time: "04:00"
+      timezone: "Etc/UTC"
+    groups:
+      gh-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(ci)"
+      include: scope
