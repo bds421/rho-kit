@@ -6,8 +6,8 @@ module github.com/bds421/rho-kit/data/saga/pgstore/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.0.0
-	github.com/bds421/rho-kit/runtime/v2 v2.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.1
+	github.com/bds421/rho-kit/runtime/v2 v2.0.1
 )
 
 require github.com/google/uuid v1.6.0 // indirect

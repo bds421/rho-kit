@@ -1,7 +1,7 @@
-github.com/bds421/rho-kit/core/v2 v2.0.0 h1:4/5ZkZuGCm361PfQLf6m6kgwrbK+ps+9ECZSjNQZ9nc=
-github.com/bds421/rho-kit/core/v2 v2.0.0/go.mod h1:3rSGZTDAkNbZeYl3EQzS+7Lr+blGPaHRc5ccZR2uNNg=
-github.com/bds421/rho-kit/data/v2 v2.0.0 h1:OI6pcoyqOKDNkd5Ntf/rwTbNj4GLi7es+iZlXNmAhKs=
-github.com/bds421/rho-kit/data/v2 v2.0.0/go.mod h1:ETh4CXKj9/14DVp10JZJiVs3KfmZPOUtTDcsESKmKVU=
+github.com/bds421/rho-kit/core/v2 v2.0.1 h1:05nYsiRpJ7Hw1qKjx8RUQhTJe41k3F8SIFv2BJLPlnY=
+github.com/bds421/rho-kit/core/v2 v2.0.1/go.mod h1:3rSGZTDAkNbZeYl3EQzS+7Lr+blGPaHRc5ccZR2uNNg=
+github.com/bds421/rho-kit/data/v2 v2.0.1 h1:gLaCPkdnZgpjVQWgAts32iLnO+K2NkQ61N49LraEFhQ=
+github.com/bds421/rho-kit/data/v2 v2.0.1/go.mod h1:1Iayu5EkLyIk/KZRxzPNMKzf1tpXamLv6YO5qRWahvc=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=
