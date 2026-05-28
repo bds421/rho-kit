@@ -3,13 +3,9 @@ module github.com/bds421/rho-kit/data/approval/postgres/v2
 go 1.26.2
 
 require (
+	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/stretchr/testify v1.11.1
-)
-
-require (
-	github.com/kr/pretty v0.3.1 // indirect
-	github.com/rogpeppe/go-internal v1.14.1 // indirect
 )
 
 require (

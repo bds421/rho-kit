@@ -8,11 +8,6 @@ require (
 )
 
 require (
-	github.com/kr/pretty v0.3.1 // indirect
-	github.com/rogpeppe/go-internal v1.14.1 // indirect
-)
-
-require (
 	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/bds421/rho-kit/data/v2 v2.0.0
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
