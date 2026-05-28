@@ -497,6 +497,11 @@ func (mc *MemoryCache) Delete(ctx context.Context, key string) error {
 	mc.setNXMu.Lock()
 	defer mc.setNXMu.Unlock()
 	mc.cache.Del(key)
+	// Ristretto buffers writes (including deletes); without Wait, an
+	// immediate Get on the same key after Delete can still see the
+	// pre-Delete value because the Del is still in the write buffer.
+	// Mirror what Set does to give Delete strict-visibility semantics.
+	mc.cache.Wait()
 	mc.nxClaims.Delete(key)
 	return nil
 }
