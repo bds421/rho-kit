@@ -12,8 +12,8 @@ go 1.26.2
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.21.1
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys v1.5.0
-	github.com/bds421/rho-kit/core/v2 v2.0.1
-	github.com/bds421/rho-kit/crypto/v2 v2.0.1
+	github.com/bds421/rho-kit/core/v2 v2.0.2
+	github.com/bds421/rho-kit/crypto/v2 v2.0.2
 )
 
 require (

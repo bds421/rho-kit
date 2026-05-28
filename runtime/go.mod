@@ -8,7 +8,7 @@ module github.com/bds421/rho-kit/runtime/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.0.1
+	github.com/bds421/rho-kit/core/v2 v2.0.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/robfig/cron/v3 v3.0.1
@@ -27,7 +27,7 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/observability/v2 v2.0.1
+	github.com/bds421/rho-kit/observability/v2 v2.0.2
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
