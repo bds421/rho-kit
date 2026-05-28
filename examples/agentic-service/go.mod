@@ -26,11 +26,11 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.0.0
-	github.com/bds421/rho-kit/data/v2 v2.0.0
-	github.com/bds421/rho-kit/httpx/v2 v2.0.0
-	github.com/bds421/rho-kit/observability/v2 v2.0.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.0.1
+	github.com/bds421/rho-kit/data/v2 v2.0.1
+	github.com/bds421/rho-kit/httpx/v2 v2.0.1
+	github.com/bds421/rho-kit/observability/v2 v2.0.1 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
