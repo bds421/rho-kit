@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-integration test-cover build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot bench check-bench-regression update-bench-baseline
+.PHONY: lint vulncheck test test-race test-integration test-cover build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-tidy bench check-bench-regression update-bench-baseline
 
 GOLANGCI_LINT_VERSION := v2.10.1
 GOVULNCHECK_VERSION  ?= v1.1.4
@@ -92,7 +92,7 @@ clean:
 	go clean -cache -testcache
 
 ## ci: Run the full CI pipeline locally (lint + test + build + supply-chain checks)
-ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-doc-rot lint test-race build
+ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-tidy check-doc-rot lint test-race build
 
 ## kit-doctor: Run strict critical kit-doctor checks against this repository
 kit-doctor:
@@ -153,6 +153,10 @@ check-dashboard-labels:
 ## check-doc-rot: Validate every "wave N" reference in docs/ has a matching commit; flag unanchored "future wave" claims.
 check-doc-rot:
 	@bash tools/check-doc-rot.sh
+
+## check-tidy: Verify every workspace module's go.mod/go.sum is `go mod tidy`-clean.
+check-tidy:
+	@bash tools/check-tidy.sh
 
 ## bench: Run all kit hot-path benchmarks (used by check-bench-regression).
 bench:
