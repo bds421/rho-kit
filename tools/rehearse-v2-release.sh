@@ -120,7 +120,12 @@ git config --global --add url."file://$origin".insteadOf "git@github.com:bds421/
 
 echo
 echo "==> Verify no local internal replaces (one-time drop was done at v2.0.0)"
-FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION="$VERSION" make check-publishable
+# Do NOT pass EXPECTED_INTERNAL_VERSION here. Internal requires currently
+# point at the previous released version (e.g. v2.0.0 when releasing
+# v2.0.1) — the per-level tidy below bumps each to the new $VERSION as
+# its dependency level's tags become resolvable on origin. The final
+# downstream-consumer verify confirms the resolved end state.
+FORBID_INTERNAL_REPLACES=1 make check-publishable
 
 echo
 echo "==> Compute release plan"
@@ -140,6 +145,16 @@ for level in $(seq 0 "$max_level"); do
   while IFS= read -r dir; do
     [[ -z "$dir" ]] && continue
     echo "tidy: $dir"
+    # Deterministic bump: rewrite every internal kit require line to
+    # $VERSION before tidy. For v2.0.0 (first release) this is a no-op
+    # because the kit checked in with requires pre-set to v2.0.0; for
+    # v2.0.x where x > 0, requires currently point at the previous
+    # version and need to be bumped now that previous-level tags for
+    # $VERSION are on origin.
+    internal_deps=$(grep -hoE 'github\.com/bds421/rho-kit/[^[:space:]]+' "$dir/go.mod" | sort -u || true)
+    for dep in $internal_deps; do
+      (cd "$dir" && GOWORK=off go mod edit -require="${dep}@${VERSION}") 2>/dev/null || true
+    done
     (cd "$dir" && GOWORK=off go mod tidy)
   done < "$level_dirs"
 
@@ -195,8 +210,9 @@ go get \
   github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2@"$VERSION"
 go mod tidy
 go test ./...
-go list -m all | grep -E 'github.com/bds421/rho-kit/.+/v2 v2\.0\.0'
-grep -E 'github.com/bds421/rho-kit/.+ v2\.0\.0' go.sum
+version_re="$(echo "$VERSION" | sed 's/\./\\./g')"
+go list -m all | grep -E "github.com/bds421/rho-kit/.+/v2 ${version_re}"
+grep -E "github.com/bds421/rho-kit/.+ ${version_re}" go.sum
 
 echo
 echo "==> Verify command installs"
