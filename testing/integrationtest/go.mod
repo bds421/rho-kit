@@ -51,8 +51,8 @@ require (
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.42.0
-	github.com/testcontainers/testcontainers-go/modules/kafka v0.40.0
-	github.com/testcontainers/testcontainers-go/modules/nats v0.40.0
+	github.com/testcontainers/testcontainers-go/modules/kafka v0.42.0
+	github.com/testcontainers/testcontainers-go/modules/nats v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.42.0
 	k8s.io/apimachinery v0.36.1
 	k8s.io/client-go v0.36.1
@@ -141,6 +141,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
+	github.com/redis/rueidis v1.0.75 // indirect
 	github.com/riverqueue/river/riverdriver v0.38.0 // indirect
 	github.com/riverqueue/river/rivershared v0.38.0 // indirect
 	github.com/riverqueue/river/rivertype v0.38.0 // indirect
