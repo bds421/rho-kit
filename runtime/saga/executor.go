@@ -180,26 +180,48 @@ func (e *DurableExecutor) Run(ctx context.Context, instanceID string) error {
 	return e.executeInstance(ctx, def, instanceID)
 }
 
-// Resume scans the store for non-terminal instances older than
-// olderThan and runs each to completion / compensation. Use this on
-// service startup to recover sagas left in flight by a previous
-// process. Returns the first error encountered per-instance via the
-// summary slice; individual failures do not short-circuit the loop.
+// resumeConcurrency bounds how many in-flight sagas Resume drives at once. A
+// single saga can block for a long time (e.g. a step that polls an external
+// resource until it is ready), so resuming sequentially lets one slow or stuck
+// saga starve every other recoverable saga behind it — and, when Resume is
+// called synchronously at startup, stall the whole process. Driving them
+// concurrently isolates a stuck saga to its own slot; the bound keeps a large
+// recovery backlog from exhausting goroutines or hammering downstream APIs.
+const resumeConcurrency = 8
+
+// Resume scans the store for non-terminal instances older than olderThan and
+// runs each to completion / compensation. Use this on service startup to
+// recover sagas left in flight by a previous process. Instances are driven
+// CONCURRENTLY (bounded by [resumeConcurrency]) so one stuck saga cannot block
+// the others. Returns the per-instance error via the summary slice (in input
+// order); individual failures do not short-circuit the batch.
 func (e *DurableExecutor) Resume(ctx context.Context, olderThan time.Duration) ([]ResumeResult, error) {
 	pending, err := e.store.ListResumable(ctx, olderThan)
 	if err != nil {
 		return nil, fmt.Errorf("saga: list resumable: %w", err)
 	}
-	results := make([]ResumeResult, 0, len(pending))
-	for _, inst := range pending {
+	// Each goroutine writes its own distinct results[i], so no lock is needed
+	// for the slice; lookupDef takes e.mu briefly but executeInstance does not,
+	// and it only ever touches its own instance row in the store.
+	results := make([]ResumeResult, len(pending))
+	sem := make(chan struct{}, resumeConcurrency)
+	var wg sync.WaitGroup
+	for i, inst := range pending {
+		results[i].InstanceID = inst.ID
 		def, err := e.lookupDef(inst.Definition)
 		if err != nil {
-			results = append(results, ResumeResult{InstanceID: inst.ID, Err: err})
+			results[i].Err = err
 			continue
 		}
-		err = e.executeInstance(ctx, def, inst.ID)
-		results = append(results, ResumeResult{InstanceID: inst.ID, Err: err})
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, def *DurableDefinition, instanceID string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			results[i].Err = e.executeInstance(ctx, def, instanceID)
+		}(i, def, inst.ID)
 	}
+	wg.Wait()
 	return results, nil
 }
 
