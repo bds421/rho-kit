@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -105,6 +106,58 @@ func TestDurableExecutor_ForwardFailureRunsCompensation(t *testing.T) {
 	inst, _ := store.Get(context.Background(), instID)
 	require.Equal(t, saga.StateFailed, inst.State)
 	require.ElementsMatch(t, []int{1, 0}, inst.Compensated)
+}
+
+// TestDurableExecutor_ResumeIsolatesStuckSaga proves that one saga blocked in a
+// forward step does NOT prevent other resumable sagas from running to
+// completion: Resume drives them concurrently. A regression here (sequential
+// resume) would deadlock the test because the "fast" saga would never run until
+// the "stuck" one returned, which it never does until released.
+func TestDurableExecutor_ResumeIsolatesStuckSaga(t *testing.T) {
+	store := saga.NewMemoryStateStore()
+	exec, _ := saga.NewDurableExecutor(store)
+	rec := &callRecorder{}
+
+	release := make(chan struct{})
+	stuckEntered := make(chan struct{})
+	stuckStep := saga.DurableStep{
+		Name: "block",
+		Forward: func(ctx context.Context, in []byte) ([]byte, error) {
+			rec.record("fwd:block")
+			close(stuckEntered)
+			<-release // block until the test releases it
+			return in, nil
+		},
+	}
+	require.NoError(t, exec.Register(&saga.DurableDefinition{
+		Name:  "stuck",
+		Steps: []saga.DurableStep{stuckStep},
+	}))
+	require.NoError(t, exec.Register(&saga.DurableDefinition{
+		Name:  "fast",
+		Steps: []saga.DurableStep{passingStep("quick", rec)},
+	}))
+
+	ctx := context.Background()
+	require.NoError(t, store.Put(ctx, saga.Instance{ID: "stuck-1", Definition: "stuck", State: saga.StateRunning}))
+	require.NoError(t, store.Put(ctx, saga.Instance{ID: "fast-1", Definition: "fast", State: saga.StateRunning}))
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = exec.Resume(ctx, 0)
+		close(done)
+	}()
+
+	// The stuck saga has entered its blocking step; the fast saga must still
+	// complete while it is blocked (would hang under sequential resume).
+	<-stuckEntered
+	require.Eventually(t, func() bool {
+		inst, err := store.Get(ctx, "fast-1")
+		return err == nil && inst.State == saga.StateCompleted
+	}, 2*time.Second, 5*time.Millisecond, "fast saga should complete while the stuck one blocks")
+
+	close(release) // let the stuck saga finish so Resume returns cleanly
+	<-done
 }
 
 func TestDurableExecutor_ResumeAfterCrash(t *testing.T) {
