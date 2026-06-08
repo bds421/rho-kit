@@ -25,7 +25,7 @@ require (
 )
 
 require (
-	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.21.1
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.22.0
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
 	github.com/bds421/rho-kit/core/v2 v2.0.2
 	github.com/bds421/rho-kit/infra/v2 v2.0.2

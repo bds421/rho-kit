@@ -3,13 +3,13 @@ module github.com/bds421/rho-kit/infra/storage/gcsbackend/v2
 go 1.26.2
 
 require (
-	cloud.google.com/go/storage v1.62.2
+	cloud.google.com/go/storage v1.62.3
 	github.com/bds421/rho-kit/infra/v2 v2.0.2
 	github.com/bds421/rho-kit/observability/v2 v2.0.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.44.0
-	google.golang.org/api v0.282.0
+	google.golang.org/api v0.283.0
 )
 
 require (
