@@ -3,24 +3,22 @@ module github.com/bds421/rho-kit/examples/realtime-broadcast/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/app/http/v2 v2.0.2
-	github.com/bds421/rho-kit/app/v2 v2.0.2
-	github.com/bds421/rho-kit/realtime/centrifuge/v2 v2.0.2
-	github.com/bds421/rho-kit/security/v2 v2.0.2
+	github.com/bds421/rho-kit/app/http/v2 v2.1.0
+	github.com/bds421/rho-kit/app/v2 v2.1.0
+	github.com/bds421/rho-kit/realtime/centrifuge/v2 v2.1.0
+	github.com/bds421/rho-kit/security/v2 v2.1.0
 	github.com/lestrrat-go/jwx/v3 v3.1.1
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
-	cel.dev/expr v0.25.2 // indirect
 	github.com/FZambia/eagle v0.2.0 // indirect
-	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
-	github.com/bds421/rho-kit/core/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/httpx/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/infra/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/runtime/v2 v2.0.2 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/httpx/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/runtime/v2 v2.1.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/centrifugal/centrifuge v0.38.0 // indirect
@@ -38,7 +36,6 @@ require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
-	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
 	github.com/lestrrat-go/dsig v1.3.0 // indirect
 	github.com/lestrrat-go/dsig-secp256k1 v1.0.0 // indirect
@@ -70,7 +67,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
