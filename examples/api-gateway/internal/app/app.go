@@ -60,8 +60,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bds421/rho-kit/app/v2"
 	apphttp "github.com/bds421/rho-kit/app/http/v2"
+	"github.com/bds421/rho-kit/app/v2"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/ratelimit"
 	"github.com/bds421/rho-kit/resilience/v2/bulkhead"
 	"github.com/bds421/rho-kit/resilience/v2/circuitbreaker"
@@ -98,6 +98,20 @@ func Run(ctx context.Context) error {
 	}
 	gw := newGateway(demoToken, callRealDownstream)
 
+	// API-key-protected demo route (opaque keys via security/apikey +
+	// httpx/middleware/apikey), alongside the JWT-stubbed /api/orders route
+	// so the example shows both auth styles side by side.
+	apiKeyHandler, apiKeyToken, err := newAPIKeyDemoHandler(ctx, logger)
+	if err != nil {
+		return err
+	}
+	// EXAMPLE ONLY: never log a plaintext key in production — it is shown to
+	// the owner once at issuance and only its hash is ever stored.
+	logger.Info("issued demo api key",
+		"try", "curl -H 'Authorization: Bearer <token>' localhost:8095/api/keys-demo",
+		"token", apiKeyToken,
+	)
+
 	cfg := app.BaseConfig{
 		Server:      app.ServerConfig{Host: "127.0.0.1", Port: 8095},
 		Internal:    app.InternalConfig{Host: "127.0.0.1", Port: 9095},
@@ -113,6 +127,7 @@ func Run(ctx context.Context) error {
 		Router(func(_ app.Infrastructure) http.Handler {
 			mux := http.NewServeMux()
 			mux.Handle("GET /api/orders", gw.buildHandler(logger))
+			mux.Handle("GET /api/keys-demo", apiKeyHandler)
 			return mux
 		}).
 		RunContext(ctx)
@@ -159,7 +174,7 @@ func newGateway(token string, downstream downstreamFn) *gateway {
 			bulkhead.WithMaxQueueWait(bulkheadQueueWait),
 		),
 		breaker: circuitbreaker.NewCircuitBreaker(
-			5 /* trip after 5 consecutive failures */,
+			5, /* trip after 5 consecutive failures */
 			500*time.Millisecond,
 			circuitbreaker.WithName("orders-downstream"),
 		),

@@ -73,6 +73,7 @@ allowed_for_boundary_dep() {
                 app/postgres/go.mod|\
                 cmd/kit-migrate/go.mod|\
                 data/actionlog/postgres/go.mod|\
+                data/apikey/postgres/go.mod|\
                 data/approval/postgres/go.mod|\
                 data/idempotency/pgstore/go.mod|\
                 data/lock/pgadvisory/go.mod|\

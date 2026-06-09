@@ -6,6 +6,7 @@ use (
 	./app
 	./app/actionlog
 	./app/amqp
+	./app/apikey
 	./app/approval
 	./app/auditlog
 	./app/authz
@@ -43,6 +44,7 @@ use (
 	./crypto/envelope/vaulttransit
 	./data
 	./data/actionlog/postgres
+	./data/apikey/postgres
 	./data/approval/postgres
 	./data/budget/redis
 	./data/cache/rediscache

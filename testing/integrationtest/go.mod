@@ -6,6 +6,7 @@ require (
 	github.com/bds421/rho-kit/core/v2 v2.0.2
 	github.com/bds421/rho-kit/crypto/v2 v2.0.2
 	github.com/bds421/rho-kit/data/actionlog/postgres/v2 v2.0.2
+	github.com/bds421/rho-kit/data/apikey/postgres/v2 v2.0.2
 	github.com/bds421/rho-kit/data/approval/postgres/v2 v2.0.2
 	github.com/bds421/rho-kit/data/budget/redis/v2 v2.0.2
 	github.com/bds421/rho-kit/data/cache/rediscache/v2 v2.0.2
@@ -37,6 +38,7 @@ require (
 	github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.0.2
 	github.com/bds421/rho-kit/observability/v2 v2.0.2
 	github.com/bds421/rho-kit/runtime/v2 v2.0.2
+	github.com/bds421/rho-kit/security/v2 v2.0.2
 	github.com/bds421/rho-kit/testing/kittest/v2 v2.0.2
 	github.com/coder/websocket v1.8.14
 	github.com/google/uuid v1.6.0

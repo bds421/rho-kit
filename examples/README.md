@@ -25,7 +25,7 @@ README points at.
 | **agentic-service**    | Implemented    | `httpx/mcp`, `data/{actionlog,approval,budget}`, `tenant` middleware |
 | **webhook-receiver**   | Implemented    | `signedrequest`, `idempotency` middleware, typed handler |
 | **background-worker**  | Implemented    | `messaging.TypedSubscription`, `resilience/{retry,circuitbreaker}` |
-| **api-gateway**        | Implemented    | `httpx/middleware/ratelimit`, stubbed JWT auth, `resilience/{retry,circuitbreaker}` for downstream fan-out |
+| **api-gateway**        | Implemented    | `httpx/middleware/ratelimit`, stubbed JWT auth, `security/apikey` + `httpx/middleware/apikey` (opaque API-key route at `/api/keys-demo`), `resilience/{retry,circuitbreaker}` for downstream fan-out |
 | **realtime-broadcast** | Implemented    | `realtime/centrifuge`, `security/jwtutil`, `httpx` |
 | **saga-coordinator**   | Implemented    | `runtime/saga`, `data/idempotency`, per-key exclusive section (in-memory; pgadvisory in production) |
 

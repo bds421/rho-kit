@@ -3,8 +3,9 @@
 Packages: `crypto/encrypt`, `crypto/envelope`, `crypto/envelope/awskms`,
 `crypto/envelope/azurekeyvault`, `crypto/envelope/gcpkms`,
 `crypto/envelope/vaulttransit`, `crypto/signing`,
-`security/jwtutil`, `security/jwtutil/revocation`, `crypto/masking`,
-`security/netutil`, `security/mtlsidentity`, `security/asvs`
+`security/jwtutil`, `security/jwtutil/revocation`, `security/apikey`,
+`data/apikey/postgres`, `httpx/middleware/apikey`, `app/apikey`,
+`crypto/masking`, `security/netutil`, `security/mtlsidentity`, `security/asvs`
 
 Snippet status: Go and JavaScript blocks in this recipe are illustrative
 fragments unless explicitly introduced as generated or executable code.
@@ -22,6 +23,8 @@ Buildable golden-path evidence lives in `cmd/kit-new` scaffold tests and
 | Sign service-to-service HTTP requests with replay protection | `httpx/sign` + `httpx/middleware/signedrequest` |
 | Verify JWTs from a JWKS endpoint | `security/jwtutil` |
 | Revoke JWTs after logout | `security/jwtutil/revocation` |
+| Issue/verify opaque API keys for external/customer access | `security/apikey` + `httpx/middleware/apikey` + `app/apikey` |
+| Persist API keys | `data/apikey/postgres` (or `apikey.NewMemoryRepository`) |
 | mTLS between services | `security/netutil` |
 | Normalize mTLS SAN/CN allowlists | `security/mtlsidentity` |
 | Redact secrets in logs | `crypto/masking` |
@@ -251,6 +254,73 @@ ks, _ := jwtutil.ParseKeySetFromPEM(testPrivKeyPEM, "test-kid")
 provider := jwtutil.NewProviderWithKeySet(ks) // no HTTP fetch
 ```
 
+## API Keys (Opaque, External-Facing)
+
+Use opaque API keys for external/customer/AI-agent access — the convention
+OpenAI, Anthropic, Stripe and GitHub all use. Prefer these over JWTs when the
+credential is long-lived and must be **revocable on demand**; prefer JWTs (above)
+for your own short-lived sessions where statelessness matters.
+
+A key is a high-entropy random secret shown to the owner **exactly once**; only
+its SHA-256 hash is stored. The token format is `<prefix>_<id>_<secret>` — the
+public `id` is an indexed lookup key, so verification is one indexed read plus
+one constant-time hash compare. SHA-256 (not argon2/bcrypt) is correct here:
+the secret already carries 256 bits of entropy, so a slow KDF buys nothing and
+its per-row salt would make lookup-by-hash impossible.
+
+```go
+// Issue (privileged side — behind an authenticated admin endpoint):
+mgr := apikey.NewManager(repo) // repo: apikey.Repository (postgres or in-memory)
+key, token, err := mgr.Issue(ctx, apikey.IssueOptions{
+    Owner:     "tenant-1",
+    Scopes:    []string{string(scopeOrdersRead)}, // strings; validated at the edge
+    ExpiresAt: time.Now().Add(90 * 24 * time.Hour),
+})
+// Deliver token.RevealString() to the owner ONCE; never log or store it.
+// Only `key` (with the hash) is persisted by Issue.
+```
+
+```go
+// Authenticate (request path) — wire via the app module at PhaseAuth:
+return app.New("my-service", version, base).
+    With(apikey.Module(repo)). // app/apikey: extracts, verifies, attaches scopes
+    Router(...).Run()
+
+// Or inline with the middleware package directly:
+h = apikeymw.Middleware(apikeymw.Config{Repository: repo})(
+    apikeymw.RequireScopes(scopeOrdersRead)(next), // 403 if the key lacks it
+)
+// In handlers: apikeymw.OwnerFromContext(r), KeyIDFromContext(r), ScopesFromContext(r)
+```
+
+The middleware reads `Authorization: Bearer <token>` (or `X-API-Key`), returns
+401 for missing/malformed/expired/revoked/unknown keys (never revealing which
+ids exist), and 403 when a required scope is absent. `RequireScopes` validates
+its scopes against the shared authz registry at **construction**, so a typo
+panics at startup instead of silently rejecting every request.
+
+**Rotation with overlap** — issue a replacement while the old key keeps working
+for a grace window, so clients can migrate without an outage:
+
+```go
+newKey, newToken, err := mgr.Rotate(ctx, oldKeyID, 24*time.Hour)
+// old key stays valid for 24h, then stops; new key inherits owner/scopes/kind.
+mgr.Revoke(ctx, keyID) // immediate kill
+```
+
+Rotation needs no special storage: `Rotate` schedules the old key's revocation
+at `now + overlap`, and `Verify` treats a future `RevokedAt` as "still valid
+until then."
+
+**Key kinds:** `apikey.KindAPI` (default) authenticates requests;
+`apikey.KindRoot` marks keys permitted to manage other keys — gate your
+issuance endpoint on it.
+
+**Testing:** `apikey.NewMemoryRepository()` is a drop-in `Repository` for unit
+tests; the Postgres implementation lives in `data/apikey/postgres` (embed
+`postgres.Migrations`). See `examples/api-gateway` (`/api/keys-demo` route) for
+end-to-end wiring.
+
 ## mTLS
 
 ```go
@@ -392,3 +462,6 @@ Use `csrf.New()` for all new code.
 - **Never** reuse `SSRFSafeTransport` across requests — DNS can change.
 - **Never** skip SSRF validation on user-supplied webhook URLs.
 - **Never** use `csrf.RequireCSRF` for new browser flows — use `csrf.New(...)` with a shared secret.
+- **Never** store API-key plaintext or log it — persist only the SHA-256 hash; `apikey.Generate`/`Manager.Issue` return the token once.
+- **Never** run API keys through `crypto/passhash` (argon2) — that's for low-entropy passwords; high-entropy keys use the SHA-256 lookup hash in `security/apikey`.
+- **Never** distinguish "unknown key" from "wrong secret" in responses — both are 401, as `httpx/middleware/apikey` does, so endpoints don't leak which key ids exist.
