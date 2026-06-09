@@ -7,10 +7,15 @@ module github.com/bds421/rho-kit/testing/kittest/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.0.2
-	github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 v2.0.2
-	github.com/bds421/rho-kit/infra/storage/storagetest/v2 v2.0.2
+	github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.1.0
+	github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 v2.1.0
+	github.com/bds421/rho-kit/infra/storage/storagetest/v2 v2.1.0
 	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.42.0
+)
+
+require (
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 )
 
 require (
@@ -35,12 +40,12 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.36.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.43.2 // indirect
 	github.com/aws/smithy-go v1.27.1 // indirect
-	github.com/bds421/rho-kit/core/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/infra/storage/s3backend/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/infra/storage/sftpbackend/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/infra/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/io/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.0.2 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/infra/storage/s3backend/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/infra/storage/sftpbackend/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.1.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -61,7 +66,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/jackc/pgx/v5 v5.10.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260330125221-c963978e514e // indirect

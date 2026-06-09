@@ -3,19 +3,19 @@ module github.com/bds421/rho-kit/app/jwt/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/app/v2 v2.0.2
-	github.com/bds421/rho-kit/core/v2 v2.0.2
-	github.com/bds421/rho-kit/observability/v2 v2.0.2
-	github.com/bds421/rho-kit/security/v2 v2.0.2
+	github.com/bds421/rho-kit/app/v2 v2.1.0
+	github.com/bds421/rho-kit/core/v2 v2.1.0
+	github.com/bds421/rho-kit/observability/v2 v2.1.0
+	github.com/bds421/rho-kit/security/v2 v2.1.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
-	github.com/bds421/rho-kit/httpx/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/infra/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/runtime/v2 v2.0.2 // indirect
+	github.com/bds421/rho-kit/httpx/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/runtime/v2 v2.1.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -28,7 +28,6 @@ require (
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
 	github.com/lestrrat-go/dsig v1.3.0 // indirect
 	github.com/lestrrat-go/dsig-secp256k1 v1.0.0 // indirect
