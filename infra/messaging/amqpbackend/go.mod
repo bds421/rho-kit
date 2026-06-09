@@ -24,11 +24,11 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.0.2
-	github.com/bds421/rho-kit/infra/v2 v2.0.2
-	github.com/bds421/rho-kit/io/v2 v2.0.2 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.0.2
-	github.com/bds421/rho-kit/resilience/v2 v2.0.2
+	github.com/bds421/rho-kit/core/v2 v2.1.0
+	github.com/bds421/rho-kit/infra/v2 v2.1.0
+	github.com/bds421/rho-kit/io/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.1.0
+	github.com/bds421/rho-kit/resilience/v2 v2.1.0
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
