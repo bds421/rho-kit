@@ -22,10 +22,14 @@ EXPECTED_INTERNAL_VERSION="${EXPECTED_INTERNAL_VERSION:-}"
 FORBID_INTERNAL_REPLACES="${FORBID_INTERNAL_REPLACES:-0}"
 
 find_go_mods() {
-  find . -name go.mod \
-    -not -path '*/.claude/*' \
-    -not -path '*/dist/*' \
-    -print0
+  # Prune .git/.claude/dist instead of filtering by path: descending into
+  # .git races with git writing pack objects (e.g. inside the release
+  # rehearsal's fresh temp repo), and a transient "No such file or directory"
+  # from find returns non-zero, which `set -o pipefail` turns into a spurious
+  # failure of every find_go_mods pipeline.
+  find . \
+    \( -path '*/.git' -o -path '*/.claude' -o -path '*/dist' \) -prune \
+    -o -name go.mod -print0
 }
 
 if command -v rg >/dev/null 2>&1; then
