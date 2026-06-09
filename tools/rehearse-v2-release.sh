@@ -191,6 +191,12 @@ git push -q origin "release/$VERSION"
 
 echo
 echo "==> Verify clean downstream consumer"
+# The consumer (and the command installs below) are standalone modules
+# OUTSIDE the kit workspace. An inherited GOWORK (CI exports one globally)
+# would make `go` try to resolve them against the kit's go.work and fail
+# with "directory prefix . does not contain modules listed in go.work".
+# Force module mode so the rehearsal verify is hermetic.
+export GOWORK=off
 cd "$consumer"
 go mod init rho-kit-v2-verify
 cat > main.go <<'GO'
