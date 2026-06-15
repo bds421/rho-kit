@@ -14,7 +14,7 @@ go 1.26.2
 require (
 	github.com/bds421/rho-kit/authz/v2 v2.1.0
 	github.com/bds421/rho-kit/core/v2 v2.1.0
-	github.com/openfga/go-sdk v0.8.1
+	github.com/openfga/go-sdk v0.8.2
 )
 
 require (
