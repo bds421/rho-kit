@@ -16,11 +16,7 @@ import (
 // can still inspect the raw code/message in logs. Errors that aren't gRPC
 // status errors, or that map to codes outside the curated set, are
 // returned unchanged.
-//
-// Unlike awskms, this adapter records no per-operation error metric, so
-// classification takes no operation argument. If gcpkms gains a Prometheus
-// surface later, reintroduce the operation label at the call sites then.
-func classifyGCPError(err error) error {
+func classifyGCPError(operation string, err error) error {
 	if err == nil {
 		return nil
 	}

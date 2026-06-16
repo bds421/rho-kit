@@ -103,6 +103,20 @@ func MustNew(name string, p Provider) *Client {
 	return c
 }
 
+// Shutdown drains and closes the installed OpenFeature provider: it
+// flushes buffered analytics and stops provider background goroutines
+// (e.g. flagd streaming, LaunchDarkly) that otherwise leak until process
+// exit. It resets the process-global OpenFeature SDK, matching the
+// one-[New]-per-service contract, so call it exactly once during
+// shutdown; it is a no-op when no provider was installed.
+//
+// Exposed here so composition-root modules can wire teardown without
+// importing the OpenFeature SDK directly (which the dependency-boundary
+// gate restricts to this adapter module).
+func Shutdown() {
+	openfeature.Shutdown()
+}
+
 // Bool evaluates a boolean flag, returning fallback on any error.
 //
 // Audit FR-034: provider/evaluation errors are silently swallowed in

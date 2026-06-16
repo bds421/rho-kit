@@ -23,8 +23,6 @@ package flags
 import (
 	"context"
 
-	"github.com/open-feature/go-sdk/openfeature"
-
 	"github.com/bds421/rho-kit/app/v2"
 	kitflags "github.com/bds421/rho-kit/flags/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
@@ -77,22 +75,22 @@ func (m *flagsModule) Init(_ context.Context, mc app.ModuleContext) error {
 	m.client = client
 
 	// kitflags.New installed the provider via
-	// openfeature.SetNamedProviderAndWait. The OpenFeature SDK owns
-	// the provider's lifecycle once installed, so we hand its
-	// shutdown to the lifecycle Runner instead of leaving it leaking:
-	// providers with background goroutines and buffered analytics
-	// (LaunchDarkly, flagd streaming) drain and flush only when their
-	// Shutdown hook fires. Mirrors app/paseto, which wires
-	// provider.Close into the Runner the same way.
+	// openfeature.SetNamedProviderAndWait. The provider owns background
+	// goroutines and buffered analytics (LaunchDarkly, flagd streaming)
+	// that drain and flush only when shutdown fires, so we hand teardown
+	// to the lifecycle Runner instead of leaking it. Mirrors app/paseto,
+	// which wires provider.Close into the Runner the same way.
 	//
-	// openfeature.Shutdown resets the whole SDK API (this version has
-	// no per-domain shutdown). That matches the kit contract of one
-	// flags.Module per service: the module is the SDK's sole owner, so
-	// a process-terminating reset is the correct teardown. The Runner
-	// invokes this in reverse registration order on SIGINT/SIGTERM.
+	// kitflags.Shutdown resets the process-global OpenFeature SDK (this
+	// version has no per-domain shutdown), matching the one-flags.Module-
+	// per-service contract: the module is the SDK's sole owner, so a
+	// process-terminating reset is the correct teardown. Routing through
+	// the flags abstraction keeps the OpenFeature SDK out of this module
+	// (the dependency-boundary gate restricts it to the adapter). The
+	// Runner invokes this in reverse registration order on SIGINT/SIGTERM.
 	mc.Runner.AddFunc("flags-provider", func(ctx context.Context) error {
 		<-ctx.Done()
-		openfeature.Shutdown()
+		kitflags.Shutdown()
 		return nil
 	})
 	return nil
