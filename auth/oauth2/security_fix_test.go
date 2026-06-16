@@ -135,6 +135,42 @@ func TestHandlers_SchemeRelativeRedirectRejected(t *testing.T) {
 	require.NotEqual(t, http.StatusFound, cbResp.Code)
 }
 
+// TestHandlers_CallbackProviderErrorNotReflected ensures the callback
+// does not echo the attacker-influenced `error` / `error_description`
+// query parameters (RFC 6749 §4.1.2.1) back into the response body. The
+// caller receives only the opaque sentinel; the raw values are logged
+// server-side.
+func TestHandlers_CallbackProviderErrorNotReflected(t *testing.T) {
+	issuer := newFakeIssuer(t, "test-client")
+	client, err := oauth2.NewClient(context.Background(),
+		oauth2.Config{
+			Issuer: issuer.server.URL, ClientID: "test-client",
+			RedirectURL: "https://app/cb",
+		},
+		oauth2.WithSessionStore(oauth2.NewMemorySessionStore()),
+		oauth2.WithStateStore(oauth2.NewMemoryStateStore()),
+		oauth2.WithInsecureCookie(),
+	)
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/", client.Handlers())
+
+	const marker = "PWNED-REFLECTED-MARKER-9zX"
+	cbReq := httptest.NewRequest(http.MethodGet,
+		"/oauth/callback?error=access_denied&error_description="+url.QueryEscape("attacker text "+marker), nil)
+	cbResp := httptest.NewRecorder()
+	mux.ServeHTTP(cbResp, cbReq)
+
+	require.Equal(t, http.StatusBadRequest, cbResp.Code)
+	body := cbResp.Body.String()
+	require.Contains(t, body, oauth2.ErrProviderError.Error(),
+		"callback must return the opaque provider-error sentinel")
+	require.NotContains(t, body, marker,
+		"attacker-controlled error_description reflected into response body")
+	require.NotContains(t, body, "access_denied",
+		"attacker-controlled error parameter reflected into response body")
+}
+
 // TestWithoutPKCEPublicClientRejected covers finding 3: WithoutPKCE on
 // a public client (no client secret) must fail closed — that config has
 // neither PKCE nor a client secret and is forbidden by RFC 7636.

@@ -141,6 +141,13 @@ func TestAcquire_FallbackToPrimaryWhenAllReplicasUnhealthy(t *testing.T) {
 
 	// Fallback counter should be at least 1.
 	require.GreaterOrEqual(t, counterValue(t, reg, "sqldb_readreplica_replica_fallback_total"), 1.0)
+
+	// primary_acquires_total counts every connection taken from the
+	// primary pool, including read-only fallbacks (its help text says so).
+	// Both reads above fell back to the primary, so the counter must
+	// equal the number of primary.Acquire calls.
+	require.Equal(t, 2.0, counterValue(t, reg, "sqldb_readreplica_primary_acquires_total"),
+		"primary_acquires_total must include read-only fallbacks to primary")
 }
 
 func TestHealthLoop_ReAddsReplicaAfterRecovery(t *testing.T) {

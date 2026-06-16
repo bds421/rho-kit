@@ -79,10 +79,17 @@ func WithClock(fn clock.Func) LimiterOption {
 
 // WithTrustedProxies sets the CIDRs from which X-Forwarded-For is trusted.
 // Invalid entries panic so proxy attribution cannot silently degrade at startup.
+//
+// A nil or empty slice falls back to the default trusted set (loopback) rather
+// than "trust no proxies" — passing []string{} does NOT disable XFF trust.
+// This preserves the kit's default attribution behavior; to trust no proxies,
+// configure the limiter behind an environment where XFF is already stripped.
 func WithTrustedProxies(cidrs []string) LimiterOption {
 	trusted, err := clientip.ParseTrustedProxiesStrict(cidrs)
 	if err != nil {
-		panic("middleware/ratelimit: WithTrustedProxies invalid trusted proxy")
+		// Surface which entry is malformed (index only) so operators can fix
+		// the config; the raw CIDR value is withheld for secret hygiene.
+		panic(fmt.Sprintf("middleware/ratelimit: WithTrustedProxies invalid trusted proxy at index %d", invalidTrustedProxyIndex(cidrs)))
 	}
 	if len(trusted) == 0 {
 		trusted = clientip.ParseTrustedProxies(nil)
@@ -90,6 +97,19 @@ func WithTrustedProxies(cidrs []string) LimiterOption {
 	return func(rl *Limiter) {
 		rl.trustedProxies = cloneIPNets(trusted)
 	}
+}
+
+// invalidTrustedProxyIndex returns the index of the first CIDR entry that
+// ParseTrustedProxiesStrict rejects, or -1 if none is individually invalid
+// (e.g. a whole-slice failure mode). The entry value is never returned, only
+// its position, so no potentially sensitive config leaks into the panic.
+func invalidTrustedProxyIndex(cidrs []string) int {
+	for i, c := range cidrs {
+		if _, err := clientip.ParseTrustedProxiesStrict([]string{c}); err != nil {
+			return i
+		}
+	}
+	return -1
 }
 
 // WithMetrics attaches Prometheus metrics to the IP rate limiter.

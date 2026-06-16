@@ -152,12 +152,15 @@ func TestWrapUnwrapRoundTrip(t *testing.T) {
 		t.Fatalf("Unwrap = %q, want original DEK", got)
 	}
 
-	// Per the documented contract, Decrypt targets the version-qualified
-	// Name pinned at Wrap time (the keyID), and forwards the ciphertext + AAD
-	// with their CRC32C wrappers.
+	// Per the documented contract, symmetric Decrypt targets the parent
+	// CryptoKey resource (not the version-qualified keyID, which GCP KMS
+	// rejects with INVALID_ARGUMENT); the version is selected from the
+	// ciphertext metadata. The keyID is retained purely as the per-blob
+	// authorization gate. Decrypt forwards the ciphertext + AAD with their
+	// CRC32C wrappers.
 	req := fake.decReq
-	if req.GetName() != keyID {
-		t.Fatalf("DecryptRequest.Name = %q, want version-qualified keyID %q", req.GetName(), keyID)
+	if req.GetName() != testParent {
+		t.Fatalf("DecryptRequest.Name = %q, want parent CryptoKey %q", req.GetName(), testParent)
 	}
 	if !bytes.Equal(req.GetCiphertext(), wrapped) {
 		t.Fatalf("DecryptRequest.Ciphertext = %q, want wrapped DEK", req.GetCiphertext())

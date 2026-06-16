@@ -23,7 +23,9 @@
 // # Schema
 //
 // `cron_schedules` table — apply via the migration shipped in
-// `migrations/` (the kit's existing migration runner reads them).
+// `migrations/`, exposed as the embedded [Migrations] fs.FS so the SQL
+// compiles into the consumer's binary (feed it to goose or the kit
+// migrate tool).
 //
 // # Quick start
 //

@@ -27,6 +27,7 @@ type options struct {
 	retryInterval time.Duration
 	maxAttempts   int
 	maxWait       time.Duration
+	logger        *slog.Logger
 }
 
 // WithTTL sets the lock expiration duration. Defaults to 30 seconds.
@@ -63,6 +64,19 @@ func WithMaxWait(d time.Duration) Option {
 		panic("redlock: WithMaxWait requires a positive duration")
 	}
 	return func(o *options) { o.maxWait = d }
+}
+
+// WithLogger sets the *slog.Logger the locker uses for the
+// post-WithLock release-failure log line. When unset the locker
+// falls back to [slog.Default]. Mirrors [redislock.WithLogger] so
+// callers swapping a single-instance locker for a quorum locker keep
+// the same observability surface.
+func WithLogger(l *slog.Logger) Option {
+	return func(o *options) {
+		if l != nil {
+			o.logger = l
+		}
+	}
 }
 
 // MaxLockKeyLen mirrors [redislock.MaxLockKeyLen] — the same key
@@ -127,6 +141,9 @@ func NewQuorumLocker(clients []goredislib.UniversalClient, opts ...Option) *Quor
 		}
 		fn(&o)
 	}
+	if o.logger == nil {
+		o.logger = slog.Default()
+	}
 	return &QuorumLocker{
 		pools: pools,
 		rs:    redsync.New(pools...),
@@ -139,6 +156,14 @@ func NewQuorumLocker(clients []goredislib.UniversalClient, opts ...Option) *Quor
 // (nil, false, nil) on retry-exhausted contention, (nil, false, err)
 // on backend failure or ctx cancellation.
 func (q *QuorumLocker) Acquire(ctx context.Context, key string) (lock.Lock, bool, error) {
+	ctx, span := startSpan(ctx, "lock.Acquire")
+	defer span.End()
+	l, ok, err := q.doAcquire(ctx, key)
+	recordResult(span, err)
+	return l, ok, err
+}
+
+func (q *QuorumLocker) doAcquire(ctx context.Context, key string) (lock.Lock, bool, error) {
 	if err := validateLockKey(key); err != nil {
 		return nil, false, err
 	}
@@ -184,6 +209,8 @@ func (q *QuorumLocker) Acquire(ctx context.Context, key string) (lock.Lock, bool
 // and [lock.ErrLockLost] from the release path is joined with fn's
 // error so callers see both.
 func (q *QuorumLocker) WithLock(ctx context.Context, key string, fn func(ctx context.Context) error) (retErr error) {
+	ctx, span := startSpan(ctx, "lock.WithLock")
+	defer func() { recordResult(span, retErr); span.End() }()
 	l, ok, err := q.Acquire(ctx, key)
 	if err != nil {
 		return redact.WrapError("redlock: acquire failed", err)
@@ -191,11 +218,11 @@ func (q *QuorumLocker) WithLock(ctx context.Context, key string, fn func(ctx con
 	if !ok {
 		return errors.New("redlock: could not acquire lock")
 	}
-	defer releaseAndJoin(ctx, l, &retErr)
+	defer releaseAndJoin(ctx, l, &retErr, q.opts.logger)
 	return fn(ctx)
 }
 
-func releaseAndJoin(ctx context.Context, l lock.Lock, retErr *error) {
+func releaseAndJoin(ctx context.Context, l lock.Lock, retErr *error, logger *slog.Logger) {
 	relCtx, cancel := detachedReleaseContext(ctx, 5*time.Second)
 	defer cancel()
 	relErr := l.Release(relCtx)
@@ -208,7 +235,10 @@ func releaseAndJoin(ctx context.Context, l lock.Lock, retErr *error) {
 		return
 	}
 	if relErr != nil {
-		slog.Error("redlock: failed to release after WithLock",
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Error("redlock: failed to release after WithLock",
 			redact.Error(relErr),
 		)
 	}
@@ -227,6 +257,14 @@ type handle struct {
 }
 
 func (l *handle) Release(ctx context.Context) error {
+	ctx, span := startSpan(ctx, "lock.Release")
+	defer span.End()
+	err := l.doRelease(ctx)
+	recordResult(span, err)
+	return err
+}
+
+func (l *handle) doRelease(ctx context.Context) error {
 	if l.released {
 		// A second Release reports ErrLockLost rather than nil so the
 		// quorum locker matches redislock/pgadvisory and the kit's
@@ -248,6 +286,14 @@ func (l *handle) Release(ctx context.Context) error {
 }
 
 func (l *handle) Extend(ctx context.Context) (bool, error) {
+	ctx, span := startSpan(ctx, "lock.Extend")
+	defer span.End()
+	ok, err := l.doExtend(ctx)
+	recordResult(span, err)
+	return ok, err
+}
+
+func (l *handle) doExtend(ctx context.Context) (bool, error) {
 	ok, err := l.mutex.ExtendContext(ctx)
 	if ok {
 		return true, nil

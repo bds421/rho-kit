@@ -209,6 +209,47 @@ func TestMiddleware_WildcardAcceptEncoding(t *testing.T) {
 	}
 }
 
+// TestMiddleware_WildcardDoesNotSelectRefusedEncoding verifies RFC 9110
+// §12.5.3: '*' matches codings NOT explicitly mentioned, so a coding the
+// client refused with q=0 must not be selected via the wildcard.
+func TestMiddleware_WildcardDoesNotSelectRefusedEncoding(t *testing.T) {
+	body := bytes.Repeat([]byte("a"), 4096)
+	h := compress.Middleware()(newHandler(body, http.Header{"Content-Type": {"text/plain"}}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// gzip is the only registered encoder; refusing it with q=0 means the
+	// wildcard has nothing left to match, so the response must be uncompressed.
+	req.Header.Set("Accept-Encoding", "gzip;q=0, *")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("wildcard must not select the q=0-refused gzip, got Content-Encoding=%q", got)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), body) {
+		t.Fatalf("body mismatch: got %d bytes, want %d", rec.Body.Len(), len(body))
+	}
+}
+
+// TestMiddleware_AcceptEncodingAcrossMultipleHeaderLines verifies that an
+// Accept-Encoding list split across multiple field lines is parsed as one
+// list, so a gzip preference on a later line is still honored.
+func TestMiddleware_AcceptEncodingAcrossMultipleHeaderLines(t *testing.T) {
+	body := bytes.Repeat([]byte("a"), 4096)
+	h := compress.Middleware()(newHandler(body, http.Header{"Content-Type": {"text/plain"}}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// br is unsupported; gzip arrives on a separate field line.
+	req.Header.Add("Accept-Encoding", "br")
+	req.Header.Add("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("gzip on a second Accept-Encoding line must negotiate, got %q", got)
+	}
+}
+
 func TestMiddleware_ETagDegradedToWeak(t *testing.T) {
 	body := bytes.Repeat([]byte("a"), 4096)
 	h := compress.Middleware()(newHandler(body, http.Header{
@@ -276,6 +317,50 @@ func TestMiddleware_HijackPassesThrough(t *testing.T) {
 	}
 	if rec.Header().Get("Content-Encoding") != "" {
 		t.Fatalf("Hijack path should not set Content-Encoding")
+	}
+}
+
+// TestMiddleware_WriteAfterHijackReturnsErrHijacked verifies that a buggy
+// handler writing after hijacking gets http.ErrHijacked (net/http's contract)
+// instead of a nil-pointer panic from dereferencing the released buffers.
+func TestMiddleware_WriteAfterHijackReturnsErrHijacked(t *testing.T) {
+	rec := &hijackableRecorder{ResponseRecorder: httptest.NewRecorder()}
+	var writeErr error
+	var flushPanicked bool
+	h := compress.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		hj := w.(http.Hijacker)
+		_, _, _ = hj.Hijack()
+		// Writing after hijack must not panic; it must report ErrHijacked.
+		_, writeErr = w.Write([]byte("late"))
+		// Flush after hijack must be a safe no-op.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					flushPanicked = true
+				}
+			}()
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}()
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("write after hijack panicked instead of returning ErrHijacked: %v", r)
+		}
+	}()
+	h.ServeHTTP(rec, req)
+
+	if !errors.Is(writeErr, http.ErrHijacked) {
+		t.Fatalf("write after hijack = %v, want http.ErrHijacked", writeErr)
+	}
+	if flushPanicked {
+		t.Fatal("flush after hijack panicked")
 	}
 }
 

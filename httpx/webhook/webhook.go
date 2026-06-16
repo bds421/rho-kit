@@ -37,6 +37,13 @@ const (
 // at construction instead of failing every Send at runtime.
 const minSecretLen = 32
 
+// maxDrainBytes caps how many response-body bytes are drained for keep-alive
+// connection reuse after a delivery attempt. A webhook receiver's body is
+// never consumed by the dispatcher (only the status code matters), so we drain
+// just enough to allow connection reuse without letting a hostile endpoint
+// stream unbounded data into io.Discard.
+const maxDrainBytes = 64 * 1024
+
 // Config configures a [Dispatcher].
 type Config struct {
 	// HTTPClient is used for every Send. Required. Pass
@@ -240,7 +247,13 @@ func (d *Dispatcher) attempt(ctx context.Context, del Delivery, signature string
 		return retryable(fmt.Errorf("webhook: do: %w", err))
 	}
 	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
+		// Drain a BOUNDED amount so a hostile or broken receiver streaming an
+		// unbounded body cannot tie up Send (and bandwidth) until the client
+		// timeout — and indefinitely if the supplied http.Client has no
+		// Timeout. Draining only what we need for connection reuse mirrors the
+		// kit's security/netutil FR-016 defense. Bytes beyond the cap are left
+		// unread; Close then tears down the (now non-reusable) connection.
+		_, _ = io.CopyN(io.Discard, resp.Body, maxDrainBytes)
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {

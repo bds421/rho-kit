@@ -53,7 +53,11 @@ func readSpooledBody(r *http.Request, max int64, inMemoryMax int64) (*spooledBod
 	defer func() { _ = originalBody.Close() }()
 
 	hasher := sha256.New()
-	sb := &spooledBody{mem: make([]byte, 0, inMemoryMax)}
+	// Grow the in-memory buffer on demand (appendChunk caps it at
+	// inMemoryMax) instead of preallocating the full cap. A 200-byte webhook
+	// no longer allocates the entire inMemoryMax (default 64 KiB, larger when
+	// WithInMemoryBodyMax is raised) per request.
+	sb := &spooledBody{}
 
 	// limited grants one extra byte over max so we can detect overflow
 	// without consuming arbitrarily large input.
@@ -150,11 +154,11 @@ func (sb *spooledBody) cleanup() {
 }
 
 type spooledReader struct {
-	mem    []byte
-	memPos int
-	file   *os.File
+	mem         []byte
+	memPos      int
+	file        *os.File
 	fileStarted bool
-	closed bool
+	closed      bool
 }
 
 func (sr *spooledReader) Read(p []byte) (int, error) {
@@ -194,4 +198,3 @@ func (sr *spooledReader) Close() error {
 	sr.mem = nil
 	return nil
 }
-

@@ -14,7 +14,9 @@
 // # Detection
 //
 // Reports any call to fmt.Errorf whose final argument is a bare
-// identifier AND whose format string contains a `: %w` segment.
+// identifier AND whose format string contains a `: %w` segment. The fmt
+// import is resolved per file, so an aliased (import f "fmt"; f.Errorf) or
+// dot-imported (import . "fmt"; Errorf) fmt cannot slip past the gate.
 // Any local error name is flagged (err, perr, marshalErr, loadErr,
 // ...), not a fixed list — wrapping a local with `%w` is exactly the
 // pattern wave 136 swept. Two identifier shapes are deliberately not
@@ -150,13 +152,20 @@ func scanFile(path string) ([]violation, error) {
 		}
 	}
 
+	// Resolve how the "fmt" package is named in this file so an aliased
+	// (import f "fmt"; f.Errorf) or dot-imported (import . "fmt"; Errorf)
+	// fmt does not silently bypass the gate. fmtName is the selector
+	// receiver to match ("fmt" by default, or the alias); dotImported is
+	// true when fmt was dot-imported, in which case Errorf is a bare ident.
+	fmtName, dotImported := resolveFmtName(f)
+
 	var out []violation
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		if !isFmtErrorf(call.Fun) {
+		if !isFmtErrorf(call.Fun, fmtName, dotImported) {
 			return true
 		}
 		if len(call.Args) < 2 {
@@ -192,7 +201,47 @@ func scanFile(path string) ([]violation, error) {
 	return out, nil
 }
 
-func isFmtErrorf(expr ast.Expr) bool {
+// resolveFmtName scans the file's import specs for the standard-library
+// "fmt" package and returns the local name it is bound to. A plain import
+// binds the package's own name ("fmt"); an alias (import f "fmt") binds the
+// alias; a dot import (import . "fmt") makes Errorf a bare identifier. The
+// returned bool reports whether fmt was dot-imported. If fmt is not
+// imported, fmtName is "" and dotImported is false, so isFmtErrorf can never
+// match a same-named selector from an unrelated package.
+func resolveFmtName(f *ast.File) (fmtName string, dotImported bool) {
+	for _, imp := range f.Imports {
+		if imp.Path == nil || imp.Path.Value != `"fmt"` {
+			continue
+		}
+		if imp.Name == nil {
+			return "fmt", false
+		}
+		switch imp.Name.Name {
+		case ".":
+			return "", true
+		case "_":
+			// Blank import cannot be used to call Errorf.
+			return "", false
+		default:
+			return imp.Name.Name, false
+		}
+	}
+	return "", false
+}
+
+// isFmtErrorf reports whether expr is a call to the standard-library
+// fmt.Errorf, accounting for how fmt is bound in the current file: a normal
+// or aliased import is a selector (fmtName.Errorf), while a dot import is a
+// bare Errorf identifier. fmtName=="" with dotImported==false means fmt is
+// not imported, so nothing matches.
+func isFmtErrorf(expr ast.Expr, fmtName string, dotImported bool) bool {
+	if dotImported {
+		id, ok := expr.(*ast.Ident)
+		return ok && id.Name == "Errorf"
+	}
+	if fmtName == "" {
+		return false
+	}
 	sel, ok := expr.(*ast.SelectorExpr)
 	if !ok {
 		return false
@@ -201,7 +250,7 @@ func isFmtErrorf(expr ast.Expr) bool {
 	if !ok {
 		return false
 	}
-	return pkg.Name == "fmt" && sel.Sel.Name == "Errorf"
+	return pkg.Name == fmtName && sel.Sel.Name == "Errorf"
 }
 
 // isErrorIdent reports whether a bare identifier passed as the final

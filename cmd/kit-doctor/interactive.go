@@ -33,8 +33,11 @@ type interactiveResult struct {
 }
 
 // runInteractive prompts the operator for each finding that carries
-// a Fix function. Findings without Fix are skipped silently — they
-// already appear in the standard text output.
+// a Fix function. Findings without a Fix are printed without a prompt:
+// repo-level findings (the input to interactive mode) are NOT part of
+// the standard text/json output, so a Fix-less one — e.g. a
+// repo-check-error Warning — would otherwise drive exit-1 with no
+// visible cause.
 //
 // in is the prompt input source (os.Stdin in production; a piped
 // reader in tests). out is the prompt output sink (os.Stdout in
@@ -61,20 +64,14 @@ func runInteractiveSession(in io.Reader, out io.Writer, findings []rules.Finding
 		if f.Fix == nil {
 			// Not fixable in interactive mode; interactive cannot
 			// clear it, so it keeps counting toward the exit code.
+			// Print it (without a prompt) so the operator can see what
+			// is keeping the run from exiting 0 — repo findings never
+			// reach the standard text/json output.
+			printFinding(out, f)
 			res.unresolved = append(res.unresolved, f)
 			continue
 		}
-		writef(out, "\n[%s] %s: %s\n", f.Severity, f.Rule, f.Message)
-		if f.File != "" {
-			writef(out, "  at %s", f.File)
-			if f.Line > 0 {
-				writef(out, ":%d", f.Line)
-			}
-			writef(out, "\n")
-		}
-		if f.Suggestion != "" {
-			writef(out, "  suggested fix: %s\n", f.Suggestion)
-		}
+		printFinding(out, f)
 		writef(out, "  apply? [y/N/skip-all] ")
 
 		ans, err := readAnswer(reader)
@@ -105,6 +102,23 @@ func runInteractiveSession(in io.Reader, out io.Writer, findings []rules.Finding
 		}
 	}
 	return res
+}
+
+// printFinding writes the human-readable header, location, and (if
+// present) suggested fix for a single finding to out. It does NOT
+// write the apply prompt — callers add that only for fixable findings.
+func printFinding(out io.Writer, f rules.Finding) {
+	writef(out, "\n[%s] %s: %s\n", f.Severity, f.Rule, f.Message)
+	if f.File != "" {
+		writef(out, "  at %s", f.File)
+		if f.Line > 0 {
+			writef(out, ":%d", f.Line)
+		}
+		writef(out, "\n")
+	}
+	if f.Suggestion != "" {
+		writef(out, "  suggested fix: %s\n", f.Suggestion)
+	}
 }
 
 // writef is a fmt.Fprintf wrapper that intentionally discards both

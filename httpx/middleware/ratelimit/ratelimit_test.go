@@ -414,6 +414,62 @@ func TestLimiterRun_StopAfterStopBeforeStartDoesNotLeak(t *testing.T) {
 	}
 }
 
+func TestLimiterStop_NilReceiverIsNoOp(t *testing.T) {
+	var rl *Limiter
+	if err := rl.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop on nil receiver = %v, want nil", err)
+	}
+}
+
+func TestLimiterStop_BeforeStartIsNoOp(t *testing.T) {
+	rl := NewLimiter(5, time.Hour)
+	if err := rl.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop before Start = %v, want nil", err)
+	}
+}
+
+func TestLimiterStop_AfterStartWaitsForGoroutine(t *testing.T) {
+	rl := NewLimiter(5, time.Hour)
+	go func() { _ = rl.Start(context.Background()) }()
+	waitForLimiterRunStarted(t, rl)
+
+	// Stop must cancel the cleanup goroutine and block until it has exited.
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- rl.Stop(context.Background()) }()
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop after Start = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return after cancelling the cleanup goroutine")
+	}
+
+	// The goroutine has exited; a second Stop is a clean idempotent no-op.
+	if err := rl.Stop(context.Background()); err != nil {
+		t.Fatalf("idempotent re-Stop = %v, want nil", err)
+	}
+}
+
+func TestLimiterStop_NilContextBlocksUntilGoroutineExits(t *testing.T) {
+	rl := NewLimiter(5, time.Hour)
+	go func() { _ = rl.Start(context.Background()) }()
+	waitForLimiterRunStarted(t, rl)
+
+	// A nil context takes the blocking-wait branch (no select on ctx.Done):
+	// it must still return once the goroutine has been cancelled and exited.
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- rl.Stop(nil) }() //nolint:staticcheck // intentionally nil
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop(nil) = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop(nil) blocked forever instead of returning after goroutine exit")
+	}
+}
+
 func TestClientIP_DirectConnection(t *testing.T) {
 	rl := NewLimiter(10, time.Minute)
 
@@ -473,8 +529,18 @@ func TestWithTrustedProxies_PanicsOnInvalid(t *testing.T) {
 		if r == nil {
 			t.Fatal("expected panic on invalid trusted proxy")
 		}
-		if r != "middleware/ratelimit: WithTrustedProxies invalid trusted proxy" {
-			t.Fatalf("panic = %q, want %q", r, "middleware/ratelimit: WithTrustedProxies invalid trusted proxy")
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("panic value = %v (%T), want string", r, r)
+		}
+		// The panic must name the offending entry's INDEX (0 here) so
+		// operators can fix the config...
+		if !strings.Contains(msg, "index 0") {
+			t.Fatalf("panic = %q, want it to reference index 0", msg)
+		}
+		// ...but must NOT leak the raw (potentially secret) CIDR value.
+		if strings.Contains(msg, "secret-token") {
+			t.Fatalf("panic leaked the raw proxy value: %q", msg)
 		}
 	}()
 	_ = WithTrustedProxies([]string{"secret-token", "10.0.0.0/8"})

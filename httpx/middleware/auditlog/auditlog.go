@@ -108,6 +108,14 @@ func isDefaultOpsPath(path, prefix string) bool {
 // omit panicked requests and operators looking at the audit-log table
 // would be unable to correlate 500s in the access log with their
 // audit-trail entries.
+//
+// Performance note: the audit emit is synchronous and bounded by a 5s
+// timeout. It runs in the request's own goroutine AFTER the response is
+// written, so a degraded audit sink stalls that goroutine for up to 5s,
+// delaying keep-alive connection reuse and letting goroutines accumulate at
+// roughly rps×5s under sustained sink failure. This is a deliberate
+// durability tradeoff (the entry is not lost on a fast process exit); if the
+// sink can be slow, front this middleware with a bounded async audit logger.
 func Middleware(l *auditlog.Logger, opts ...Option) func(http.Handler) http.Handler {
 	if l == nil {
 		panic("auditlog: Middleware requires a non-nil *auditlog.Logger")
@@ -132,7 +140,7 @@ func Middleware(l *auditlog.Logger, opts ...Option) func(http.Handler) http.Hand
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !safePathFilter(cfg.pathFilter, httpx.RequestPath(r)) {
+			if !safePathFilter(cfg.errLogger, cfg.pathFilter, httpx.RequestPath(r)) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -166,7 +174,7 @@ func Middleware(l *auditlog.Logger, opts ...Option) func(http.Handler) http.Hand
 // extractor logic.
 func writeAuditEntry(l *auditlog.Logger, r *http.Request, rec *middleware.ResponseRecorder, cfg config, panicked bool) {
 	statusCode := rec.Status()
-	if !panicked && !safeStatusFilter(cfg.statusFilter, statusCode) {
+	if !panicked && !safeStatusFilter(cfg.errLogger, cfg.statusFilter, statusCode) {
 		return
 	}
 
@@ -181,8 +189,8 @@ func writeAuditEntry(l *auditlog.Logger, r *http.Request, rec *middleware.Respon
 	defer cancel()
 
 	ev := auditlog.Event{
-		IPAddress: safeAuditIPAddress(safeClientIP(cfg.clientIPFunc, r)),
-		Actor:     safeAuditActor(safeActor(cfg.actorExtractor, r)),
+		IPAddress: safeAuditIPAddress(safeClientIP(cfg.errLogger, cfg.clientIPFunc, r)),
+		Actor:     safeAuditActor(safeActor(cfg.errLogger, cfg.actorExtractor, r)),
 		Action:    safeAuditToken(r.Method, auditlog.MaxActionBytes, "method"),
 		Resource:  safeAuditResource(r),
 		Status:    status,

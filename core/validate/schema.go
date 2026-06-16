@@ -32,6 +32,16 @@ type builtSchema struct {
 	requiredNonEmpty  map[string]struct{}
 	parametricFormats []string
 	fieldOrder        map[string]int
+	// collections maps a schema-side dotted path that describes a JSON
+	// array or object-with-additionalProperties (slice/array or map
+	// fields) to the number of element levels nested directly under it.
+	// The instance paths santhosh-tekuri reports interpose one element
+	// segment per level (a numeric index for arrays, a key for maps)
+	// after the path — a slice-of-slice keyed at "items" interposes two
+	// ("items.0.1.name"). normalizeInstancePath strips exactly that many
+	// segments so a required-non-empty / field-order lookup keyed by the
+	// schema path still matches a violation inside a collection element.
+	collections map[string]int
 }
 
 // ErrCyclicSchema is returned when a struct field recursively
@@ -52,6 +62,7 @@ func buildSchema(t reflect.Type) (*builtSchema, error) {
 		requiredNonEmpty: map[string]struct{}{},
 		parametric:       map[string]struct{}{},
 		fieldOrder:       map[string]int{},
+		collections:      map[string]int{},
 	}
 	s, err := schemaForReflect(ctx, t, "", "")
 	if err != nil {
@@ -61,6 +72,7 @@ func buildSchema(t reflect.Type) (*builtSchema, error) {
 		schema:           s,
 		requiredNonEmpty: ctx.requiredNonEmpty,
 		fieldOrder:       ctx.fieldOrder,
+		collections:      ctx.collections,
 	}
 	for name := range ctx.parametric {
 		out.parametricFormats = append(out.parametricFormats, name)
@@ -77,6 +89,7 @@ type buildCtx struct {
 	requiredNonEmpty map[string]struct{}
 	parametric       map[string]struct{}
 	fieldOrder       map[string]int
+	collections      map[string]int
 }
 
 // schemaForReflect is the main recursive walker. constraintTag carries
@@ -119,13 +132,30 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path 
 			// base64-encodes byte *slices*; a byte *array* ([16]byte
 			// UUID, [32]byte hash) marshals as a JSON array of numbers,
 			// so it falls through to the array-of-integer schema below.
-			return &jsonschemago.Schema{Type: "string"}, nil
+			//
+			// String constraints (min/max/len/pattern/format) apply to
+			// the base64-encoded text the field marshals to, NOT the raw
+			// byte count: a 3-byte slice encodes to a 4-character base64
+			// string, so `min=`/`max=` count base64 characters. Run them
+			// here so a constraint on a []byte field is honoured instead
+			// of silently dropped.
+			s := &jsonschemago.Schema{Type: "string"}
+			applyStringConstraints(ctx, s, constraintTag)
+			return s, nil
 		}
 		if ctx.visiting[t] {
 			return nil, fmt.Errorf("%w: recursive array or slice type", ErrCyclicSchema)
 		}
 		ctx.visiting[t] = true
 		defer delete(ctx.visiting, t)
+		// Record this path as a collection so the error renderer can
+		// strip the per-element index segment santhosh-tekuri injects
+		// ("items.0.name" -> "items.name") before a requiredNonEmpty /
+		// fieldOrder lookup. A slice-of-slice keyed at the same path
+		// nests two element levels, so the count is incremented.
+		if path != "" {
+			ctx.collections[path]++
+		}
 		items, err := schemaForReflect(ctx, t.Elem(), "", path)
 		if err != nil {
 			return nil, err
@@ -142,6 +172,15 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path 
 		}
 		ctx.visiting[t] = true
 		defer delete(ctx.visiting, t)
+		// Record this path as a collection so the error renderer can
+		// strip the per-entry key segment santhosh-tekuri injects
+		// ("m.somekey.label" -> "m.label") before a requiredNonEmpty /
+		// fieldOrder lookup. A map-of-slice (or slice-of-map) keyed at
+		// the same path nests more than one element level, so the count
+		// is incremented rather than set.
+		if path != "" {
+			ctx.collections[path]++
+		}
 		val, err := schemaForReflect(ctx, t.Elem(), "", path)
 		if err != nil {
 			return nil, err
@@ -175,6 +214,40 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 
 	var required []string
 	var order []string
+	// seenRequired dedupes the required list so a name promoted from two
+	// embedded structs (or an embedded plus a direct field) is listed
+	// once.
+	seenRequired := map[string]struct{}{}
+	addRequired := func(name string) {
+		if _, ok := seenRequired[name]; ok {
+			return
+		}
+		seenRequired[name] = struct{}{}
+		required = append(required, name)
+	}
+
+	// directNames is the set of JSON names declared directly on this
+	// struct (depth 0). encoding/json's shadowing rule gives a shallower
+	// field precedence over an embedded (deeper) field with the same
+	// name regardless of declaration order, so a direct field always
+	// wins. Precomputing the set lets the embedded merge below skip a
+	// shadowed sibling — including the case where the embedded struct is
+	// declared *before* the parent field, which would otherwise leave a
+	// duplicate PropertyOrder entry plus a stale required marker from
+	// the losing embedded field.
+	directNames := map[string]struct{}{}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Anonymous && f.Tag.Get("json") == "" {
+			continue
+		}
+		if !f.IsExported() {
+			continue
+		}
+		if name, _, skip := jsonFieldName(f); !skip {
+			directNames[name] = struct{}{}
+		}
+	}
 
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
@@ -198,13 +271,30 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 				return nil, err
 			}
 			for _, name := range emb.PropertyOrder {
+				// A direct field of this struct shadows the embedded
+				// sibling: drop the embedded property, its order slot,
+				// and any required/required-non-empty marker it left so
+				// the shallower (winning) field's optionality stands.
+				if _, shadowed := directNames[name]; shadowed {
+					childPath := name
+					if path != "" {
+						childPath = path + "." + name
+					}
+					delete(ctx.requiredNonEmpty, childPath)
+					continue
+				}
 				if _, ok := out.Properties[name]; ok {
 					continue
 				}
 				out.Properties[name] = emb.Properties[name]
 				order = append(order, name)
 			}
-			required = append(required, emb.Required...)
+			for _, name := range emb.Required {
+				if _, shadowed := directNames[name]; shadowed {
+					continue
+				}
+				addRequired(name)
+			}
 			continue
 		}
 		if !f.IsExported() {
@@ -237,7 +327,7 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 		}
 		isRequired := jsonschemaTagHasRequired(jsTag)
 		if isRequired {
-			required = append(required, name)
+			addRequired(name)
 			// For string/array required fields, also enforce non-
 			// empty. The error renderer maps a minLength / minItems
 			// violation on a path in requiredNonEmpty back to
@@ -613,13 +703,14 @@ func canonicalFormatName(key string) string {
 	switch key {
 	case "url":
 		return "uri"
-	case "uuid4":
-		return "uuid"
 	case "ip":
 		return "ipv4-or-ipv6"
 	case "datetime":
 		return "date-time"
 	}
+	// `uuid4` maps to its own version-enforcing format (registered in
+	// builtinFormats) rather than collapsing to the generic `uuid`, so a
+	// migrated v1 `uuid4` tag keeps the version-4 constraint.
 	return key
 }
 

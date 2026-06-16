@@ -70,6 +70,12 @@ func (cw *compressWriter) WriteHeader(status int) {
 }
 
 func (cw *compressWriter) Write(p []byte) (int, error) {
+	if cw.hijacked {
+		// The connection was hijacked; the buffers are gone and any framing
+		// we add would corrupt the raw stream. Mirror net/http's own writer
+		// by returning http.ErrHijacked instead of dereferencing nil buffers.
+		return 0, http.ErrHijacked
+	}
 	if !cw.wroteHeader {
 		cw.WriteHeader(http.StatusOK)
 	}
@@ -112,6 +118,11 @@ func (cw *compressWriter) Write(p []byte) (int, error) {
 // minimum, we commit to passthrough (compression has no benefit on
 // sub-threshold flushes). Otherwise we commit to compressed streaming.
 func (cw *compressWriter) Flush() {
+	if cw.hijacked {
+		// No buffers to flush after hijack; touching the writer would corrupt
+		// the raw connection.
+		return
+	}
 	if !cw.wroteHeader {
 		cw.WriteHeader(http.StatusOK)
 	}
@@ -145,10 +156,11 @@ func (cw *compressWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		return nil, nil, errors.New("compress: underlying ResponseWriter does not implement http.Hijacker")
 	}
 	cw.hijacked = true
-	// Release any in-flight compressor; pool entries are not safe to
-	// reuse after we abandon the response.
+	// Release any in-flight compressor WITHOUT Close: Close would flush a
+	// gzip trailer through the response path we are about to abandon, which
+	// could corrupt the hijacked connection. The pooled encoder is Reset on
+	// its next Acquire, so skipping Close here leaks nothing.
 	if cw.cw != nil {
-		_ = cw.cw.Close()
 		cw.cw.Release()
 		cw.cw = nil
 	}

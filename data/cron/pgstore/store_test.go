@@ -2,6 +2,7 @@ package pgstore_test
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 
@@ -170,6 +171,26 @@ func TestApplyRecords(t *testing.T) {
 			unknown = pgstore.ApplyRecords(scheduler, records, jobs)
 		})
 		require.Empty(t, unknown)
+	})
+}
+
+func TestApplyTo_NilArgs(t *testing.T) {
+	// New panics on a nil *sql.DB, so construct around a placeholder.
+	// These guards return before any query, so the DB is never used.
+	store := pgstore.New(&sql.DB{})
+	ctx := context.Background()
+	jobs := map[string]pgstore.JobFunc{"x": func(context.Context) error { return nil }}
+
+	t.Run("nil scheduler", func(t *testing.T) {
+		unknown, err := store.ApplyTo(ctx, nil, jobs)
+		require.Error(t, err)
+		require.Nil(t, unknown)
+	})
+
+	t.Run("nil jobs map", func(t *testing.T) {
+		unknown, err := store.ApplyTo(ctx, cron.New(nil), nil)
+		require.Error(t, err)
+		require.Nil(t, unknown)
 	})
 }
 

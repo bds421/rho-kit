@@ -117,3 +117,92 @@ func notAWrap(err error) error {
 		t.Errorf("expected exactly %d violations, got %d: %v", len(wantFlagged), len(got), gotIdents)
 	}
 }
+
+// TestScanFileAliasedImport asserts that an aliased fmt import does not let
+// a %w-over-local wrap slip past the gate, and that a same-named selector
+// from an *unrelated* package (when fmt is not the aliased target) is not
+// falsely flagged.
+func TestScanFileAliasedImport(t *testing.T) {
+	const src = `package fixture
+
+import f "fmt"
+
+func wrapAliased(err error) error {
+	// Aliased fmt still wraps a local backend error — must be flagged.
+	return f.Errorf("op: %w", err)
+}
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "aliased.go")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	got, err := scanFile(path)
+	if err != nil {
+		t.Fatalf("scanFile: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 violation through aliased fmt, got %d: %v", len(got), got)
+	}
+	if got[0].expr != `fmt.Errorf("op: %w", ..., err)` {
+		t.Errorf("unexpected violation expr: %q", got[0].expr)
+	}
+}
+
+// TestScanFileDotImport asserts that a dot-imported fmt (Errorf as a bare
+// ident) is still detected.
+func TestScanFileDotImport(t *testing.T) {
+	const src = `package fixture
+
+import . "fmt"
+
+func wrapDot(err error) error {
+	// Dot-imported fmt: Errorf is a bare ident — must be flagged.
+	return Errorf("op: %w", err)
+}
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dot.go")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	got, err := scanFile(path)
+	if err != nil {
+		t.Fatalf("scanFile: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 violation through dot-imported fmt, got %d: %v", len(got), got)
+	}
+}
+
+// TestScanFileUnrelatedAlias guards against a false positive: a selector
+// f.Errorf where f is a *different* package (fmt imported normally, an alias
+// f bound to something else) must not be flagged as fmt.Errorf.
+func TestScanFileUnrelatedAlias(t *testing.T) {
+	const src = `package fixture
+
+import (
+	"fmt"
+	f "errors"
+)
+
+var _ = fmt.Sprintf
+
+func notFmt(err error) error {
+	// f is errors, not fmt; f.Errorf is not the stdlib fmt.Errorf.
+	return f.Errorf("op: %w", err)
+}
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unrelated.go")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	got, err := scanFile(path)
+	if err != nil {
+		t.Fatalf("scanFile: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected no violations (f is errors, not fmt), got %d: %v", len(got), got)
+	}
+}

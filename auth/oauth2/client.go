@@ -321,8 +321,14 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if errParam := q.Get("error"); errParam != "" {
-		desc := q.Get("error_description")
-		http.Error(w, fmt.Sprintf("oauth2: provider error: %s (%s)", errParam, desc), http.StatusBadRequest)
+		// The issuer may redirect back with attacker-influenced `error` /
+		// `error_description` values. Log them (redacted) server-side and
+		// return only the opaque sentinel across the trust boundary so the
+		// caller can't surface arbitrary reflected content.
+		c.logger.WarnContext(r.Context(), "oauth2: provider returned an error",
+			slog.String("error", redact.StringValue(errParam)),
+			slog.String("error_description", redact.StringValue(q.Get("error_description"))))
+		http.Error(w, ErrProviderError.Error(), http.StatusBadRequest)
 		return
 	}
 	stateToken := q.Get("state")
@@ -414,10 +420,15 @@ func (c *Client) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		_ = c.sessions.Delete(r.Context(), cookie.Value)
 	}
+	// Mirror Domain (and other scoping attributes) from sessionCookie so a
+	// domain-scoped session cookie set via WithCookieDomain is actually
+	// matched and removed by the browser; otherwise the stale cookie value
+	// would linger client-side.
 	http.SetCookie(w, &http.Cookie{
 		Name:     c.cookieName,
 		Value:    "",
 		Path:     "/",
+		Domain:   c.cookieDomain,
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   c.cookieSecure,

@@ -64,6 +64,29 @@ func okHandler() http.Handler {
 	})
 }
 
+// TestIsValidSignedToken_RejectsOverlengthBeforeHMAC pins the length guard that
+// stops an attacker from forcing an HMAC over a multi-MB cookie/header value on
+// every request. A token longer than maxSignedTokenLen must be rejected before
+// any HMAC is computed, and a well-formed token must still validate.
+func TestIsValidSignedToken_RejectsOverlengthBeforeHMAC(t *testing.T) {
+	s := secretpkg.New(testSecret())
+
+	valid := generateSignedToken(testSecret())
+	require.LessOrEqual(t, len(valid), maxSignedTokenLen,
+		"a well-formed token must be within the length cap")
+	require.True(t, isValidSignedToken(valid, s), "well-formed token must validate")
+
+	// A hostile, over-length value must be rejected outright.
+	overlength := strings.Repeat("a", maxSignedTokenLen+1)
+	require.False(t, isValidSignedToken(overlength, s),
+		"over-length token must be rejected before HMAC")
+
+	// Even a value whose prefix is a real token but padded past the cap fails.
+	padded := valid + strings.Repeat("a", maxSignedTokenLen)
+	require.False(t, isValidSignedToken(padded, s),
+		"padded token exceeding the cap must be rejected")
+}
+
 func TestNew_SetsCookieOnGET(t *testing.T) {
 	mw := New(WithSecret(testSecret()))
 	handler := mw(okHandler())

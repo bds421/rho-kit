@@ -204,6 +204,101 @@ func TestRoundTrip_RejectsWithSentinel(t *testing.T) {
 		"reject must surface ErrBudgetExceeded so callers can distinguish it from upstream 429")
 }
 
+func TestRoundTrip_RejectExposesRetryAfter(t *testing.T) {
+	srv := upstream(t, nil)
+	t.Cleanup(srv.Close)
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: false, remaining: 0, retry: 90 * time.Second}}}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "alice"))
+
+	resp, err := c.Get(srv.URL)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(t, err)
+	// Sentinel reachability is preserved.
+	assert.True(t, errors.Is(err, budget.ErrBudgetExceeded))
+	// The typed error must carry the store's backoff hint so callers can
+	// schedule a retry without separately calling Peek.
+	var be *budget.BudgetExceededError
+	require.True(t, errors.As(err, &be), "reject must surface a *BudgetExceededError")
+	assert.Equal(t, 90*time.Second, be.RetryAfter)
+}
+
+func TestRoundTrip_StripsEstimateHeaderBeforeUpstream(t *testing.T) {
+	var gotEstimate string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEstimate = r.Header.Get("X-Estimated-Tokens")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: true, remaining: 50}}}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "alice",
+		budget.WithEstimateHeader("X-Estimated-Tokens"),
+	))
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, nil)
+	req.Header.Set("X-Estimated-Tokens", "42")
+	resp, err := c.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	// The estimate was still charged...
+	require.Len(t, b.consumed, 1)
+	assert.Equal(t, int64(42), b.consumed[0].amount)
+	// ...but the internal accounting header must not reach the upstream.
+	assert.Empty(t, gotEstimate, "estimate header must be stripped before forwarding")
+
+	// The caller's original request must not be mutated by the transport.
+	assert.Equal(t, "42", req.Header.Get("X-Estimated-Tokens"),
+		"transport must clone, not mutate, the caller's request")
+}
+
+func TestRoundTrip_AmbiguousEstimateHeaderWarns(t *testing.T) {
+	srv := upstream(t, nil)
+	t.Cleanup(srv.Close)
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: true, remaining: 50}}}
+	logs := &captureLogger{}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "alice",
+		budget.WithEstimateHeader("X-Estimated-Tokens"),
+		budget.WithDefaultAmount(7),
+		budget.WithLogger(logs),
+	))
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, nil)
+	req.Header.Add("X-Estimated-Tokens", "42")
+	req.Header.Add("X-Estimated-Tokens", "100")
+	resp, err := c.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	require.NotEmpty(t, logs.warns, "duplicate estimate header must be logged, like the actual-header path")
+	assert.Contains(t, fmt.Sprint(logs.warns), "ambiguous estimate header")
+}
+
+func TestRoundTrip_MalformedEstimateHeaderWarnsRedacted(t *testing.T) {
+	srv := upstream(t, nil)
+	t.Cleanup(srv.Close)
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: true, remaining: 50}}}
+	logs := &captureLogger{}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "alice",
+		budget.WithEstimateHeader("X-Estimated-Tokens"),
+		budget.WithDefaultAmount(7),
+		budget.WithLogger(logs),
+	))
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, nil)
+	req.Header.Set("X-Estimated-Tokens", "tenant-garbage")
+	resp, err := c.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	require.NotEmpty(t, logs.warns)
+	assert.Contains(t, fmt.Sprint(logs.warns), "malformed estimate header")
+	// The raw value must be redacted, mirroring the actual-header path.
+	assert.NotContains(t, fmt.Sprint(logs.warnAttrs), "tenant-garbage")
+}
+
 func TestRoundTrip_BackendErrorPropagates(t *testing.T) {
 	srv := upstream(t, nil)
 	t.Cleanup(srv.Close)

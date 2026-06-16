@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -187,6 +188,86 @@ func TestCircuitBreaker_ShouldTripTrue_TripsOnTransportError(t *testing.T) {
 	}
 	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
 		t.Fatalf("expected ErrCircuitOpen after threshold reached, got %v", err)
+	}
+}
+
+// A 5xx response counts as a failure for the breaker (via the serverError
+// sentinel) but must still be returned to the caller as (resp, nil) with a
+// readable, un-consumed body — the net/http convention where non-2xx is not an
+// error. This exercises the serverError→(resp, nil) conversion path.
+func TestCircuitBreaker_ServerError_ReturnsReadableResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, "boom-body")
+	}))
+	defer srv.Close()
+
+	// threshold high enough that one 5xx does not open the breaker.
+	rt := newCBTransport(http.DefaultTransport, defaultShouldTrip, 5, time.Minute)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("5xx must surface as (resp, nil), got err = %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected a non-nil response for a 5xx")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	body, rerr := io.ReadAll(resp.Body)
+	if rerr != nil {
+		t.Fatalf("response body must be readable, got %v", rerr)
+	}
+	if string(body) != "boom-body" {
+		t.Fatalf("body = %q, want %q", string(body), "boom-body")
+	}
+}
+
+// A sustained run of 5xx responses must open the breaker; subsequent calls then
+// short-circuit with ErrCircuitOpen instead of hitting the backend. This pins
+// the threshold/serverError interaction end-to-end over httptest.
+func TestCircuitBreaker_RepeatedServerErrors_OpenBreaker(t *testing.T) {
+	var hits int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	rt := newCBTransport(http.DefaultTransport, defaultShouldTrip, 2, time.Minute)
+
+	for i := 0; i < 2; i++ {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+		resp, err := rt.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("request %d: 5xx must surface as (resp, nil), got %v", i, err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	mu.Lock()
+	hitsAfterThreshold := hits
+	mu.Unlock()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("expected ErrCircuitOpen after 5xx threshold, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if hits != hitsAfterThreshold {
+		t.Fatalf("backend hit %d times after breaker opened; open circuit must short-circuit", hits-hitsAfterThreshold)
 	}
 }
 

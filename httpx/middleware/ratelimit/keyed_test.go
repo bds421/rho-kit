@@ -49,7 +49,11 @@ func TestKeyedLimiter_SeparateKeys(t *testing.T) {
 }
 
 func TestKeyedLimiter_WindowExpiry(t *testing.T) {
-	rl := NewKeyedLimiter(1, 10*time.Millisecond)
+	// Drive time with an injectable clock instead of real sleeps so a loaded
+	// CI runner cannot flake by preempting between Allow calls.
+	now := time.Unix(1_700_000_000, 0)
+	window := time.Minute
+	rl := NewKeyedLimiter(1, window, WithKeyedClock(func() time.Time { return now }))
 
 	allowed, _ := rl.Allow("key1")
 	if !allowed {
@@ -58,11 +62,11 @@ func TestKeyedLimiter_WindowExpiry(t *testing.T) {
 
 	allowed, _ = rl.Allow("key1")
 	if allowed {
-		t.Fatal("second request should be denied")
+		t.Fatal("second request should be denied within the window")
 	}
 
-	time.Sleep(15 * time.Millisecond)
-
+	// Advance past the window end; the next request starts a fresh window.
+	now = now.Add(window + time.Second)
 	allowed, _ = rl.Allow("key1")
 	if !allowed {
 		t.Fatal("request after window expiry should be allowed")
@@ -70,11 +74,14 @@ func TestKeyedLimiter_WindowExpiry(t *testing.T) {
 }
 
 func TestKeyedLimiter_Cleanup(t *testing.T) {
-	rl := NewKeyedLimiter(1, 10*time.Millisecond)
+	now := time.Unix(1_700_000_000, 0)
+	window := time.Minute
+	rl := NewKeyedLimiter(1, window, WithKeyedClock(func() time.Time { return now }))
 	rl.Allow("key1")
 	rl.Allow("key2")
 
-	time.Sleep(15 * time.Millisecond)
+	// Advance past the window so both entries are expired, then run cleanup.
+	now = now.Add(window + time.Second)
 	rl.cleanup()
 
 	var count int
@@ -387,6 +394,17 @@ func TestKeyedMiddleware_PanicsOnNilInputs(t *testing.T) {
 			}
 		}()
 		KeyedMiddleware(NewKeyedLimiter(1, time.Minute), nil)
+	})
+	t.Run("nil next handler", func(t *testing.T) {
+		// Fail fast at wiring time, matching ratelimit.Middleware, instead of
+		// deferring to a nil-pointer panic on the first allowed request.
+		mw := KeyedMiddleware(NewKeyedLimiter(1, time.Minute), func(*http.Request) string { return "key" })
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic when next handler is nil")
+			}
+		}()
+		mw(nil)
 	})
 }
 

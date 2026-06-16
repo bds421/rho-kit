@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestConnection(healthy, wasConnected bool) *Connection {
@@ -104,6 +105,10 @@ func TestConnection_Dead(t *testing.T) {
 }
 
 func TestConnection_Close_Idempotent(t *testing.T) {
+	// A bare Connection with no client exercises Close()'s lifecycle
+	// bookkeeping (closeOnce, closed-channel close, health flip) without
+	// needing a live server. Calling Close() twice must not panic, must
+	// return nil both times, and must leave the connection unhealthy.
 	conn := &Connection{
 		closed:    make(chan struct{}),
 		dead:      make(chan struct{}),
@@ -111,9 +116,18 @@ func TestConnection_Close_Idempotent(t *testing.T) {
 		client:    nil,
 	}
 
-	conn.healthy = true
 	conn.mu.Lock()
-	conn.healthy = false
+	conn.healthy = true
 	conn.mu.Unlock()
+
+	require.NoError(t, conn.Close())
+	assert.False(t, conn.Healthy(), "Close must flip the connection unhealthy")
+	assert.True(t, conn.isClosed(), "Close must close the closed channel")
+
+	// Second call is a no-op: closeOnce must keep it from re-closing the
+	// already-closed channel (which would panic) and must still return nil.
+	require.NotPanics(t, func() {
+		require.NoError(t, conn.Close())
+	})
 	assert.False(t, conn.Healthy())
 }

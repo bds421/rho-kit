@@ -85,15 +85,14 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 	if resp.Payload == nil || len(resp.Payload.Data) == 0 {
 		return secrets.Secret{}, errors.New("gcpsm: empty payload")
 	}
-	version := ""
-	if resp.Name != "" {
-		// Name is the full resource path
-		// "projects/P/secrets/S/versions/N"; Secret.Version exposes it
-		// verbatim. Unlike awssm (bare VersionId) and vaultkv (bare
-		// integer), gcpsm returns the full path — see gcpsm_test.go,
-		// which pins this behavior.
-		version = resp.Name
-	}
+	// resp.Name is the full resource path
+	// "projects/P/secrets/S/versions/N". Expose only the trailing
+	// version segment "N" so Secret.Version matches the documented
+	// contract (secrets.Secret.Version: "GCP version number") and the
+	// sibling backends awssm (bare VersionId) and vaultkv (bare
+	// integer). Callers comparing Secret.Version across loaders then see
+	// a consistent shape.
+	version := trailingSegment(resp.Name)
 	return secrets.MakeSecret(append([]byte(nil), resp.Payload.Data...), version), nil
 }
 
@@ -118,4 +117,17 @@ func (l *Loader) resolveName(key string) (string, error) {
 
 func hasPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+// trailingSegment returns the substring after the final "/" in s, or s
+// itself when there is no "/". For a GCP resource name
+// "projects/P/secrets/S/versions/N" it yields the bare version "N";
+// an empty name yields "".
+func trailingSegment(s string) string {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '/' {
+			return s[i+1:]
+		}
+	}
+	return s
 }

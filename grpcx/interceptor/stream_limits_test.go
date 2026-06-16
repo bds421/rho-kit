@@ -292,6 +292,55 @@ func TestStreamIdleTimeout_PanicStopsWatchdogPromptly(t *testing.T) {
 		"panicked handlers must not leave watchdog goroutines lingering for the idle duration (leaked=%d)", leaked)
 }
 
+// TestStreamIdleTimeout_DoesNotUnblockHandlerParkedInRecvMsg pins the
+// documented cooperative-cancellation limitation: a handler blocked inside
+// the underlying stream's RecvMsg (a paused client that has gone silent) is
+// NOT unblocked by the idle watchdog, because the watchdog cancels a context
+// DERIVED from ss.Context() and grpc-go's transport-level RecvMsg blocks on
+// the real parent stream context. Only handlers that select on
+// Context().Done() are reaped (see TestStreamIdleTimeout_CancelsIdleStream).
+//
+// This exercises fakeServerStream.recvBlockCh / recvMsgCount, which model
+// exactly that threat scenario, and converts the scaffolding into a live
+// assertion of the contract.
+func TestStreamIdleTimeout_DoesNotUnblockHandlerParkedInRecvMsg(t *testing.T) {
+	interc := interceptor.StreamIdleTimeout(80*time.Millisecond, nil)
+
+	block := make(chan struct{})
+	ss := &fakeServerStream{ctx: context.Background(), recvBlockCh: block}
+
+	// Handler parks inside RecvMsg, ignoring its (derived, cancellable) ctx —
+	// the canonical `for { stream.Recv() }` loop against a silent client.
+	done := make(chan error, 1)
+	go func() {
+		done <- interc(nil, ss, &grpc.StreamServerInfo{FullMethod: "/test.Service/Stream"},
+			func(_ any, stream grpc.ServerStream) error {
+				return stream.RecvMsg(nil)
+			},
+		)
+	}()
+
+	// The watchdog fires well within this window, but it cannot unblock a
+	// handler parked in RecvMsg: the handler must still be running.
+	select {
+	case err := <-done:
+		t.Fatalf("handler parked in RecvMsg was unexpectedly unblocked by the idle watchdog (err=%v); the documented limitation no longer holds", err)
+	case <-time.After(300 * time.Millisecond):
+		// Expected: still blocked.
+	}
+	assert.Equal(t, int32(1), ss.recvMsgCount.Load(),
+		"handler should be parked inside the single RecvMsg call")
+
+	// Release so the goroutine and stream tear down cleanly.
+	close(block)
+	select {
+	case err := <-done:
+		require.NoError(t, err, "handler returns the RecvMsg result once the client speaks")
+	case <-time.After(time.Second):
+		t.Fatal("handler did not return after RecvMsg was unblocked")
+	}
+}
+
 func TestNewStreamLimitMetrics_RegistersAllCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := interceptor.NewStreamLimitMetrics(interceptor.WithRegisterer(reg))

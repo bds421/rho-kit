@@ -2,7 +2,6 @@ package interceptor
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -81,8 +80,8 @@ func NewMetrics(opts ...MetricsOption) *GRPCMetrics {
 		),
 	}
 
-	m.handledTotal = tryRegister(reg, m.handledTotal).(*prometheus.CounterVec)
-	m.handlingSeconds = tryRegister(reg, m.handlingSeconds).(*prometheus.HistogramVec)
+	m.handledTotal = promutil.MustRegisterOrGet(reg, m.handledTotal)
+	m.handlingSeconds = promutil.MustRegisterOrGet(reg, m.handlingSeconds)
 
 	return m
 }
@@ -142,18 +141,4 @@ func statusCode(err error) string {
 		return st.Code().String()
 	}
 	return "Unknown"
-}
-
-// tryRegister attempts to register a Prometheus collector. If it is already
-// registered, the existing collector is returned. This prevents panics when
-// the same metrics are created multiple times with the same registerer.
-func tryRegister(reg prometheus.Registerer, c prometheus.Collector) prometheus.Collector {
-	if err := reg.Register(c); err != nil {
-		var are prometheus.AlreadyRegisteredError
-		if errors.As(err, &are) {
-			return are.ExistingCollector
-		}
-		panic("grpcx/interceptor: metric registration failed")
-	}
-	return c
 }

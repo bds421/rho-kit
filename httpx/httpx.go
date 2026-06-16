@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -256,13 +257,35 @@ func WithErrorLog(l *log.Logger) ServerOption {
 	return func(s *http.Server) { s.ErrorLog = l }
 }
 
+// dynamicDefaultHandler is a slog.Handler that forwards to whatever
+// slog.Default() resolves to at the moment each record is handled. NewServer
+// wires it into the server's ErrorLog so a slog.SetDefault performed after
+// construction takes effect for connection-level error logs, instead of the
+// handler being captured once at construction time.
+type dynamicDefaultHandler struct{}
+
+func (dynamicDefaultHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return slog.Default().Handler().Enabled(ctx, level)
+}
+
+func (dynamicDefaultHandler) Handle(ctx context.Context, r slog.Record) error {
+	return slog.Default().Handler().Handle(ctx, r)
+}
+
+func (h dynamicDefaultHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h dynamicDefaultHandler) WithGroup(string) slog.Handler { return h }
+
 // NewServer returns an *http.Server with safe production defaults.
 // Options may override individual fields.
 //
 // ErrorLog defaults to a slog-backed adapter so net/http's connection-level
 // error messages (TLS handshake failures, peer-reset reads) flow through the
 // structured logger rather than the global "log" package — without this,
-// raw client RemoteAddrs leak to stdout and pollute SIEMs.
+// raw client RemoteAddrs leak to stdout and pollute SIEMs. The adapter
+// resolves [slog.Default] per record, so a [slog.SetDefault] call made after
+// NewServer (a common init ordering) still redirects connection-level errors
+// to the new default handler instead of pinning the bootstrap one.
 //
 // The returned server has HTTP/2 hardening installed via
 // [http2.ConfigureServer] with [defaultHTTP2MaxReadFrameSize] and
@@ -288,7 +311,7 @@ func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Se
 		WriteTimeout:      35 * time.Second, // Must exceed the configured request timeout so middleware can write 503
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1 MB
-		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
+		ErrorLog:          slog.NewLogLogger(dynamicDefaultHandler{}, slog.LevelWarn),
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -394,7 +417,11 @@ func ParseID(r *http.Request) (uint, bool) {
 		return 0, false
 	}
 	idStr := r.PathValue("id")
-	id, err := strconv.ParseUint(idStr, 10, 64)
+	// Parse with strconv.IntSize so values that overflow the platform's uint
+	// width are rejected rather than silently truncated. On 64-bit platforms
+	// this is identical to width 64; on 32-bit platforms (GOARCH=arm, 386) a
+	// value like 4294967297 now fails instead of wrapping to 1.
+	id, err := strconv.ParseUint(idStr, 10, strconv.IntSize)
 	if err != nil || id == 0 {
 		return 0, false
 	}

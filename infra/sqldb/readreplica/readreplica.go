@@ -210,7 +210,14 @@ func (p *RoutingPool) Acquire(ctx context.Context, opts ...AcquireOption) (*pgxp
 		p.metrics.replicaAcquires.Inc()
 		return conn, nil
 	}
+	// Fallback path: this read-only Acquire could not find a healthy
+	// replica and must take a primary connection. Count it in both
+	// replica_fallback_total (the degradation event) and
+	// primary_acquires_total (the actual primary pool load) so the
+	// latter reflects every connection drawn from the primary, matching
+	// its help text.
 	p.metrics.replicaFallback.Inc()
+	p.metrics.primaryAcquires.Inc()
 	p.cfg.logger.Warn("readreplica: no healthy replicas, falling back to primary")
 	conn, err := p.primary.Acquire(ctx)
 	if err != nil {

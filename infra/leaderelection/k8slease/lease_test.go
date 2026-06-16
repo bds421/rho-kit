@@ -551,23 +551,39 @@ func TestRun_DoesNotCallOnLostWithoutAcquired(t *testing.T) {
 	// adapter must NOT call OnLost in that case (the kit contract
 	// states OnLost describes an acquired term, not a never-started
 	// one). We cannot drive LeaderElector.Run without a real or fake
-	// clientset, so we exercise the gating directly: with
-	// onAcquiredStarted=false the OnStoppedLeading branch returns
-	// before invoking the user callback.
+	// clientset, so we exercise the *production* gate directly:
+	// onStoppedLeading reports "no acquired term" and Run's
+	// OnStoppedLeading closure (`if !e.onStoppedLeading(...) { return }`)
+	// returns before draining or running OnLost.
 	//
-	// This test pins the behaviour by reading the same atomic flag
-	// the production code uses; the integration test covers the
-	// end-to-end client-go scenario.
-	var onAcquiredStarted atomic.Bool
-	called := atomic.Bool{}
-
-	// Inline the gate so the test exercises the same predicate.
-	stopFn := func() {
-		if !onAcquiredStarted.Load() {
-			return
-		}
-		called.Store(true)
+	// This drives the real onStoppedLeading rather than a test-local
+	// reimplementation, so deleting the production gate breaks it; the
+	// integration test covers the end-to-end client-go scenario.
+	e := &Elector{
+		namespace: "ns",
+		name:      "name",
+		identity:  "id",
+		logger:    slog.Default(),
 	}
-	stopFn()
-	require.False(t, called.Load(), "OnLost must not run when leadership was never acquired")
+	tm := newTerm() // fresh term: never claimed by OnStartedLeading
+
+	onLostCalled := atomic.Bool{}
+	cb := leaderelection.Callbacks{
+		OnLost: func() { onLostCalled.Store(true) },
+	}
+
+	// Mirror Run's OnStoppedLeading closure exactly: the gate is the
+	// boolean returned by the real onStoppedLeading. A never-acquired
+	// term must short-circuit before drain + OnLost.
+	acquired := e.onStoppedLeading(tm, cb)
+	require.False(t, acquired,
+		"onStoppedLeading must report no acquired term when OnStartedLeading never claimed")
+	if acquired {
+		// Unreachable for a never-acquired term; present so the test
+		// fails (rather than silently passing) if the gate ever flips.
+		_ = e.runOnLost(cb)
+	}
+
+	require.False(t, onLostCalled.Load(), "OnLost must not run when leadership was never acquired")
+	require.False(t, e.IsLeader(), "leader must remain false for a never-acquired term")
 }

@@ -151,6 +151,28 @@ func TestCheckGoWorkSum_NoFindingWhenWorkAbsent(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
+// TestCheckGoWorkSum_FindingIsWarningNotHigh pins the severity at
+// Warning: the staleness signal is a fuzzy size heuristic that
+// `go work sync` does not guarantee to clear, so reporting it at High
+// would let it permanently drive exit-1 at the default -strict=high
+// floor even after a successful fix.
+func TestCheckGoWorkSum_FindingIsWarningNotHigh(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.work"), []byte("go 1.26.2\n"), 0o644))
+	// A go.sum larger than a missing go.work.sum trips the heuristic.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.sum"),
+		[]byte("example.com/x v1.0.0 h1:deadbeef\n"), 0o644))
+
+	findings, err := checkGoWorkSum(dir)
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "missing go.work.sum next to a non-empty go.sum must flag")
+	assert.Equal(t, "go-work-sum-stale", findings[0].Rule)
+	assert.Equal(t, rules.Warning, findings[0].Severity,
+		"fuzzy go.work.sum heuristic must not be High (would permanently drive exit-1)")
+	assert.Less(t, int(findings[0].Severity), int(rules.High),
+		"severity must be below the default exit floor")
+}
+
 // TestCheckServiceConfigEnvVars_FixAppendsMissing verifies the env-
 // var check finds and fixes omissions, and is idempotent.
 func TestCheckServiceConfigEnvVars_FixAppendsMissing(t *testing.T) {

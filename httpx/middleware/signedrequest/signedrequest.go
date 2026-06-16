@@ -22,7 +22,6 @@
 package signedrequest
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -30,7 +29,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -482,6 +480,20 @@ func verify(r *http.Request, cfg *config) error {
 // far in the past (expired). Splitting the direction lets metrics
 // distinguish the two without changing the writeError behaviour.
 func classifyTimestampSkew(tsUnix int64, now time.Time, skew time.Duration) int {
+	// time.Unix adds unixToInternal internally; for tsUnix near math.MaxInt64
+	// that addition overflows and yields a far-PAST time, which would
+	// misclassify a maximally-future timestamp as "expired". Bound the value
+	// to a sane range (|seconds| < 1<<40, i.e. years ~ -33000..36000) and, for
+	// anything outside it, classify directly by sign: a huge positive value is
+	// future-skew (+1), a huge negative value is expired (-1). The request is
+	// rejected either way; this only keeps the metrics direction label honest.
+	const saneUnixBound = int64(1) << 40
+	if tsUnix > saneUnixBound {
+		return 1
+	}
+	if tsUnix < -saneUnixBound {
+		return -1
+	}
 	ts := time.Unix(tsUnix, 0)
 	if ts.After(now) {
 		if ts.Sub(now) <= skew {
@@ -575,50 +587,6 @@ func isServerSideVerifyError(err error) bool {
 		// Unclassified errors map to 500 in writeError; surface them.
 		return true
 	}
-}
-
-// streamBody buffers the body in memory and returns its SHA-256 hash.
-// Used only by the offline Sign helper, which operates on
-// caller-controlled outbound bodies (no amplification risk). The
-// server-side verifier uses [readSpooledBody] instead, which spools
-// bodies that exceed inMemoryBodyMax to a private temp file so a
-// single authenticated caller cannot pin bodyMaxSize bytes of heap.
-// Returns ErrBodyTooLarge when the limit is exceeded.
-func streamBody(r *http.Request, max int64) ([]byte, [32]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, sha256.Sum256(nil), nil
-	}
-	originalBody := r.Body
-	limited := io.LimitReader(originalBody, max+1)
-	hasher := sha256.New()
-	var buf bytes.Buffer
-	tee := io.TeeReader(limited, hasher)
-	_, err := io.Copy(&buf, tee)
-	closeErr := originalBody.Close()
-	if err != nil {
-		return nil, [32]byte{}, safeWrap("signedrequest: read body failed", err)
-	}
-	if closeErr != nil {
-		return nil, [32]byte{}, safeWrap("signedrequest: close body failed", closeErr)
-	}
-	if int64(buf.Len()) > max {
-		return nil, [32]byte{}, ErrBodyTooLarge
-	}
-	var sum [32]byte
-	copy(sum[:], hasher.Sum(nil))
-	return buf.Bytes(), sum, nil
-}
-
-// readBody buffers the body and rewinds r.Body for callers that need
-// the bytes without a streaming hash. Kept for the offline Sign helper
-// that produces canonical strings outside the verify path.
-func readBody(r *http.Request, max int64) ([]byte, error) {
-	body, _, err := streamBody(r, max)
-	if err != nil {
-		return nil, err
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, nil
 }
 
 // buildCanonical returns the deterministic string MAC'd by both

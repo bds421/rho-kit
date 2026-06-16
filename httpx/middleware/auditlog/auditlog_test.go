@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -346,6 +347,37 @@ func TestAuditlog_ExtractorPanicsUseFallbacks(t *testing.T) {
 	}
 	if ev.Actor != "anonymous" {
 		t.Errorf("Actor = %q, want anonymous fallback", ev.Actor)
+	}
+}
+
+func TestAuditlog_CallbackPanicRoutesToErrorLogger(t *testing.T) {
+	// A callback panic must be logged through the WithErrorLogger logger, not
+	// only slog.Default(), so audit-pipeline health lands in one sink.
+	store, l := newLogger()
+	var buf bytes.Buffer
+	errLogger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+	mw := Middleware(l,
+		WithErrorLogger(errLogger),
+		WithActorExtractor(func(*http.Request) string { panic("actor failed") }),
+	)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/x", nil))
+
+	if len(store.events) != 1 {
+		t.Fatalf("expected audit event after extractor panic, got %d", len(store.events))
+	}
+	if buf.Len() == 0 {
+		t.Fatal("callback panic was not routed to the configured error logger")
+	}
+	if !strings.Contains(buf.String(), "callback panicked") {
+		t.Fatalf("error logger output missing panic message: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "actor extractor") {
+		t.Fatalf("error logger output missing callback name: %s", buf.String())
 	}
 }
 

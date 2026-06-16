@@ -95,6 +95,73 @@ func TestDeadlineStream_PanicsOnNonPositive(t *testing.T) {
 	_ = interceptor.DeadlineStream(0)
 }
 
+// TestDeadlineStream_CancelsBoundedCtxOnTerminalRecvMsg verifies the early-
+// release contract of boundedClientStream: once the wrapped stream's RecvMsg
+// returns a terminal error (io.EOF on a normal close, or a real RPC error)
+// the bounded context is cancelled so the deadline timer is released
+// promptly rather than lingering until d elapses. The cancel must be
+// idempotent across repeated RecvMsg calls after EOF.
+func TestDeadlineStream_CancelsBoundedCtxOnTerminalRecvMsg(t *testing.T) {
+	icpt := interceptor.DeadlineStream(time.Hour)
+
+	cs, err := icpt(context.Background(), &grpc.StreamDesc{}, nil, "/svc/Stream",
+		func(ctx context.Context, _ *grpc.StreamDesc, _ *grpc.ClientConn, _ string, _ ...grpc.CallOption) (grpc.ClientStream, error) {
+			return &fakeClientStream{ctx: ctx, recvErr: io.EOF}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("interceptor returned error: %v", err)
+	}
+
+	// Before the terminal RecvMsg the bounded ctx is still live.
+	select {
+	case <-cs.Context().Done():
+		t.Fatalf("bounded ctx cancelled before any terminal RecvMsg")
+	default:
+	}
+
+	// RecvMsg returns the terminal error and must fire cancel.
+	if got := cs.RecvMsg(nil); got != io.EOF {
+		t.Fatalf("RecvMsg = %v, want io.EOF", got)
+	}
+	select {
+	case <-cs.Context().Done():
+		// Expected: cancel fired on terminal error.
+	case <-time.After(time.Second):
+		t.Fatalf("bounded ctx not cancelled after terminal RecvMsg")
+	}
+
+	// A second RecvMsg after EOF must be safe (idempotent cancel) and still
+	// surface the terminal error.
+	if got := cs.RecvMsg(nil); got != io.EOF {
+		t.Fatalf("second RecvMsg = %v, want io.EOF", got)
+	}
+}
+
+// TestDeadlineStream_DoesNotCancelOnSuccessfulRecvMsg verifies the converse:
+// a successful (nil-error) RecvMsg leaves the stream live so subsequent
+// messages can be received. cancel fires only on the terminal error.
+func TestDeadlineStream_DoesNotCancelOnSuccessfulRecvMsg(t *testing.T) {
+	icpt := interceptor.DeadlineStream(time.Hour)
+
+	cs, err := icpt(context.Background(), &grpc.StreamDesc{}, nil, "/svc/Stream",
+		func(ctx context.Context, _ *grpc.StreamDesc, _ *grpc.ClientConn, _ string, _ ...grpc.CallOption) (grpc.ClientStream, error) {
+			return &fakeClientStream{ctx: ctx, recvErr: nil}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("interceptor returned error: %v", err)
+	}
+	if got := cs.RecvMsg(nil); got != nil {
+		t.Fatalf("RecvMsg = %v, want nil", got)
+	}
+	select {
+	case <-cs.Context().Done():
+		t.Fatalf("bounded ctx cancelled on a successful RecvMsg")
+	default:
+	}
+}
+
 func TestDeadlineStream_PropagatesStreamerError(t *testing.T) {
 	want := errors.New("boom")
 	icpt := interceptor.DeadlineStream(time.Second)

@@ -2,7 +2,6 @@ package webhook_test
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -53,6 +52,58 @@ func TestSend_HappyPath(t *testing.T) {
 	require.NotEmpty(t, gotSig)
 	require.NotEmpty(t, gotTS)
 	require.NotEmpty(t, gotID, "delivery id auto-generated when omitted")
+}
+
+// countingBody reports how many bytes were read from it and never reaches EOF
+// within the drain window, emulating a hostile receiver streaming an unbounded
+// response body.
+type countingBody struct {
+	read atomic.Int64
+}
+
+func (b *countingBody) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	b.read.Add(int64(len(p)))
+	return len(p), nil
+}
+
+func (b *countingBody) Close() error { return nil }
+
+// roundTripperFunc adapts a function to http.RoundTripper.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestSend_BoundsResponseBodyDrain verifies that a 2xx delivery whose receiver
+// streams an unbounded response body does not read the whole stream: the
+// dispatcher drains at most a bounded amount for keep-alive reuse, then closes.
+func TestSend_BoundsResponseBodyDrain(t *testing.T) {
+	body := &countingBody{}
+	client := &http.Client{
+		Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       body,
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	d := newDispatcher(t, client)
+	err := d.Send(context.Background(), webhook.Delivery{
+		URL:  "https://receiver.example/hook",
+		Body: []byte(`{"ok":true}`),
+	})
+	require.NoError(t, err)
+
+	// The drain must be bounded: well under the unbounded stream the receiver
+	// would otherwise feed. Allow a small slack over the cap for the final
+	// io.CopyN buffer chunk.
+	const cap = 64 * 1024
+	require.LessOrEqual(t, body.read.Load(), int64(cap)+64*1024,
+		"response body drain must be bounded, read %d bytes", body.read.Load())
 }
 
 func TestSend_DefaultsContentTypeJSON(t *testing.T) {
@@ -181,8 +232,12 @@ func TestSend_HonoursCtxCancel(t *testing.T) {
 	defer cancel()
 	err := d.Send(ctx, webhook.Delivery{URL: srv.URL})
 	require.Error(t, err)
-	require.True(t, errors.Is(err, context.DeadlineExceeded) || err != nil,
-		"expected ctx-derived error, got %v", err)
+	// The server keeps returning 503 (retryable), so Send must keep retrying
+	// until the context deadline fires and surface a ctx-derived error — not
+	// retry-budget exhaustion. Assert the cancellation cause directly rather
+	// than the previously tautological "|| err != nil".
+	require.ErrorIs(t, err, context.DeadlineExceeded,
+		"expected the context deadline to terminate retries, got %v", err)
 }
 
 func TestNew_ValidatesConfig(t *testing.T) {

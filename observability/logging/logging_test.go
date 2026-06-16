@@ -206,11 +206,55 @@ func TestTraceHandler_withAttrs(t *testing.T) {
 func TestTraceHandler_withGroup(t *testing.T) {
 	var buf bytes.Buffer
 	inner := slog.NewJSONHandler(&buf, nil)
-	handler := &traceHandler{inner: inner}
+	// Construct as New() does so root captures the group-free base handler.
+	handler := &traceHandler{inner: inner, root: inner}
 
 	grouped := handler.WithGroup("grp")
 	if _, ok := grouped.(*traceHandler); !ok {
-		t.Error("WithGroup should return a *traceHandler")
+		t.Fatal("WithGroup should return a *traceHandler")
+	}
+
+	// Emit through the grouped handler with a span context and assert where the
+	// trace IDs land: they must stay at the top level for log/trace correlation,
+	// while the record's own attributes nest under the open group. Asserting the
+	// wrapper type alone gives false confidence in this exact path.
+	logger := slog.New(grouped)
+
+	traceID, _ := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	spanID, _ := trace.SpanIDFromHex("00f067aa0ba902b7")
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	logger.InfoContext(ctx, "test message", "path", "/v1/things")
+
+	var logEntry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &logEntry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+
+	if logEntry["trace_id"] != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("top-level trace_id = %v, want 4bf92f3577b34da6a3ce929d0e0e4736", logEntry["trace_id"])
+	}
+	if logEntry["span_id"] != "00f067aa0ba902b7" {
+		t.Errorf("top-level span_id = %v, want 00f067aa0ba902b7", logEntry["span_id"])
+	}
+
+	grp, ok := logEntry["grp"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected grp group object, got %v", logEntry["grp"])
+	}
+	if grp["path"] != "/v1/things" {
+		t.Errorf("grp.path = %v, want /v1/things", grp["path"])
+	}
+	if _, nested := grp["trace_id"]; nested {
+		t.Error("trace_id should not be nested under the open group")
+	}
+	if _, nested := grp["span_id"]; nested {
+		t.Error("span_id should not be nested under the open group")
 	}
 }
 

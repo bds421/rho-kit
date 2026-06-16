@@ -79,6 +79,23 @@ func TestWrite_DefaultsTo500(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
 }
 
+// Write is exported for hand-built Problems; an out-of-range Status must not
+// panic in net/http's WriteHeader. It is clamped to 500, consistent with the
+// other misuse paths.
+func TestWrite_OutOfRangeStatusClampsTo500(t *testing.T) {
+	for _, status := range []int{-1, 0, 1, 42, 99, 600, 1000, 99999} {
+		rr := httptest.NewRecorder()
+		require.NotPanics(t, func() {
+			Write(rr, Problem{Status: status, Title: "X"})
+		}, "status %d must not panic", status)
+		assert.Equal(t, http.StatusInternalServerError, rr.Code, "status %d", status)
+
+		var p Problem
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&p))
+		assert.Equal(t, http.StatusInternalServerError, p.Status, "body status for %d", status)
+	}
+}
+
 func TestWrite_MarshalErrorDoesNotLeakRawDetails(t *testing.T) {
 	rr := httptest.NewRecorder()
 	Write(rr, Problem{

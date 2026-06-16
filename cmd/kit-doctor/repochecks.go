@@ -237,11 +237,18 @@ func appendAllowlistEntry(path, pattern string) (string, error) {
 	return fmt.Sprintf("appended %q to %s", strings.TrimRight(line, "\n"), path), nil
 }
 
-// checkGoWorkSum surfaces a stale go.work.sum by running `go work
-// sync` in dry-run mode against a copy; here we don't actually
-// detect staleness — we just emit an actionable finding when go.work
-// exists. The fix runs `go work sync` against root. Idempotent: a
-// no-op sync is safe.
+// checkGoWorkSum emits an actionable finding when go.work exists and
+// the go.work.sum size heuristic (goWorkSumLooksStale) suggests the
+// sum file may be out of date. The fix runs `go work sync` against
+// root. Idempotent: a no-op sync is safe.
+//
+// Severity is Warning, not High: the heuristic is deliberately fuzzy
+// (a module go.sum can legitimately hold more hashes than the
+// workspace build list needs), so `go work sync` does not guarantee
+// the size comparison flips. Reporting this at High would let it
+// permanently drive exit-1 at the default -strict=high floor even
+// after a successful sync. The authoritative arbiter remains
+// `make check-publishable` and CI.
 func checkGoWorkSum(root string) ([]rules.Finding, error) {
 	workPath := filepath.Join(root, "go.work")
 	if _, err := os.Stat(workPath); err != nil {
@@ -259,7 +266,7 @@ func checkGoWorkSum(root string) ([]rules.Finding, error) {
 	}
 	return []rules.Finding{{
 		Rule:       "go-work-sum-stale",
-		Severity:   rules.High,
+		Severity:   rules.Warning,
 		File:       filepath.Join(root, "go.work.sum"),
 		Message:    "go.work.sum may be stale (missing or smaller than go.sum union)",
 		Suggestion: "run `go work sync` from the workspace root",

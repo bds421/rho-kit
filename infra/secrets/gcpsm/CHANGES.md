@@ -10,3 +10,7 @@
   `ErrLoaderUnavailable` (wrapped via `redact.WrapSentinel` +
   `redact.WrapError`).
 - Caller-owned `secretmanager.Client` lifecycle.
+- `Secret.Version` exposes the bare trailing version segment (e.g. `3`),
+  not the full `projects/P/secrets/S/versions/N` resource path, matching
+  the documented `secrets.Secret.Version` contract and the awssm/vaultkv
+  backends.

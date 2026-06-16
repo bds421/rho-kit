@@ -224,7 +224,12 @@ func (f Fields) ValidateRedis(environment string) error {
 	if err := f.Redis.checkFR077(resolved); err != nil {
 		return err
 	}
-	if f.Redis.Password == "" && f.Redis.URL == "" {
+	// AllowPlaintext is the explicit opt-out for trusted local-dev fixtures;
+	// checkFR077 already honored it above. Enforcing a password here too would
+	// make the fields path (REDIS_HOST without a password) reject configs that
+	// Config.Options() accepts, so the two paths would disagree. Skip the
+	// password requirement when the opt-out is set so both paths stay in sync.
+	if !f.Redis.AllowPlaintext && f.Redis.Password == "" && f.Redis.URL == "" {
 		return fmt.Errorf("REDIS_PASSWORD is required (or pass it via REDIS_URL)")
 	}
 	return nil

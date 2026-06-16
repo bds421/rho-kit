@@ -227,11 +227,11 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			if err := rejectSymlinkPathComponents(targetDir, filepath.Dir(targetPath)); err != nil {
-				writef(stderr, "Error reading %s: %v\n", targetPath, err)
+				writef(stderr, "Error reading %s: %v\n", filename, err)
 				return 1
 			}
 			if err := rejectSymlinkTarget(targetPath); err != nil {
-				writef(stderr, "Error reading %s: %v\n", targetPath, err)
+				writef(stderr, "Error reading %s: %v\n", filename, err)
 				return 1
 			}
 			existing, err := os.ReadFile(targetPath)
@@ -239,7 +239,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 				if os.IsNotExist(err) {
 					continue
 				}
-				writef(stderr, "Error reading %s: %v\n", targetPath, err)
+				writef(stderr, "Error reading %s\n", filename)
 				return 1
 			}
 

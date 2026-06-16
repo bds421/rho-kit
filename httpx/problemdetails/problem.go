@@ -86,7 +86,11 @@ func (p Problem) MarshalJSON() ([]byte, error) {
 // instead.
 func Write(w http.ResponseWriter, p Problem) {
 	status := p.Status
-	if status == 0 {
+	// net/http panics in WriteHeader for codes outside [100, 999]. Write is
+	// exported for hand-built Problems, so clamp any out-of-range or unset
+	// status to a safe 500 rather than crashing mid-response — consistent with
+	// the marshal-error path below, which also collapses misuse to 500.
+	if status < 100 || status > 599 {
 		status = http.StatusInternalServerError
 		p.Status = status
 	}

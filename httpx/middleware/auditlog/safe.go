@@ -16,48 +16,56 @@ import (
 	auditstore "github.com/bds421/rho-kit/observability/v2/auditlog"
 )
 
-func safePathFilter(fn func(string) bool, path string) (audit bool) {
+func safePathFilter(errLogger *slog.Logger, fn func(string) bool, path string) (audit bool) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			logCallbackPanic("path filter", rec)
+			logCallbackPanic(errLogger, "path filter", rec)
 			audit = true
 		}
 	}()
 	return fn(path)
 }
 
-func safeStatusFilter(fn func(int) bool, status int) (audit bool) {
+func safeStatusFilter(errLogger *slog.Logger, fn func(int) bool, status int) (audit bool) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			logCallbackPanic("status filter", rec)
+			logCallbackPanic(errLogger, "status filter", rec)
 			audit = true
 		}
 	}()
 	return fn(status)
 }
 
-func safeClientIP(fn func(*http.Request) string, r *http.Request) (ip string) {
+func safeClientIP(errLogger *slog.Logger, fn func(*http.Request) string, r *http.Request) (ip string) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			logCallbackPanic("client IP resolver", rec)
+			logCallbackPanic(errLogger, "client IP resolver", rec)
 			ip = ""
 		}
 	}()
 	return fn(r)
 }
 
-func safeActor(fn func(*http.Request) string, r *http.Request) (actor string) {
+func safeActor(errLogger *slog.Logger, fn func(*http.Request) string, r *http.Request) (actor string) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			logCallbackPanic("actor extractor", rec)
+			logCallbackPanic(errLogger, "actor extractor", rec)
 			actor = "anonymous"
 		}
 	}()
 	return fn(r)
 }
 
-func logCallbackPanic(callback string, rec any) {
-	slog.Default().Error("auditlog middleware: callback panicked",
+// logCallbackPanic routes callback panics to the WithErrorLogger logger when
+// configured, so path-filter/status-filter/extractor panics land in the same
+// audit-health sink as emit failures rather than fragmenting across
+// slog.Default(). Falls back to slog.Default() when no error logger is set.
+func logCallbackPanic(errLogger *slog.Logger, callback string, rec any) {
+	logger := errLogger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Error("auditlog middleware: callback panicked",
 		"callback", callback,
 		redact.Panic(rec),
 		"stack", string(debug.Stack()),

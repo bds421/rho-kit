@@ -81,6 +81,13 @@ func WithKeyedClock(fn func() time.Time) KeyedOption {
 // [NewKeyedLimiter] so the limiter is only published once its shards and
 // name are fully initialized; publishing mid-construction would race a
 // concurrent scrape that reads those fields.
+//
+// Lifetime requirement: the active-keys collector retains a reference to every
+// limiter attached to it and exposes no untrack path, so a metrics-attached
+// KeyedLimiter must be a process-lifetime singleton. Do NOT attach short-lived
+// or per-request limiters via this option — each one is pinned for the life of
+// the metrics registry (including its shard LRUs) and keeps emitting a stale
+// active_keys series on every scrape.
 func WithKeyedMetrics(m *Metrics) KeyedOption {
 	if m == nil {
 		panic("middleware/ratelimit: WithKeyedMetrics requires non-nil metrics")
@@ -180,7 +187,12 @@ func (rl *KeyedLimiter) AllowKey(key string) (allowed bool, retryAfter int, err 
 	if ok {
 		// Mutating *keyedRateLimitEntry through the cached pointer is safe:
 		// the shard mutex serialises all access. Get() already marked it recently used.
-		if now.After(entry.windowEnd) {
+		//
+		// Use !now.Before(windowEnd) (i.e. now >= windowEnd) so the window is
+		// half-open [start, end) — identical to the IP Limiter's
+		// `elapsed >= window`. At the exact boundary instant both siblings
+		// start a fresh window rather than counting against the old one.
+		if !now.Before(entry.windowEnd) {
 			entry.count = 1
 			entry.windowEnd = now.Add(rl.window)
 			rl.observeDecision(rateLimitOutcomeAllowed)
@@ -324,7 +336,9 @@ func (rl *KeyedLimiter) cleanup() {
 		s.mu.Lock()
 		for _, key := range keys[:limit] {
 			entry, ok := s.entries.Peek(key)
-			if ok && now.After(entry.windowEnd) {
+			// Match Allow's half-open boundary: an entry whose window has
+			// ended (now >= windowEnd) is expired and may be evicted.
+			if ok && !now.Before(entry.windowEnd) {
 				s.entries.Remove(key)
 			}
 		}
@@ -345,6 +359,11 @@ func KeyedMiddleware(rl *KeyedLimiter, keyFunc func(r *http.Request) string) fun
 		panic("middleware/ratelimit: KeyedMiddleware requires a non-nil key function")
 	}
 	return func(next http.Handler) http.Handler {
+		// Fail fast at wiring time, matching Middleware's contract, instead of
+		// deferring to a nil-pointer panic on the first allowed request.
+		if next == nil {
+			panic("middleware/ratelimit: KeyedMiddleware requires a non-nil next handler")
+		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			skip, handled, outcome := handleDegradation(w, r, rl.health, rl.degradation)
 			if outcome != "" {

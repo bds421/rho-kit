@@ -84,13 +84,14 @@ func TestRunInteractive_SkipAllAbortsLoop(t *testing.T) {
 	assert.Contains(t, out.String(), "skip-all")
 }
 
-// TestRunInteractive_IgnoresFindingsWithoutFix verifies the loop
-// silently skips findings whose Fix is nil — they show up in the
-// standard text output but never prompt.
-func TestRunInteractive_IgnoresFindingsWithoutFix(t *testing.T) {
+// TestRunInteractive_PrintsFindingsWithoutFix verifies the loop never
+// prompts for a finding whose Fix is nil, but DOES print it: repo
+// findings are not in the standard text/json output, so a Fix-less one
+// must still be visible here or it would drive exit-1 with no cause.
+func TestRunInteractive_PrintsFindingsWithoutFix(t *testing.T) {
 	calls := 0
 	findings := []rules.Finding{
-		{Rule: "info-only", Severity: rules.Info, File: "x", Message: "m"},
+		{Rule: "info-only", Severity: rules.Info, File: "x", Message: "m", Suggestion: "look here"},
 		{Rule: "fixable", Severity: rules.High, File: "y", Message: "m", Fix: fixCounter(&calls, "ok")},
 	}
 	in := strings.NewReader("y\n")
@@ -98,7 +99,13 @@ func TestRunInteractive_IgnoresFindingsWithoutFix(t *testing.T) {
 	applied := runInteractive(in, &out, findings)
 	assert.Equal(t, 1, applied)
 	assert.Equal(t, 1, calls)
-	assert.NotContains(t, out.String(), "info-only", "non-fixable findings must not appear in prompt")
+	got := out.String()
+	// The non-fixable finding is printed so its exit-1 cause is visible...
+	assert.Contains(t, got, "info-only", "non-fixable findings must still be shown")
+	assert.Contains(t, got, "look here", "its suggestion must be shown")
+	// ...but only the fixable one gets an apply prompt.
+	assert.Equal(t, 1, strings.Count(got, "apply? [y/N/skip-all]"),
+		"only the fixable finding may be prompted")
 }
 
 // TestRunInteractive_FixErrorContinuesLoop verifies a failing Fix
@@ -255,6 +262,32 @@ func TestRunInteractiveSession_NonFixableStaysUnresolved(t *testing.T) {
 	assert.Equal(t, 0, res.applied)
 	require.Len(t, res.unresolved, 1)
 	assert.Equal(t, "info", res.unresolved[0].Rule)
+}
+
+// TestRunInteractiveSession_RepoCheckErrorIsVisible guards the
+// reported defect: a Fix-less repo-check-error Warning is excluded
+// from the standard text/json output yet still drives exit-1, so it
+// must be printed in the interactive session (without a prompt) to
+// explain why the run did not exit 0.
+func TestRunInteractiveSession_RepoCheckErrorIsVisible(t *testing.T) {
+	findings := []rules.Finding{
+		{
+			Rule: "repo-check-error", Severity: rules.Warning,
+			File: "/repo", Message: "repo check failed: stat go.work: boom",
+		},
+	}
+	var out bytes.Buffer
+	res := runInteractiveSession(strings.NewReader(""), &out, findings)
+
+	require.Len(t, res.unresolved, 1, "the error still counts toward exit-1")
+	got := out.String()
+	assert.Contains(t, got, "repo-check-error",
+		"a Fix-less repo finding driving exit-1 must be visible")
+	assert.Contains(t, got, "repo check failed: stat go.work: boom")
+	assert.NotContains(t, got, "apply?", "non-fixable findings must not be prompted")
+	// With -strict=warning this unresolved Warning trips exit-1; the
+	// operator can now see the cause printed above.
+	assert.Equal(t, 1, exitCode(res.unresolved, rules.Warning))
 }
 
 // assertError is a tiny error type for tests so we don't import

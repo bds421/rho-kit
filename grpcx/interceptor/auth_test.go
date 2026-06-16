@@ -1034,6 +1034,127 @@ func TestMTLSAuthUnary_JWTPath_NoTrustedMarker(t *testing.T) {
 		"JWT branch of MTLSAuthUnary must NOT stamp the trusted-S2S marker")
 }
 
+// TestMTLSAuthUnary_MTLSPath_Success drives the full mTLS branch of
+// MTLSAuthUnary to success — the feature's core contract that every other
+// MTLSAuth test only ever exercises on a rejection path: a verified client
+// cert with an allow-listed identity plus a valid x-user-id is admitted, the
+// handler runs, IsTrustedS2S(ctx) is true, and UserID(ctx) equals the
+// impersonated UUID.
+func TestMTLSAuthUnary_MTLSPath_Success(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+
+	const wantUserID = "11111111-1111-1111-1111-111111111111"
+	var guardIdentity, guardUserID string
+	ic := interceptor.MTLSAuthUnary(provider,
+		interceptor.WithAllowedCNs("svc-a"),
+		interceptor.WithS2SImpersonationGuard(func(_ context.Context, identity, userID string) error {
+			guardIdentity = identity
+			guardUserID = userID
+			return nil
+		}),
+	)
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "svc-a"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	called := false
+	var observedTrusted bool
+	var observedUserID string
+	resp, err := ic(
+		mtlsIncomingContext(cert),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, _ any) (any, error) {
+			called = true
+			observedTrusted = interceptor.IsTrustedS2S(ctx)
+			observedUserID = interceptor.UserID(ctx)
+			return "ok", nil
+		},
+	)
+	require.NoError(t, err)
+	assert.True(t, called, "handler must run on a successful mTLS S2S admission")
+	assert.Equal(t, "ok", resp)
+	assert.True(t, observedTrusted, "mTLS branch must stamp the trusted-S2S marker")
+	assert.Equal(t, wantUserID, observedUserID, "UserID must equal the impersonated UUID")
+	assert.Equal(t, "cn:svc-a", guardIdentity, "guard receives the matched client identity")
+	assert.Equal(t, wantUserID, guardUserID, "guard receives the impersonated UUID")
+}
+
+// TestMTLSAuthStream_MTLSPath_Success mirrors the unary success path for the
+// streaming variant, asserting the contextStream wrapping so the handler's
+// stream observes the authenticated context (trusted marker + user ID).
+func TestMTLSAuthStream_MTLSPath_Success(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+
+	const wantUserID = "11111111-1111-1111-1111-111111111111"
+	ic := interceptor.MTLSAuthStream(provider,
+		interceptor.WithAllowedCNs("svc-a"),
+		allowS2SImpersonationForTest(),
+	)
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "svc-a"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	called := false
+	var observedTrusted bool
+	var observedUserID string
+	ss := &fakeStream{ctx: mtlsIncomingContext(cert)}
+	err := ic(nil, ss, noopStreamInfo, func(_ any, stream grpc.ServerStream) error {
+		called = true
+		ctx := stream.Context()
+		observedTrusted = interceptor.IsTrustedS2S(ctx)
+		observedUserID = interceptor.UserID(ctx)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.True(t, called, "handler must run on a successful mTLS S2S admission")
+	assert.True(t, observedTrusted,
+		"contextStream must carry the trusted-S2S marker into the handler")
+	assert.Equal(t, wantUserID, observedUserID,
+		"contextStream must carry the impersonated UUID into the handler")
+}
+
+// TestMTLSAuthUnary_MTLSPath_TrustedS2SBypassesPermissionCheck composes the
+// real mTLS branch with RequirePermissionUnary to verify, in the DEFAULT
+// build (no authtest tag), that an mTLS-admitted caller with no permissions
+// claim is granted by the trusted-S2S bypass. This exercises the production
+// path that stamps the marker rather than the authtest-only WithTrustedS2S
+// shortcut.
+func TestMTLSAuthUnary_MTLSPath_TrustedS2SBypassesPermissionCheck(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+
+	auth := interceptor.MTLSAuthUnary(provider,
+		interceptor.WithAllowedCNs("svc-a"),
+		allowS2SImpersonationForTest(),
+	)
+	requirePerm := interceptor.RequirePermissionUnary("admin")
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "svc-a"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	called := false
+	handler := func(context.Context, any) (any, error) {
+		called = true
+		return "ok", nil
+	}
+	// auth (outer) -> requirePerm (inner) mirrors the kit chain ordering.
+	resp, err := auth(
+		mtlsIncomingContext(cert),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			return requirePerm(ctx, req, noopUnaryInfo, handler)
+		},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", resp)
+	assert.True(t, called,
+		"trusted-S2S marker from the mTLS branch must satisfy RequirePermission without a perms claim")
+}
+
 func TestUserPermissions_ReturnsClone(t *testing.T) {
 	provider, privKey := testKeyAndProvider(t)
 	token := signTestToken(t, privKey, "11111111-1111-1111-1111-111111111111", []string{"read", "write"})

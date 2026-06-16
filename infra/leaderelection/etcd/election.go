@@ -275,11 +275,24 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 			break
 		}
 		if termErr != nil {
-			e.logger.Warn("leader-election: term ended with error",
-				redact.String("election", e.electionKey),
-				redact.String("identity", e.identity),
-				redact.Error(termErr),
-			)
+			// An orderly shutdown of a non-leader replica (caller ctx
+			// cancelled while Campaign blocks, or session create failing
+			// on the cancelled ctx) surfaces as a context error. That is
+			// expected steady-state teardown, not a fault, so log it at
+			// Debug to avoid a spurious warn on every clean shutdown.
+			if ctx.Err() != nil && isContextTermination(termErr) {
+				e.logger.Debug("leader-election: term ended during shutdown",
+					redact.String("election", e.electionKey),
+					redact.String("identity", e.identity),
+					redact.Error(termErr),
+				)
+			} else {
+				e.logger.Warn("leader-election: term ended with error",
+					redact.String("election", e.electionKey),
+					redact.String("identity", e.identity),
+					redact.Error(termErr),
+				)
+			}
 		}
 		if ctx.Err() != nil {
 			break
@@ -414,6 +427,13 @@ func (e *Elector) runOnce(ctx context.Context, cb leaderelection.Callbacks) (err
 	lostErr := e.runOnLost(cb)
 	termErr := joinTermErrors(lostErr, drainResult)
 	return termErr, drainResult.timedOut
+}
+
+// isContextTermination reports whether a term error is just the caller
+// ctx being cancelled or timing out — the expected end of every standby
+// replica's term on orderly shutdown rather than a backend fault.
+func isContextTermination(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func detachedReleaseContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {

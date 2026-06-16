@@ -98,6 +98,14 @@ var ErrUnsupportedType = errors.New("mcp: schema generation: unsupported type")
 // internals to the caller" invariant.
 var errHandlerPanicked = errors.New("mcp: tool handler panicked")
 
+// errInvalidArguments is the generic, non-reflecting reason recorded in the
+// action log when an argument payload fails to decode (unknown field, type
+// mismatch, or trailing JSON tokens). It mirrors the caller-facing "invalid
+// arguments" message and deliberately omits the raw payload so the audit reason
+// never reflects caller-controlled bytes — keeping malformed-argument probes
+// visible to operators alongside validation and gate refusals.
+var errInvalidArguments = errors.New("mcp: invalid arguments")
+
 // Tool describes one MCP tool. Every handler registered via
 // [Register] becomes one Tool. The fields are the kit-visible surface
 // of the SDK's [sdkmcp.Tool]; the underlying SDK value is constructed
@@ -520,13 +528,16 @@ func (s *Server) Stop(ctx context.Context) error {
 	if !s.cfg.asyncAudit {
 		return nil
 	}
+	// Signal shutdown exactly once (idempotent close of auditDone), but ALWAYS
+	// fall through to wait on auditWG below. A first Stop whose context times
+	// out returns ctx.Err() while workers are still draining; a retry with a
+	// fresh context must re-wait rather than return a false success, or the
+	// caller races process exit against in-flight audit appends.
 	s.auditStopMu.Lock()
-	if s.auditStopped.Load() {
-		s.auditStopMu.Unlock()
-		return nil
+	if !s.auditStopped.Load() {
+		s.auditStopped.Store(true)
+		close(s.auditDone)
 	}
-	s.auditStopped.Store(true)
-	close(s.auditDone)
 	s.auditStopMu.Unlock()
 	done := make(chan struct{})
 	go func() {
@@ -960,17 +971,25 @@ func wrapToolHandler[In any, Out any](s *Server, name string, h Handler[In, Out]
 			dec.DisallowUnknownFields()
 			if err := dec.Decode(&in); err != nil {
 				s.logInternalError(ctx, "mcp: argument decode failed", err)
+				_ = s.recordActionLog(ctx, httpReq, name, errInvalidArguments)
 				return errorResult("invalid arguments"), nil
 			}
 			if tok, err := dec.Token(); err != io.EOF {
 				if err != nil {
 					s.logInternalError(ctx, "mcp: trailing token after arguments", err)
 				} else {
+					// dec.Token returns a nil interface for a JSON null token;
+					// reflect.TypeOf(nil) is nil and .String() would panic.
+					kind := "null"
+					if tok != nil {
+						kind = reflect.TypeOf(tok).String()
+					}
 					s.cfg.logger.Warn("mcp: rejected request with trailing JSON tokens",
 						redact.String("tool", name),
-						redact.String("token_kind", reflect.TypeOf(tok).String()),
+						redact.String("token_kind", kind),
 					)
 				}
+				_ = s.recordActionLog(ctx, httpReq, name, errInvalidArguments)
 				return errorResult("invalid arguments"), nil
 			}
 		}

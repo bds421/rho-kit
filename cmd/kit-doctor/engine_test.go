@@ -85,6 +85,49 @@ func wire() {
 		"scan must not parse code outside root through a symlink, got %+v", findings)
 }
 
+// TestScan_UnreadableSubdirectoryDoesNotAbortScan guards the reported
+// defect: one permission-denied subdirectory must not fail the whole
+// scan (exit 2). It must be surfaced as an io-error Warning while the
+// rest of the tree is still scanned — mirroring the per-file lenience.
+func TestScan_UnreadableSubdirectoryDoesNotAbortScan(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses directory permissions")
+	}
+	dir := t.TempDir()
+	// A readable sibling whose finding must still be reported.
+	writeFile(t, dir, "wire.go", `package svc
+
+import "github.com/bds421/rho-kit/app/jwt/v2"
+
+func wire() {
+	_ = jwt.Module("https://issuer/.well-known/jwks.json")
+}
+`)
+	// An unreadable subdirectory: WalkDir cannot descend into it.
+	locked := filepath.Join(dir, "locked")
+	require.NoError(t, os.Mkdir(locked, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(locked, "inner.go"),
+		[]byte("package locked\n"), 0o600))
+	require.NoError(t, os.Chmod(locked, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err, "an unreadable subdirectory must not abort the whole scan")
+	assert.True(t, hasRule(findings, "jwt-missing-claims"),
+		"the readable sibling must still be scanned, got %+v", findings)
+	assert.True(t, hasRule(findings, "io-error"),
+		"the unreadable subdirectory must be surfaced as an io-error Warning, got %+v", findings)
+}
+
+// TestScan_UnreadableRootIsToolError verifies an unreadable scan root
+// is still a tool error (non-nil err -> exit 2): there is nothing to
+// scan, so the lenient per-entry path does not apply to the root.
+func TestScan_UnreadableRootIsToolError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	_, err := scan(missing, rules.Registered())
+	require.Error(t, err, "a missing/unreadable root must surface as a tool error")
+}
+
 func TestScan_FlagsOnlyBuilderMissingClaims(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "wire.go", `package svc
@@ -1231,7 +1274,7 @@ func TestScan_FlagsWebsocketAnyOriginUnsafe(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "ws.go", `package svc
 
-import "github.com/bds421/rho-kit/httpx/v2/websocket"
+import "github.com/bds421/rho-kit/httpx/websocket/v2"
 
 func wire() {
 	websocket.Handle(websocket.WithAnyOriginUnsafe(), websocket.WithMaxConnections(100))
@@ -1247,7 +1290,7 @@ func TestScan_WebsocketAnyOriginUnsafeSkipsTestFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "ws_test.go", `package svc
 
-import "github.com/bds421/rho-kit/httpx/v2/websocket"
+import "github.com/bds421/rho-kit/httpx/websocket/v2"
 
 func wire() {
 	websocket.Handle(websocket.WithAnyOriginUnsafe())
@@ -1263,7 +1306,7 @@ func TestScan_FlagsWebsocketMissingMaxConnections(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "ws.go", `package svc
 
-import "github.com/bds421/rho-kit/httpx/v2/websocket"
+import "github.com/bds421/rho-kit/httpx/websocket/v2"
 
 func wire() {
 	websocket.Handle(websocket.WithAllowedOrigins([]string{"https://example.com"}))
@@ -1279,7 +1322,7 @@ func TestScan_AcceptsWebsocketWithMaxConnections(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "ws.go", `package svc
 
-import "github.com/bds421/rho-kit/httpx/v2/websocket"
+import "github.com/bds421/rho-kit/httpx/websocket/v2"
 
 func wire() {
 	websocket.Handle(websocket.WithMaxConnections(1000))
@@ -1295,7 +1338,7 @@ func TestScan_FlagsCentrifugeMissingJWTAuth(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "realtime.go", `package svc
 
-import "github.com/bds421/rho-kit/realtime/v2/centrifuge"
+import "github.com/bds421/rho-kit/realtime/centrifuge/v2"
 
 func wire() {
 	_, _ = centrifuge.NewNode(centrifuge.WithChannelClassifier(classifier))
@@ -1311,7 +1354,7 @@ func TestScan_AcceptsCentrifugeWithJWTAuth(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "realtime.go", `package svc
 
-import "github.com/bds421/rho-kit/realtime/v2/centrifuge"
+import "github.com/bds421/rho-kit/realtime/centrifuge/v2"
 
 func wire() {
 	_, _ = centrifuge.NewNode(centrifuge.WithJWTAuth(provider))
@@ -1327,7 +1370,7 @@ func TestScan_CentrifugeMissingJWTAuthSkipsTestFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "realtime_test.go", `package svc
 
-import "github.com/bds421/rho-kit/realtime/v2/centrifuge"
+import "github.com/bds421/rho-kit/realtime/centrifuge/v2"
 
 func wire() {
 	_, _ = centrifuge.NewNode()
@@ -1343,7 +1386,7 @@ func TestScan_CentrifugeJWTAuthAliasedImport(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "realtime.go", `package svc
 
-import rt "github.com/bds421/rho-kit/realtime/v2/centrifuge"
+import rt "github.com/bds421/rho-kit/realtime/centrifuge/v2"
 
 func wire() {
 	_, _ = rt.NewNode()
@@ -1353,6 +1396,47 @@ func wire() {
 	require.NoError(t, err)
 	assert.True(t, hasRule(findings, "centrifuge-missing-jwt-auth"),
 		"aliased centrifuge import must still trigger rule, got %+v", findings)
+}
+
+// The websocket and centrifuge rules carry the real consumer module
+// paths (httpx/websocket/v2, realtime/centrifuge/v2 — pinned in
+// rules/websocket_centrifuge_import_path_test.go) but also retain the
+// legacy transposed paths (httpx/v2/websocket, realtime/v2/centrifuge)
+// for backwards compatibility with older fixtures/callers. These two
+// engine-level tests pin that legacy support end-to-end through scan()
+// so a future cleanup of the legacy constants is caught here rather
+// than silently making old consumer wiring invisible.
+
+func TestScan_FlagsWebsocketAnyOriginUnsafeLegacyImportPath(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "ws.go", `package svc
+
+import "github.com/bds421/rho-kit/httpx/v2/websocket"
+
+func wire() {
+	websocket.Handle(websocket.WithAnyOriginUnsafe(), websocket.WithMaxConnections(100))
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "websocket-any-origin-unsafe"),
+		"legacy transposed websocket import path must still flag, got %+v", findings)
+}
+
+func TestScan_FlagsCentrifugeMissingJWTAuthLegacyImportPath(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "realtime.go", `package svc
+
+import "github.com/bds421/rho-kit/realtime/v2/centrifuge"
+
+func wire() {
+	_, _ = centrifuge.NewNode(centrifuge.WithChannelClassifier(classifier))
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "centrifuge-missing-jwt-auth"),
+		"legacy transposed centrifuge import path must still flag, got %+v", findings)
 }
 
 // F2 wave 179: apphttp.WithoutTLS rule.

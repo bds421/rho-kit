@@ -36,7 +36,37 @@ func TestLoader_Get(t *testing.T) {
 	s, err := l.Get(context.Background(), "k")
 	require.NoError(t, err)
 	require.Equal(t, "hunter2", s.Value.RevealString())
-	require.Equal(t, "projects/p/secrets/k/versions/3", s.Version)
+	// Secret.Version exposes only the bare trailing version segment ("3"),
+	// matching the documented secrets.Secret.Version contract ("GCP
+	// version number") and the awssm/vaultkv siblings — not the full
+	// "projects/.../versions/3" resource path.
+	require.Equal(t, "3", s.Version)
+}
+
+func TestLoader_VersionIsBareSegment(t *testing.T) {
+	// Even when GCP resolves "latest" to a concrete numbered version, the
+	// returned resp.Name is a full resource path; gcpsm must surface only
+	// the trailing segment.
+	api := &fakeAPI{resp: &secretmanagerpb.AccessSecretVersionResponse{
+		Name:    "projects/proj-123/secrets/api-key/versions/42",
+		Payload: &secretmanagerpb.SecretPayload{Data: []byte("v")},
+	}}
+	l := gcpsm.New(api, gcpsm.WithProject("proj-123"))
+	s, err := l.Get(context.Background(), "api-key")
+	require.NoError(t, err)
+	require.Equal(t, "42", s.Version)
+}
+
+func TestLoader_EmptyResponseNameYieldsEmptyVersion(t *testing.T) {
+	// A backend that omits resp.Name must leave Secret.Version empty
+	// rather than producing a spurious value.
+	api := &fakeAPI{resp: &secretmanagerpb.AccessSecretVersionResponse{
+		Payload: &secretmanagerpb.SecretPayload{Data: []byte("v")},
+	}}
+	l := gcpsm.New(api, gcpsm.WithProject("p"))
+	s, err := l.Get(context.Background(), "k")
+	require.NoError(t, err)
+	require.Equal(t, "", s.Version)
 }
 
 func TestLoader_NotFound(t *testing.T) {

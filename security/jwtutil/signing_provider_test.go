@@ -549,6 +549,65 @@ func TestSigningProvider_RefreshRejectsWrongShapeKey(t *testing.T) {
 	}
 }
 
+// TestNewSigningProvider_RejectsWrongShapeInitialKey locks the documented
+// "validates compatibility once at construction" contract (see KeyRotator
+// doc). A rotator that returns a key whose shape mismatches the configured
+// algorithm on the very first load must fail the CONSTRUCTOR fast, not defer
+// the failure to a runtime "jwtutil: sign token" error on every later Sign.
+// The constructor runs the same keyTypeForSigningAlg guard via refresh, so
+// the initial load surfaces the mismatch as NewSigningProvider's error return.
+func TestNewSigningProvider_RejectsWrongShapeInitialKey(t *testing.T) {
+	cases := []struct {
+		name    string
+		alg     jwa.SignatureAlgorithm
+		wrong   func(*testing.T) crypto.PrivateKey
+		wantKty string
+	}{
+		{
+			name:    "ES256_with_RSA_key",
+			alg:     jwa.ES256(),
+			wrong:   func(t *testing.T) crypto.PrivateKey { return mustRSAKey(t) },
+			wantKty: "RSA",
+		},
+		{
+			name:    "RS256_with_EC_key",
+			alg:     jwa.RS256(),
+			wrong:   func(t *testing.T) crypto.PrivateKey { return mustECDSAKey(t) },
+			wantKty: "EC",
+		},
+		{
+			name:    "EdDSA_with_EC_key",
+			alg:     jwa.EdDSA(),
+			wrong:   func(t *testing.T) crypto.PrivateKey { return mustECDSAKey(t) },
+			wantKty: "EC",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := NewSigningProvider(context.Background(),
+				staticRotator(tc.wrong(t)),
+				WithSigningRotationInterval(time.Hour),
+				WithSigningExpectedIssuer("svc"), WithSigningAllowAnyAudience(),
+				WithSigningMethod(tc.alg),
+			)
+			if err == nil {
+				if p != nil {
+					_ = p.Close()
+				}
+				t.Fatalf("NewSigningProvider accepted a %s key for alg %s; want a fast-fail construction error", tc.wantKty, tc.alg)
+			}
+			if p != nil {
+				t.Fatalf("NewSigningProvider returned a non-nil provider alongside an error: %v", err)
+			}
+			if !strings.Contains(err.Error(), "incompatible") {
+				t.Fatalf("construction error = %v, want it to mention incompatibility", err)
+			}
+		})
+	}
+}
+
 func TestSigningProvider_RejectsSignAfterMaxStale(t *testing.T) {
 	priv := mustECDSAKey(t)
 	called := atomic.Bool{}

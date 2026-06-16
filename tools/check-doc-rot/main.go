@@ -73,7 +73,7 @@ var waveRefRE = regexp.MustCompile(`(?i)\bwave\s+(\d+)\b`)
 // "follow-up wave" or "tracked for ... wave" phrase WITHOUT a
 // specific wave number. Wave 158 was exactly this — a "future wave"
 // promise that had silently shipped.
-var futureWaveRE = regexp.MustCompile(`(?i)(future wave|follow[- ]up wave|tracked.{1,30}for.{1,30}wave[^0-9]|post[- ]2\.0\.0)`)
+var futureWaveRE = regexp.MustCompile(`(?i)(future wave|follow[- ]up wave|tracked.{1,30}for.{1,30}wave(?:[^0-9]|$)|post[- ]2\.0\.0)`)
 
 // allowOptOutRE matches the line-level opt-out marker.
 var allowOptOutRE = regexp.MustCompile(`<!--\s*kit:ok-doc-rot\s*-->`)
@@ -134,6 +134,7 @@ func main() {
 
 	docsRoot := filepath.Join(root, docsGlob)
 	var findings []finding
+	var scanErrs []string
 	err = filepath.WalkDir(docsRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -144,15 +145,32 @@ func main() {
 		if !strings.HasSuffix(path, ".md") {
 			return nil
 		}
-		f, openErr := scanFile(path, shippedWaves, verbose)
-		if openErr != nil {
-			return openErr
+		f, scanErr := scanFile(path, shippedWaves, verbose)
+		if scanErr != nil {
+			// A single unreadable/transient-failure doc must not abort the
+			// whole scan: report it and keep walking so every other doc is
+			// still checked. The accumulated errors still fail the gate
+			// loudly (exit 2) below, so a skipped doc can never hide rot.
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				rel = path
+			}
+			scanErrs = append(scanErrs, fmt.Sprintf("%s: %v", rel, scanErr))
+			fmt.Fprintf(os.Stderr, "doc-rot: skipped unreadable file %s: %v\n", rel, scanErr)
+			return nil
 		}
 		findings = append(findings, f...)
 		return nil
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "doc-rot: walk %s: %v\n", docsRoot, err)
+		os.Exit(2)
+	}
+	if len(scanErrs) > 0 {
+		fmt.Fprintf(os.Stderr, "doc-rot: %d file(s) could not be read and were skipped:\n", len(scanErrs))
+		for _, e := range scanErrs {
+			fmt.Fprintf(os.Stderr, "  %s\n", e)
+		}
 		os.Exit(2)
 	}
 

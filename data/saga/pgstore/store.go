@@ -20,12 +20,31 @@ import (
 // than assume the write landed.
 var ErrConcurrentUpdate = errors.New("pgstore: saga instance updated concurrently")
 
+// ErrInvalidStore is returned by Store methods invoked on a nil receiver
+// or a zero-value &Store{} that bypassed [New] (e.g. db is nil). It
+// mirrors the kit-wide invalid-receiver convention used by sibling
+// backends (queue.ErrInvalidQueue, ratelimit.ErrInvalidLimiter): a
+// method call on an uninitialized handle returns a sentinel rather than
+// panicking with a nil-pointer dereference.
+var ErrInvalidStore = errors.New("pgstore: store is not initialized")
+
 var validIdent = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$`)
 
 // Store implements [saga.StateStore] against Postgres.
 type Store struct {
 	db    *sql.DB
 	table string
+}
+
+// ready reports whether s is usable. A nil receiver or a zero-value
+// &Store{} that skipped [New] (nil db, empty table) is not usable and
+// yields [ErrInvalidStore]. [New] always sets both fields, so a
+// constructed Store always passes.
+func (s *Store) ready() error {
+	if s == nil || s.db == nil || s.table == "" {
+		return ErrInvalidStore
+	}
+	return nil
 }
 
 // Option configures the Store.
@@ -72,6 +91,9 @@ func New(db *sql.DB, opts ...Option) *Store {
 // in-memory UpdatedAt is stale after the first write. See
 // putUpdateOptimistic for the full rationale.
 func (s *Store) Put(ctx context.Context, inst saga.Instance) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
 	if inst.ID == "" {
 		return errors.New("pgstore: Put requires Instance.ID")
 	}
@@ -161,6 +183,9 @@ func (s *Store) putUpdateOptimistic(ctx context.Context, inst saga.Instance, com
 
 // Get implements [saga.StateStore].
 func (s *Store) Get(ctx context.Context, id string) (saga.Instance, error) {
+	if err := s.ready(); err != nil {
+		return saga.Instance{}, err
+	}
 	query := fmt.Sprintf(`SELECT id, definition, state, current_step,
 		compensated, input, step_results, last_error, created_at, updated_at
 		FROM %s WHERE id = $1`, s.table)
@@ -170,6 +195,9 @@ func (s *Store) Get(ctx context.Context, id string) (saga.Instance, error) {
 
 // ListResumable implements [saga.StateStore].
 func (s *Store) ListResumable(ctx context.Context, olderThan time.Duration) ([]saga.Instance, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
 	var (
 		query string
 		args  []any
@@ -210,6 +238,9 @@ func (s *Store) ListResumable(ctx context.Context, olderThan time.Duration) ([]s
 
 // Delete implements [saga.StateStore]. Idempotent.
 func (s *Store) Delete(ctx context.Context, id string) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
 	query := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.table)
 	_, err := s.db.ExecContext(ctx, query, id)
 	if err != nil {
