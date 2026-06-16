@@ -43,7 +43,7 @@ func TestResolveHTTPConfig_PanicsOnMultipleProviders(t *testing.T) {
 // name-dedup check does not fire first).
 func TestBuilder_PanicsOnTwoHTTPConfigProviders(t *testing.T) {
 	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", validBaseConfig()).
+		_ = New("test-svc", "v0.1.0", validBaseConfig()).
 			With(&stubHTTPConfig{BaseModule: NewBaseModule("http-a"), plaintext: true}).
 			With(&stubHTTPConfig{BaseModule: NewBaseModule("http-b"), plaintext: true}).
 			WithoutRateLimit().

@@ -929,7 +929,6 @@ type gatedPublisher struct {
 	published []outbox.Entry
 	entries   atomic.Int64
 	gate      chan struct{}
-	gateOnce  sync.Once
 }
 
 func (g *gatedPublisher) Publish(_ context.Context, entry outbox.Entry) error {
@@ -1078,10 +1077,10 @@ func (s *resetterStore) ResetPending(ctx context.Context, ids []string) error {
 	s.resetCtxLive = ctx.Err() == nil
 	// Mirror the real store: return the rows to pending so state stays sane.
 	for _, id := range ids {
-		for i := range s.fakeStore.entries {
-			if s.fakeStore.entries[i].ID.String() == id &&
-				s.fakeStore.entries[i].Status == outbox.StatusProcessing {
-				s.fakeStore.entries[i] = withStatus(s.fakeStore.entries[i], outbox.StatusPending)
+		for i := range s.entries {
+			if s.entries[i].ID.String() == id &&
+				s.entries[i].Status == outbox.StatusProcessing {
+				s.entries[i] = withStatus(s.entries[i], outbox.StatusPending)
 			}
 		}
 	}
@@ -1182,7 +1181,7 @@ func TestRelay_ResetsClaimedEntriesOnShutdown(t *testing.T) {
 	// And the store rows must be back to pending, not stranded in processing.
 	store.fakeStore.mu.Lock()
 	defer store.fakeStore.mu.Unlock()
-	for _, e := range store.fakeStore.entries {
+	for _, e := range store.entries {
 		assert.NotEqual(t, outbox.StatusProcessing, e.Status,
 			"no row may remain in processing after shutdown reset")
 	}

@@ -271,14 +271,15 @@ func (s *CursorSigner) Close() error {
 // so distinct (context, payload) pairs can never alias each other (e.g.
 // context "ab"+payload "c" must not collide with context "a"+payload "bc").
 func (s *CursorSigner) writeMACInput(mac interface{ Write([]byte) (int, error) }, payload []byte) {
+	// hash.Hash.Write is documented never to return an error.
 	if s.context != "" {
 		var lenPrefix [8]byte
 		ctx := []byte(s.context)
 		binary.BigEndian.PutUint64(lenPrefix[:], uint64(len(ctx)))
-		mac.Write(lenPrefix[:])
-		mac.Write(ctx)
+		_, _ = mac.Write(lenPrefix[:])
+		_, _ = mac.Write(ctx)
 	}
-	mac.Write(payload)
+	_, _ = mac.Write(payload)
 }
 
 // Encode signs the raw cursor payload (typically a UUID or other PK string).

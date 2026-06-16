@@ -61,7 +61,7 @@ func TestDefault_WithCompress_CompressesEligibleResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("response body is not valid gzip: %v", err)
 	}
-	defer gr.Close()
+	defer func() { _ = gr.Close() }()
 	decoded, err := io.ReadAll(gr)
 	if err != nil {
 		t.Fatalf("reading gzip body: %v", err)

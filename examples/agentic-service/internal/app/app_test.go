@@ -380,7 +380,7 @@ func TestServe_DrainsInFlightRequestBeforeReturning(t *testing.T) {
 			clientErr = e
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		clientStatus = resp.StatusCode
 		b, _ := io.ReadAll(resp.Body)
 		clientBody = string(b)
