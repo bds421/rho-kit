@@ -16,7 +16,8 @@
 //	    Run()
 //
 // The bridge keeps the runtime/v2/eventbus import out of services
-// that don't register one — consistent with waves 88-98.
+// that don't register one — matching the lazy-adapter convention of
+// the other app/* bridge modules.
 package eventbus
 
 import (

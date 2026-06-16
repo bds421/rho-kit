@@ -41,17 +41,31 @@ mkdir -p "$log_dir"
 log_file="$log_dir/${timestamp}-v2-release-rehearsal.log"
 
 tmpdir="$(mktemp -d)"
+
+# Tee all output to the canonical rehearsal log. A bare
+# `exec > >(tee ...)` can have the script (and its EXIT trap) finish
+# before tee flushes its final buffer, truncating the log — even on a
+# successful run — and the tee subprocess is never reaped. Capture tee's
+# PID and wait for it in the cleanup trap so the on-disk log always
+# contains the full run, including the trailing "Rehearsal passed."
+exec > >(tee "$log_file"); tee_pid=$!
+exec 2>&1
+
 cleanup() {
+  # Close the fds feeding tee and wait for it to drain before we touch
+  # tmpdir, so the log is complete regardless of how we exit.
+  exec 1>&- 2>&-
+  if [[ -n "${tee_pid:-}" ]]; then
+    wait "$tee_pid" 2>/dev/null || true
+  fi
   if [[ "$KEEP" == "1" ]]; then
-    echo "Keeping rehearsal temp directory: $tmpdir"
+    echo "Keeping rehearsal temp directory: $tmpdir" >&2
   else
     chmod -R u+w "$tmpdir" 2>/dev/null || true
     rm -rf "$tmpdir"
   fi
 }
 trap cleanup EXIT
-
-exec > >(tee "$log_file") 2>&1
 
 echo "rho-kit v2 release rehearsal"
 echo "version: $VERSION"
@@ -151,7 +165,18 @@ for level in $(seq 0 "$max_level"); do
     # v2.0.x where x > 0, requires currently point at the previous
     # version and need to be bumped now that previous-level tags for
     # $VERSION are on origin.
-    internal_deps=$(grep -hoE 'github\.com/bds421/rho-kit/[^[:space:]]+' "$dir/go.mod" | sort -u || true)
+    # Enumerate only DIRECT require paths from the go.mod require blocks.
+    # A raw grep over the whole file would also match the `module` line,
+    # `// indirect` requires, and replace targets — none of which should
+    # be -require'd here.
+    internal_deps=$(
+      awk '
+        /^require[[:space:]]*\(/ { inreq=1; next }
+        inreq && /^[[:space:]]*\)/ { inreq=0; next }
+        inreq && $1 ~ /^github\.com\/bds421\/rho-kit\// && $0 !~ /\/\/[[:space:]]*indirect/ { print $1; next }
+        /^require[[:space:]]+github\.com\/bds421\/rho-kit\// && $0 !~ /\/\/[[:space:]]*indirect/ { print $2 }
+      ' "$dir/go.mod" | sort -u || true
+    )
     for dep in $internal_deps; do
       (cd "$dir" && GOWORK=off go mod edit -require="${dep}@${VERSION}") 2>/dev/null || true
     done
@@ -216,9 +241,39 @@ go get \
   github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2@"$VERSION"
 go mod tidy
 go test ./...
-version_re="$(echo "$VERSION" | sed 's/\./\\./g')"
-go list -m all | grep -E "github.com/bds421/rho-kit/.+/v2 ${version_re}"
-grep -E "github.com/bds421/rho-kit/.+ ${version_re}" go.sum
+
+# End-state verification. The version regex is anchored so v2.0.1 does
+# NOT also accept v2.0.10 / v2.0.1-rc, and we assert that EVERY internal
+# rho-kit module in the resolved graph is at exactly $VERSION — not just
+# that at least one matching line exists. A single module left at the
+# previous version must fail the rehearsal.
+version_re="$(printf '%s' "$VERSION" | sed 's/[.]/\\./g')"
+
+# Collect "<module> <version>" for every internal module (strip any
+# "=> replacement" suffix that go list may append).
+internal_resolved="$(
+  go list -m all |
+    awk '$1 ~ /^github\.com\/bds421\/rho-kit\// { print $1, $2 }'
+)"
+if [[ -z "$internal_resolved" ]]; then
+  echo "ERROR: rehearsal verify found no internal rho-kit modules in the consumer graph." >&2
+  exit 1
+fi
+
+# Any internal module NOT at exactly $VERSION is a failure.
+mismatched="$(printf '%s\n' "$internal_resolved" | grep -vE " ${version_re}\$" || true)"
+if [[ -n "$mismatched" ]]; then
+  echo "ERROR: internal modules not resolved to ${VERSION}:" >&2
+  printf '%s\n' "$mismatched" >&2
+  exit 1
+fi
+echo "OK: all internal modules resolved to ${VERSION}:"
+printf '%s\n' "$internal_resolved"
+
+# go.sum must contain an anchored entry at $VERSION for each internal
+# module (the .+ guard ensures we match a submodule path, and the
+# trailing context (' '|/go.mod) keeps the version anchored).
+grep -E "github.com/bds421/rho-kit/.+ ${version_re}( |/go\.mod )" go.sum
 
 echo
 echo "==> Verify command installs"

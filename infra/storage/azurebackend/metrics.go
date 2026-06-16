@@ -54,7 +54,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Help:      "Duration of Azure Blob Storage operations.",
 				Buckets:   []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 			},
-			[]string{"instance", "operation"},
+			[]string{"storage_instance", "operation"},
 		),
 		opErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -63,7 +63,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "operation_errors_total",
 				Help:      "Total Azure Blob Storage operation errors.",
 			},
-			[]string{"instance", "operation"},
+			[]string{"storage_instance", "operation"},
 		),
 	}
 

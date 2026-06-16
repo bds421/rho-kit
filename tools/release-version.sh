@@ -51,6 +51,16 @@ export GOPRIVATE='github.com/bds421/*'
 export GONOPROXY='github.com/bds421/*'
 export GONOSUMDB='github.com/bds421/*'
 
+echo "==> Preflight: verify origin/main has not advanced past HEAD"
+# A concurrent push to origin/main would make `git push origin main` below
+# reject mid-run, after earlier levels' tags are already on origin, leaving a
+# half-released state. Fail loudly up front instead.
+git fetch -q origin main
+if ! git merge-base --is-ancestor origin/main HEAD; then
+  echo "ERROR: origin/main is not an ancestor of HEAD; fetch/rebase before releasing." >&2
+  exit 1
+fi
+
 echo "==> Compute release plan for $VERSION"
 RELEASE_MODE=all RELEASE_FORMAT=tsv RELEASE_VERSION="$VERSION" make release-plan > "$PLAN"
 max_level=$(awk -F'\t' 'NR>1 && $1>max {max=$1} END{print max+0}' "$PLAN")
@@ -61,32 +71,63 @@ for level in $(seq 0 "$max_level"); do
   echo "==> Level $level"
   level_dirs=$(awk -F'\t' -v l="$level" 'NR>1 && $1==l {print $2}' "$PLAN")
   level_tags=$(awk -F'\t' -v l="$level" 'NR>1 && $1==l {print $4}' "$PLAN")
-  count=$(echo "$level_dirs" | grep -c .)
+  count=$(printf '%s\n' "$level_dirs" | grep -c . || true)
   echo "modules: $count"
 
+  tidy_failed=0
   while IFS= read -r dir; do
     [ -z "$dir" ] && continue
-    # Bump every already-required internal kit module to $VERSION
-    # before tidy. For v2.0.0 (first release) this was a no-op
-    # because go.mod requires were pre-set. For v2.0.x where x > 0,
-    # requires currently point at v2.0.(x-1) and need to be bumped
-    # now that previous-level tags for $VERSION are on origin.
-    internal_deps=$(grep -hoE 'github\.com/bds421/rho-kit/[^[:space:]]+' "$dir/go.mod" | sort -u || true)
+    # Bump every already-required DIRECT internal kit module to
+    # $VERSION before tidy. For v2.0.0 (first release) this was a
+    # no-op because go.mod requires were pre-set. For v2.0.x where
+    # x > 0, requires currently point at v2.0.(x-1) and need to be
+    # bumped now that previous-level tags for $VERSION are on origin.
+    #
+    # Enumerate only DIRECT require paths by parsing the go.mod require
+    # blocks. A raw `grep` over the whole file would also match the
+    # `module` line, `// indirect` requires, and replace targets — none
+    # of which should be -require'd here.
+    internal_deps=$(
+      awk '
+        /^require[[:space:]]*\(/ { inreq=1; next }
+        inreq && /^[[:space:]]*\)/ { inreq=0; next }
+        inreq && $1 ~ /^github\.com\/bds421\/rho-kit\// && $0 !~ /\/\/[[:space:]]*indirect/ { print $1; next }
+        /^require[[:space:]]+github\.com\/bds421\/rho-kit\// && $0 !~ /\/\/[[:space:]]*indirect/ { print $2 }
+      ' "$dir/go.mod" | sort -u || true
+    )
     for dep in $internal_deps; do
       (cd "$dir" && GOWORK=off go mod edit -require="${dep}@${VERSION}") 2>/dev/null || true
     done
-    (cd "$dir" && GOWORK=off go mod tidy) >/dev/null 2>&1 || echo "  (tidy issue in $dir)"
+    if ! (cd "$dir" && GOWORK=off go mod tidy) >/dev/null 2>&1; then
+      echo "  ERROR: go mod tidy failed in $dir" >&2
+      tidy_failed=1
+    fi
   done <<< "$level_dirs"
 
-  # Stage and commit if any go.mod/go.sum changed
+  if [ "$tidy_failed" -ne 0 ]; then
+    echo "ERROR: aborting release before tagging level $level — at least one" >&2
+    echo "module's go mod tidy failed; its go.sum/require set would be wrong." >&2
+    exit 1
+  fi
+
+  # Stage and commit if any go.mod/go.sum changed. go.sum may be absent
+  # (zero-dep / internal-only modules), so stage the two files
+  # independently — a missing go.sum must not make git drop the go.mod
+  # bump from the release commit (combined pathspecs stage atomically).
   while IFS= read -r dir; do
     [ -z "$dir" ] && continue
-    git add -A "$dir/go.mod" "$dir/go.sum" 2>/dev/null || true
+    git add -A "$dir/go.mod"
+    git add -A "$dir/go.sum" 2>/dev/null || true
   done <<< "$level_dirs"
 
   if ! git diff --cached --quiet; then
     git commit -q -m "release: prepare $VERSION module level $level"
-    git push origin main
+    # --force-with-lease only succeeds if origin/main is still at the
+    # remote-tracking ref this run last fetched; if another push raced
+    # in, fail loudly here rather than silently overwriting it. (The
+    # commits are fast-forward over HEAD's ancestor anyway; the lease is
+    # purely a concurrent-writer guard.)
+    git push --force-with-lease=refs/heads/main:"$(git rev-parse origin/main)" origin main
   fi
 
   commit=$(git rev-parse HEAD)
@@ -95,9 +136,16 @@ for level in $(seq 0 "$max_level"); do
     git tag -a "$tag" -m "rho-kit $tag" "$commit"
   done <<< "$level_tags"
 
-  tags_args=$(echo "$level_tags" | grep . | tr '\n' ' ')
-  git push --atomic origin $tags_args
-  echo "  pushed $count tags at $commit"
+  # `grep .` exits 1 on an empty level, which would abort the whole run
+  # under set -e (after earlier levels' tags are already on origin); guard
+  # with `|| true`. An empty tag list is then skipped explicitly.
+  tags_args=$(printf '%s\n' "$level_tags" | grep . | tr '\n' ' ' || true)
+  if [ -n "$tags_args" ]; then
+    git push --atomic origin $tags_args
+    echo "  pushed $count tags at $commit"
+  else
+    echo "  no tags for level $level"
+  fi
 done
 
 echo ""

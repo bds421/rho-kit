@@ -249,6 +249,41 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeleteTerminalBefore prunes terminal (completed / failed) saga
+// instances whose updated_at is older than before, returning the number
+// of rows removed. It is the retention sweep for this store: the
+// executor leaves completed and failed instances in place (each carries
+// input + per-step JSONB results), so without a periodic prune the table
+// grows unbounded. Run it from a scheduled job — mirrors
+// outbox.DeletePublishedBefore / DeleteFailedBefore and
+// idempotency.DeleteExpired.
+//
+// Only terminal states are touched, so an in-flight (pending / running /
+// compensating) instance is never collected even if its updated_at is
+// stale; ResetStaleProcessing-style recovery via ListResumable stays
+// intact. The partial index idx_saga_instances_terminal keeps the sweep
+// O(rows-to-delete). Not part of [saga.StateStore]: it is a
+// backend-specific extension, like the outbox store's prune methods, so
+// adding it does not force the in-memory backend to implement retention.
+func (s *Store) DeleteTerminalBefore(ctx context.Context, before time.Time) (int64, error) {
+	if err := s.ready(); err != nil {
+		return 0, err
+	}
+	query := fmt.Sprintf(
+		`DELETE FROM %s WHERE state IN ('completed', 'failed') AND updated_at < $1`,
+		s.table,
+	)
+	res, err := s.db.ExecContext(ctx, query, before.UTC())
+	if err != nil {
+		return 0, redact.WrapError("pgstore: DeleteTerminalBefore", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, redact.WrapError("pgstore: DeleteTerminalBefore rows", err)
+	}
+	return n, nil
+}
+
 // scannable is the minimal contract both *sql.Row and *sql.Rows
 // satisfy so scanRow handles both.
 type scannable interface {

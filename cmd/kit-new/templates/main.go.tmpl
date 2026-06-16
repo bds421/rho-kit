@@ -21,6 +21,6 @@ var version = ""
 
 func main() {
 	app.Main("{{.ServiceName}}", version, func(logger *slog.Logger) error {
-		return svcapp.Run(logger)
+		return svcapp.Run(logger, version)
 	})
 }

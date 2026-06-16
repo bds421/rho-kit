@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   GOTOOLCHAIN: local
   GOWORK: ${{ github.workspace }}/go.work
@@ -27,6 +31,7 @@ jobs:
   readiness:
     name: Validate v2 readiness
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-candidate')
     steps:
       - uses: actions/checkout@v6

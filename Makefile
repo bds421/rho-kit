@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-integration test-cover build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-tidy bench check-bench-regression update-bench-baseline
+.PHONY: lint vulncheck test test-race test-integration test-cover build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-tidy check-release-team bench check-bench-regression update-bench-baseline
 
 GOLANGCI_LINT_VERSION := v2.10.1
 GOVULNCHECK_VERSION  ?= v1.1.4
@@ -92,7 +92,7 @@ clean:
 	go clean -cache -testcache
 
 ## ci: Run the full CI pipeline locally (lint + test + build + supply-chain checks)
-ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-tidy check-doc-rot lint test-race build
+ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-tidy check-doc-rot check-dashboard-metrics check-dashboard-labels lint test-race build
 
 ## kit-doctor: Run strict critical kit-doctor checks against this repository
 kit-doctor:
@@ -191,7 +191,7 @@ release-bin:
 		CGO_ENABLED=0 \
 		go build \
 			-trimpath \
-			-ldflags="-s -w -buildid= -X main.commit=$$(git rev-parse HEAD) -X main.date=$$(git log -1 --format=%cI)" \
+			-ldflags="-s -w -buildid=" \
 			-o ../../dist/cmd/$(BIN)/$(BIN) \
 			.
 	@echo "built dist/cmd/$(BIN)/$(BIN)"

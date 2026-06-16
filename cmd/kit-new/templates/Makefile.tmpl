@@ -1,4 +1,20 @@
-.PHONY: build test lint vet doctor{{if .Postgres}} sqlc migrate{{end}}{{if .MCP}} mcp-smoke{{end}}
+# Tool versions. Pinned so CI is reproducible and a new upstream
+# release can't silently change `make lint`/`make doctor` results.
+# Override on the command line to upgrade, e.g. `make lint GOLANGCI_LINT_VERSION=v2.11.0`.
+GOLANGCI_LINT_VERSION := v2.10.1
+# KIT_VERSION pins the rho-kit CLI tools (kit-doctor{{if .Postgres}}, kit-migrate{{end}}).
+{{- if .RhoVersion}} Defaults to the
+# rho-kit module version this service was scaffolded against.
+KIT_VERSION := {{.RhoVersion}}
+{{- else}} Set to a tagged
+# release (e.g. v2.0.0) for reproducible runs; defaults to latest until pinned.
+KIT_VERSION ?= latest
+{{- end}}
+{{- if .Postgres}}
+SQLC_VERSION := v1.27.0
+{{- end}}
+
+.PHONY: build test lint fmt vet doctor{{if .Postgres}} sqlc migrate{{end}}{{if .MCP}} mcp-smoke{{end}}
 
 build:
 	go build ./...
@@ -6,25 +22,35 @@ build:
 test:
 	go test -race -timeout=5m ./...
 
+# lint is check-only so CI fails on style/format drift. golangci-lint
+# mirrors the rho-kit repo's own linter; gofmt -l reports (without
+# rewriting) any file that is not gofmt-clean. Run `make fmt` to fix.
 lint:
-	go fmt ./...
+	@gofmt_out="$$(gofmt -l .)"; if [ -n "$$gofmt_out" ]; then \
+		echo "gofmt needs to run on:"; echo "$$gofmt_out"; exit 1; fi
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout=5m
 	go vet ./...
+
+# fmt rewrites files in place; kept separate from lint so CI never
+# masks drift by mutating the tree.
+fmt:
+	gofmt -w .
 
 vet:
 	go vet ./...
 
 doctor:
-	go run github.com/bds421/rho-kit/cmd/kit-doctor/v2@latest .
+	go run github.com/bds421/rho-kit/cmd/kit-doctor/v2@$(KIT_VERSION) .
 {{if .Postgres}}
 # sqlc regenerates db/sqlc/*.go from the .sql files in db/queries/.
 # The generated code is checked in so CI doesn't need sqlc installed.
 sqlc:
-	go run github.com/sqlc-dev/sqlc/cmd/sqlc@latest generate
+	go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION) generate
 
 # migrate publishes the kit's bundled migrations (idempotency, etc.)
 # into db/migrations/ so goose can run them alongside your own.
 migrate:
-	go run github.com/bds421/rho-kit/cmd/kit-migrate/v2@latest publish --to=./db/migrations
+	go run github.com/bds421/rho-kit/cmd/kit-migrate/v2@$(KIT_VERSION) publish --to=./db/migrations
 {{end}}{{if .MCP}}
 # mcp-smoke POSTs a JSON-RPC tools/list call against a locally-running
 # service. Start the service in another terminal first:

@@ -21,13 +21,13 @@ type PoolStatsCollector struct {
 	pool     *pgxpool.Pool
 	instance string
 
-	acquiredConns           *prometheus.Desc
-	totalConns              *prometheus.Desc
-	idleConns               *prometheus.Desc
-	maxConns                *prometheus.Desc
-	acquireWaitSeconds      *prometheus.Desc
-	acquireCount            *prometheus.Desc
-	canceledAcquireCount    *prometheus.Desc
+	acquiredConns        *prometheus.Desc
+	totalConns           *prometheus.Desc
+	idleConns            *prometheus.Desc
+	maxConns             *prometheus.Desc
+	acquireWaitSeconds   *prometheus.Desc
+	acquireCount         *prometheus.Desc
+	canceledAcquireCount *prometheus.Desc
 }
 
 // MetricsOption configures [NewPoolStatsCollector]. Standardised
@@ -77,7 +77,7 @@ func NewPoolStatsCollector(p *pgxpool.Pool, instance string, opts ...MetricsOpti
 	}
 	reg := cfg.registerer
 
-	labels := prometheus.Labels{"instance": instance}
+	labels := prometheus.Labels{"pgx_instance": instance}
 	c := &PoolStatsCollector{
 		pool:     p,
 		instance: instance,

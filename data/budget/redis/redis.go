@@ -3,10 +3,11 @@
 //
 // State per (key, period bucket) is a single integer counter:
 // `<prefix>:<key>:<period-id>`. Every Consume call is one atomic
-// Lua script — read counter, optimistically INCRBY, on overflow
-// DECRBY and reject — so multi-replica races never overspend the
-// cap. The TTL on each bucket key is `period + grace` so stale
-// buckets evict on their own without a sweep job.
+// Lua script — read the counter, check headroom against the cap,
+// then INCRBY only when the charge fits (rejecting otherwise) — so
+// multi-replica races never overspend the cap. The TTL on each
+// bucket key is `period + grace` so stale buckets evict on their
+// own without a sweep job.
 //
 // Use this when:
 //
@@ -51,14 +52,15 @@ import (
 //	ARGV[1] = amount to charge (>=0)
 //	ARGV[2] = cap
 //	ARGV[3] = key TTL in seconds (>=1)
-//	ARGV[4] = retry-after milliseconds (time until next period)
 //
 // Returns: {allowed (0|1), remaining int}.
 //
-// The optimistic INCRBY then conditional DECRBY pattern is the
-// canonical "atomic test-and-set against a cap" idiom in Redis Lua:
-// it tolerates dozens of concurrent script invocations against the
-// same key with no extra synchronisation in the application.
+// The pre-check-then-INCRBY pattern is the canonical "atomic
+// test-and-set against a cap" idiom in Redis Lua: the script compares
+// available headroom before incrementing and only charges when the
+// amount fits, so it tolerates dozens of concurrent script invocations
+// against the same key with no extra synchronisation in the
+// application and without ever overshooting the cap.
 var budgetScript = goredis.NewScript(`
 local amount = tonumber(ARGV[1])
 local cap    = tonumber(ARGV[2])

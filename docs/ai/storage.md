@@ -22,8 +22,9 @@ Use the `infra/storage` package whenever a service needs to store, retrieve, or 
 | Unit tests | `membackend` |
 
 S3, GCS, Azure Blob Storage, and SFTP backends expose matching Prometheus
-operation-duration and operation-error metrics with `instance` and `operation`
-labels. Use `WithRegisterer(reg)` for test isolation or custom registries; the
+operation-duration and operation-error metrics with `storage_instance` and
+`operation` labels. (`storage_instance` avoids colliding with Prometheus's
+reserved `instance` scrape-target label.) Use `WithRegisterer(reg)` for test isolation or custom registries; the
 production dashboards live under `observability/dashboards/grafana/` as the
 storage overview plus one provider dashboard per backend.
 

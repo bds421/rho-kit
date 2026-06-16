@@ -70,7 +70,7 @@ git ls-files -co --exclude-standard -- '*go.mod' |
             }
         ' "$gomod"
     done |
-    awk -F '\t' -v internal="$INTERNAL_PREFIX" '$1 !~ "^" internal { print }' |
+    awk -F '\t' -v internal="$INTERNAL_PREFIX" 'index($1, internal) != 1 { print }' |
     sort -u > "$raw_actual"
 
 cut -f1 "$raw_actual" | sort -u > "$actual"

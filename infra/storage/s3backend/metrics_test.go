@@ -35,8 +35,8 @@ func TestMetricsContract(t *testing.T) {
 	metrics.observeOp("assets", "put", start, nil)
 	metrics.observeOp("assets", "get", start, errors.New("boom"))
 
-	assertMetricLabels(t, reg, "storage_s3_operation_duration_seconds", []string{"instance", "operation"})
-	assertMetricLabels(t, reg, "storage_s3_operation_errors_total", []string{"instance", "operation"})
+	assertMetricLabels(t, reg, "storage_s3_operation_duration_seconds", []string{"operation", "storage_instance"})
+	assertMetricLabels(t, reg, "storage_s3_operation_errors_total", []string{"operation", "storage_instance"})
 
 	if got := testutil.ToFloat64(metrics.opErrors.WithLabelValues("assets", "get")); got != 1 {
 		t.Fatalf("get errors = %v, want 1", got)

@@ -287,15 +287,21 @@ func (h dynamicDefaultHandler) WithGroup(string) slog.Handler { return h }
 // NewServer (a common init ordering) still redirects connection-level errors
 // to the new default handler instead of pinning the bootstrap one.
 //
-// The returned server has HTTP/2 hardening installed via
-// [http2.ConfigureServer] with [defaultHTTP2MaxReadFrameSize] and
-// [defaultHTTP2MaxConcurrentStreams] applied. Pinning these explicitly
-// matters because the `net/http2` defaults are renegotiable by the peer
-// (frame size) or large (concurrent streams) and would otherwise let a
-// single TCP peer pin server memory and goroutines well above the
-// THREAT_MODEL.md §4.2 G-03 streaming-flood budget. Operators who need
-// to raise these limits should compose a custom server rather than
-// silently undoing the pin.
+// When a TLS config is set (via [WithTLSConfig]), the returned server
+// has HTTP/2 hardening installed via [http2.ConfigureServer] with
+// [defaultHTTP2MaxReadFrameSize] and [defaultHTTP2MaxConcurrentStreams]
+// applied. Pinning these explicitly matters because the `net/http2`
+// defaults are renegotiable by the peer (frame size) or large
+// (concurrent streams) and would otherwise let a single TCP peer pin
+// server memory and goroutines well above the THREAT_MODEL.md §4.2
+// G-03 streaming-flood budget. Operators who need to raise these limits
+// should compose a custom server rather than silently undoing the pin.
+//
+// The hardening is gated on TLS because http2.ConfigureServer would
+// initialize TLSConfig on a plaintext server, breaking the
+// `srv.TLSConfig != nil` TLS-enabled probe. Plaintext h2c deployments
+// (e.g. behind a TLS-terminating load balancer) get no HTTP/2 pins from
+// NewServer and must configure http2.Server limits themselves.
 func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Server {
 	if addr == "" {
 		panic("httpx: NewServer requires a non-empty addr")

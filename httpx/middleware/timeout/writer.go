@@ -87,7 +87,7 @@ func (tw *timeoutWriter) WriteHeader(code int) {
 		return
 	}
 	if code < 100 || code > 999 {
-		panic("middleware/timeout: WriteHeader writer WriteHeader received invalid status code")
+		panic("middleware/timeout: WriteHeader received invalid status code")
 	}
 	// 1xx informational responses are not the final status; ignore them so a
 	// later WriteHeader/Write can still set the real status code.

@@ -106,7 +106,7 @@ func (k *KEK) AddKey(keyID string, masterKey []byte) error {
 }
 
 // Rotate makes keyID the active key. The keyID must already be
-// registered via [New] or [KEK.AddKey]. Subsequent Wrap calls embed
+// registered via [NewKEK] or [KEK.AddKey]. Subsequent Wrap calls embed
 // the new keyID; existing blobs continue to decrypt via the older key
 // until they are rewrapped. Returns [ErrKEKClosed] if the KEK has been
 // closed.

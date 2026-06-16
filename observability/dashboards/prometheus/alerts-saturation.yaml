@@ -92,18 +92,23 @@ groups:
           runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/outbox-backlog.md"
 
       - alert: RhoKitRedisPoolTimeouts
-        # The redis pool exposes a snapshot timeout counter as a gauge.
-        # An increase in the gauge value over 5 minutes means new
-        # timeouts happened in that window — the pool is undersized
-        # or the server is slow.
+        # The redis pool exposes a snapshot timeout counter as a gauge
+        # (redis_pool_timeouts = go-redis PoolStats().Timeouts, Set()
+        # on each scrape). It is NOT a Prometheus counter: on client
+        # recreation the snapshot resets to a low value. increase() is
+        # a counter function that does reset-extrapolation, so a reset
+        # would manufacture a phantom spike. delta() takes the plain
+        # end-minus-start difference: a genuine rise still trips the
+        # threshold, and a reset yields a negative delta that simply
+        # under-reports for one window instead of false-paging.
         expr: |
-          increase(redis_pool_timeouts[5m]) > 5
+          delta(redis_pool_timeouts[5m]) > 5
         for: 10m
         labels:
           severity: warn
           source: rho-kit
         annotations:
-          summary: "Redis pool timeouts for {{ $labels.namespace }}/{{ $labels.service }}/{{ $labels.instance }}"
+          summary: "Redis pool timeouts for {{ $labels.namespace }}/{{ $labels.service }}/{{ $labels.redis_instance }}"
           description: |
             More than 5 connection-pool timeouts in a 5-minute window for
             10+ minutes. Either PoolSize is too small, the Redis server is

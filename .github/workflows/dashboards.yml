@@ -23,22 +23,39 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     name: Validate dashboards and rules
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       PROM_VERSION: "2.55.1"
+      # SHA256 of prometheus-${PROM_VERSION}.linux-amd64.tar.gz, taken from the
+      # release's sha256sums.txt. Bump together with PROM_VERSION.
+      PROM_SHA256: "19700bdd42ec31ee162e4079ebda4cd0a44432df4daa637141bdbea4b1cd8927"
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.2"
+          cache-dependency-path: "**/go.sum"
+
       - name: Install promtool
         # promtool ships in the Prometheus tarball. We pull a
-        # pinned release rather than rely on apt's older version.
+        # pinned release rather than rely on apt's older version,
+        # and verify its published SHA256 before extracting so a
+        # compromised release asset or registry MITM cannot run an
+        # attacker-controlled binary as root in CI.
         run: |
           set -euo pipefail
           curl -fsSL -o /tmp/prometheus.tar.gz \
             "https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-amd64.tar.gz"
+          echo "${PROM_SHA256}  /tmp/prometheus.tar.gz" | sha256sum -c -
           tar -xzf /tmp/prometheus.tar.gz -C /tmp
           sudo mv "/tmp/prometheus-${PROM_VERSION}.linux-amd64/promtool" /usr/local/bin/promtool
           promtool --version
@@ -67,3 +84,14 @@ jobs:
             python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f"
             echo "ok: $f"
           done
+
+      - name: Check dashboard metric drift
+        # Fails if a dashboard/rule references a metric name no Go source
+        # emits, catching metric-rename drift that JSON/YAML syntax checks
+        # cannot see.
+        run: make check-dashboard-metrics
+
+      - name: Check dashboard label drift
+        # Fails if a dashboard label selector references a label not declared
+        # by the metric's Go NewXxxVec call.
+        run: make check-dashboard-labels

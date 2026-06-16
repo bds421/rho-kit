@@ -26,13 +26,13 @@ groups:
       - alert: RhoKitSLOFastBurn
         expr: |
           (
-            sum by (namespace, service) (rate(http_errors_total{status_class=~"5.."}[1h]))
+            sum by (namespace, service) (rate(http_errors_total{status_class="5xx"}[1h]))
               /
             sum by (namespace, service) (rate(http_requests_total[1h]))
           ) > (14.4 * 0.001)
           and
           (
-            sum by (namespace, service) (rate(http_errors_total{status_class=~"5.."}[5m]))
+            sum by (namespace, service) (rate(http_errors_total{status_class="5xx"}[5m]))
               /
             sum by (namespace, service) (rate(http_requests_total[5m]))
           ) > (14.4 * 0.001)
@@ -49,13 +49,13 @@ groups:
       - alert: RhoKitSLOSlowBurn
         expr: |
           (
-            sum by (namespace, service) (rate(http_errors_total{status_class=~"5.."}[6h]))
+            sum by (namespace, service) (rate(http_errors_total{status_class="5xx"}[6h]))
               /
             sum by (namespace, service) (rate(http_requests_total[6h]))
           ) > (6 * 0.001)
           and
           (
-            sum by (namespace, service) (rate(http_errors_total{status_class=~"5.."}[30m]))
+            sum by (namespace, service) (rate(http_errors_total{status_class="5xx"}[30m]))
               /
             sum by (namespace, service) (rate(http_requests_total[30m]))
           ) > (6 * 0.001)

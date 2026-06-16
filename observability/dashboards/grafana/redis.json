@@ -26,7 +26,7 @@
         "name": "instance",
         "type": "query",
         "datasource": "Prometheus",
-        "query": "label_values(redis_command_duration_seconds_count{namespace=\"$namespace\", service=\"$service\"}, instance)",
+        "query": "label_values(redis_command_duration_seconds_count{namespace=\"$namespace\", service=\"$service\"}, redis_instance)",
         "includeAll": true,
         "multi": true,
         "refresh": 2
@@ -40,7 +40,7 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum by (command) (rate(redis_command_duration_seconds_count{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (command) (rate(redis_command_duration_seconds_count{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"}[5m]))",
           "legendFormat": "{{command}}"
         }
       ],
@@ -52,7 +52,7 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum by (command) (rate(redis_command_errors_total{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (command) (rate(redis_command_errors_total{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"}[5m]))",
           "legendFormat": "{{command}}"
         }
       ],
@@ -64,15 +64,15 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(redis_command_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(redis_command_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"}[5m])))",
           "legendFormat": "p50"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(redis_command_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(redis_command_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"}[5m])))",
           "legendFormat": "p95"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(redis_command_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(redis_command_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"}[5m])))",
           "legendFormat": "p99"
         }
       ],
@@ -85,8 +85,8 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "redis_connection_healthy{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}",
-          "legendFormat": "{{instance}}"
+          "expr": "redis_connection_healthy{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"}",
+          "legendFormat": "{{redis_instance}}"
         }
       ],
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
@@ -97,16 +97,16 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum by (instance) (redis_pool_total_conns{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} total"
+          "expr": "sum by (redis_instance) (redis_pool_total_conns{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"})",
+          "legendFormat": "{{redis_instance}} total"
         },
         {
-          "expr": "sum by (instance) (redis_pool_idle_conns{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} idle"
+          "expr": "sum by (redis_instance) (redis_pool_idle_conns{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"})",
+          "legendFormat": "{{redis_instance}} idle"
         },
         {
-          "expr": "sum by (instance) (redis_pool_stale_conns{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} stale"
+          "expr": "sum by (redis_instance) (redis_pool_stale_conns{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"})",
+          "legendFormat": "{{redis_instance}} stale"
         }
       ],
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }
@@ -117,16 +117,16 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum by (instance) (redis_pool_hits{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} hits"
+          "expr": "sum by (redis_instance) (redis_pool_hits{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"})",
+          "legendFormat": "{{redis_instance}} hits"
         },
         {
-          "expr": "sum by (instance) (redis_pool_misses{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} misses"
+          "expr": "sum by (redis_instance) (redis_pool_misses{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"})",
+          "legendFormat": "{{redis_instance}} misses"
         },
         {
-          "expr": "sum by (instance) (redis_pool_timeouts{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} timeouts"
+          "expr": "sum by (redis_instance) (redis_pool_timeouts{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"})",
+          "legendFormat": "{{redis_instance}} timeouts"
         }
       ],
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 }
@@ -137,12 +137,12 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum by (instance) (rate(redis_reconnect_attempts_total{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{instance}} attempts"
+          "expr": "sum by (redis_instance) (rate(redis_reconnect_attempts_total{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{redis_instance}} attempts"
         },
         {
-          "expr": "sum by (instance) (rate(redis_reconnect_successes_total{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{instance}} successes"
+          "expr": "sum by (redis_instance) (rate(redis_reconnect_successes_total{namespace=\"$namespace\", service=\"$service\", redis_instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{redis_instance}} successes"
         }
       ],
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 }

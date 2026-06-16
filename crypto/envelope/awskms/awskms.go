@@ -1,9 +1,10 @@
 // Package awskms implements [envelope.KEK] backed by AWS KMS. Wrap
 // calls KMS Encrypt with the configured KeyID; Unwrap calls Decrypt.
 // AWS KMS handles key rotation internally — the returned KeyId in
-// the Encrypt response is the version-qualified key ARN, which we
-// pass through to the envelope so Decrypt later targets the same
-// version.
+// the Encrypt response is the key ARN of the KMS key used (AWS KMS
+// does not expose per-version ARNs); KMS resolves the correct rotated
+// key material on Decrypt. We pass the ARN through to the envelope so
+// Decrypt later targets the same KMS key.
 //
 // The adapter assumes the caller has set up AWS credentials (env
 // vars, IRSA, EC2 role) and the KMS key has appropriate IAM grants:
@@ -134,7 +135,7 @@ func (k *KEK) KeyID() string {
 }
 
 // Wrap implements [envelope.KEK]. Calls KMS Encrypt and returns the
-// version-qualified KeyId for embedding in the envelope.
+// key ARN reported by KMS for embedding in the envelope.
 //
 // Errors from AWS KMS are routed through [classifyAWSError] so retryable
 // failures (Throttling, KMSInternalException) become

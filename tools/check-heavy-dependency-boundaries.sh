@@ -98,7 +98,6 @@ allowed_for_boundary_dep() {
         github.com/riverqueue/river|github.com/riverqueue/river/riverdriver/riverpgxv5|github.com/riverqueue/river/rivertype|github.com/bds421/rho-kit/data/queue/riverqueue/v2)
             case "$gomod" in
                 data/queue/riverqueue/go.mod|\
-                data/queue/riverqueue/integrationtest/go.mod|\
                 testing/integrationtest/go.mod)
                     return 0
                     ;;
@@ -110,7 +109,6 @@ allowed_for_boundary_dep() {
             case "$gomod" in
                 app/amqp/go.mod|\
                 infra/messaging/amqpbackend/go.mod|\
-                infra/messaging/amqpbackend/integrationtest/go.mod|\
                 testing/integrationtest/go.mod|\
                 testing/kittest/go.mod)
                     return 0
@@ -123,7 +121,6 @@ allowed_for_boundary_dep() {
             case "$gomod" in
                 app/nats/go.mod|\
                 infra/messaging/natsbackend/go.mod|\
-                infra/messaging/natsbackend/integrationtest/go.mod|\
                 testing/integrationtest/go.mod)
                     return 0
                     ;;
@@ -134,7 +131,6 @@ allowed_for_boundary_dep() {
         github.com/segmentio/kafka-go|github.com/bds421/rho-kit/infra/messaging/kafkabackend/v2)
             case "$gomod" in
                 infra/messaging/kafkabackend/go.mod|\
-                infra/messaging/kafkabackend/integrationtest/go.mod|\
                 testing/integrationtest/go.mod)
                     return 0
                     ;;
@@ -292,7 +288,6 @@ allowed_for_boundary_dep() {
         github.com/coder/websocket|github.com/bds421/rho-kit/httpx/websocket/v2)
             case "$gomod" in
                 httpx/websocket/go.mod|\
-                httpx/websocket/integrationtest/go.mod|\
                 testing/integrationtest/go.mod)
                     return 0
                     ;;

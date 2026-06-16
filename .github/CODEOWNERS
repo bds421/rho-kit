@@ -2,17 +2,20 @@
 # These owners must exist in the GitHub organization before branch
 # protection can require their review.
 
-docs/audit/SUPPLY_CHAIN.md @bds421/security
+docs/audit/README.md @bds421/security
 docs/audit/THREAT_MODEL.md @bds421/security
 docs/audit/dependency-allowlist.txt @bds421/security
-docs/release/ @bds421/security
 .github/workflows/ @bds421/security
+.github/CODEOWNERS @bds421/security
+.github/dependabot.yml @bds421/security
+go.work @bds421/security
+Makefile @bds421/security
 tools/check-direct-dependency-allowlist.sh @bds421/security
 tools/check-heavy-dependency-boundaries.sh @bds421/security
 tools/check-no-binaries.sh @bds421/security
 tools/check-publishable.sh @bds421/security
-tools/drop-internal-replaces.sh @bds421/security
 tools/plan-module-release.sh @bds421/security
+tools/release-version.sh @bds421/security
 tools/rehearse-v2-release.sh @bds421/security
 tools/check-release-team.sh @bds421/security
 

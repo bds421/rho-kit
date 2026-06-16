@@ -66,16 +66,16 @@ hit on the slow path).
 ## Related metrics / queries
 
 ```promql
-# Pool timeouts gained in last 5 minutes (per service / instance)
+# Pool timeouts gained in last 5 minutes (per service / redis_instance)
 increase(redis_pool_timeouts[5m])
 
 # Pool utilisation (1.0 = saturated)
-sum by (namespace, service, instance) (
+sum by (namespace, service, redis_instance) (
   redis_pool_total_conns
   - redis_pool_idle_conns
 )
 / clamp_min(
-    sum by (namespace, service, instance) (redis_pool_total_conns),
+    sum by (namespace, service, redis_instance) (redis_pool_total_conns),
     1
   )
 

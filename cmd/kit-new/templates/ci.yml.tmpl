@@ -4,12 +4,18 @@ on:
   push:
     branches: [main]
 
+# Drop the default read-write GITHUB_TOKEN to least privilege, matching
+# the rho-kit repo's own CI. CI only reads the checkout; no job needs
+# write scope.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26.2'
       - run: make lint

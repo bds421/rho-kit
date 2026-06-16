@@ -174,6 +174,12 @@ jobs:
           fatal = 0
           for f in called:
               osv = osvs.get(f.get("osv", ""), {})
+              # Findings without parseable severity metadata default to MEDIUM
+              # (fail-safe, not fail-open): with the default FAIL_LEVEL=HIGH
+              # they only warn, but if VULN_FAIL_LEVEL is lowered to MEDIUM/LOW
+              # an unscored called vuln is still surfaced as fatal rather than
+              # silently dropped to LOW. The classifier only ever escalates
+              # from this baseline via CVSS substrings or database_specific.
               sev = "MEDIUM"
               for affected in osv.get("affected", []):
                   for sv in affected.get("severity", []) or []:

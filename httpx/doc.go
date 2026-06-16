@@ -6,10 +6,12 @@
 //
 //   - [NewServer] returns an [http.Server] with production-grade timeouts
 //     (read/header/idle), a bounded MaxHeaderBytes, a slog-backed
-//     ErrorLog so connection-level errors land in structured logs, and
-//     HTTP/2 frame-size + concurrent-stream limits pinned via
-//     `http2.ConfigureServer` to bound per-peer goroutine and buffer
-//     footprints (THREAT_MODEL.md §4.2 G-03).
+//     ErrorLog so connection-level errors land in structured logs, and —
+//     when a TLS config is set via [WithTLSConfig] — HTTP/2 frame-size +
+//     concurrent-stream limits pinned via `http2.ConfigureServer` to
+//     bound per-peer goroutine and buffer footprints (THREAT_MODEL.md
+//     §4.2 G-03). Plaintext h2c deployments must pin these limits
+//     themselves.
 //   - [WithTLSConfig], [WithWriteTimeout], [WithErrorLog] configure the
 //     server without re-implementing the timeout matrix.
 //
