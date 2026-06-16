@@ -53,7 +53,6 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	apphttp "github.com/bds421/rho-kit/app/http/v2"
@@ -222,7 +221,7 @@ func (c *coordinator) runSaga(ctx context.Context, idemKey string, req OrderRequ
 
 	// Idempotency cache hit → return the cached state without
 	// re-running any step.
-	if cached, ok := c.lookupCache(idemKey); ok {
+	if cached, ok := c.lookupCache(ctx, idemKey); ok {
 		return cached, nil
 	}
 
@@ -234,12 +233,12 @@ func (c *coordinator) runSaga(ctx context.Context, idemKey string, req OrderRequ
 		// have a fix in place).
 		return state, err
 	}
-	c.storeCache(idemKey, state)
+	c.storeCache(ctx, idemKey, state)
 	c.completed.Store(req.OrderID, state)
 	return state, nil
 }
 
-func (c *coordinator) lookupCache(idemKey string) (*OrderState, bool) {
+func (c *coordinator) lookupCache(ctx context.Context, idemKey string) (*OrderState, bool) {
 	// MemoryStore stores raw bytes; we encode the OrderState as JSON
 	// so the cache contract matches the production redisstore/pgstore.
 	//
@@ -248,7 +247,7 @@ func (c *coordinator) lookupCache(idemKey string) (*OrderState, bool) {
 	// A cache HIT is `(resp != nil, false, nil)`; a cache MISS is
 	// `(nil, false, nil)`. This example does not use the fingerprint
 	// channel, so we ignore `ok` entirely and branch on `resp != nil`.
-	resp, _, err := c.store.Get(context.Background(), idemKey, nil)
+	resp, _, err := c.store.Get(ctx, idemKey, nil)
 	if err != nil || resp == nil {
 		return nil, false
 	}
@@ -259,18 +258,18 @@ func (c *coordinator) lookupCache(idemKey string) (*OrderState, bool) {
 	return &state, true
 }
 
-func (c *coordinator) storeCache(idemKey string, state *OrderState) {
+func (c *coordinator) storeCache(ctx context.Context, idemKey string, state *OrderState) {
 	body, err := json.Marshal(state)
 	if err != nil {
 		return
 	}
 	// TryLock returns (token, fingerprintMismatch, acquired, err).
 	// Cache the response only when we successfully acquired the lock.
-	token, _, acquired, err := c.store.TryLock(context.Background(), idemKey, nil, idempotencyTTL)
+	token, _, acquired, err := c.store.TryLock(ctx, idemKey, nil, idempotencyTTL)
 	if err != nil || !acquired {
 		return
 	}
-	_ = c.store.Set(context.Background(), idemKey, token, idem.CachedResponse{
+	_ = c.store.Set(ctx, idemKey, token, idem.CachedResponse{
 		StatusCode: http.StatusOK,
 		Body:       body,
 	}, idempotencyTTL)
@@ -423,15 +422,4 @@ func realCardCharge(_ context.Context, s *OrderState) error {
 func realShipmentDispatch(_ context.Context, s *OrderState) error {
 	s.ShipmentID = "shp_" + s.Request.OrderID
 	return nil
-}
-
-// failAtStep returns a step callable that fails on the Nth call
-// — used by the smoke test to drive compensation paths.
-type failOnce struct {
-	calls atomic.Int32
-}
-
-func (f *failOnce) fail(_ context.Context, _ *OrderState) error {
-	f.calls.Add(1)
-	return errors.New("synthetic step failure")
 }

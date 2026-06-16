@@ -185,9 +185,18 @@ func (m *Manager) Default() Storage {
 // Names returns all registered backend names in alphabetical order.
 // Note: the order differs from [Default], which returns the first-registered
 // backend. Do not assume Names()[0] is the default.
+//
+// After [Manager.Close] it returns nil: the backends are released, so
+// reporting names a caller can no longer resolve (Backend returns
+// [ErrManagerClosed]; Default/MustBackend panic) would misrepresent a
+// shut-down Manager as usable.
 func (m *Manager) Names() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
+	if m.closed {
+		return nil
+	}
 
 	names := make([]string, len(m.order))
 	copy(names, m.order)
@@ -196,9 +205,18 @@ func (m *Manager) Names() []string {
 }
 
 // Has reports whether a backend with the given name is registered.
+//
+// After [Manager.Close] it returns false for every name, mirroring [Names]:
+// a Has-then-MustBackend guard must not pass the check only to panic on the
+// now-released backend, which would defeat the diagnosable-race intent of
+// [ErrManagerClosed].
 func (m *Manager) Has(name string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
+	if m.closed {
+		return false
+	}
 
 	_, ok := m.backends[name]
 	return ok

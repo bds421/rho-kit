@@ -73,8 +73,13 @@ const nonceLen = 16
 const MaxTokenLen = 256
 
 // sessionPrefixLen is the number of bytes of the session-ID hash
-// embedded in the token so [Issuer.Verify] can short-circuit on a
-// mismatched session before doing the HMAC compare.
+// embedded in the token. It is pure defense-in-depth: the HMAC already
+// binds the full length-prefixed session ID (see [computeMAC]), so a
+// token whose MAC verifies against a given session necessarily carries
+// the matching prefix. The prefix is therefore NOT the source of the
+// session-binding guarantee — it is a redundant cross-check that would
+// only ever diverge from the MAC under a SHA-256/HMAC collision. Future
+// readers must not treat it as load-bearing.
 const sessionPrefixLen = 8
 
 // Issuer signs and verifies CSRF tokens.
@@ -236,6 +241,11 @@ func (i *Issuer) Verify(t Token, sessionID string) error {
 	if !macOK {
 		return ErrTokenInvalid
 	}
+	// Defense-in-depth only. The MAC above already binds the full session
+	// ID, so for any token whose MAC verifies this prefix necessarily
+	// matches; ErrSessionMismatch is therefore unreachable for legitimately
+	// decoded tokens (it would require a SHA-256/HMAC collision). Kept as a
+	// belt-and-suspenders cross-check, not as the session-binding guarantee.
 	if !prefixOK {
 		return ErrSessionMismatch
 	}

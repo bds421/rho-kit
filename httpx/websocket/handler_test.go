@@ -285,6 +285,32 @@ func TestHandle_PanicsOnNilMetricsReg(t *testing.T) {
 	})
 }
 
+// TestHandle_PanicsOnPongTimeoutWithoutPingInterval guards the fail-fast
+// contract: a pong timeout is inert without a heartbeat, so configuring
+// it without WithPingInterval must surface as a startup panic rather
+// than being silently dropped.
+func TestHandle_PanicsOnPongTimeoutWithoutPingInterval(t *testing.T) {
+	assert.Panics(t, func() {
+		websocket.Handle(
+			websocket.WithHandler(func(context.Context, *websocket.Conn) error { return nil }),
+			websocket.WithPongTimeout(5*time.Second),
+		)
+	})
+}
+
+// TestHandle_PongTimeoutWithPingIntervalOK is the positive control: a
+// pong timeout paired with a ping interval is a valid configuration and
+// must not panic.
+func TestHandle_PongTimeoutWithPingIntervalOK(t *testing.T) {
+	assert.NotPanics(t, func() {
+		websocket.Handle(
+			websocket.WithHandler(func(context.Context, *websocket.Conn) error { return nil }),
+			websocket.WithPingInterval(10*time.Second),
+			websocket.WithPongTimeout(5*time.Second),
+		)
+	})
+}
+
 // TestHandle_Compression_Variants verifies both compression modes
 // successfully negotiate a working WebSocket. Detailed permessage-
 // deflate negotiation semantics belong in the upstream

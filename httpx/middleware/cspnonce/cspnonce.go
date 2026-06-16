@@ -16,9 +16,12 @@
 //	<script nonce="{{ .Nonce }}">…</script>
 //
 // The middleware injects 'nonce-<value>' into the script-src and
-// style-src directives of the configured base policy on every request,
-// and stores the raw nonce string in the request context for the
-// handler/templates to consume.
+// style-src directives (and their script-src-elem/style-src-elem
+// variants, when present) of the configured base policy on every
+// request, and stores the raw nonce string in the request context for
+// the handler/templates to consume. When script-src/style-src must be
+// created, it inherits the default-src source list so a stricter base
+// policy is not silently widened.
 //
 // asvs: V9.2.1, V14.4.1
 package cspnonce
@@ -59,9 +62,12 @@ type config struct {
 }
 
 // WithBasePolicy overrides the base CSP policy. The middleware augments
-// the script-src and style-src directives (creating them if absent) so
-// the per-request nonce is honoured. Other directives pass through
-// unchanged.
+// the script-src and style-src directives — and their
+// script-src-elem/style-src-elem variants when the base policy declares
+// them — so the per-request nonce is honoured. Absent script-src/style-src
+// are created, inheriting the default-src source list so a stricter base
+// policy (e.g. "default-src 'none'") is not silently widened. Other
+// directives pass through unchanged.
 //
 // Default: "default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'".
 func WithBasePolicy(policy string) Option {
@@ -143,10 +149,16 @@ func generateNonce() (string, error) {
 	return base64.RawStdEncoding.EncodeToString(buf), nil
 }
 
-// injectNonce splices `'nonce-<n>'` into the script-src and style-src
-// directives of policy. If a directive is absent, it is added with
-// 'self' as the source list plus the nonce. Other directives pass
-// through unchanged.
+// injectNonce splices `'nonce-<n>'` into the script-src/style-src and
+// their *-elem variants of policy. If script-src/style-src is absent,
+// it is added, inheriting the default-src source list (so a stricter
+// base policy such as "default-src 'none'" is not silently widened),
+// plus the nonce. Other directives pass through unchanged.
+//
+// The *-elem directives (script-src-elem/style-src-elem) take
+// precedence over script-src/style-src for element-level enforcement,
+// so the nonce is injected into them too when the base policy declares
+// them; otherwise nonced inline elements would stay blocked.
 //
 // The implementation is intentionally simple: split on ';', augment
 // the recognized directives, rejoin. Conformant CSP grammar — no
@@ -157,8 +169,10 @@ func injectNonce(policy, nonce string) string {
 	}
 	parts := strings.Split(policy, ";")
 	var (
-		hadScriptSrc bool
-		hadStyleSrc  bool
+		hadScriptSrc  bool
+		hadStyleSrc   bool
+		hadDefaultSrc bool
+		defaultSrc    string // inheritable source list of default-src
 	)
 	for i, raw := range parts {
 		d := strings.TrimSpace(raw)
@@ -167,21 +181,65 @@ func injectNonce(policy, nonce string) string {
 		}
 		name := directiveName(d)
 		switch strings.ToLower(name) {
-		case "script-src":
+		case "script-src", "script-src-elem":
 			parts[i] = " " + d + " 'nonce-" + nonce + "'"
-			hadScriptSrc = true
-		case "style-src":
+			if strings.EqualFold(name, "script-src") {
+				hadScriptSrc = true
+			}
+		case "style-src", "style-src-elem":
 			parts[i] = " " + d + " 'nonce-" + nonce + "'"
-			hadStyleSrc = true
+			if strings.EqualFold(name, "style-src") {
+				hadStyleSrc = true
+			}
+		case "default-src":
+			hadDefaultSrc = true
+			defaultSrc = inheritableSourceList(d)
 		}
 	}
 	if !hadScriptSrc {
-		parts = append(parts, " script-src 'self' 'nonce-"+nonce+"'")
+		parts = append(parts, " "+newNonceDirective("script-src", hadDefaultSrc, defaultSrc, nonce))
 	}
 	if !hadStyleSrc {
-		parts = append(parts, " style-src 'self' 'nonce-"+nonce+"'")
+		parts = append(parts, " "+newNonceDirective("style-src", hadDefaultSrc, defaultSrc, nonce))
 	}
 	return strings.TrimSpace(strings.Join(parts, ";"))
+}
+
+// inheritableSourceList returns the source list of a default-src
+// directive (the tokens after the directive name), suitable for
+// reuse on an inherited script-src/style-src. A bare 'none' yields the
+// empty string: 'none' is not composable with other sources, so the
+// inherited directive must carry only the nonce.
+func inheritableSourceList(defaultSrcDirective string) string {
+	fields := strings.Fields(defaultSrcDirective)
+	if len(fields) <= 1 {
+		return ""
+	}
+	sources := fields[1:]
+	if len(sources) == 1 && strings.EqualFold(sources[0], "'none'") {
+		return ""
+	}
+	return strings.Join(sources, " ")
+}
+
+// newNonceDirective builds a directive that did not exist in the base
+// policy, plus the per-request nonce. When default-src is present, the
+// new directive inherits its (composable) source list so the operator's
+// intent is preserved and a stricter policy is not widened — including
+// the case where default-src is 'none', which inherits an empty source
+// list (nonce-only). When no default-src was present at all, it falls
+// back to 'self' (the historical default).
+func newNonceDirective(name string, hadDefaultSrc bool, defaultSrc, nonce string) string {
+	nonceToken := "'nonce-" + nonce + "'"
+	switch {
+	case hadDefaultSrc && defaultSrc != "":
+		return name + " " + defaultSrc + " " + nonceToken
+	case hadDefaultSrc:
+		// default-src present but yields no composable source (e.g. 'none').
+		return name + " " + nonceToken
+	default:
+		return name + " 'self' " + nonceToken
+	}
 }
 
 func directiveName(d string) string {

@@ -3,7 +3,9 @@ package pgstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +115,64 @@ func TestStore_SetRejectsInvalidCachedResponseBeforeDBUse(t *testing.T) {
 	if !errors.Is(err, idempotency.ErrInvalidCachedResponse) {
 		t.Fatalf("Set invalid response = %v, want ErrInvalidCachedResponse", err)
 	}
+}
+
+// TestHeadersWithinBound_AdmitsMaximalValidHeaders guards the headers
+// size-gate (doGet) against false rejections: the derived
+// maxCachedHeadersBytes bound MUST be large enough that the JSON encoding of
+// the largest map ValidateCachedResponse accepts still passes the gate.
+// Otherwise the gate would reject legitimate cached responses, turning a
+// hardening fix into a correctness regression.
+func TestHeadersWithinBound_AdmitsMaximalValidHeaders(t *testing.T) {
+	headers := maximalValidHeaders()
+
+	// Sanity-check the fixture: it must be a response the contract accepts.
+	resp := idempotency.CachedResponse{StatusCode: 200, Headers: headers}
+	if err := idempotency.ValidateCachedResponse(resp); err != nil {
+		t.Fatalf("maximalValidHeaders is not a valid response: %v", err)
+	}
+
+	encoded, err := json.Marshal(headers)
+	if err != nil {
+		t.Fatalf("marshal headers: %v", err)
+	}
+	if !headersWithinBound(int64(len(encoded))) {
+		t.Fatalf("headersWithinBound(%d) = false for a maximal valid headers map; bound %d is too small and would reject legitimate rows",
+			len(encoded), maxCachedHeadersBytes)
+	}
+}
+
+// TestHeadersWithinBound_RejectsOversize ensures the gate actually fires:
+// a headers column one byte over the bound must be rejected, so a hostile
+// multi-MB headers blob is refused before it is materialised.
+func TestHeadersWithinBound_RejectsOversize(t *testing.T) {
+	if headersWithinBound(maxCachedHeadersBytes) != true {
+		t.Fatalf("headersWithinBound(bound) = false, want true (inclusive bound)")
+	}
+	if headersWithinBound(maxCachedHeadersBytes + 1) {
+		t.Fatal("headersWithinBound(bound+1) = true, want false")
+	}
+}
+
+// maximalValidHeaders builds the largest headers map ValidateCachedResponse
+// accepts: MaxCachedHeaders distinct names at the name-length cap, each with
+// MaxCachedHeaderValues values at the value-length cap. Used to prove the
+// size gate admits any legitimate row.
+func maximalValidHeaders() map[string][]string {
+	headers := make(map[string][]string, idempotency.MaxCachedHeaders)
+	value := strings.Repeat("v", idempotency.MaxCachedHeaderValueBytes)
+	for i := 0; i < idempotency.MaxCachedHeaders; i++ {
+		// Header names allow alphanumerics; pad a unique numeric suffix out
+		// to the name cap so each entry is at the maximum encoded size.
+		suffix := fmt.Sprintf("%d", i)
+		name := "h" + suffix + strings.Repeat("x", idempotency.MaxCachedHeaderNameBytes-1-len(suffix))
+		values := make([]string, idempotency.MaxCachedHeaderValues)
+		for j := range values {
+			values[j] = value
+		}
+		headers[name] = values
+	}
+	return headers
 }
 
 // TestIntervalSeconds_RoundsSubSecondUp guards the TTL precision fix:

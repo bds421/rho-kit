@@ -51,6 +51,12 @@ func (r websocketMissingMaxConnectionsRule) Run(fset *token.FileSet, file *ast.F
 		if !isPackageAliasCall(call, aliases, "Handle") {
 			return true
 		}
+		// Options spread from a slice (Handle(opts...)) cannot be
+		// inspected statically — stay silent rather than emit a false
+		// positive.
+		if callOptionsUnverifiable(call) {
+			return true
+		}
 		if callHasOption(call, "WithMaxConnections") {
 			return true
 		}

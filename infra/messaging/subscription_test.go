@@ -30,6 +30,7 @@ type fakeConsumer struct {
 	handlerErrs []error
 	mu          sync.Mutex
 	dispatched  []messaging.Delivery
+	handlerRets []error // error returned by the handler for each delivery, in order
 	called      atomic.Int32
 }
 
@@ -48,8 +49,12 @@ func (f *fakeConsumer) Consume(ctx context.Context, _ messaging.Binding, h messa
 		if i < len(f.handlerErrs) {
 			wantErr = f.handlerErrs[i]
 		}
-		if err := h(ctx, d); err != nil && wantErr == nil {
-			return err
+		ret := h(ctx, d)
+		f.mu.Lock()
+		f.handlerRets = append(f.handlerRets, ret)
+		f.mu.Unlock()
+		if ret != nil && wantErr == nil {
+			return ret
 		}
 	}
 	if f.consumeErr != nil {
@@ -57,6 +62,17 @@ func (f *fakeConsumer) Consume(ctx context.Context, _ messaging.Binding, h messa
 	}
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// lastHandlerRet returns the error returned by the most recent handler
+// invocation, plus whether any invocation occurred. Safe for concurrent use.
+func (f *fakeConsumer) lastHandlerRet() (error, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.handlerRets) == 0 {
+		return nil, false
+	}
+	return f.handlerRets[len(f.handlerRets)-1], true
 }
 
 func (f *fakeConsumer) ConsumeOnce(ctx context.Context, b messaging.Binding, h messaging.Handler) error {
@@ -227,12 +243,12 @@ func TestTypedSubscription_DecodeFailureSurfaces(t *testing.T) {
 		deliveries: []messaging.Delivery{
 			{Message: messaging.Message{Payload: []byte("not json")}},
 		},
-		handlerErrs: []error{errors.New("dummy")}, // tell fake to ignore handler err so Consume completes
+		handlerErrs: []error{errors.New("dummy")}, // ignore the wrapper err so Consume keeps running
 	}
 
-	called := false
+	var called atomic.Bool
 	h := func(_ context.Context, _ orderEvent, _ messaging.Delivery) error {
-		called = true
+		called.Store(true)
 		return nil
 	}
 
@@ -244,12 +260,22 @@ func TestTypedSubscription_DecodeFailureSurfaces(t *testing.T) {
 	defer cancel()
 	go func() { _ = sub.Start(ctx) }()
 
-	// Wait briefly for the bad delivery to be processed.
-	time.Sleep(150 * time.Millisecond)
-	cancel()
+	// Wait until the kit's wrapper has been invoked for the bad delivery
+	// (it records its return into handlerRets) — no sleeps, no races.
+	require.Eventually(t, func() bool {
+		_, ok := cons.lastHandlerRet()
+		return ok
+	}, 2*time.Second, 5*time.Millisecond, "kit wrapper was never invoked for the delivery")
 
-	assert.False(t, called,
+	assert.False(t, called.Load(),
 		"typed handler must NOT be called for un-decodable payloads — kit returns the decode error to the consumer for nack/dead-letter")
+
+	// The decode error must surface to the consumer (for nack/dead-letter),
+	// not be swallowed: the wrapper's return is a non-nil decode error.
+	ret, _ := cons.lastHandlerRet()
+	require.Error(t, ret, "decode failure must surface to the consumer as a non-nil error")
+	assert.Contains(t, ret.Error(), "decode",
+		"surfaced error must identify the decode failure stage")
 }
 
 func TestTypedSubscription_ValidationFailsForInvalidPayload(t *testing.T) {
@@ -260,9 +286,9 @@ func TestTypedSubscription_ValidationFailsForInvalidPayload(t *testing.T) {
 		handlerErrs: []error{errors.New("dummy")},
 	}
 
-	called := false
+	var called atomic.Bool
 	h := func(_ context.Context, _ orderEvent, _ messaging.Delivery) error {
-		called = true
+		called.Store(true)
 		return nil
 	}
 
@@ -273,11 +299,20 @@ func TestTypedSubscription_ValidationFailsForInvalidPayload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = sub.Start(ctx) }()
-	time.Sleep(150 * time.Millisecond)
-	cancel()
 
-	assert.False(t, called,
+	require.Eventually(t, func() bool {
+		_, ok := cons.lastHandlerRet()
+		return ok
+	}, 2*time.Second, 5*time.Millisecond, "kit wrapper was never invoked for the delivery")
+
+	assert.False(t, called.Load(),
 		"validation failure must prevent handler dispatch")
+
+	// The validation error must surface to the consumer, not be swallowed.
+	ret, _ := cons.lastHandlerRet()
+	require.Error(t, ret, "validation failure must surface to the consumer as a non-nil error")
+	assert.Contains(t, ret.Error(), "validate",
+		"surfaced error must identify the validation failure stage")
 }
 
 func TestTypedSubscription_WithoutValidation_BypassesSchemaCheck(t *testing.T) {

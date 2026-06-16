@@ -309,6 +309,32 @@ func TestMiddleware_CustomStatusCode(t *testing.T) {
 	}
 }
 
+func TestWithStatusCode_RejectsOutOfRange(t *testing.T) {
+	for _, code := range []int{0, -1, 99, 1000} {
+		t.Run("", func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatalf("WithStatusCode(%d) should panic at construction", code)
+				}
+			}()
+			Middleware(WithStatusCode(code))
+		})
+	}
+}
+
+func TestWithStatusCode_AcceptsInRange(t *testing.T) {
+	for _, code := range []int{100, 200, 418, 500, 599, 999} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("WithStatusCode(%d) should not panic, got: %v", code, r)
+				}
+			}()
+			Middleware(WithStatusCode(code))
+		}()
+	}
+}
+
 func TestMiddleware_NoPanicNoRecovery(t *testing.T) {
 	logger, buf := newCapturingLogger()
 	mw := Middleware(WithLogger(logger))

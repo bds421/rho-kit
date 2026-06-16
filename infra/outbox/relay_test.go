@@ -158,9 +158,14 @@ func TestRelay_RetriesOnPublishError(t *testing.T) {
 	}
 	require.NoError(t, writer.Write(ctx, params))
 
+	// maxAttempts=2: the first failure schedules a retry (NextRetryAt =
+	// now + retryBackoff(1) = now + 2s) and the second exhausts attempts and
+	// marks the entry failed. With the contract-faithful store gating the
+	// retry behind the backoff window, reaching StatusFailed takes one full
+	// backoff window, so the timeout below must exceed defaultBackoffBase.
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
-		outbox.WithMaxAttempts(3),
+		outbox.WithMaxAttempts(2),
 	)
 
 	relayCtx, cancel := context.WithCancel(context.Background())
@@ -176,7 +181,7 @@ func TestRelay_RetriesOnPublishError(t *testing.T) {
 			return false
 		}
 		return store.entries[0].Status == outbox.StatusFailed
-	}, 2*time.Second, 10*time.Millisecond)
+	}, 6*time.Second, 20*time.Millisecond)
 
 	cancel()
 	require.NoError(t, <-done)
@@ -356,7 +361,11 @@ func TestRelay_StoreErrorLogRedactsBackendError(t *testing.T) {
 }
 
 func TestRelay_Stop(t *testing.T) {
-	store := &fakeStore{}
+	// Use the start-signal store so we deterministically know the Start
+	// goroutine has begun polling before calling Stop. A bare time.Sleep
+	// could let Stop set stopped=true first on a loaded CI runner, making
+	// Start return "already stopped" and the test fail spuriously.
+	store := newStartSignalStore()
 	pub := &fakePublisher{}
 	logger := slog.Default()
 
@@ -369,7 +378,7 @@ func TestRelay_Stop(t *testing.T) {
 		done <- relay.Start(context.Background())
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	store.waitForFetch(t)
 
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer stopCancel()
@@ -433,7 +442,11 @@ func TestRelay_StartRejectsRestartAfterStop(t *testing.T) {
 
 	err := relay.Start(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "already started")
+	// A relay that ran and was stopped reports its actual terminal state on
+	// restart: "already stopped", not "already started". The latter would
+	// point operators at the wrong condition (a concurrent run that is not
+	// happening).
+	assert.Contains(t, err.Error(), "already stopped")
 }
 
 func TestRelay_StopRejectsNilContext(t *testing.T) {
@@ -770,8 +783,12 @@ func TestRelay_RecoverStaleProcessingEntries(t *testing.T) {
 // be reset to pending and double-published. The fix is heartbeating the
 // processing row + a configurable stale duration. This test wires both:
 //
-//   - staleDuration: 200ms (short enough for a unit test).
-//   - publish takes 600ms (3x stale duration) — without heartbeat, the
+//   - staleDuration: 1s. The heartbeat fires every staleDuration/3 ≈ 333ms,
+//     comfortably above minHeartbeatInterval (100ms) so it is NOT clamped to
+//     the floor. That gives a 3x margin between a heartbeat round-trip and
+//     the stale window, so a single delayed tick under -race on saturated CI
+//     cannot let the stale-recovery sweep fire mid-publish.
+//   - publish takes 3s (3x stale duration) — without heartbeat, the
 //     stale-recovery sweep would reset the row mid-flight.
 //   - We assert exactly one publish reached the publisher AND the row ends
 //     up in published state.
@@ -781,7 +798,7 @@ func TestRelay_LongPublishDoesNotDuplicate(t *testing.T) {
 	logger := slog.Default()
 	ctx := context.Background()
 
-	pub := &slowPublisher{delay: 600 * time.Millisecond}
+	pub := &slowPublisher{delay: 3 * time.Second}
 
 	require.NoError(t, writer.Write(ctx, outbox.WriteParams{
 		Topic: "t", RoutingKey: "rk", MessageID: "msg-1",
@@ -790,7 +807,7 @@ func TestRelay_LongPublishDoesNotDuplicate(t *testing.T) {
 
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
-		outbox.WithStaleDuration(200*time.Millisecond),
+		outbox.WithStaleDuration(1*time.Second),
 	)
 
 	relayCtx, cancel := context.WithCancel(context.Background())
@@ -801,11 +818,11 @@ func TestRelay_LongPublishDoesNotDuplicate(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return pub.count() >= 1
-	}, 5*time.Second, 20*time.Millisecond)
+	}, 10*time.Second, 20*time.Millisecond)
 
 	// Give the relay one extra stale window to expose any duplicate
 	// publish that an unguarded relay would issue.
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	cancel()
 	require.NoError(t, <-done)
@@ -993,9 +1010,15 @@ func TestRelay_RecoverAfterPublisherError(t *testing.T) {
 	// Clear error to let publish succeed.
 	pub.setErr(nil)
 
+	// The first failure schedules NextRetryAt = now + retryBackoff(1)
+	// (defaultBackoffBase = 2s). A contract-faithful store gates the retry
+	// until that window elapses, so the success poll cannot land sooner.
+	// Allow comfortably more than one backoff window so the test asserts
+	// "eventually recovers" deterministically rather than racing the 2s
+	// backoff boundary.
 	require.Eventually(t, func() bool {
 		return pub.count() >= 1
-	}, 2*time.Second, 10*time.Millisecond)
+	}, 6*time.Second, 20*time.Millisecond)
 
 	cancel()
 	require.NoError(t, <-done)

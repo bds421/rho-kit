@@ -96,6 +96,11 @@ func (m *cronModule) HealthChecks() []health.DependencyCheck { return nil }
 // ElectorProvider capability so app/cron stays independent of
 // app/leader. The lookup is optional — services that don't
 // register a leader module run cron unguarded.
+//
+// A foreign ElectorProvider whose Elector() returns a nil interface
+// is treated as absent: app/leader always returns a non-nil elector,
+// but a third-party module under the same name must not crash Init by
+// having the leader.IsLeader method value dereference a nil interface.
 func lookupElector(mc app.ModuleContext) (electorLike, bool) {
 	m := mc.LookupModule("leader-election")
 	if m == nil {
@@ -105,7 +110,11 @@ func lookupElector(mc app.ModuleContext) (electorLike, bool) {
 	if !ok {
 		return nil, false
 	}
-	return ep.Elector(), true
+	e := ep.Elector()
+	if e == nil {
+		return nil, false
+	}
+	return e, true
 }
 
 // electorLike is a tiny structural mirror over

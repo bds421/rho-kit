@@ -335,6 +335,48 @@ func TestProvider_CloseConcurrentSafe(t *testing.T) {
 	wg.Wait()
 }
 
+func TestProvider_CloseDoesNotFireSpuriousRefreshError(t *testing.T) {
+	pub, _ := mustGenKey(t)
+
+	var first atomic.Bool
+	first.Store(true)
+	refreshStarted := make(chan struct{}, 1)
+	var refreshErrors atomic.Int32
+
+	p, err := OpenProvider(context.Background(),
+		func(ctx context.Context) ([]ed25519.PublicKey, error) {
+			if first.CompareAndSwap(true, false) {
+				return []ed25519.PublicKey{pub}, nil
+			}
+			// Post-init refresh: announce we're in flight, then block
+			// until the context is cancelled (by Close) and surface the
+			// cancellation as the refresh error.
+			select {
+			case refreshStarted <- struct{}{}:
+			default:
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		5*time.Millisecond,
+		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
+		WithOnRefreshError(func(error) { refreshErrors.Add(1) }),
+	)
+	require.NoError(t, err)
+
+	// Wait for a post-init refresh to be in flight, then Close while it
+	// is blocked so rootCancel surfaces context.Canceled inside refresh.
+	select {
+	case <-refreshStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("post-init refresh never started")
+	}
+	require.NoError(t, p.Close())
+
+	assert.Equal(t, int32(0), refreshErrors.Load(),
+		"Close cancelling an in-flight refresh must not fire onRefreshErr (false 'rotation stalled' alert on shutdown)")
+}
+
 func TestProvider_InvalidReceiverDoesNotPanic(t *testing.T) {
 	var nilProvider *Provider
 	if _, err := nilProvider.Verify("token", time.Now()); !errors.Is(err, ErrKeySetUnavailable) {

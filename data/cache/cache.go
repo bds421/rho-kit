@@ -32,6 +32,12 @@ var ErrKeyEmpty = errors.New("cache: key must not be empty")
 // ErrKeyTooLong is returned when a cache key exceeds MaxKeyLen bytes.
 var ErrKeyTooLong = errors.New("cache: key exceeds maximum length")
 
+// ErrPrefixTooLong is returned when a cache key prefix exceeds
+// MaxKeyPrefixLen bytes. It is a distinct sentinel from [ErrKeyTooLong]
+// so callers can errors.Is it, matching the package's sentinel-based
+// error contract.
+var ErrPrefixTooLong = errors.New("cache: prefix exceeds maximum length")
+
 // ErrKeyInvalidChars is returned when a cache key contains invalid UTF-8,
 // whitespace, or control characters.
 var ErrKeyInvalidChars = errors.New("cache: key contains invalid characters")
@@ -88,7 +94,7 @@ func ValidateKey(key string) error {
 // share the backend keyspace.
 func ValidateKeyPrefix(prefix string) error {
 	if len(prefix) > MaxKeyPrefixLen {
-		return errors.New("cache prefix exceeds maximum length")
+		return ErrPrefixTooLong
 	}
 	if containsInvalidKeyRune(prefix) {
 		return ErrKeyInvalidChars

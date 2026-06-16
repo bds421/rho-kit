@@ -62,6 +62,13 @@ const usage = "usage: kit-verify -url=URL [-format=text|json] [-soft] [-no-allow
 
 var errRedirectBlocked = errors.New("kit-verify: redirects are disabled")
 
+// errFlagParseReported marks a flag-parse failure that the flag package
+// has already written to stderr (error message plus usage). run() must
+// not re-print it, otherwise every bad-flag invocation emits the same
+// message twice. Post-parse validation errors are NOT wrapped in this,
+// so they are still printed exactly once by run().
+var errFlagParseReported = errors.New("kit-verify: flag parse error already reported")
+
 type config struct {
 	target       string
 	format       string
@@ -106,10 +113,15 @@ func main() {
 func run(args []string, stdout, stderr io.Writer) int {
 	cfg, err := parseConfig(args, stderr)
 	if err != nil {
-		if err == flag.ErrHelp {
+		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
-		_, _ = fmt.Fprintln(stderr, err)
+		// The flag package already wrote flag-parse errors (and usage)
+		// to stderr; re-printing here would duplicate the message. Only
+		// post-parse validation errors still need to be printed.
+		if !errors.Is(err, errFlagParseReported) {
+			_, _ = fmt.Fprintln(stderr, err)
+		}
 		return 2
 	}
 
@@ -205,7 +217,14 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	fs.StringVar(&cfg.csrfPath, "csrf-path", "/api/v1/state", "state-changing CSRF probe path")
 	fs.StringVar(&cfg.rateLimitPath, "ratelimit-path", "/", "rate-limit probe path")
 	if err := fs.Parse(args); err != nil {
-		return cfg, err
+		// flag.ContinueOnError + fs.SetOutput(stderr) means the flag
+		// package has already written the error and usage to stderr.
+		// Preserve flag.ErrHelp (run() exits 0 on -h/-help); wrap any
+		// other parse error so run() does not duplicate the message.
+		if errors.Is(err, flag.ErrHelp) {
+			return cfg, err
+		}
+		return cfg, fmt.Errorf("%w: %w", errFlagParseReported, err)
 	}
 	if cfg.target == "" {
 		return cfg, errors.New(usage)
@@ -529,7 +548,7 @@ func expectHeader(hc *http.Client, url, key, contains string) (Status, string) {
 		return fail("GET request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
-	got, ok := singletonResponseHeader(resp, key)
+	got, ok := mergedResponseHeader(resp, key)
 	if !ok || (contains != "" && !containsFold(got, contains)) {
 		return fail(fmt.Sprintf("response header %s does not contain expected value", key))
 	}
@@ -542,12 +561,17 @@ func expectHeaderPresent(hc *http.Client, url, key string) (Status, string) {
 		return fail("GET request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if _, ok := singletonResponseHeader(resp, key); !ok {
+	if _, ok := mergedResponseHeader(resp, key); !ok {
 		return fail(fmt.Sprintf("response header %s missing", key))
 	}
 	return pass("")
 }
 
+// singletonResponseHeader returns the value of key only when the
+// response carries exactly one non-empty field line for it. It is used
+// for identity/echo headers (X-Request-Id, X-Correlation-Id) and
+// Retry-After, where more than one field line would itself indicate a
+// middleware bug, so collapsing duplicates would mask the defect.
 func singletonResponseHeader(resp *http.Response, key string) (string, bool) {
 	values := resp.Header.Values(key)
 	if len(values) != 1 {
@@ -558,6 +582,28 @@ func singletonResponseHeader(resp *http.Response, key string) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+// mergedResponseHeader returns the comma-joined value of all non-empty
+// field lines for key, treating an absent header (or one whose lines are
+// all blank) as not present. Per RFC 9110 §5.2/§5.3 multiple field lines
+// with the same name are semantically equivalent to a single value with
+// the lines comma-joined in order; a proxy appending its own
+// Cache-Control or X-Frame-Options line is legal. The value-presence
+// header probes therefore must not treat a legitimate duplicate as a
+// missing/mismatched header.
+func mergedResponseHeader(resp *http.Response, key string) (string, bool) {
+	values := resp.Header.Values(key)
+	parts := make([]string, 0, len(values))
+	for _, v := range values {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	return strings.Join(parts, ", "), true
 }
 
 // containsFold reports whether s contains substr, case-insensitively.

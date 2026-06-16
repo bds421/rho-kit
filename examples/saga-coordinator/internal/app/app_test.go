@@ -311,3 +311,15 @@ func TestHandleOrder_SagaFailureReturns422(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 }
+
+// failOnce is a test step callable that returns an error on every
+// call while counting invocations, so tests can drive the saga's
+// compensation paths and assert the failing step ran exactly once.
+type failOnce struct {
+	calls atomic.Int32
+}
+
+func (f *failOnce) fail(_ context.Context, _ *OrderState) error {
+	f.calls.Add(1)
+	return errors.New("synthetic step failure")
+}

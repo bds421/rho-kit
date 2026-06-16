@@ -26,6 +26,36 @@ func ValidateServiceName(name string) error {
 	return nil
 }
 
+// modulePathElement matches a single slash-separated element of a Go
+// module path. It is a conservative subset of what
+// golang.org/x/mod/module.CheckPath accepts: ASCII letters, digits, and
+// the punctuation Go allows in import paths (-._~). Crucially it admits
+// no spaces, quotes, newlines, or other control characters, so the value
+// cannot inject content into the rendered go.mod module line or the
+// import strings in main.go/wire.go.
+var modulePathElement = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?$`)
+
+// ValidateModulePath rejects module paths that are not safe to render
+// into go.mod's module directive or into Go import strings. It mirrors
+// the rigor applied to ServiceName: a path with spaces, quotes, or
+// newlines would otherwise produce a silently broken tree (discovered
+// only at `go mod tidy`) or inject content into generated files. The
+// invalid value is deliberately not echoed back in the error.
+func ValidateModulePath(path string) error {
+	if path == "" {
+		return fmt.Errorf("kit-new: ModulePath must not be empty")
+	}
+	if strings.HasPrefix(path, "/") || strings.HasSuffix(path, "/") {
+		return fmt.Errorf("kit-new: ModulePath must not start or end with a slash")
+	}
+	for _, elem := range strings.Split(path, "/") {
+		if !modulePathElement.MatchString(elem) {
+			return fmt.Errorf("kit-new: ModulePath must be a valid Go module path (slash-separated elements of letters, digits, and -._~)")
+		}
+	}
+	return nil
+}
+
 //go:embed templates/*.tmpl
 var templatesFS embed.FS
 
@@ -125,8 +155,8 @@ func scaffold(outDir string, p Params) error {
 	if err := ValidateServiceName(p.ServiceName); err != nil {
 		return err
 	}
-	if p.ModulePath == "" {
-		return fmt.Errorf("kit-new: ModulePath must not be empty")
+	if err := ValidateModulePath(p.ModulePath); err != nil {
+		return err
 	}
 	if p.RhoVersion != "" && !rhoVersionPattern.MatchString(p.RhoVersion) {
 		return fmt.Errorf("kit-new: RhoVersion must be a semver tag like v2.0.0 or a pseudo-version")

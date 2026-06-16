@@ -163,6 +163,50 @@ func TestScaffold_RejectsEmptyModulePath(t *testing.T) {
 	require.Error(t, scaffold(t.TempDir(), Params{ServiceName: "demo"}))
 }
 
+func TestScaffold_RejectsUnsafeModulePath(t *testing.T) {
+	// Each of these would otherwise be rendered verbatim into go.mod's
+	// module line and the import strings in main.go/wire.go, producing a
+	// silently broken tree or injecting content into generated files.
+	cases := map[string]string{
+		"space":           "example.com/my service",
+		"newline":         "example.com/demo\nrequire evil v1.0.0",
+		"quote":           `example.com/"demo"`,
+		"leading slash":   "/example.com/demo",
+		"trailing slash":  "example.com/demo/",
+		"empty element":   "example.com//demo",
+		"tab":             "example.com/de\tmo",
+		"backtick inject": "example.com/demo`)\nvar x = `",
+	}
+	for name, modulePath := range cases {
+		t.Run(name, func(t *testing.T) {
+			out := t.TempDir()
+			err := scaffold(out, Params{ServiceName: "demo", ModulePath: modulePath})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "ModulePath")
+			assert.NotContains(t, err.Error(), modulePath, "error must not echo the rejected value")
+
+			// A rejected module path must abort before any file is written.
+			entries, readErr := os.ReadDir(out)
+			require.NoError(t, readErr)
+			assert.Empty(t, entries, "scaffold must not write files when ModulePath is invalid")
+		})
+	}
+}
+
+func TestValidateModulePath_AcceptsValidPaths(t *testing.T) {
+	valid := []string{
+		"example.com/demo",
+		"github.com/org/my-service",
+		"github.com/org/my-service/v2",
+		"example.com/demo_v1",
+		"single",
+		"k8s.io/api",
+	}
+	for _, p := range valid {
+		assert.NoErrorf(t, ValidateModulePath(p), "expected %q to be a valid module path", p)
+	}
+}
+
 func TestScaffold_RefusesToOverwriteExistingFiles(t *testing.T) {
 	out := t.TempDir()
 	readmePath := filepath.Join(out, "README.md")

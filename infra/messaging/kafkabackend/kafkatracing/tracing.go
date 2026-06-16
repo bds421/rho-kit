@@ -13,6 +13,23 @@
 // every kit messaging backend has a consistent tracing-helper
 // surface; AMQP shipped first because it was the original kit
 // messaging backend.
+//
+// # Divergence from amqptracing
+//
+// "Mirrors the shape" refers to the carrier and inject/extract
+// helpers, not the Start* signatures, which intentionally differ:
+//
+//   - [StartPublisherSpan] takes a headers map and injects the W3C
+//     trace context into it, whereas [amqptracing.StartPublisherSpan]
+//     takes no headers and never injects (callers there inject
+//     separately via [amqptracing.InjectHeaders]).
+//   - Span names use "operation topic" (e.g. "publish orders"),
+//     whereas amqptracing uses the constant suffixes
+//     "operation publish" / "operation process".
+//
+// These differences are deliberate (a Kafka record carries its own
+// headers, so injecting at span start is ergonomic), so cross-backend
+// callers cannot swap the Start* helpers mechanically.
 package kafkatracing
 
 import (
@@ -102,6 +119,10 @@ func StartConsumerSpan(ctx context.Context, headers map[string]string, operation
 // message. Creates a [trace.SpanKindProducer] span and injects the
 // W3C trace context into the supplied headers so downstream
 // consumers can extract it.
+//
+// When headers is nil the span is still created but the trace context
+// is silently dropped (there is nowhere to inject it); pass a non-nil
+// map to propagate the trace to consumers.
 //
 // Caller MUST end the returned span. Typical use:
 //

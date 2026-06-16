@@ -25,6 +25,6 @@ func FuzzParseEnvTag(f *testing.F) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, tag string) {
-		_, _, _ = parseEnvTag(tag, "Field") // must not panic
+		_, _, _ = parseEnvTag(tag) // must not panic
 	})
 }

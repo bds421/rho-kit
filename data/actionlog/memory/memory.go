@@ -22,6 +22,11 @@ type Store struct {
 	mu      sync.RWMutex
 	entries []actionlog.Entry
 	byID    map[string]int
+	// latestByTenant maps a tenant id to the index in entries of its
+	// highest-Seq entry, so latestForTenantLocked is O(1) instead of an
+	// O(all entries) scan on every Append (which made N appends O(N²)).
+	// entries is append-only, so a recorded index never goes stale.
+	latestByTenant map[string]int
 	// tenantMu serialises chain extension per tenant. Uses sync.Map +
 	// LoadOrStore so a global lock isn't needed for every Append; entries
 	// are removed in [Store.PruneTenants] to avoid unbounded growth in
@@ -43,8 +48,9 @@ func New(signer *actionlog.CursorSigner) *Store {
 		panic("actionlog/memory: New requires a non-nil *actionlog.CursorSigner")
 	}
 	return &Store{
-		byID:         make(map[string]int),
-		cursorSigner: signer,
+		byID:           make(map[string]int),
+		latestByTenant: make(map[string]int),
+		cursorSigner:   signer,
 	}
 }
 
@@ -129,31 +135,35 @@ func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(p
 	if _, dup := s.byID[entry.ID]; dup {
 		return actionlog.Entry{}, ErrDuplicateID
 	}
-	s.byID[entry.ID] = len(s.entries)
+	idx := len(s.entries)
+	s.byID[entry.ID] = idx
 	s.entries = append(s.entries, entry)
+	// Track the highest-Seq entry per tenant. Mirror the original scan,
+	// which only considered entries with Seq > 0 (bestSeq started at 0
+	// and used a strict >), so a tenant whose entries all have Seq <= 0
+	// has no recorded latest and latestForTenantLocked returns zero
+	// values — exactly as the full-scan version did.
+	if entry.Seq > 0 {
+		if cur, ok := s.latestByTenant[entry.TenantID]; !ok || entry.Seq > s.entries[cur].Seq {
+			s.latestByTenant[entry.TenantID] = idx
+		}
+	}
 	return entry.Clone(), nil
 }
 
 // latestForTenantLocked returns the highest-Seq entry for tenantID
 // (and its Seq), or zero values if none exist. Caller must hold the
-// per-tenant lock to make the read-then-append atomic.
+// per-tenant lock to make the read-then-append atomic. The lookup is
+// O(1) via latestByTenant rather than scanning every entry.
 func (s *Store) latestForTenantLocked(tenantID string) (actionlog.Entry, int64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var (
-		best    actionlog.Entry
-		bestSeq int64
-	)
-	for _, e := range s.entries {
-		if e.TenantID != tenantID {
-			continue
-		}
-		if e.Seq > bestSeq {
-			bestSeq = e.Seq
-			best = e
-		}
+	idx, ok := s.latestByTenant[tenantID]
+	if !ok {
+		return actionlog.Entry{}, 0
 	}
-	return best.Clone(), bestSeq
+	best := s.entries[idx]
+	return best.Clone(), best.Seq
 }
 
 // Get returns the entry by id, or [actionlog.ErrNotFound] if absent.
@@ -202,7 +212,15 @@ func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry,
 		limit = defaultLimit
 	}
 
-	matched := make([]actionlog.Entry, 0, limit+1)
+	// Collect matches without cloning. Sorting and cursor/limit pruning
+	// only read the OccurredAt/ID value fields, so the reflection-based
+	// metadata deep copy is deferred until after truncation and paid for
+	// at most limit entries instead of every match. The store is
+	// read-locked for the whole call, so referencing the underlying
+	// entries (which share their metadata maps) is safe; the survivors
+	// are cloned before return to preserve the metadata-isolation
+	// contract verified by TestStore_CopiesMetadataOnPublicBoundaries.
+	matched := make([]actionlog.Entry, 0)
 	for i, e := range s.entries {
 		if i%ctxCheckBatch == 0 {
 			if err := ctx.Err(); err != nil {
@@ -212,7 +230,7 @@ func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry,
 		if !match(e, q) {
 			continue
 		}
-		matched = append(matched, e.Clone())
+		matched = append(matched, e)
 	}
 
 	sort.Slice(matched, func(i, j int) bool {
@@ -242,7 +260,12 @@ func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry,
 		next = s.cursorSigner.Encode(last.OccurredAt, last.ID)
 		matched = matched[:limit]
 	}
-	return matched, next, nil
+
+	out := make([]actionlog.Entry, len(matched))
+	for i := range matched {
+		out[i] = matched[i].Clone()
+	}
+	return out, next, nil
 }
 
 // RangeByTenantSeq calls fn for every entry for tenantID in Seq ASC

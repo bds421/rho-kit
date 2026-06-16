@@ -37,7 +37,20 @@ type timeoutWriter struct {
 	written     bool
 	flushWarned bool
 
-	maxBuffer int // per-instance cap; 0 falls back to defaultMaxBufferSize
+	maxBuffer int          // per-instance cap; 0 falls back to defaultMaxBufferSize
+	logger    *slog.Logger // configured logger; nil falls back to slog.Default
+}
+
+// warnLogger returns the configured logger, falling back to slog.Default so
+// the Flush misconfiguration signal is never silently dropped. This mirrors
+// the late-panic fallback in Timeout (cfg.logger / drainLateHandler): a
+// service that wires a structured non-default logger via WithLogger sees the
+// SSE/streaming warning on the same sink as its late-panic records.
+func (tw *timeoutWriter) warnLogger() *slog.Logger {
+	if tw.logger != nil {
+		return tw.logger
+	}
+	return slog.Default()
 }
 
 func (tw *timeoutWriter) bufferCap() int {
@@ -155,6 +168,15 @@ func (tw *timeoutWriter) writeToReal() {
 //
 // Returns nil after the timeout has fired or the response has already been
 // flushed, preventing writes that would corrupt the already-sent response.
+//
+// This is an intentional escape hatch: before the timeout fires it hands the
+// real ResponseWriter to http.ResponseController, so rc.Hijack() and
+// rc.SetWriteDeadline() reach the real connection and bypass the buffering and
+// write deadline this middleware enforces. After a successful hijack the
+// connection is owned by the caller and a subsequent writeTimeout 503 is
+// dropped by the stdlib. Routes that legitimately hijack (WebSocket, raw
+// streaming) should bypass the timeout via [WithWebSocketUpgradeBypass] or by
+// not wrapping the route, rather than relying on this Unwrap path.
 func (tw *timeoutWriter) Unwrap() http.ResponseWriter {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
@@ -174,8 +196,9 @@ func (tw *timeoutWriter) Flush() {
 	tw.mu.Lock()
 	if !tw.flushWarned {
 		tw.flushWarned = true
+		logger := tw.warnLogger()
 		tw.mu.Unlock()
-		slog.Warn("timeout middleware: Flush() called but is a no-op; SSE/streaming endpoints should bypass the timeout middleware")
+		logger.Warn("timeout middleware: Flush() called but is a no-op; SSE/streaming endpoints should bypass the timeout middleware")
 		return
 	}
 	tw.mu.Unlock()

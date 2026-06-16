@@ -291,8 +291,18 @@ func (c *Client) ready() error {
 func (c *Client) finishEval(key string, d openfeature.EvaluationDetails, err error) error {
 	if d.ErrorCode != "" || err != nil {
 		c.observeError(key, d.ErrorMessage, err)
-		if err == nil && d.ErrorMessage != "" {
-			err = errors.New(d.ErrorMessage)
+		if err == nil {
+			// Synthesize an error so the E-variants never report success
+			// when the provider signalled an error code. Prefer the
+			// human-readable message; fall back to the error code so a
+			// non-empty ErrorCode with an empty ErrorMessage still
+			// surfaces (FR-034).
+			switch {
+			case d.ErrorMessage != "":
+				err = errors.New(d.ErrorMessage)
+			case d.ErrorCode != "":
+				err = errors.New(string(d.ErrorCode))
+			}
 		}
 	}
 	return err
@@ -327,28 +337,18 @@ func evalCtx(ctx context.Context) (openfeature.EvaluationContext, error) {
 		targetingKey = t.String()
 		attrs["tenant"] = t.String()
 	}
-	switch stored := ctx.Value(userKeyCtx{}).(type) {
-	case userKeyValue:
+	// userKeyCtx is unexported and WithUserKey is its only writer, always
+	// storing a userKeyValue (never a bare string), so a single type
+	// assertion suffices — no string case can be reached.
+	if stored, ok := ctx.Value(userKeyCtx{}).(userKeyValue); ok {
 		if stored.err != nil {
 			return openfeature.EvaluationContext{}, stored.err
 		}
-		if stored.value == "" {
-			break
-		}
-		attrs["user"] = stored.value
-		if targetingKey == "" {
-			targetingKey = stored.value
-		}
-	case string:
-		if stored == "" {
-			break
-		}
-		if err := validateUserKey(stored); err != nil {
-			return openfeature.EvaluationContext{}, err
-		}
-		attrs["user"] = stored
-		if targetingKey == "" {
-			targetingKey = stored
+		if stored.value != "" {
+			attrs["user"] = stored.value
+			if targetingKey == "" {
+				targetingKey = stored.value
+			}
 		}
 	}
 	if cid := contextutil.CorrelationID(ctx); cid != "" {

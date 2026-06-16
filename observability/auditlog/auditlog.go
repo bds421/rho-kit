@@ -477,7 +477,7 @@ func (l *Logger) LogE(ctx context.Context, event Event) error {
 				keyEmpty = true
 				return
 			}
-			mac = computeHMAC(k, event.PrevHMAC, event)
+			mac = computeHMAC(k, event)
 		})
 		if keyEmpty {
 			buildErr = ErrLoggerClosed
@@ -663,7 +663,7 @@ func (l *Logger) streamVerifyChain(ctx context.Context, chainKey []byte, waterma
 	)
 	err := l.store.RangeChain(ctx, func(event Event) error {
 		// 1. Self-consistency: recomputed HMAC must equal stored HMAC.
-		expected := computeHMAC(chainKey, event.PrevHMAC, eventWithoutHMAC(event))
+		expected := computeHMAC(chainKey, eventWithoutHMAC(event))
 		if !constantTimeEqualHMAC(event.HMAC, expected) {
 			return fmt.Errorf("%w: event[%d] HMAC does not match canonical content", ErrChainBroken, index)
 		}

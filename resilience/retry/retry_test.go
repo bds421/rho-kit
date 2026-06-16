@@ -320,8 +320,12 @@ func TestDo_maxDelayCap(t *testing.T) {
 
 func TestDo_stableReset(t *testing.T) {
 	stableThresh := 20 * time.Millisecond
+	base := 5 * time.Millisecond
 	var calls int
-	var delayBeforeReset, delayAfterReset time.Time
+	// Capture the scheduled delay handed to OnRetry rather than measuring
+	// wall-clock gaps (which are unreliable). With Jitter=0 the backoff
+	// sequence is deterministic, so the recorded delays prove the reset.
+	var delays []time.Duration
 
 	_ = Do(context.Background(), func(_ context.Context) error {
 		calls++
@@ -329,24 +333,42 @@ func TestDo_stableReset(t *testing.T) {
 		case 1:
 			return errors.New("fail fast")
 		case 2:
-			delayBeforeReset = time.Now()
 			return errors.New("fail fast again")
 		case 3:
-			// Simulate stable run
+			// Simulate a stable run that crosses the StableReset threshold.
 			time.Sleep(stableThresh + 5*time.Millisecond)
 			return errors.New("fail after stable run")
 		case 4:
-			delayAfterReset = time.Now()
 			return nil
 		}
 		return nil
-	}, WithMaxRetries(10), WithBaseDelay(5*time.Millisecond), WithMaxDelay(100*time.Millisecond),
-		WithFactor(4.0), WithJitter(0), WithStableReset(stableThresh))
+	}, WithMaxRetries(10), WithBaseDelay(base), WithMaxDelay(100*time.Millisecond),
+		WithFactor(4.0), WithJitter(0), WithStableReset(stableThresh),
+		WithOnRetry(func(_ error, _ int, delay time.Duration) {
+			delays = append(delays, delay)
+		}))
 
-	// After stable run, delay should reset to base (5ms) instead of escalating
-	if !delayAfterReset.IsZero() && !delayBeforeReset.IsZero() {
-		gapAfterStable := delayAfterReset.Sub(delayBeforeReset)
-		_ = gapAfterStable // Timing is unreliable in tests; just verify no panic
+	// Three failures preceded a retry, so OnRetry fired three times.
+	if len(delays) != 3 {
+		t.Fatalf("expected 3 recorded delays, got %d: %v", len(delays), delays)
+	}
+
+	// Deterministic backoff (Factor=4, Jitter=0): the first two delays
+	// escalate from BaseDelay, but the stable run before the third failure
+	// must reset the sequence back to BaseDelay.
+	if delays[0] != base {
+		t.Errorf("first delay = %v, want BaseDelay %v", delays[0], base)
+	}
+	if delays[1] != base*4 {
+		t.Errorf("second delay = %v, want %v (escalated)", delays[1], base*4)
+	}
+	// The load-bearing assertion: without StableReset this would be
+	// base*16 (80ms); the reset drops it back to BaseDelay.
+	if delays[2] != base {
+		t.Errorf("post-stable delay = %v, want it reset to BaseDelay %v", delays[2], base)
+	}
+	if delays[2] >= delays[1] {
+		t.Errorf("post-stable delay %v should drop below pre-stable delay %v", delays[2], delays[1])
 	}
 }
 

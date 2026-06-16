@@ -21,8 +21,10 @@ type Binding struct {
 // the panic is logged with a stack trace and shutdownFn (if non-nil) is called
 // to trigger graceful shutdown.
 //
-// Returns an error if any binding has an empty queue name or nil handler —
-// this catches configuration errors at startup rather than at runtime.
+// Returns an error if any binding has an empty queue name, a nil handler, or
+// a queue name that duplicates an earlier binding — this catches configuration
+// errors at startup rather than at runtime (a duplicate queue would otherwise
+// trip the active-queue guard at runtime and trigger shutdownFn).
 // Panics if queue or wg is nil (programming errors); a nil logger is
 // normalized to [slog.Default].
 func StartProcessors(
@@ -43,6 +45,7 @@ func StartProcessors(
 		logger = slog.Default()
 	}
 
+	seen := make(map[string]struct{}, len(bindings))
 	for i, b := range bindings {
 		if b.Queue == "" {
 			return &redis.BindingError{Index: i, Reason: "queue name must not be empty"}
@@ -50,6 +53,17 @@ func StartProcessors(
 		if b.Handler == nil {
 			return &redis.BindingError{Index: i, Reason: "handler must not be nil"}
 		}
+		// Two bindings for the same queue would have the second Process call
+		// hit the active-queue guard and panic, which the per-goroutine
+		// recover turns into a full shutdownFn — i.e. a config error becomes
+		// a runtime whole-app teardown. Reject it here so the duplicate
+		// surfaces as a startup error instead. The queue name is omitted from
+		// the reason to keep it out of error strings (queue names are treated
+		// as opaque elsewhere in the kit).
+		if _, dup := seen[b.Queue]; dup {
+			return &redis.BindingError{Index: i, Reason: "duplicate queue name in bindings"}
+		}
+		seen[b.Queue] = struct{}{}
 	}
 
 	for _, binding := range bindings {

@@ -375,7 +375,7 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 
 	rc, meta, err := e.backend.Get(ctx, key)
 	if err != nil {
-		return nil, meta, storage.WrapSafe("encryption: get failed", err)
+		return nil, storage.ObjectMeta{}, storage.WrapSafe("encryption: get failed", err)
 	}
 
 	// Limit ciphertext read to MaxEncryptableSize + GCM overhead (nonce + tag)
@@ -390,20 +390,20 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	// Defer zero immediately so all error paths below scrub ciphertext too.
 	defer zeroBytes(ciphertext)
 	if err != nil {
-		return nil, meta, storage.WrapSafe("encryption: read ciphertext failed", err)
+		return nil, storage.ObjectMeta{}, storage.WrapSafe("encryption: read ciphertext failed", err)
 	}
 	if int64(len(ciphertext)) > int64(maxCiphertextSize) {
-		return nil, meta, fmt.Errorf("encryption: ciphertext exceeds maximum size (%d bytes)", maxCiphertextSize)
+		return nil, storage.ObjectMeta{}, fmt.Errorf("encryption: ciphertext exceeds maximum size (%d bytes)", maxCiphertextSize)
 	}
 
 	gcm, err := encrypt.NewGCM(keyBytes)
 	if err != nil {
-		return nil, meta, redact.WrapError("encryption", err)
+		return nil, storage.ObjectMeta{}, redact.WrapError("encryption", err)
 	}
 
 	plaintext, err := encrypt.DecryptBytesAAD(gcm, ciphertext, aadForKey(key))
 	if err != nil {
-		return nil, meta, redact.WrapError("encryption", err)
+		return nil, storage.ObjectMeta{}, redact.WrapError("encryption", err)
 	}
 
 	meta.Size = int64(len(plaintext))

@@ -39,10 +39,15 @@ type loggerConfig struct {
 // client IP is read, so an attacker can't cause one middleware to see a
 // proxy IP and another to see the spoofed XFF.
 func WithClientIPResolver(resolver func(*http.Request) string) LoggerOption {
+	if resolver == nil {
+		// Fail fast to match the kit's option convention (a miswired caller
+		// passing a nil resolver would otherwise silently fall back to the
+		// loopback-only default and log proxy IPs instead of client IPs).
+		// Omit the option entirely to keep the default resolver.
+		panic("logging: WithClientIPResolver requires a non-nil resolver (omit the option for the default resolver)")
+	}
 	return func(c *loggerConfig) {
-		if resolver != nil {
-			c.clientIPResolver = resolver
-		}
+		c.clientIPResolver = resolver
 	}
 }
 
@@ -118,8 +123,19 @@ func logAccessRequest(logger *slog.Logger, cfg loggerConfig, quiet map[string]bo
 		level = slog.LevelDebug
 	}
 
+	// Hijacked connections (WebSocket upgrades, h2 stream takeover) never go
+	// through WriteHeader, so wrapped.Status() is the recorder default (200) —
+	// misleading on a connection that wrote 101 directly to the raw conn and
+	// may then run for hours. Record 101 (Switching Protocols) to match the
+	// wire status the upgrade emitted, and flag the line with hijacked=true so
+	// it agrees with the sibling metrics/tracing middleware (which skip / use
+	// 101 for exactly this reason).
+	hijacked := wrapped.WasHijacked()
 	status := wrapped.Status()
-	if panicked && !wrapped.WroteHeader() {
+	switch {
+	case hijacked:
+		status = http.StatusSwitchingProtocols
+	case panicked && !wrapped.WroteHeader():
 		status = http.StatusInternalServerError
 	}
 
@@ -129,6 +145,9 @@ func logAccessRequest(logger *slog.Logger, cfg loggerConfig, quiet map[string]bo
 		slog.Int("status", status),
 		slog.Duration("duration", time.Since(start)),
 		slog.String("remote", safeClientIP(logger, cfg.clientIPResolver, r)),
+	}
+	if hijacked {
+		attrs = append(attrs, slog.Bool("hijacked", true))
 	}
 	if panicked {
 		attrs = append(attrs, slog.Bool("panicked", true))

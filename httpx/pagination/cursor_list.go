@@ -63,6 +63,21 @@ func HandleCursorList[T any](w http.ResponseWriter, r *http.Request, opts Cursor
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	// ListFn and IDFn are mandatory wiring. A nil ListFn would nil-deref at
+	// the call site below and a nil IDFn panics inside BuildResult whenever
+	// hasMore is true; both are the same class of misconfiguration as an
+	// invalid limit envelope, so surface them as a deliberate logged 500
+	// rather than a torn connection from an unhandled panic.
+	if opts.ListFn == nil {
+		opts.Logger.Error("pagination ListFn must not be nil")
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if opts.IDFn == nil {
+		opts.Logger.Error("pagination IDFn must not be nil")
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	if opts.Signer != nil && !opts.Signer.ready() {
 		opts.Logger.Error("pagination cursor signer invalid")
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")

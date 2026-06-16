@@ -447,3 +447,18 @@ func TestMemoryStateStore_Lifecycle(t *testing.T) {
 	_, err = s.Get(context.Background(), "i1")
 	require.ErrorIs(t, err, saga.ErrInstanceNotFound)
 }
+
+func TestMemoryStateStore_PutEmptyIDRejectsAsValidationError(t *testing.T) {
+	s := saga.NewMemoryStateStore()
+
+	err := s.Put(context.Background(), saga.Instance{Definition: "d"})
+
+	// An ID-less Put is caller misuse, not a missing instance: it must
+	// not be reported via the not-found sentinel, otherwise a caller's
+	// errors.Is(err, ErrInstanceNotFound) misclassifies the bug.
+	require.Error(t, err)
+	require.NotErrorIs(t, err, saga.ErrInstanceNotFound)
+	require.Contains(t, err.Error(), "Instance.ID")
+	// The rejected write must not be persisted.
+	require.Equal(t, 0, s.Len())
+}

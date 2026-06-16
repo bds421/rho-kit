@@ -184,7 +184,7 @@ func loadWithEnvTracking(v reflect.Value, visited map[reflect.Type]struct{}) (en
 			continue
 		}
 
-		envName, required, tagErr := parseEnvTag(envTag, field.Name)
+		envName, required, tagErr := parseEnvTag(envTag)
 		if tagErr != nil {
 			return false, tagErr
 		}
@@ -238,7 +238,13 @@ func loadWithEnvTracking(v reflect.Value, visited map[reflect.Type]struct{}) (en
 	return envRead, nil
 }
 
-func parseEnvTag(tag, fieldName string) (envName string, required bool, _ error) {
+// parseEnvTag splits an env struct-tag value into the environment-variable
+// name and the recognised options (currently only "required"). The struct
+// field name is intentionally not threaded in: the returned errors deliberately
+// omit it so a malformed tag cannot leak a field name into operator-facing
+// logs, and the loader already identifies the failing variable via the tag
+// content the caller controls.
+func parseEnvTag(tag string) (envName string, required bool, _ error) {
 	parts := strings.Split(tag, ",")
 	envName = strings.TrimSpace(parts[0])
 	if envName == "" {

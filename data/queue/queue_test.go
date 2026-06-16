@@ -10,9 +10,41 @@ import (
 	"github.com/bds421/rho-kit/data/v2/queue"
 )
 
-func TestSentinels(t *testing.T) {
-	assert.ErrorIs(t, queue.ErrInvalidQueue, queue.ErrInvalidQueue)
-	assert.ErrorIs(t, queue.ErrBatchTooLarge, queue.ErrBatchTooLarge)
+func TestSentinels_Distinct(t *testing.T) {
+	// Sentinels are public API and must remain mutually distinct so callers
+	// can errors.Is each branch. Aliasing two sentinels (e.g. assigning
+	// ErrBatchTooLarge = ErrInvalidQueue) would silently break consumer
+	// branch logic; these assertions fail if that ever happens.
+	sentinels := map[string]error{
+		"ErrInvalidQueue":    queue.ErrInvalidQueue,
+		"ErrInvalidName":     queue.ErrInvalidName,
+		"ErrInvalidMessage":  queue.ErrInvalidMessage,
+		"ErrMessageTooLarge": queue.ErrMessageTooLarge,
+		"ErrBatchTooLarge":   queue.ErrBatchTooLarge,
+	}
+	for aName, a := range sentinels {
+		assert.NotNil(t, a, "%s must be a non-nil sentinel", aName)
+		for bName, b := range sentinels {
+			if aName == bName {
+				continue
+			}
+			assert.NotErrorIs(t, a, b, "%s must not unwrap to %s", aName, bName)
+		}
+	}
+}
+
+func TestMessageTooLargeError_Unwrap(t *testing.T) {
+	// The typed error reports size/limit but must still satisfy
+	// errors.Is(err, ErrMessageTooLarge) so callers can branch on the
+	// sentinel without depending on the concrete type, and must not
+	// accidentally unwrap to any sibling sentinel.
+	err := error(&queue.MessageTooLargeError{Size: 10, Limit: 4})
+	assert.ErrorIs(t, err, queue.ErrMessageTooLarge)
+	assert.NotErrorIs(t, err, queue.ErrInvalidQueue)
+	assert.NotErrorIs(t, err, queue.ErrInvalidMessage)
+	assert.NotErrorIs(t, err, queue.ErrBatchTooLarge)
+	assert.Contains(t, err.Error(), "10")
+	assert.Contains(t, err.Error(), "4")
 }
 
 func TestValidateName(t *testing.T) {

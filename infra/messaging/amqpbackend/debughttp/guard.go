@@ -112,7 +112,12 @@ func AllowFromHeader(name, expected string) Authenticator {
 	if !validHeaderValue(expected) {
 		panic("debughttp: AllowFromHeader requires a valid non-empty expected value")
 	}
-	want := []byte(expected)
+	// Hash both sides to fixed-size digests before the constant-time compare so
+	// the comparison cannot leak the expected value's length: subtle.
+	// ConstantTimeCompare returns immediately when the two slices differ in
+	// length, so comparing the raw bytes would let an attacker probe len(expected)
+	// via timing. This mirrors BasicAuth, which already hashes both sides.
+	want := sha256.Sum256([]byte(expected))
 	return func(r *http.Request) bool {
 		values := r.Header.Values(headerName)
 		if len(values) != 1 {
@@ -121,8 +126,8 @@ func AllowFromHeader(name, expected string) Authenticator {
 		if !validHeaderValue(values[0]) {
 			return false
 		}
-		got := []byte(values[0])
-		return subtle.ConstantTimeCompare(got, want) == 1
+		got := sha256.Sum256([]byte(values[0]))
+		return subtle.ConstantTimeCompare(got[:], want[:]) == 1
 	}
 }
 

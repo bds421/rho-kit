@@ -35,6 +35,12 @@ func (r httpServerMissingErrorLogRule) Run(fset *token.FileSet, file *ast.File) 
 		if !isPackageAliasCall(call, httpxAliases, "NewServer") {
 			return true
 		}
+		// Options spread from a slice (NewServer(handler, opts...))
+		// cannot be inspected statically — stay silent rather than emit
+		// a false positive.
+		if callOptionsUnverifiable(call) {
+			return true
+		}
 		// httpx.NewServer takes opts variadically; check the call's
 		// argument list directly (no fluent chain to walk).
 		if !callHasOption(call, "WithErrorLog") {

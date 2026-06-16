@@ -23,6 +23,8 @@ package flags
 import (
 	"context"
 
+	"github.com/open-feature/go-sdk/openfeature"
+
 	"github.com/bds421/rho-kit/app/v2"
 	kitflags "github.com/bds421/rho-kit/flags/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
@@ -73,6 +75,26 @@ func (m *flagsModule) Init(_ context.Context, mc app.ModuleContext) error {
 		return err
 	}
 	m.client = client
+
+	// kitflags.New installed the provider via
+	// openfeature.SetNamedProviderAndWait. The OpenFeature SDK owns
+	// the provider's lifecycle once installed, so we hand its
+	// shutdown to the lifecycle Runner instead of leaving it leaking:
+	// providers with background goroutines and buffered analytics
+	// (LaunchDarkly, flagd streaming) drain and flush only when their
+	// Shutdown hook fires. Mirrors app/paseto, which wires
+	// provider.Close into the Runner the same way.
+	//
+	// openfeature.Shutdown resets the whole SDK API (this version has
+	// no per-domain shutdown). That matches the kit contract of one
+	// flags.Module per service: the module is the SDK's sole owner, so
+	// a process-terminating reset is the correct teardown. The Runner
+	// invokes this in reverse registration order on SIGINT/SIGTERM.
+	mc.Runner.AddFunc("flags-provider", func(ctx context.Context) error {
+		<-ctx.Done()
+		openfeature.Shutdown()
+		return nil
+	})
 	return nil
 }
 
@@ -82,6 +104,9 @@ func (m *flagsModule) Populate(infra *app.Infrastructure) {
 	}
 }
 
+// Stop is a no-op: provider shutdown is driven by the lifecycle
+// Runner func registered in Init ("flags-provider"), not from here,
+// so it participates in the Runner's shared stop budget and ordering.
 func (m *flagsModule) Stop(_ context.Context) error { return nil }
 
 func (m *flagsModule) HealthChecks() []health.DependencyCheck { return nil }

@@ -13,6 +13,7 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -332,6 +333,40 @@ func TestS3Backend_Get(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, storage.ErrObjectNotFound))
 		assert.NotContains(t, err.Error(), "secret-token")
+	})
+
+	t.Run("returns ErrObjectNotFound on typed NotFound", func(t *testing.T) {
+		t.Parallel()
+		client := &mockS3Client{
+			getFn: func(_ context.Context, _ *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+				return nil, &types.NotFound{}
+			},
+		}
+		b := newTestBackend(client)
+
+		_, _, err := b.Get(ctx, "missing.txt")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, storage.ErrObjectNotFound)
+	})
+
+	t.Run("returns ErrObjectNotFound on bodyless 404 (generic APIError)", func(t *testing.T) {
+		t.Parallel()
+		for _, code := range []string{"NoSuchKey", "NotFound"} {
+			code := code
+			t.Run(code, func(t *testing.T) {
+				t.Parallel()
+				client := &mockS3Client{
+					getFn: func(_ context.Context, _ *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+						return nil, &smithy.GenericAPIError{Code: code, Message: "Not Found"}
+					},
+				}
+				b := newTestBackend(client)
+
+				_, _, err := b.Get(ctx, "missing.txt")
+				require.Error(t, err)
+				assert.ErrorIs(t, err, storage.ErrObjectNotFound)
+			})
+		}
 	})
 
 	t.Run("returns stable error on S3 failure", func(t *testing.T) {
@@ -712,14 +747,19 @@ func TestS3Backend_List(t *testing.T) {
 		}
 		b := newTestBackend(client)
 
+		var seenErr error
 		for _, err := range b.List(ctx, "secret-token/", storage.ListOptions{}) {
-			require.Error(t, err)
-			assert.ErrorIs(t, err, backendErr)
-			assert.Contains(t, err.Error(), "s3backend: list")
-			assert.NotContains(t, err.Error(), "secret-token")
-			assert.NotContains(t, err.Error(), "access denied")
+			seenErr = err
 			break
 		}
+
+		// Assert after the loop so a List that swallows the backend error and
+		// yields nothing fails the test instead of passing vacuously.
+		require.Error(t, seenErr)
+		assert.ErrorIs(t, seenErr, backendErr)
+		assert.Contains(t, seenErr.Error(), "s3backend: list")
+		assert.NotContains(t, seenErr.Error(), "secret-token")
+		assert.NotContains(t, seenErr.Error(), "access denied")
 	})
 
 	t.Run("rejects invalid options before calling S3", func(t *testing.T) {

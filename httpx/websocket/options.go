@@ -177,8 +177,12 @@ func WithPingInterval(d time.Duration) Option {
 
 // WithPongTimeout bounds how long the heartbeat waits for the peer's
 // Pong reply before declaring the connection dead and closing with
-// [StatusPolicyViolation]. Must be positive when [WithPingInterval]
-// is set; non-positive values panic.
+// [StatusPolicyViolation]. Non-positive values panic.
+//
+// The pong timeout is only meaningful alongside a heartbeat, so it must
+// be paired with [WithPingInterval]: [Handle] panics if a pong timeout
+// is configured without a ping interval, since the setting would
+// otherwise be silently dropped.
 //
 // When unset the heartbeat uses the ping interval as the pong
 // deadline, which is a safe default for almost all deployments.

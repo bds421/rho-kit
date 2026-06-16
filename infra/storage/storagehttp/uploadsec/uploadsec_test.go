@@ -516,6 +516,30 @@ func TestAllowMIMETypes_AcceptsCleanGIF(t *testing.T) {
 	assert.Equal(t, "image/gif", meta.ContentType)
 }
 
+func TestValidateGIFEnd_SignatureVersion(t *testing.T) {
+	clean := tinyGIF(t)
+
+	t.Run("accepts GIF89a", func(t *testing.T) {
+		require.NoError(t, validateGIFEnd(clean))
+	})
+
+	t.Run("accepts GIF87a", func(t *testing.T) {
+		// gif.Encode emits GIF89a; rewrite the version bytes to the
+		// other documented version, keeping the rest of the stream intact.
+		body := append([]byte(nil), clean...)
+		copy(body[:6], []byte("GIF87a"))
+		require.NoError(t, validateGIFEnd(body))
+	})
+
+	t.Run("rejects unknown version", func(t *testing.T) {
+		// Same magic "GIF" prefix but an out-of-spec version. The old
+		// 3-byte-only check accepted this; the documented contract does not.
+		body := append([]byte(nil), clean...)
+		copy(body[:6], []byte("GIF8?a"))
+		require.ErrorIs(t, validateGIFEnd(body), ErrInvalidImage)
+	})
+}
+
 func TestAllowMIMETypes_AcceptsCleanWebP(t *testing.T) {
 	v := AllowMIMETypes("image/webp")
 	body := bytes.NewReader(tinyWebP(t))

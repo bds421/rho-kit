@@ -35,6 +35,12 @@ func (r idempotencyMissingUserExtractorRule) Run(fset *token.FileSet, file *ast.
 		if !isPackageAliasCall(call, idempotencyAliases, "Middleware") {
 			return true
 		}
+		// Options spread from a slice (Middleware(store, opts...)) cannot
+		// be inspected statically — stay silent rather than emit a
+		// Critical false positive.
+		if callOptionsUnverifiable(call) {
+			return true
+		}
 		// WithUserExtractor / WithAllowSharedKeys are variadic options
 		// passed as arguments to Middleware, not methods on a builder.
 		if callHasOption(call, "WithUserExtractor") || callHasOption(call, "WithAllowSharedKeys") {

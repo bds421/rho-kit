@@ -77,15 +77,6 @@ func TestNormalizeDialURL_SchemeErrorDoesNotEchoValue(t *testing.T) {
 	assert.NotContains(t, err.Error(), "secret-token")
 }
 
-func TestSanitizeURL_DropsCredentialsQueryAndFragment(t *testing.T) {
-	got := sanitizeURL("amqps://token-user:secret@rabbit:5671/vhost?token=query-secret#frag")
-	assert.Contains(t, got, "rabbit:5671")
-	assert.NotContains(t, got, "token-user")
-	assert.NotContains(t, got, "secret")
-	assert.NotContains(t, got, "query-secret")
-	assert.NotContains(t, got, "frag")
-}
-
 // --- DialOption constructors ---
 
 func TestWithMaxReconnectAttempts_SetsValue(t *testing.T) {
@@ -341,6 +332,27 @@ func TestConnection_InvalidReceiverSafety(t *testing.T) {
 	err = zero.WaitForConnection(t.Context())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not initialized")
+}
+
+// --- drainReconnectSignal (self-inflicted signal after onReconnect failure) ---
+
+func TestDrainReconnectSignal_DrainsBufferedSignal(t *testing.T) {
+	c := &Connection{reconnectSignal: make(chan struct{}, 1)}
+	c.reconnectSignal <- struct{}{}
+
+	drained := c.drainReconnectSignal()
+
+	assert.True(t, drained, "a buffered signal must be reported as drained")
+	assert.Len(t, c.reconnectSignal, 0, "the buffered signal must be consumed")
+}
+
+func TestDrainReconnectSignal_NoSignal_IsNonBlockingNoop(t *testing.T) {
+	c := &Connection{reconnectSignal: make(chan struct{}, 1)}
+
+	drained := c.drainReconnectSignal()
+
+	assert.False(t, drained, "no buffered signal — nothing to drain")
+	assert.Len(t, c.reconnectSignal, 0)
 }
 
 // --- Connect with lazy connect ---

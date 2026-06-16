@@ -12,6 +12,15 @@ import (
 // files stable across runs. Concurrent calls must be safe for the
 // installed function — [New] itself is, and so is any closure that
 // only reads its captured state under a mutex.
+//
+// Generator is a plain, unsynchronized variable, so reassignment is a
+// test-only affordance: install the swap during package or test setup,
+// before any other goroutine reads it, and restore it on cleanup.
+// Reassigning Generator while another goroutine calls it — including
+// from a [testing.T.Parallel] test, or as a runtime swap in a live
+// service — is a data race under the Go memory model. When concurrent
+// code needs per-call determinism, thread a generator function through
+// your own configuration rather than swapping this variable.
 var Generator func() string = New
 
 // New returns a fresh UUID v7 as a canonical 36-character string.

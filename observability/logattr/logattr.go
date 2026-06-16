@@ -174,6 +174,18 @@ func redactedValue(value string) string {
 	return fmt.Sprintf("<redacted %d bytes sha256:%s>", len(value), digest)
 }
 
+// redactedURL fully redacts raw down to a length-only marker; the URL is
+// never rendered verbatim regardless of validity.
+//
+// The url.Parse check does NOT perform meaningful validation: url.Parse is
+// extremely lenient and accepts almost any string (e.g. "not a url" or
+// "javascript:alert(1)") without error. It only rejects gross syntactic
+// malformations such as a missing scheme ("://invalid"), a bad port, or
+// control characters. Those rare cases render the literal "[INVALID URL]"
+// marker instead of the length marker; every other input — valid or not —
+// falls through to the identical redacted form. The distinction is purely a
+// cosmetic hint for log readers and carries no security weight, since the
+// raw value is redacted on both paths.
 func redactedURL(raw string) string {
 	if raw == "" {
 		return redact.StringValue(raw)

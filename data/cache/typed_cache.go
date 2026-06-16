@@ -17,7 +17,13 @@ type TypedCache[T any] struct {
 }
 
 // NewTypedCache creates a TypedCache that serializes T to/from JSON.
-// The prefix is prepended to all keys to avoid collisions.
+// The prefix is prepended verbatim to all keys (full = prefix + key) to
+// avoid collisions between caches sharing one backend.
+//
+// The prefix is concatenated WITHOUT an inserted delimiter, so callers
+// MUST include a trailing separator (e.g. "users:") to keep the keyspace
+// unambiguous. Without one, related prefixes collide — prefix "user" with
+// key "s1" maps to the same backend key as prefix "users" with key "1".
 //
 // Returns an error if backend is nil, or if the prefix contains invalid
 // characters or is too long. The combined prefix+key must fit within

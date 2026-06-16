@@ -32,9 +32,13 @@ var ErrChainBroken = errors.New("auditlog: chain integrity check failed")
 // suitable for HMAC computation. The output:
 //   - excludes the [Event.HMAC] field itself (the HMAC is computed over
 //     this canonical form),
-//   - includes the previous record's HMAC as a length-prefixed field so
-//     two events with identical content but different positions in the
-//     chain produce different HMACs,
+//   - includes the previous record's HMAC ([Event.PrevHMAC]) as a
+//     length-prefixed field so two events with identical content but
+//     different positions in the chain produce different HMACs. For
+//     historical reasons PrevHMAC is serialised in two positions; both are
+//     sourced from the same [Event.PrevHMAC] field so they can never
+//     diverge, and the duplication is preserved to keep the on-disk
+//     encoding stable,
 //   - serialises each field as `uint32 length || bytes` so no field
 //     boundary can be confused with another field's payload (length
 //     prefixing prevents e.g. an actor "alice\x00action=approve"
@@ -45,15 +49,16 @@ var ErrChainBroken = errors.New("auditlog: chain integrity check failed")
 // This encoding is part of the on-disk contract: changing it invalidates
 // every existing chain. Bump a CHANGES.md entry and document a migration
 // path if the format ever has to change.
-func canonicalEvent(prevHMAC []byte, event Event) []byte {
-	// Estimate the buffer size to avoid reallocs on the hot path.
+func canonicalEvent(event Event) []byte {
+	// Estimate the buffer size to avoid reallocs on the hot path. PrevHMAC
+	// is counted twice because it appears in two positions of the encoding.
 	approx := hmacSize +
 		len(event.ID) + len(event.Actor) + len(event.Action) +
 		len(event.Resource) + len(event.Status) + len(event.IPAddress) +
-		len(event.TraceID) + len(event.Metadata) + len(event.PrevHMAC) +
+		len(event.TraceID) + len(event.Metadata) + 2*len(event.PrevHMAC) +
 		11*4 + 8 // length headers + timestamp
 	buf := make([]byte, 0, approx)
-	buf = appendLenPrefixed(buf, prevHMAC)
+	buf = appendLenPrefixed(buf, event.PrevHMAC)
 	buf = appendLenPrefixed(buf, []byte(event.ID))
 	buf = appendUnixNano(buf, event.Timestamp)
 	buf = appendLenPrefixed(buf, []byte(event.Actor))
@@ -81,12 +86,13 @@ func appendUnixNano(dst []byte, t time.Time) []byte {
 	return append(dst, header[:]...)
 }
 
-// computeHMAC returns the HMAC-SHA256 of canonicalEvent(prevHMAC, event)
-// keyed by chainKey. The returned slice is freshly allocated so callers
-// may store it without aliasing.
-func computeHMAC(chainKey []byte, prevHMAC []byte, event Event) []byte {
+// computeHMAC returns the HMAC-SHA256 of canonicalEvent(event) keyed by
+// chainKey. The previous record's HMAC is taken from [Event.PrevHMAC], so
+// callers must set that field before computing the HMAC. The returned slice
+// is freshly allocated so callers may store it without aliasing.
+func computeHMAC(chainKey []byte, event Event) []byte {
 	mac := hmac.New(sha256.New, chainKey)
-	mac.Write(canonicalEvent(prevHMAC, event))
+	mac.Write(canonicalEvent(event))
 	return mac.Sum(nil)
 }
 
@@ -169,7 +175,7 @@ func VerifyChainFrom(events []Event, chainKey []byte, watermark []byte) error {
 				return fmt.Errorf("%w: event[%d] PrevHMAC does not match event[%d] HMAC", ErrChainBroken, i, i-1)
 			}
 		}
-		expected := computeHMAC(chainKey, event.PrevHMAC, eventWithoutHMAC(event))
+		expected := computeHMAC(chainKey, eventWithoutHMAC(event))
 		if !constantTimeEqualHMAC(event.HMAC, expected) {
 			return fmt.Errorf("%w: event[%d] HMAC does not match canonical content", ErrChainBroken, i)
 		}

@@ -111,6 +111,22 @@ func TestRegister_RejectsEmptyPath(t *testing.T) {
 	assert.ErrorIs(t, err, openapigen.ErrEmptyPath)
 }
 
+// TestRegister_RejectsPathWithoutLeadingSlash verifies the documented
+// "path must start with /" contract: a relative path such as "widgets"
+// is rejected rather than silently producing an OAS-invalid document
+// (and, via Handle, a mux pattern net/http would panic on). The route
+// must not be recorded on the spec when rejected.
+func TestRegister_RejectsPathWithoutLeadingSlash(t *testing.T) {
+	spec := openapigen.NewSpec("api", "v1")
+	err := spec.Register(http.MethodPost, "widgets")
+	require.ErrorIs(t, err, openapigen.ErrInvalidPath)
+
+	// No phantom route may survive the rejection.
+	_, ok := spec.Document().Paths["widgets"]
+	assert.False(t, ok, "rejected path must not appear in the document")
+	assert.Empty(t, spec.Document().Paths)
+}
+
 func TestRegister_RejectsInvalidMethod(t *testing.T) {
 	spec := openapigen.NewSpec("api", "v1")
 	err := spec.Register("FOO", "/x")
@@ -899,6 +915,30 @@ func TestRegister_ResponseExample(t *testing.T) {
 		"example for a media type with no schema must still attach so portals show it")
 }
 
+// TestRegister_ResponseExample_StandaloneStatus verifies that a
+// WithResponseExample for a status with no other registration (no
+// schema, header, or description) still produces a Response node with
+// the example attached. Previously the status was dropped from the
+// union of registered statuses, silently losing the example.
+func TestRegister_ResponseExample_StandaloneStatus(t *testing.T) {
+	spec := openapigen.NewSpec("resp-ex-standalone", "v1")
+	example := map[string]any{"code": "not_found", "message": "no such widget"}
+
+	err := spec.Register(http.MethodGet, "/widgets/{id}",
+		openapigen.WithResponseExample(http.StatusNotFound, "application/json", example),
+	)
+	require.NoError(t, err)
+
+	resp, ok := spec.Document().Paths["/widgets/{id}"].Get.Responses["404"]
+	require.True(t, ok, "a 404 response node must exist for the standalone example")
+	// Description falls back to the status text since none was supplied.
+	assert.Equal(t, http.StatusText(http.StatusNotFound), resp.Description)
+	mt := resp.Content["application/json"]
+	assert.Equal(t, example, mt.Example,
+		"standalone response example must attach to the media type")
+	assert.Nil(t, mt.Schema, "no schema was registered for this status")
+}
+
 func TestRegister_ResponseExample_RejectsBadInput(t *testing.T) {
 	spec := openapigen.NewSpec("resp-ex-bad", "v1")
 	err := spec.Register(http.MethodGet, "/x",
@@ -911,6 +951,55 @@ func TestRegister_ResponseExample_RejectsBadInput(t *testing.T) {
 		openapigen.WithResponseExample(http.StatusOK, "", "x"),
 	)
 	require.Error(t, err)
+}
+
+// TestDocument_ResultDoesNotAliasSpecState verifies the "caller owns
+// the result" contract on Document(): mutating the returned Document's
+// operation substructures (Tags, Parameters, Security, Response
+// Headers/Content) must not corrupt the Spec's internal state, so a
+// later Document()/Marshal() reflects the original registration.
+func TestDocument_ResultDoesNotAliasSpecState(t *testing.T) {
+	spec := openapigen.NewSpec("alias", "v1")
+	require.NoError(t, spec.Register(http.MethodGet, "/widgets/{id}",
+		openapigen.WithTags("widgets"),
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+		openapigen.WithResponseHeader(http.StatusOK, "X-Rate-Limit",
+			openapigen.Header{Description: "remaining"}),
+		openapigen.WithSecurity(map[string][]string{"bearer": {"read"}}),
+	))
+
+	doc := spec.Document()
+	op := doc.Paths["/widgets/{id}"].Get
+	require.NotNil(t, op)
+
+	// Mutate every operation substructure the caller "owns".
+	require.NotEmpty(t, op.Tags)
+	op.Tags[0] = "MUTATED"
+	require.NotEmpty(t, op.Parameters)
+	op.Parameters[0].Name = "MUTATED"
+	require.NotNil(t, op.Security)
+	(*op.Security)[0]["bearer"] = []string{"MUTATED"}
+	resp := op.Responses["200"]
+	resp.Headers["X-Rate-Limit"] = openapigen.Header{Description: "MUTATED"}
+	resp.Content["application/json"] = openapigen.MediaType{}
+	resp.Content["injected"] = openapigen.MediaType{}
+
+	// A fresh Document must be pristine.
+	fresh := spec.Document()
+	freshOp := fresh.Paths["/widgets/{id}"].Get
+	require.NotNil(t, freshOp)
+	assert.Equal(t, []string{"widgets"}, freshOp.Tags, "Tags must not alias")
+	assert.Equal(t, "id", freshOp.Parameters[0].Name, "Parameters must not alias")
+	require.NotNil(t, freshOp.Security)
+	assert.Equal(t, []string{"read"}, (*freshOp.Security)[0]["bearer"],
+		"Security must not alias")
+	freshResp := freshOp.Responses["200"]
+	assert.Equal(t, "remaining", freshResp.Headers["X-Rate-Limit"].Description,
+		"Response Headers must not alias")
+	require.NotNil(t, freshResp.Content["application/json"].Schema,
+		"Response Content schema must survive caller mutation")
+	_, injected := freshResp.Content["injected"]
+	assert.False(t, injected, "caller-injected content key must not leak into the Spec")
 }
 
 // TestRegister_ParameterExample covers WithParameterExample: an

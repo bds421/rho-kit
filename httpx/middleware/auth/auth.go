@@ -101,6 +101,17 @@ type mtlsIdentityConfig struct {
 // WithS2SImpersonationGuard installs a callback that decides whether
 // `identity` is allowed to impersonate `userID`. Returning an error
 // rejects the impersonation; the middleware returns 403.
+//
+// The `identity` value is the matched certificate identity prefixed with
+// the SAN/CN kind that matched, NOT the bare service name:
+//   - "cn:<common-name>"  — e.g. "cn:backend"
+//   - "dns:<dns-san>"     — e.g. "dns:svc-a.internal"
+//   - "uri:<uri-san>"     — e.g. "uri:spiffe://example.org/svc-a"
+//
+// A guard that compares against bare names (identity == "backend") will
+// reject every request — a silent fail-closed outage. Compare against the
+// prefixed form (identity == "cn:backend"), or strip the prefix before
+// matching.
 func WithS2SImpersonationGuard(fn func(r *http.Request, identity, userID string) error) MTLSIdentityOption {
 	if fn == nil {
 		panic("middleware/auth: WithS2SImpersonationGuard requires a non-nil callback")
@@ -193,6 +204,10 @@ func WithAllowedCNs(cns ...string) MTLSIdentityOption {
 // At least one identity allowlist option ([WithAllowedCNs] or
 // [WithAllowedSANs]) must contribute at least one non-empty entry, and
 // [WithS2SImpersonationGuard] must be supplied.
+//
+// The identity passed to the impersonation guard is prefixed with the
+// matched kind ("cn:", "dns:", or "uri:") — see [WithS2SImpersonationGuard]
+// for the exact convention a guard must compare against.
 func RequireS2SAuthWithIdentity(provider *jwtutil.Provider, opts ...MTLSIdentityOption) func(http.Handler) http.Handler {
 	if provider == nil {
 		panic("middleware/auth: RequireS2SAuthWithIdentity requires a non-nil JWT provider")
@@ -220,12 +235,21 @@ func RequireS2SAuthWithIdentity(provider *jwtutil.Provider, opts ...MTLSIdentity
 	}
 }
 
+// writeBearerUnauthorized writes a 401 carrying the RFC 7235 WWW-Authenticate
+// challenge with the Bearer scheme (RFC 6750). Standard HTTP clients and SDKs
+// key their re-auth behaviour off this header; bearer-token auth failures must
+// advertise the scheme the endpoint expects.
+func writeBearerUnauthorized(w http.ResponseWriter, msg string) {
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	httpx.WriteError(w, http.StatusUnauthorized, msg)
+}
+
 // jwtOnlyHandler returns a handler that requires a valid Bearer JWT token.
 func jwtOnlyHandler(provider *jwtutil.Provider, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, status := parseBearerToken(r)
 		if status != bearerTokenPresent {
-			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+			writeBearerUnauthorized(w, "unauthorized")
 			return
 		}
 
@@ -245,7 +269,7 @@ func s2sHandler(provider *jwtutil.Provider, cfg mtlsIdentityConfig, next http.Ha
 			verifyJWT(w, r, provider, token, next)
 			return
 		case bearerTokenInvalid:
-			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+			writeBearerUnauthorized(w, "unauthorized")
 			return
 		}
 
@@ -335,15 +359,15 @@ func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provide
 		// gone stale; surface the same "unauthorized" response as before but
 		// keep the cause distinguishable for logging callers via errors.Is.
 		if errors.Is(err, jwtutil.ErrKeySetUnavailable) {
-			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+			writeBearerUnauthorized(w, "unauthorized")
 			return
 		}
-		httpx.WriteError(w, http.StatusUnauthorized, "invalid token")
+		writeBearerUnauthorized(w, "invalid token")
 		return
 	}
 
 	if !jwtutil.IsUUID(claims.Subject) {
-		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		writeBearerUnauthorized(w, "unauthorized")
 		return
 	}
 

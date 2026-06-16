@@ -268,6 +268,38 @@ func (s *Store) LastHMAC(ctx context.Context) ([]byte, error) {
 	return hmac, nil
 }
 
+// DeleteBefore removes every event with occurred_at strictly before the
+// given time and returns the number of rows deleted, satisfying
+// [auditlog.RetentionStore] so the documented [auditlog.RetentionJob]
+// wiring compiles with the production Store.
+//
+// The boundary is exclusive (< before) to match the [auditlog.RetentionStore]
+// contract ("events with a timestamp before the given time"). Deleting the
+// oldest events leaves the surviving head with a PrevHMAC that links to a
+// now-removed row; operators relying on tamper-evidence must verify with the
+// retention-aware [auditlog.VerifyChainFrom] watermark (see [auditlog.RetentionJob]).
+func (s *Store) DeleteBefore(ctx context.Context, before time.Time) (int64, error) {
+	if s == nil || s.pool == nil {
+		return 0, errors.New("auditlog/postgres: store not initialized")
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	const q = "DELETE FROM audit_log_events WHERE occurred_at < $1"
+	tag, err := s.pool.Exec(ctx, q, before.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("auditlog/postgres: delete before: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// Compile-time assertions that Store satisfies both the base
+// [auditlog.Store] and the retention-aware [auditlog.RetentionStore].
+var (
+	_ auditlog.Store          = (*Store)(nil)
+	_ auditlog.RetentionStore = (*Store)(nil)
+)
+
 const selectColumns = `SELECT id, occurred_at, actor, action, resource, status,
        ip_address, trace_id, metadata, prev_hmac, hmac`
 

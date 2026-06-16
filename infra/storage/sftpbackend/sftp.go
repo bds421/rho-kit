@@ -459,6 +459,17 @@ func (b *Backend) rejectSymlinkAncestors(client Client, remotePath string) error
 	return nil
 }
 
+// rejectSymlinkPath rejects remotePath if it or any ancestor under the root is a
+// symlink, defending against a hostile/confused SFTP server redirecting reads,
+// writes or deletes outside the configured root.
+//
+// The check is best-effort, not atomic: it uses Lstat, but the follow-up
+// operation (Open/Stat/Remove/Rename) follows symlinks. A server that swaps a
+// regular file for a symlink between the Lstat here and the follow-up op (a
+// TOCTOU race) can still redirect that single operation. pkg/sftp exposes no
+// O_NOFOLLOW open, so this residual race cannot be closed at the protocol level;
+// the symlink rejection narrows, but does not eliminate, the hostile-server
+// window.
 func (b *Backend) rejectSymlinkPath(client Client, remotePath string) error {
 	if err := b.rejectSymlinkAncestors(client, remotePath); err != nil {
 		return err
@@ -513,6 +524,14 @@ func translateSFTPCapacity(err error) error {
 }
 
 // Put writes content from r to the remote path. Validators run before upload.
+//
+// ctx governs validation, connection setup, and the trace span, but mid-transfer
+// cancellation is not honored: once the body io.Copy to the remote temp file is
+// underway, a cancelled or deadline-exceeded ctx does not abort the streaming
+// transfer — it runs until the underlying SSH connection's own timeouts fire.
+// This is inherent to pkg/sftp, which does not thread a context through its
+// blocking I/O. Bound transfer time via the SSH connection timeouts rather than
+// relying on ctx to interrupt an in-flight upload.
 func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	_, span := otel.Tracer(tracerName).Start(ctx, "sftp.Put")
 	defer span.End()
@@ -630,6 +649,12 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 }
 
 // Get retrieves file content from the remote path. Caller must close the returned ReadCloser.
+//
+// ctx governs validation, connection setup, the symlink check, and the trace
+// span, but reads from the returned ReadCloser are not bound to ctx: cancelling
+// ctx after Get returns does not interrupt an in-flight Read on the body, which
+// streams until the underlying SSH connection's own timeouts fire. This is
+// inherent to pkg/sftp, which does not thread a context through its blocking I/O.
 func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
 	_, span := otel.Tracer(tracerName).Start(ctx, "sftp.Get")
 	defer span.End()
@@ -647,7 +672,13 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 	}
 
 	remotePath := b.remotePath(key)
+	start := now()
 	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
+		// Record the operation so symlink-rejection events stay visible in
+		// storage_sftp_* and per-operation counts match the happy/remote-error
+		// paths. sftpMetricErr keeps an expected not-found out of
+		// operation_errors_total, consistent with the Open path below.
+		b.metrics.observeOp(b.instance, "get", start, sftpMetricErr(err))
 		if isNotExist(err) {
 			opErr := fmt.Errorf("sftpbackend: get: %w", storage.ErrObjectNotFound)
 			span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
@@ -658,7 +689,6 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 		return nil, storage.ObjectMeta{}, opErr
 	}
 
-	start := now()
 	f, err := client.Open(remotePath)
 	// Not-found is expected (cache miss / CAS probe / sweep) and must
 	// not inflate operation_errors_total. Route through sftpMetricErr
@@ -701,7 +731,13 @@ func (b *Backend) Delete(ctx context.Context, key string) error {
 		return opErr
 	}
 	remotePath := b.remotePath(key)
+	start := now()
 	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
+		// Record the operation so symlink-rejection events stay visible in
+		// storage_sftp_* and per-operation counts match the remote Remove
+		// path below. sftpMetricErr keeps an expected not-found (idempotent
+		// delete) out of operation_errors_total.
+		b.metrics.observeOp(b.instance, "delete", start, sftpMetricErr(err))
 		if isNotExist(err) {
 			return nil
 		}
@@ -710,7 +746,6 @@ func (b *Backend) Delete(ctx context.Context, key string) error {
 		return opErr
 	}
 
-	start := now()
 	err = client.Remove(remotePath)
 	b.metrics.observeOp(b.instance, "delete", start, sftpMetricErr(err))
 
@@ -742,7 +777,13 @@ func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
 		return false, opErr
 	}
 	remotePath := b.remotePath(key)
+	start := now()
 	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
+		// Record the operation so symlink-rejection events stay visible in
+		// storage_sftp_* and per-operation counts match the remote Stat path
+		// below. sftpMetricErr keeps an expected not-found out of
+		// operation_errors_total.
+		b.metrics.observeOp(b.instance, "exists", start, sftpMetricErr(err))
 		if isNotExist(err) {
 			return false, nil
 		}
@@ -751,7 +792,6 @@ func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
 		return false, opErr
 	}
 
-	start := now()
 	_, err = client.Stat(remotePath)
 	b.metrics.observeOp(b.instance, "exists", start, sftpMetricErr(err))
 

@@ -279,6 +279,42 @@ func TestWithClock_PanicsOnNil(t *testing.T) {
 	WithClock(nil)
 }
 
+func TestParseScriptResult(t *testing.T) {
+	cases := []struct {
+		name        string
+		res         any
+		wantAllowed bool
+		wantRetryUS int64
+		wantErr     bool
+	}{
+		{"allowed", []any{int64(1), int64(0)}, true, 0, false},
+		{"denied with retry", []any{int64(0), int64(5000)}, false, 5000, false},
+		{"non-array", int64(1), false, 0, true},
+		{"wrong length", []any{int64(1)}, false, 0, true},
+		{"too long", []any{int64(1), int64(0), int64(0)}, false, 0, true},
+		// Non-int64 members must surface an explicit error, NOT a silent
+		// deny indistinguishable from a real rate-limit rejection.
+		{"non-int allowed member", []any{"1", int64(0)}, false, 0, true},
+		{"non-int retry member", []any{int64(0), "5000"}, false, 0, true},
+		{"both members non-int", []any{1.0, 2.0}, false, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			allowed, retryUS, err := parseScriptResult(tc.res)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "unexpected script result shape")
+				assert.False(t, allowed)
+				assert.Zero(t, retryUS)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantAllowed, allowed)
+			assert.Equal(t, tc.wantRetryUS, retryUS)
+		})
+	}
+}
+
 func TestAllow_ConcurrentSameKeyConvergesToBurst(t *testing.T) {
 	// With burst=N, exactly N concurrent admits should happen at the
 	// same instant; the rest must deny.

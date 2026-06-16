@@ -53,6 +53,19 @@ func WithWatchLogger(l *slog.Logger) WatcherOption {
 // instead of creating an internal one. This allows fine-grained control
 // when multiple EnvReloader instances or other SIGHUP listeners coexist
 // in the same process.
+//
+// The caller owns the channel's signal wiring: [EnvReloader.Start] does NOT
+// call signal.Notify on an injected channel (it only does so for the channel
+// it creates itself when this option is absent). To have real OS SIGHUPs
+// delivered, the caller must register and later release the channel, e.g.:
+//
+//	ch := make(chan os.Signal, 1)
+//	signal.Notify(ch, syscall.SIGHUP)
+//	defer signal.Stop(ch)
+//	r := config.NewEnvReloader(w, config.WithSignalChannel(ch))
+//
+// An injected channel that is never passed to signal.Notify will only reload
+// when the caller sends to it manually; real SIGHUPs are ignored.
 func WithSignalChannel(ch chan os.Signal) WatcherOption {
 	return func(c *watcherConfig) {
 		if ch != nil {

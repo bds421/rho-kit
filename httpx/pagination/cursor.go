@@ -126,6 +126,13 @@ func singleQueryValue(q url.Values, key string) (string, error) {
 // and panicked at runtime. A clamped-to-zero result reports HasMore
 // when the caller has at least one item, surfacing the wiring bug
 // without crashing the request.
+//
+// A nil items slice is normalised to an empty (non-nil) slice so the JSON
+// envelope always serialises "data":[] rather than "data":null. ListFn
+// implementations commonly return a nil slice for an empty result set;
+// without this the response shape would silently depend on the callee's
+// slice idiom and trip strictly-typed JSON consumers that distinguish []
+// from null.
 func BuildResult[T any](items []T, limit int, extractID func(T) string) CursorResult[T] {
 	if limit < 0 {
 		limit = 0
@@ -138,6 +145,10 @@ func BuildResult[T any](items []T, limit int, extractID func(T) string) CursorRe
 	var nextCursor string
 	if hasMore && len(items) > 0 {
 		nextCursor = extractID(items[len(items)-1])
+	}
+
+	if items == nil {
+		items = []T{}
 	}
 
 	return CursorResult[T]{

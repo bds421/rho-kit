@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/gabriel-vasile/mimetype"
 )
 
@@ -186,7 +187,10 @@ func AllowedMIMETypes(allowed ...string) Validator {
 		header := make([]byte, mimeSniffSize)
 		n, err := io.ReadFull(r, header)
 		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-			return nil, fmt.Errorf("storage: read for MIME detection failed")
+			// Preserve the unwrap chain (redacted) so callers can errors.Is
+			// for context.Canceled/DeadlineExceeded and classify transients,
+			// matching ChecksumValidator's error handling.
+			return nil, redact.WrapError("storage: read for MIME detection", err)
 		}
 		header = header[:n]
 

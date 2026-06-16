@@ -78,10 +78,22 @@ func (r *ResponseRecorder) Write(b []byte) (int, error) {
 }
 
 // Flush delegates to the underlying writer if it implements http.Flusher.
+//
+// net/http's Flush implicitly commits a 200 header when none has been written,
+// so the recorder latches wroteHeader=true (statusCode keeps its 200 default)
+// before delegating. Without this, panic-recovery consumers see
+// WroteHeader()==false and report 500 even though the wire already carried 200
+// from the flush, desyncing the recorder from the committed response. Only the
+// final status latches; statusCode is left untouched when WriteHeader already
+// ran, and the flag is left clear when the writer is not an http.Flusher (no
+// implicit commit happens in that case).
 func (r *ResponseRecorder) Flush() {
-	if f, ok := r.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
+	f, ok := r.ResponseWriter.(http.Flusher)
+	if !ok {
+		return
 	}
+	r.wroteHeader = true
+	f.Flush()
 }
 
 // Hijack implements http.Hijacker by delegating to the underlying ResponseWriter.

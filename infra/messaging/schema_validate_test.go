@@ -3,6 +3,7 @@ package messaging_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -82,6 +83,33 @@ func TestValidateMessage_MissingRequiredFieldFails(t *testing.T) {
 	err := reg.ValidateMessage(msg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "schema validation failed")
+}
+
+// TestValidateMessage_PreservesUnderlyingCause asserts the jsonschema
+// failure cause survives in the error chain (errors.Unwrap) rather than
+// being discarded — operators need the underlying triage signal, while
+// the rendered text stays redacted.
+func TestValidateMessage_PreservesUnderlyingCause(t *testing.T) {
+	reg := messaging.NewInMemorySchemaRegistry()
+	schema := json.RawMessage(`{
+		"type": "object",
+		"properties": {"age": {"type": "integer"}},
+		"required": ["age"]
+	}`)
+	require.NoError(t, reg.Register("user.created", 1, schema))
+
+	msg := messaging.Message{
+		ID:            "msg-cause",
+		Type:          "user.created",
+		Payload:       json.RawMessage(`{"age":"not-a-number"}`),
+		SchemaVersion: 1,
+	}
+
+	err := reg.ValidateMessage(msg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "schema validation failed")
+	require.NotNil(t, errors.Unwrap(err),
+		"validation error must wrap the jsonschema cause, not discard it")
 }
 
 func TestValidateMessage_UnknownVersionPasses(t *testing.T) {

@@ -530,7 +530,7 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 		if o.maxSize > 0 && len(o.pending) >= o.maxSize {
 			o.mu.Unlock()
 			o.onDrop()
-			return fmt.Errorf("buffered publisher: buffer full, message dropped")
+			return ErrBufferFull
 		}
 		o.pending = append(o.pending, pendingMessage{
 			Exchange:   exchange,
@@ -584,7 +584,7 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 				redact.String("msg_id", msg.ID),
 				"buffer_size", o.maxSize)
 			o.onDrop()
-			return fmt.Errorf("buffered publisher: buffer full, message dropped")
+			return ErrBufferFull
 		}
 	}
 

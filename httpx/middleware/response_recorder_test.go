@@ -109,6 +109,69 @@ func TestResponseRecorder_Flush(t *testing.T) {
 	}
 }
 
+// TestResponseRecorder_FlushLatchesHeader verifies that Flush mirrors
+// net/http's implicit header commit: http.Flusher.Flush sends a 200 header
+// when none was written, so the recorder must mark wroteHeader=true (status
+// stays 200). Otherwise panic-recovery consumers see WroteHeader()==false and
+// report 500 while the wire already carried 200, desyncing the recorder from
+// the committed response.
+func TestResponseRecorder_FlushLatchesHeader(t *testing.T) {
+	inner := httptest.NewRecorder()
+	rec := NewResponseRecorder(inner)
+
+	if rec.WroteHeader() {
+		t.Fatal("new recorder should not report a written header")
+	}
+	rec.Flush()
+
+	if !rec.WroteHeader() {
+		t.Error("Flush should latch wroteHeader=true (implicit 200 commit)")
+	}
+	if rec.Status() != http.StatusOK {
+		t.Errorf("status = %d, want 200 after implicit Flush commit", rec.Status())
+	}
+}
+
+// TestResponseRecorder_FlushPreservesStatus verifies Flush does not overwrite a
+// status code already set via WriteHeader.
+func TestResponseRecorder_FlushPreservesStatus(t *testing.T) {
+	inner := httptest.NewRecorder()
+	rec := NewResponseRecorder(inner)
+
+	rec.WriteHeader(http.StatusAccepted) // 202
+	rec.Flush()
+
+	if rec.Status() != http.StatusAccepted {
+		t.Errorf("status = %d, want 202 (Flush must not overwrite an explicit status)", rec.Status())
+	}
+}
+
+// nonFlusher wraps a ResponseWriter but does not implement http.Flusher, so
+// Flush is a no-op on the wire and must not latch the recorder's header state.
+type nonFlusher struct {
+	header http.Header
+}
+
+func (n *nonFlusher) Header() http.Header {
+	if n.header == nil {
+		n.header = make(http.Header)
+	}
+	return n.header
+}
+
+func (n *nonFlusher) Write(b []byte) (int, error) { return len(b), nil }
+func (n *nonFlusher) WriteHeader(int)             {}
+
+func TestResponseRecorder_FlushNonFlusherDoesNotLatch(t *testing.T) {
+	rec := NewResponseRecorder(&nonFlusher{})
+
+	rec.Flush() // underlying writer is not a Flusher: nothing committed
+
+	if rec.WroteHeader() {
+		t.Error("Flush on a non-Flusher writer must not latch wroteHeader")
+	}
+}
+
 func TestResponseRecorder_Hijack_NotSupported(t *testing.T) {
 	rec := NewResponseRecorder(httptest.NewRecorder())
 	_, _, err := rec.Hijack()

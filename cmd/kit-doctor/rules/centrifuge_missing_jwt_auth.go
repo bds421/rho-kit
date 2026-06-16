@@ -59,6 +59,12 @@ func (r centrifugeMissingJWTAuthRule) Run(fset *token.FileSet, file *ast.File) [
 		if !isPackageAliasCall(call, aliases, "NewNode") {
 			return true
 		}
+		// Options spread from a slice (NewNode(opts...)) cannot be
+		// inspected statically — stay silent rather than emit a Critical
+		// false positive.
+		if callOptionsUnverifiable(call) {
+			return true
+		}
 		if callHasOption(call, "WithJWTAuth") {
 			return true
 		}

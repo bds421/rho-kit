@@ -78,6 +78,7 @@ func TestCloneTLSConfigWithFloor_NilCfgReturnsFreshFloor(t *testing.T) {
 }
 
 func TestCloneTLSConfigWithFloor_PanicsOnInsecureSkipVerify(t *testing.T) {
+	const label = "httpx/budget: Wrap"
 	cfg := &tls.Config{InsecureSkipVerify: true}
 	defer func() {
 		rec := recover()
@@ -91,11 +92,17 @@ func TestCloneTLSConfigWithFloor_PanicsOnInsecureSkipVerify(t *testing.T) {
 		if !strings.Contains(msg, "InsecureSkipVerify=true is not permitted") {
 			t.Errorf("panic message = %q, want it to flag InsecureSkipVerify", msg)
 		}
+		// The caller label must be interpolated so operators can tell which
+		// constructor tripped the floor.
+		if !strings.Contains(msg, label) {
+			t.Errorf("panic message = %q, want it to include caller label %q", msg, label)
+		}
 	}()
-	_ = CloneTLSConfigWithFloor(cfg, "test")
+	_ = CloneTLSConfigWithFloor(cfg, label)
 }
 
 func TestCloneTLSConfigWithFloor_PanicsOnLowMaxVersion(t *testing.T) {
+	const label = "healthhttp: HTTPCheck"
 	cfg := &tls.Config{MaxVersion: tls.VersionTLS11}
 	defer func() {
 		rec := recover()
@@ -109,8 +116,13 @@ func TestCloneTLSConfigWithFloor_PanicsOnLowMaxVersion(t *testing.T) {
 		if !strings.Contains(msg, "TLS MaxVersion") {
 			t.Errorf("panic message = %q, want it to mention TLS MaxVersion", msg)
 		}
+		// The caller label must be interpolated so operators can tell which
+		// constructor tripped the floor.
+		if !strings.Contains(msg, label) {
+			t.Errorf("panic message = %q, want it to include caller label %q", msg, label)
+		}
 	}()
-	_ = CloneTLSConfigWithFloor(cfg, "test")
+	_ = CloneTLSConfigWithFloor(cfg, label)
 }
 
 func TestFallback_ReturnsStdlibShapedTransport(t *testing.T) {

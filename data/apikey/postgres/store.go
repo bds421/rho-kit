@@ -19,9 +19,22 @@ import (
 // constraint (here the primary key) is violated.
 const uniqueViolation = "23505"
 
+// querier is the narrow slice of [pgxpool.Pool] the Store depends on. Keeping
+// it unexported lets the store be exercised with a fake in unit tests without
+// a live database, while New still accepts a concrete *pgxpool.Pool so the
+// exported surface is unchanged.
+type querier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// Compile-time assertion that *pgxpool.Pool satisfies the querier seam.
+var _ querier = (*pgxpool.Pool)(nil)
+
 // Store is a pgx-backed [apikey.Repository].
 type Store struct {
-	pool *pgxpool.Pool
+	pool querier
 }
 
 // Compile-time assertion that Store implements the repository contract.
@@ -81,12 +94,16 @@ WHERE id = $1`
 
 // Revoke implements [apikey.Repository]. It is idempotent: an already-revoked
 // key keeps its original revocation time. Returns NotFound when absent.
+//
+// A zero at is mapped to NULL (via [nullTime]) rather than the 0001-01-01
+// sentinel, so the key reads back active — matching
+// [apikey.MemoryRepository], which leaves RevokedAt zero for a zero at.
 func (s *Store) Revoke(ctx context.Context, id string, at time.Time) error {
 	const q = `
 UPDATE api_keys
 SET revoked_at = $2
 WHERE id = $1 AND revoked_at IS NULL`
-	tag, err := s.pool.Exec(ctx, q, id, at.UTC())
+	tag, err := s.pool.Exec(ctx, q, id, nullTime(at))
 	if err != nil {
 		return redact.WrapError("apikey/postgres: revoke", err)
 	}

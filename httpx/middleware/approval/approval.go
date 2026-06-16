@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/id"
@@ -281,40 +282,40 @@ func Middleware(store approval.Store, opts ...Option) func(http.Handler) http.Ha
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tenantID, ok := safeTenantSource(cfg.logger, cfg.tenantSource, r)
 			if !ok || tenantID == "" {
-				writeError(w, http.StatusBadRequest, "tenant id missing")
+				httpx.WriteError(w, http.StatusBadRequest, "tenant id missing")
 				return
 			}
 
 			actor, ok := safeActorExtractor(cfg.logger, cfg.actorExtractor, r)
 			if !ok || actor == "" {
-				writeError(w, http.StatusUnauthorized, "actor not resolved")
+				httpx.WriteError(w, http.StatusUnauthorized, "actor not resolved")
 				return
 			}
 
 			body, err := readBody(r, cfg.maxBodyBytes)
 			if errors.Is(err, errBodyTooLarge) {
-				writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds approval cap")
+				httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request body exceeds approval cap")
 				return
 			}
 			if err != nil {
 				cfg.logger.Error("approval: read body", redact.Error(err))
-				writeError(w, http.StatusBadRequest, "could not read request body")
+				httpx.WriteError(w, http.StatusBadRequest, "could not read request body")
 				return
 			}
 
 			id, ok := safeIDFunc(cfg.logger, cfg.idFunc)
 			if !ok {
-				writeError(w, http.StatusInternalServerError, "could not record approval")
+				httpx.WriteError(w, http.StatusInternalServerError, "could not record approval")
 				return
 			}
 			action, ok := safeStringExtractor(cfg.logger, "action extractor", cfg.actionExtractor, r)
 			if !ok {
-				writeError(w, http.StatusInternalServerError, "could not record approval")
+				httpx.WriteError(w, http.StatusInternalServerError, "could not record approval")
 				return
 			}
 			resource, ok := safeStringExtractor(cfg.logger, "resource extractor", cfg.resourceExtractor, r)
 			if !ok {
-				writeError(w, http.StatusInternalServerError, "could not record approval")
+				httpx.WriteError(w, http.StatusInternalServerError, "could not record approval")
 				return
 			}
 
@@ -333,7 +334,7 @@ func Middleware(store approval.Store, opts ...Option) func(http.Handler) http.Ha
 			created, err := store.Create(r.Context(), req)
 			if err != nil {
 				cfg.logger.Error("approval: create", redact.Error(err), redact.String("approval_id", req.ID))
-				writeError(w, http.StatusInternalServerError, "could not record approval")
+				httpx.WriteError(w, http.StatusInternalServerError, "could not record approval")
 				return
 			}
 
@@ -441,23 +442,23 @@ func readBody(r *http.Request, max int64) ([]byte, error) {
 	return body, nil
 }
 
-// writeError emits a small JSON error body. The middleware deliberately
-// avoids depending on httpx's WriteError — this package is its own
-// module so that consumers (the approver endpoint, integration tests)
-// don't drag the full httpx dep just to wire approvals.
-func writeError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
-}
-
 // EnsureBodyBuffered returns an http.Request whose body is a re-readable
 // bytes.Reader over a detached copy of body. Useful for executors that replay
-// a stored payload through the original handler.
+// a stored payload through the original handler or an http.Client.
+//
+// r.Clone copies GetBody and the Header map from the source request. Both are
+// rewired here so a replay stays consistent with the buffered payload: GetBody
+// returns a fresh reader over the owned copy (so the http.Transport reconstructs
+// the buffered body on retry/redirect rather than resurrecting the original),
+// and any stale Content-Length header is overwritten to match.
 func EnsureBodyBuffered(r *http.Request, body []byte) *http.Request {
 	r2 := r.Clone(r.Context())
 	owned := append([]byte(nil), body...)
 	r2.Body = io.NopCloser(bytes.NewReader(owned))
 	r2.ContentLength = int64(len(owned))
+	r2.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(owned)), nil
+	}
+	r2.Header.Set("Content-Length", strconv.FormatInt(int64(len(owned)), 10))
 	return r2
 }

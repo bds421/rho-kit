@@ -40,6 +40,9 @@ func TestValidateKey(t *testing.T) {
 		{name: "dot in middle", key: "a/./b", wantErr: "path traversal"},
 		{name: "backslash", key: "uploads\\file.txt", wantErr: "backslash"},
 		{name: "backslash traversal", key: "uploads\\..\\etc\\passwd", wantErr: "backslash"},
+		{name: "rtl override", key: "uploads/file‮.txt", wantErr: "invalid characters"},
+		{name: "zero-width space", key: "uploads/fi​le.txt", wantErr: "invalid characters"},
+		{name: "byte order mark", key: "uploads/\ufefffile.txt", wantErr: "invalid characters"},
 	}
 
 	for _, tt := range tests {
@@ -78,6 +81,7 @@ func TestValidatePrefix(t *testing.T) {
 		{name: "space", prefix: "uploads 2026", wantErr: "invalid characters"},
 		{name: "tab", prefix: "uploads\t2026", wantErr: "invalid characters"},
 		{name: "invalid utf8", prefix: string([]byte{'u', 'p', 0xff}), wantErr: "invalid characters"},
+		{name: "zero-width space", prefix: "uploads​/2026", wantErr: "invalid characters"},
 	}
 
 	for _, tt := range tests {

@@ -39,6 +39,7 @@ import (
 
 	kms "cloud.google.com/go/kms/apiv1"
 	"cloud.google.com/go/kms/apiv1/kmspb"
+	gax "github.com/googleapis/gax-go/v2"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/bds421/rho-kit/crypto/v2/envelope"
@@ -58,9 +59,19 @@ var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 // transport problem.
 var ErrChecksumMismatch = errors.New("gcpkms: CRC32C verification failed; retry the request")
 
+// kmsClient is the subset of *kms.KeyManagementClient this adapter
+// uses. *kms.KeyManagementClient satisfies it. Accepting the interface
+// (rather than the concrete client) lets tests substitute a fake to
+// exercise request construction and CRC32C verification without a live
+// KMS backend.
+type kmsClient interface {
+	Encrypt(ctx context.Context, req *kmspb.EncryptRequest, opts ...gax.CallOption) (*kmspb.EncryptResponse, error)
+	Decrypt(ctx context.Context, req *kmspb.DecryptRequest, opts ...gax.CallOption) (*kmspb.DecryptResponse, error)
+}
+
 // KEK is the GCP KMS-backed [envelope.KEK].
 type KEK struct {
-	c   *kms.KeyManagementClient
+	c   kmsClient
 	key string // full resource path: projects/.../locations/.../keyRings/.../cryptoKeys/...
 	aad []byte
 }
@@ -92,6 +103,18 @@ func (c Config) LogValue() slog.Value {
 // NewKEK builds a KEK from cfg using the given KMS client. Returns an
 // error if KeyResource is empty.
 func NewKEK(c *kms.KeyManagementClient, cfg Config) (*KEK, error) {
+	if c == nil {
+		return nil, errors.New("gcpkms: client must not be nil")
+	}
+	return newKEK(c, cfg)
+}
+
+// newKEK is the interface-typed core of NewKEK. The exported NewKEK keeps
+// its concrete *kms.KeyManagementClient signature for API stability and a
+// nil-typed-pointer guard; this seam lets tests inject a fake kmsClient.
+// A nil interface value here is still rejected so the constructor never
+// returns a KEK whose later Wrap/Unwrap would nil-panic.
+func newKEK(c kmsClient, cfg Config) (*KEK, error) {
 	if c == nil {
 		return nil, errors.New("gcpkms: client must not be nil")
 	}
@@ -129,7 +152,7 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 	}
 	resp, err := k.c.Encrypt(ctx, req)
 	if err != nil {
-		return "", nil, fmt.Errorf("gcpkms: encrypt: %w", classifyGCPError("encrypt", err))
+		return "", nil, fmt.Errorf("gcpkms: encrypt: %w", classifyGCPError(err))
 	}
 	if resp.GetName() == "" {
 		return "", nil, errors.New("gcpkms: encrypt response missing Name")
@@ -172,7 +195,7 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 	req := k.decryptRequest(keyID, wrapped)
 	resp, err := k.c.Decrypt(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gcpkms: decrypt: %w", classifyGCPError("decrypt", err))
+		return nil, fmt.Errorf("gcpkms: decrypt: %w", classifyGCPError(err))
 	}
 	plaintext := resp.GetPlaintext()
 	if got, want := crc32.Checksum(plaintext, crc32cTable), uint32(resp.GetPlaintextCrc32C().GetValue()); got != want {

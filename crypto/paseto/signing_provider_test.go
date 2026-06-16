@@ -212,6 +212,70 @@ func TestSigningProvider_CloseIsIdempotent(t *testing.T) {
 	require.NoError(t, p.Close())
 }
 
+func TestWithSigningFetchTimeout_RejectsNonPositiveDurations(t *testing.T) {
+	for name, fn := range map[string]func(){
+		"zero":     func() { WithSigningFetchTimeout(0) },
+		"negative": func() { WithSigningFetchTimeout(-time.Second) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Panics(t, fn)
+		})
+	}
+}
+
+func TestWithSigningFetchTimeout_OverridesDefault(t *testing.T) {
+	_, priv := newPrivateKey(t)
+	p, err := OpenSigningProvider(context.Background(), privSource(priv), time.Hour,
+		WithSigningFetchTimeout(42*time.Second),
+		WithSigningOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
+	)
+	require.NoError(t, err)
+	defer func() { _ = p.Close() }()
+
+	assert.Equal(t, 42*time.Second, p.fetchTimeout,
+		"WithSigningFetchTimeout must override the default per-refresh deadline")
+}
+
+func TestSigningProvider_CloseDoesNotFireSpuriousRefreshError(t *testing.T) {
+	_, priv := newPrivateKey(t)
+
+	var first atomic.Bool
+	first.Store(true)
+	refreshStarted := make(chan struct{}, 1)
+	var refreshErrors atomic.Int32
+
+	src := func(ctx context.Context) (*secret.String, error) {
+		if first.CompareAndSwap(true, false) {
+			return secret.New(priv), nil
+		}
+		// Post-init refresh: announce we're in flight, then block until
+		// the context is cancelled (by Close) and surface the
+		// cancellation as the refresh error.
+		select {
+		case refreshStarted <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	p, err := OpenSigningProvider(context.Background(), src, 5*time.Millisecond,
+		WithSigningOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
+		WithOnSigningRefreshError(func(error) { refreshErrors.Add(1) }),
+	)
+	require.NoError(t, err)
+
+	select {
+	case <-refreshStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("post-init refresh never started")
+	}
+	require.NoError(t, p.Close())
+
+	assert.Equal(t, int32(0), refreshErrors.Load(),
+		"Close cancelling an in-flight refresh must not fire onRefreshErr (false 'rotation stalled' alert on shutdown)")
+}
+
 func TestSigningProvider_OnRefreshErrorCallbackPanicSwallowed(t *testing.T) {
 	_, priv := newPrivateKey(t)
 
@@ -228,7 +292,11 @@ func TestSigningProvider_OnRefreshErrorCallbackPanicSwallowed(t *testing.T) {
 	p, err := OpenSigningProvider(context.Background(), src, time.Hour,
 		WithSigningOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
 		WithOnSigningRefreshError(func(err error) {
-			defer func() { _ = recover() }()
+			// Panic WITHOUT self-recovery so the panic actually escapes
+			// the callback and reaches SigningProvider.callOnRefreshError's
+			// recover wrapper. A self-recovering callback would never
+			// exercise that wrapper, so the test would pass even if the
+			// wrapper were deleted.
 			select {
 			case cbInvoked <- struct{}{}:
 			default:
@@ -239,10 +307,13 @@ func TestSigningProvider_OnRefreshErrorCallbackPanicSwallowed(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = p.Close() }()
 
-	// Force a refresh outside the ticker path so the test is
-	// deterministic. Use callOnRefreshError directly to exercise the
-	// panic-recovery wrapper without waiting for the ticker.
-	p.callOnRefreshError(errors.New("simulated"))
+	// Force a refresh-error notification outside the ticker path so the
+	// test is deterministic. callOnRefreshError must recover the panicking
+	// callback and return normally; if its recover wrapper were missing,
+	// the panic would propagate here and fail the test.
+	require.NotPanics(t, func() {
+		p.callOnRefreshError(errors.New("simulated"))
+	}, "callOnRefreshError must recover a panicking callback")
 	select {
 	case <-cbInvoked:
 	case <-time.After(time.Second):

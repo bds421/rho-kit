@@ -2,6 +2,7 @@ package labelguard
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -113,6 +114,13 @@ func TestNew_PanicsOnUnsafeAllowlistDimensions(t *testing.T) {
 		{name: "empty label", allowed: map[string][]string{"": {"GET"}}},
 		{name: "label with space", allowed: map[string][]string{"bad label": {"GET"}}},
 		{name: "label with newline", allowed: map[string][]string{"bad\nlabel": {"GET"}}},
+		// A Prometheus label NAME must match [a-zA-Z_][a-zA-Z0-9_]*.
+		// '.' and ':' are valid in label VALUES but never in NAMES, so
+		// an allowlist keyed by such a name could never match a real
+		// label and silently disables the guard — reject it loudly.
+		{name: "label with dot", allowed: map[string][]string{"bad.label": {"GET"}}},
+		{name: "label with colon", allowed: map[string][]string{"bad:label": {"GET"}}},
+		{name: "label starting with digit", allowed: map[string][]string{"9label": {"GET"}}},
 		{name: "empty value", allowed: map[string][]string{"method": {""}}},
 		{name: "value with space", allowed: map[string][]string{"method": {"BAD VALUE"}}},
 		{name: "value too long", allowed: map[string][]string{"method": {strings.Repeat("x", 257)}}},
@@ -166,6 +174,78 @@ func TestObserveCounter_NilVecIsNoOp(t *testing.T) {
 	// Must not panic.
 	g.ObserveCounter(nil, prometheus.Labels{"x": "y"})
 	g.ObserveHistogram(nil, prometheus.Labels{"x": "y"}, 1.0)
+}
+
+func TestPermit_VecNameCacheHitOnRepeatedObservation(t *testing.T) {
+	g, reg := freshGuard(t, map[string][]string{
+		"method": {"GET"},
+	})
+	cv := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "cached_total",
+		Help: "test",
+	}, []string{"method"})
+	require.NoError(t, reg.Register(cv))
+
+	// First rejection resolves and caches the vec name (cache miss);
+	// the second rejection must hit the cache and attribute the same
+	// vec name, proving the cached value is reused rather than dropped.
+	g.ObserveCounter(cv, prometheus.Labels{"method": "DELETE"})
+	g.ObserveCounter(cv, prometheus.Labels{"method": "PUT"})
+
+	assert.Equal(t, float64(2),
+		testutil.ToFloat64(g.rejected.WithLabelValues("cached_total", "method")))
+}
+
+func TestPermit_ConcurrentObservationsAreRaceFree(t *testing.T) {
+	g, reg := freshGuard(t, map[string][]string{
+		"method": {"GET"},
+	})
+
+	const vecs = 8
+	const goroutines = 16
+	const rounds = 50
+	cvs := make([]*prometheus.CounterVec, vecs)
+	for i := range cvs {
+		cv := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "race_total_" + string(rune('a'+i)),
+			Help: "test",
+		}, []string{"method"})
+		require.NoError(t, reg.Register(cv))
+		cvs[i] = cv
+	}
+
+	// Pre-compute the exact number of rejections each vec receives so
+	// the assertion can fail if even one rejection is lost or
+	// misattributed across goroutines.
+	want := make([]int, vecs)
+	for round := 0; round < rounds; round++ {
+		want[round%vecs] += goroutines
+	}
+
+	var wg sync.WaitGroup
+	for w := 0; w < goroutines; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for round := 0; round < rounds; round++ {
+				cv := cvs[round%vecs]
+				// Mix accepted and rejected to exercise both the
+				// cache-miss write path and the lock-free read path.
+				g.ObserveCounter(cv, prometheus.Labels{"method": "GET"})
+				g.ObserveCounter(cv, prometheus.Labels{"method": "BAD"})
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Each vec must have resolved to its own distinct name and recorded
+	// every rejection; nothing should be lost or misattributed.
+	for i := range cvs {
+		name := "race_total_" + string(rune('a'+i))
+		assert.Equal(t, float64(want[i]),
+			testutil.ToFloat64(g.rejected.WithLabelValues(name, "method")),
+			"vec %s should record all its rejections", name)
+	}
 }
 
 func TestNew_ReusesRejectedCounter(t *testing.T) {

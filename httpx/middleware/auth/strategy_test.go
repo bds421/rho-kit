@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -245,6 +246,49 @@ func TestAPIKeyAuthenticator_MultipleHeadersRejected(t *testing.T) {
 	_, err := a.Authenticate(req)
 	require.True(t, errors.Is(err, auth.ErrInvalidCredentials),
 		"multiple header values must be invalid-credentials, not unauthenticated")
+}
+
+func TestAPIKeyAuthenticator_OversizedKeyRejectedWithoutCallingVerifier(t *testing.T) {
+	verifierCalled := false
+	v := auth.APIKeyVerifierFunc(func(context.Context, string) (auth.Identity, error) {
+		verifierCalled = true
+		return auth.Identity{UserID: testUserID}, nil
+	})
+	a := auth.NewAPIKeyAuthenticator("X-API-Key", v)
+
+	// 8KiB + 1 exceeds the maxBearerTokenLen cap shared with the bearer path.
+	oversized := strings.Repeat("k", 8*1024+1)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-API-Key", oversized)
+	_, err := a.Authenticate(req)
+
+	require.True(t, errors.Is(err, auth.ErrInvalidCredentials),
+		"an oversized API key must be rejected as invalid credentials")
+	require.False(t, verifierCalled,
+		"the verifier must not be invoked for an oversized key (DoS hardening)")
+}
+
+func TestAPIKeyAuthenticator_MaxLengthKeyAccepted(t *testing.T) {
+	// A key exactly at the cap must still reach the verifier — the cap is
+	// inclusive of maxBearerTokenLen, matching the bearer-token boundary.
+	atLimit := strings.Repeat("k", 8*1024)
+	verifierCalled := false
+	v := auth.APIKeyVerifierFunc(func(_ context.Context, key string) (auth.Identity, error) {
+		verifierCalled = true
+		if key != atLimit {
+			return auth.Identity{}, errors.New("nope")
+		}
+		return auth.Identity{UserID: testUserID}, nil
+	})
+	a := auth.NewAPIKeyAuthenticator("X-API-Key", v)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-API-Key", atLimit)
+	id, err := a.Authenticate(req)
+
+	require.NoError(t, err, "a key at exactly the length cap must be accepted")
+	require.True(t, verifierCalled, "the verifier must be invoked for a key at the cap")
+	require.Equal(t, testUserID, id.UserID)
 }
 
 func TestAPIKeyAuthenticator_VerifierErrorIsInvalidCredentials(t *testing.T) {

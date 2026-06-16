@@ -830,7 +830,7 @@ func validateGIFEnd(body []byte) error {
 		return ErrInvalidImage
 	}
 	// GIF signature: "GIF87a" or "GIF89a".
-	if !bytes.Equal(body[:3], []byte("GIF")) {
+	if !bytes.Equal(body[:6], []byte("GIF87a")) && !bytes.Equal(body[:6], []byte("GIF89a")) {
 		return ErrInvalidImage
 	}
 	off := 6 // past the 6-byte header.

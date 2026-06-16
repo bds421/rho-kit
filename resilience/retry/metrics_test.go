@@ -61,9 +61,34 @@ func TestMetrics_OutcomeCtxCancelled(t *testing.T) {
 		MaxRetries: 5, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond,
 		Factor: 2, Name: "ctx", Metrics: m,
 	}
-	err := DoWith(ctx, policy, func(_ context.Context) error { return errors.New("nope") })
+	calls := 0
+	err := DoWith(ctx, policy, func(_ context.Context) error {
+		calls++
+		return errors.New("nope")
+	})
 	require.Error(t, err)
+	assert.Equal(t, 0, calls, "pre-cancelled ctx must short-circuit before fn runs")
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.outcomes.WithLabelValues("ctx", outcomeFailedCtxCancelled)))
+
+	// Contract: a ctx cancelled before the first invocation records
+	// attempts=0 (one histogram sample, sum 0) — fn never ran.
+	mfs, gErr := reg.Gather()
+	require.NoError(t, gErr)
+	var sum float64
+	var count uint64
+	for _, mf := range mfs {
+		if mf.GetName() != "retry_attempts" {
+			continue
+		}
+		for _, met := range mf.GetMetric() {
+			if h := met.GetHistogram(); h != nil {
+				sum += h.GetSampleSum()
+				count += h.GetSampleCount()
+			}
+		}
+	}
+	assert.Equal(t, uint64(1), count, "exactly one attempts sample for the cancelled call")
+	assert.Equal(t, 0.0, sum, "pre-cancel records 0 attempts, not a fabricated 1")
 }
 
 // TestMetrics_OutcomeNonRetryable: RetryIf says no on the first

@@ -63,12 +63,21 @@ func (s *fakeStore) FetchPending(_ context.Context, limit int) ([]outbox.Entry, 
 		return nil, s.fetchPendingErr
 	}
 
+	now := time.Now().UTC()
 	var result []outbox.Entry
 	for i := range s.entries {
-		if s.entries[i].Status == outbox.StatusPending && len(result) < limit {
-			s.entries[i] = withStatus(s.entries[i], outbox.StatusProcessing)
-			result = append(result, s.entries[i])
+		if s.entries[i].Status != outbox.StatusPending || len(result) >= limit {
+			continue
 		}
+		// Mirror the production contract (postgres store.go:135 and Entry
+		// doc outbox.go:64-69): an entry whose NextRetryAt is still in the
+		// future is not yet eligible, so exponential backoff actually takes
+		// effect. A nil NextRetryAt means eligible immediately.
+		if s.entries[i].NextRetryAt != nil && s.entries[i].NextRetryAt.After(now) {
+			continue
+		}
+		s.entries[i] = withStatus(s.entries[i], outbox.StatusProcessing)
+		result = append(result, s.entries[i])
 	}
 	return result, nil
 }
@@ -267,6 +276,48 @@ func (s *fakeStore) count() int {
 func withStatus(e outbox.Entry, status outbox.Status) outbox.Entry {
 	e.Status = status
 	return e
+}
+
+// TestFakeStore_FetchPendingSkipsFutureNextRetryAt pins the documented
+// Store.FetchPending contract (store.go:24, Entry doc outbox.go:64-69 and
+// the production postgres store at store.go:135): a pending entry whose
+// NextRetryAt is still in the future must NOT be claimed, so exponential
+// backoff actually gates retries. An entry with a past NextRetryAt and one
+// with a nil NextRetryAt remain immediately eligible.
+func TestFakeStore_FetchPendingSkipsFutureNextRetryAt(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Hour)
+
+	futureID := uuid.UUID(id.NewBytes())
+	pastID := uuid.UUID(id.NewBytes())
+	nilID := uuid.UUID(id.NewBytes())
+
+	store := &fakeStore{
+		entries: []outbox.Entry{
+			{ID: futureID, Status: outbox.StatusPending, NextRetryAt: &future},
+			{ID: pastID, Status: outbox.StatusPending, NextRetryAt: &past},
+			{ID: nilID, Status: outbox.StatusPending},
+		},
+	}
+
+	got, err := store.FetchPending(context.Background(), 10)
+	require.NoError(t, err)
+
+	claimed := make(map[uuid.UUID]bool, len(got))
+	for _, e := range got {
+		claimed[e.ID] = true
+	}
+
+	assert.False(t, claimed[futureID], "entry with future NextRetryAt must be skipped")
+	assert.True(t, claimed[pastID], "entry with past NextRetryAt must be claimed")
+	assert.True(t, claimed[nilID], "entry with nil NextRetryAt must be claimed")
+
+	// The skipped entry must remain pending; the claimed ones move to processing.
+	skipped, ok := store.findByID(futureID)
+	require.True(t, ok)
+	assert.Equal(t, outbox.StatusPending, skipped.Status,
+		"future-retry entry must not be transitioned to processing")
 }
 
 func TestNewWriter_PanicsOnNilStore(t *testing.T) {

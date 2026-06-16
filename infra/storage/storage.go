@@ -118,7 +118,12 @@ func containsInvalidKeyRune(s string) bool {
 		return true
 	}
 	for _, r := range s {
-		if unicode.IsControl(r) || unicode.IsSpace(r) {
+		// unicode.IsControl only covers C0/C1 (Latin-1) control codes, so it
+		// misses Unicode format runes such as U+202E (RTL override), U+200B
+		// (zero-width space), and U+FEFF (BOM). Those render misleadingly in
+		// logs/CLIs and let visually identical keys differ in bytes, so reject
+		// the whole Cf (format) category as well.
+		if unicode.IsControl(r) || unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) {
 			return true
 		}
 	}

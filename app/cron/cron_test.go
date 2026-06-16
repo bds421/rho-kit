@@ -2,7 +2,6 @@ package cron
 
 import (
 	"context"
-	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/bds421/rho-kit/app/v2"
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
-	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 func newMC(t *testing.T, modules ...app.Module) app.ModuleContext {
@@ -75,6 +73,30 @@ func TestModule_InitGatesOnLeader(t *testing.T) {
 	assert.NotNil(t, Scheduler(infra))
 }
 
+// nilElectorModule mimics a foreign ElectorProvider whose Elector()
+// returns a nil interface value. app/leader never does this, but a
+// third-party module registered under "leader-election" might, and
+// the lookup must degrade to unguarded rather than panic.
+type nilElectorModule struct {
+	app.BaseModule
+}
+
+func (nilElectorModule) Elector() leaderelection.Elector { return nil }
+
+func TestModule_InitWithNilElectorRunsUnguarded(t *testing.T) {
+	stub := nilElectorModule{BaseModule: app.NewBaseModule("leader-election")}
+	m := Module()
+	mc := newMC(t, &stub, m)
+
+	// A nil Elector must not panic inside Init (the leader.IsLeader
+	// method value would otherwise dereference a nil interface).
+	require.NoError(t, m.Init(context.Background(), mc))
+
+	infra := app.Infrastructure{}
+	m.Populate(&infra)
+	assert.NotNil(t, Scheduler(infra))
+}
+
 func TestScheduler_NilWhenNotRegistered(t *testing.T) {
 	infra := app.Infrastructure{}
 	assert.Nil(t, Scheduler(infra))
@@ -84,7 +106,3 @@ func TestModule_StopBeforeInit(t *testing.T) {
 	m := Module()
 	require.NoError(t, m.Stop(context.Background()))
 }
-
-// silenceUnused keeps lifecycle/slog imports honest when refactoring.
-var _ = lifecycle.NewRunner
-var _ = slog.Default

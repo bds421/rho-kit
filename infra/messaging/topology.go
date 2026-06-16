@@ -218,11 +218,26 @@ func validateConsumerGroup(consumerGroup string, withRetry bool) error {
 //
 // The returned bindings own detached retry-policy copies so caller mutation
 // after setup cannot alter consumer retry decisions.
+//
+// Defaults applied by [NormalizeBindingSpecs] (e.g. DefaultRetryPolicy) are
+// silently applied here. Use [ComputeBindingsWithWarnings] to surface those
+// defaults in the consumer's startup log.
 func ComputeBindings(specs ...BindingSpec) ([]Binding, error) {
+	bindings, _, err := ComputeBindingsWithWarnings(specs...)
+	return bindings, err
+}
+
+// ComputeBindingsWithWarnings is [ComputeBindings] that additionally returns
+// the [NormalizeBindingSpecs] warnings describing any kit defaults applied to
+// the specs (e.g. DefaultRetryPolicy filled in for a Retry-less, non-
+// WithoutRetry binding). Callers should log the warnings so operators can see
+// that the kit picked a default for them — the silent default-application in
+// ComputeBindings was the gap this method closes.
+func ComputeBindingsWithWarnings(specs ...BindingSpec) ([]Binding, []string, error) {
 	specs = CloneBindingSpecs(specs)
-	_ = NormalizeBindingSpecs(specs)
+	warnings := NormalizeBindingSpecs(specs)
 	if err := ValidateBindingSpecs(specs); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	result := make([]Binding, 0, len(specs))
@@ -236,7 +251,7 @@ func ComputeBindings(specs ...BindingSpec) ([]Binding, error) {
 		}
 		result = append(result, db)
 	}
-	return result, nil
+	return result, warnings, nil
 }
 
 // FindBinding returns the first Binding whose RoutingKey matches the given key.

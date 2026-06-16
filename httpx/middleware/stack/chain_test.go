@@ -67,6 +67,28 @@ func TestChain_ThenFunc(t *testing.T) {
 	assert.Equal(t, "yes", rec.Header().Get("X-Test"))
 }
 
+func TestChain_ThenFuncNilPanics(t *testing.T) {
+	// A nil http.HandlerFunc wraps into a non-nil http.Handler interface, so
+	// without the explicit guard it would slip past Then's nil check and only
+	// panic on the first request. ThenFunc must fail fast at wiring time like
+	// Then does.
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected ThenFunc(nil) to panic at construction time")
+		}
+	}()
+	NewChain(addHeader("X-A", "1")).ThenFunc(nil)
+}
+
+func TestChain_ThenNilPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected Then(nil) to panic")
+		}
+	}()
+	NewChain().Then(nil)
+}
+
 func TestChain_Empty(t *testing.T) {
 	chain := NewChain()
 

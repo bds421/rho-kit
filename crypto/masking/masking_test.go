@@ -66,12 +66,11 @@ func TestMaskURL_HTTP(t *testing.T) {
 }
 
 func TestMaskURL_Empty(t *testing.T) {
+	// url.Parse("") succeeds but yields an empty scheme and host, so MaskURL
+	// falls back to the fully-redacted sentinel rather than leaking "://".
 	got := MaskURL("")
-	// url.Parse("") succeeds with empty scheme/host
-	if got != "://**"+"*" {
-		// Empty URL parses to scheme="" host="" → "://**"
-		// Just verify it doesn't panic and returns something
-		_ = got
+	if got != "***" {
+		t.Fatalf("expected %q, got %q", "***", got)
 	}
 }
 

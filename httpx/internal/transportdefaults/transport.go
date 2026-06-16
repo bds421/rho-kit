@@ -54,13 +54,13 @@ func newFromSource(src http.RoundTripper, tlsConfig *tls.Config, idleConnTimeout
 // "trust any certificate" toggle into a production transport. Diagnostic
 // tooling that genuinely needs the bypass should call tlsclone directly
 // with the [tlsclone.WithAllowInsecureSkipVerify] opt-in.
-func CloneTLSConfigWithFloor(cfg *tls.Config, _ string) *tls.Config {
+func CloneTLSConfigWithFloor(cfg *tls.Config, label string) *tls.Config {
 	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, MinimumTLSVersion)
 	if err != nil {
 		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
-			panic("transportdefaults: CloneTLSConfigWithFloor TLS InsecureSkipVerify=true is not permitted — see tlsclone.WithAllowInsecureSkipVerify for the explicit opt-in")
+			panic("transportdefaults: CloneTLSConfigWithFloor [" + label + "] TLS InsecureSkipVerify=true is not permitted — see tlsclone.WithAllowInsecureSkipVerify for the explicit opt-in")
 		}
-		panic("transportdefaults: CloneTLSConfigWithFloor TLS MaxVersion must allow TLS 1.2 or newer")
+		panic("transportdefaults: CloneTLSConfigWithFloor [" + label + "] TLS MaxVersion must allow TLS 1.2 or newer")
 	}
 	return cloned
 }

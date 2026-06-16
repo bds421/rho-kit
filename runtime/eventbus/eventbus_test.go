@@ -324,6 +324,64 @@ func TestBus_StartRejectsAfterStopBeforeStart(t *testing.T) {
 	assert.Contains(t, err.Error(), "already stopped")
 }
 
+func TestPublish_UnboundedAsync_AfterStopSurfacesErrStopped(t *testing.T) {
+	// In unbounded-async mode the default OnFullError policy applies, so a
+	// Publish after Stop must observe the shutdown rather than silently
+	// spawning a goroutine — matching ErrStopped's documented contract and
+	// the bounded worker-pool path.
+	bus := New(WithUnboundedAsync())
+
+	var fired atomic.Bool
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		fired.Store(true)
+		return nil
+	}, WithAsync(), WithName("after-stop"))
+
+	require.NoError(t, bus.Stop(context.Background()))
+
+	err := Publish(bus, context.Background(), testEvent{ID: "post-stop"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrStopped)
+
+	// The async handler must not have been dispatched after Stop.
+	assert.Never(t, fired.Load, 50*time.Millisecond, 5*time.Millisecond,
+		"unbounded-async dispatch must not spawn a goroutine after Stop")
+}
+
+func TestPublish_UnboundedAsyncDrop_AfterStopSuppressesErrStopped(t *testing.T) {
+	// OnFullDrop publishers treat shutdown as a silent drop: Publish returns
+	// nil and the handler is not dispatched.
+	bus := New(WithUnboundedAsync(), WithOnFull(OnFullDrop))
+
+	var fired atomic.Bool
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		fired.Store(true)
+		return nil
+	}, WithAsync(), WithName("after-stop-drop"))
+
+	require.NoError(t, bus.Stop(context.Background()))
+
+	err := Publish(bus, context.Background(), testEvent{ID: "post-stop"})
+	require.NoError(t, err)
+	assert.Never(t, fired.Load, 50*time.Millisecond, 5*time.Millisecond,
+		"dropped async dispatch must not run after Stop")
+}
+
+func TestPublish_UnboundedAsync_BeforeStopStillDispatches(t *testing.T) {
+	// Sanity guard: the added stopped-check must not regress the normal
+	// pre-Stop dispatch path.
+	bus := New(WithUnboundedAsync())
+
+	var fired atomic.Bool
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		fired.Store(true)
+		return nil
+	}, WithAsync(), WithName("before-stop"))
+
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "live"}))
+	assert.Eventually(t, fired.Load, time.Second, 5*time.Millisecond)
+}
+
 func TestSubscribe_WithName(t *testing.T) {
 	bus := New()
 	Subscribe(bus, func(_ context.Context, _ testEvent) error {

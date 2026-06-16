@@ -177,6 +177,11 @@ func TestAppend_RejectsInvalidBoundedFields(t *testing.T) {
 		mut  func(*Entry)
 	}{
 		{"id too long", func(e *Entry) { e.ID = strings.Repeat("a", MaxIDLen+1) }},
+		{"id invalid utf8", func(e *Entry) { e.ID = string([]byte{0xff}) }},
+		{"id contains nul", func(e *Entry) { e.ID = "entry\x001" }},
+		{"id contains newline", func(e *Entry) { e.ID = "entry\n1" }},
+		{"id contains space", func(e *Entry) { e.ID = "entry 1" }},
+		{"id contains tab", func(e *Entry) { e.ID = "entry\t1" }},
 		{"tenant too long", func(e *Entry) { e.TenantID = strings.Repeat("t", MaxTenantIDLen+1) }},
 		{"tenant invalid token", func(e *Entry) { e.TenantID = "tenant/1" }},
 		{"actor too long", func(e *Entry) { e.Actor = strings.Repeat("a", MaxActorLen+1) }},
@@ -905,6 +910,82 @@ func TestVerifyChain_SpansKeyRotation(t *testing.T) {
 	}
 
 	require.NoError(t, logger2.VerifyChain(context.Background(), "t"))
+}
+
+// countingSecrets wraps a SecretSource and tallies Resolve calls per
+// keyID so a test can assert that List/VerifyChain memoize resolution
+// instead of issuing one (potentially remote) Resolve per verified row.
+type countingSecrets struct {
+	inner    SecretSource
+	mu       sync.Mutex
+	resolves map[string]int
+}
+
+func newCountingSecrets(inner SecretSource) *countingSecrets {
+	return &countingSecrets{inner: inner, resolves: map[string]int{}}
+}
+
+func (c *countingSecrets) CurrentKeyID(ctx context.Context) (string, error) {
+	return c.inner.CurrentKeyID(ctx)
+}
+
+func (c *countingSecrets) Resolve(ctx context.Context, keyID string) ([]byte, error) {
+	c.mu.Lock()
+	c.resolves[keyID]++
+	c.mu.Unlock()
+	return c.inner.Resolve(ctx, keyID)
+}
+
+func (c *countingSecrets) count(keyID string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.resolves[keyID]
+}
+
+// TestList_MemoizesSecretResolution asserts the N+1 fix (one Resolve per
+// distinct keyID per page, not one per row). Without memoization a page
+// of N entries signed under one key would issue N Resolve calls — one
+// remote round-trip each for KMS/Vault-backed sources.
+func TestList_MemoizesSecretResolution(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+
+	const rows = 5
+	for i := 0; i < rows; i++ {
+		_, err := logger.Append(context.Background(), Entry{
+			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+		})
+		require.NoError(t, err)
+	}
+
+	counter := newCountingSecrets(newTestSecrets(t))
+	verifying := New(store, counter)
+	got, _, err := verifying.List(context.Background(), Query{TenantID: "t"})
+	require.NoError(t, err)
+	require.Len(t, got, rows)
+	assert.Equal(t, 1, counter.count("k1"),
+		"List should Resolve each distinct keyID once per page, not once per row")
+}
+
+// TestVerifyChain_MemoizesSecretResolution asserts the same N+1 fix for
+// a chain sweep: one Resolve per distinct keyID across the whole chain.
+func TestVerifyChain_MemoizesSecretResolution(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+
+	const rows = 5
+	for i := 0; i < rows; i++ {
+		_, err := logger.Append(context.Background(), Entry{
+			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+		})
+		require.NoError(t, err)
+	}
+
+	counter := newCountingSecrets(newTestSecrets(t))
+	verifying := New(store, counter)
+	require.NoError(t, verifying.VerifyChain(context.Background(), "t"))
+	assert.Equal(t, 1, counter.count("k1"),
+		"VerifyChain should Resolve each distinct keyID once per sweep, not once per row")
 }
 
 func TestNewStaticSecrets_PanicsOnUnknownCurrent(t *testing.T) {

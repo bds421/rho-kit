@@ -56,7 +56,15 @@ func (c Chain) Then(handler http.Handler) http.Handler {
 // ThenFunc is a convenience that wraps an http.HandlerFunc before applying
 // the chain. Since http.HandlerFunc implements http.Handler, callers can
 // also use Then(fn) directly.
+//
+// Like [Chain.Then], panics if fn is nil. A nil http.HandlerFunc would
+// otherwise convert into a non-nil http.Handler interface and slip past
+// Then's nil check, deferring the panic to the first request instead of
+// failing fast at wiring time.
 func (c Chain) ThenFunc(fn http.HandlerFunc) http.Handler {
+	if fn == nil {
+		return c.Then(nil)
+	}
 	return c.Then(fn)
 }
 

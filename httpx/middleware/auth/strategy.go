@@ -285,7 +285,12 @@ func NewAPIKeyAuthenticator(headerName string, v APIKeyVerifier) Authenticator {
 			return Identity{}, ErrInvalidCredentials
 		}
 		key := values[0]
-		if key == "" || strings.TrimSpace(key) != key || !httpguts.ValidHeaderFieldValue(key) {
+		// Cap the key length before invoking the verifier. Verifiers
+		// typically hash/compare the key, so an attacker-sized header
+		// value would cost CPU per request. Mirror the bearer-token cap
+		// (maxBearerTokenLen) so both credential paths in this package
+		// are hardened consistently.
+		if key == "" || len(key) > maxBearerTokenLen || strings.TrimSpace(key) != key || !httpguts.ValidHeaderFieldValue(key) {
 			return Identity{}, ErrInvalidCredentials
 		}
 		id, err := v.VerifyAPIKey(r.Context(), key)

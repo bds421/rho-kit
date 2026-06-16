@@ -122,6 +122,13 @@ func TestMiddleware_RejectsWith429AndHeaders(t *testing.T) {
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, retry, 1, "Retry-After must be at least 1 second")
 	assert.LessOrEqual(t, retry, 30)
+
+	// The 429 must carry the same Content-Type and Cache-Control as
+	// httpx.WriteError (see assertJSONError): "application/json" without
+	// a charset suffix and "no-store" so the per-key remaining/retry
+	// data is never cached by an intermediary.
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
 }
 
 func TestMiddleware_DefaultScopeIsTenant(t *testing.T) {

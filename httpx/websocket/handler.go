@@ -32,6 +32,14 @@ func Handle(opts ...Option) http.HandlerFunc {
 	if cfg.handler == nil {
 		panic("httpx/websocket: Handle requires WithHandler")
 	}
+	// WithPongTimeout only takes effect when a heartbeat is running, and
+	// the heartbeat is spawned solely when WithPingInterval is set.
+	// Configuring a pong timeout without a ping interval is therefore an
+	// inert, silently-dropped setting — exactly the misconfiguration the
+	// package's other options fail fast on, so reject it at startup.
+	if cfg.pongTimeout > 0 && cfg.pingInterval <= 0 {
+		panic("httpx/websocket: WithPongTimeout requires WithPingInterval (the pong timeout is inert without a heartbeat)")
+	}
 	logger := cfg.logger
 	if logger == nil {
 		logger = slog.Default()

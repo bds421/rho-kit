@@ -3,8 +3,10 @@ package centrifuge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -104,9 +106,15 @@ func (n *Node) Underlying() *cfg.Node {
 	return n.node
 }
 
-// Start runs the centrifuge node. Blocks until Stop is called or
-// the node exits with an error. Implements
-// [runtime/lifecycle.Component].
+// Start runs the centrifuge node. It starts the node's internal
+// goroutines and then blocks until the passed-in ctx is cancelled,
+// satisfying the [runtime/lifecycle.Component] "Start blocks" contract.
+//
+// Cancellation contract: Start returns ONLY when ctx is cancelled.
+// [Node.Stop] shuts the centrifuge node down but does NOT unblock a
+// concurrent Start — callers MUST cancel the context they passed to
+// Start (lifecycle.Runner does this automatically on shutdown) or the
+// Start goroutine leaks. Stop alone is not sufficient to return Start.
 //
 // Safe to call at most once per Node — a second Start returns an
 // error rather than racing the centrifuge internals.
@@ -203,8 +211,8 @@ func (n *Node) installCallbacks() {
 			n.metrics.observePublish(n.classifier(e.Channel))
 			cb(cfg.PublishReply{}, nil)
 		})
-		client.OnDisconnect(func(_ cfg.DisconnectEvent) {
-			n.metrics.observeDisconnect(disconnectReasonClean)
+		client.OnDisconnect(func(e cfg.DisconnectEvent) {
+			n.metrics.observeDisconnect(disconnectReason(e.Disconnect))
 		})
 	})
 }
@@ -224,6 +232,20 @@ func extractBearer(token string, data []byte) string {
 	// Older centrifuge clients sometimes pass the token in the
 	// Data field as a literal string — accept that path too.
 	return strings.TrimPrefix(string(data), "Bearer ")
+}
+
+// disconnectReason classifies a centrifuge disconnect for the
+// kit's disconnects_total metric. centrifuge sets the event's
+// Disconnect to [centrifuge.DisconnectConnectionClosed] (code 3000)
+// when the close was NOT server-initiated — i.e. the client closed
+// the connection cleanly. Any other code means the server tore the
+// connection down (shutdown, expired credentials, slow consumer,
+// kicked, etc.), which the kit reports as "stale".
+func disconnectReason(d cfg.Disconnect) string {
+	if d.Code == cfg.DisconnectConnectionClosed.Code {
+		return disconnectReasonClean
+	}
+	return disconnectReasonStale
 }
 
 // toCentrifugeLogLevel maps the kit's bounded log-level enum to
@@ -268,16 +290,31 @@ func makeLogHandler(logger *slog.Logger) cfg.LogHandler {
 }
 
 // valueToString renders an arbitrary log-field value for
-// [redact.String]. centrifuge fields are typically strings,
-// integers, or short structured shapes; full formatting via fmt
-// would pull in extra cost on every log line.
+// [redact.String]. centrifuge LogEntry.Fields commonly carry
+// scalars (client/user counts, durations, flags) alongside strings,
+// so the common scalar types are handled explicitly and anything
+// else falls back to [fmt.Sprint] rather than being dropped to the
+// empty string — silently discarding diagnostic context in bridged
+// log lines.
 func valueToString(v any) string {
 	switch t := v.(type) {
 	case string:
 		return t
 	case error:
 		return t.Error()
-	default:
+	case bool:
+		return strconv.FormatBool(t)
+	case int:
+		return strconv.Itoa(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case uint64:
+		return strconv.FormatUint(t, 10)
+	case float64:
+		return strconv.FormatFloat(t, 'g', -1, 64)
+	case nil:
 		return ""
+	default:
+		return fmt.Sprint(t)
 	}
 }

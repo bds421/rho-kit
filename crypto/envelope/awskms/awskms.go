@@ -31,9 +31,17 @@ import (
 	"github.com/bds421/rho-kit/crypto/v2/envelope"
 )
 
+// kmsAPI is the subset of *kms.Client this adapter calls. It exists so
+// the Wrap/Unwrap KMS round-trips can be exercised with a fake in tests
+// without constructing a live *kms.Client. *kms.Client satisfies it.
+type kmsAPI interface {
+	Encrypt(context.Context, *kms.EncryptInput, ...func(*kms.Options)) (*kms.EncryptOutput, error)
+	Decrypt(context.Context, *kms.DecryptInput, ...func(*kms.Options)) (*kms.DecryptOutput, error)
+}
+
 // KEK is the AWS KMS-backed [envelope.KEK].
 type KEK struct {
-	c       *kms.Client
+	c       kmsAPI
 	keyID   string
 	context map[string]string
 	// region is captured from the KMS client at construction time so
@@ -143,11 +151,7 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 		EncryptionContext: k.context,
 	})
 	if err != nil {
-		classified := k.classifyAWSError("wrap", err)
-		if classified != err {
-			return "", nil, classified
-		}
-		return "", nil, fmt.Errorf("awskms: encrypt: %w", err)
+		return "", nil, fmt.Errorf("awskms: encrypt: %w", k.classifyAWSError("wrap", err))
 	}
 	if out.KeyId == nil {
 		return "", nil, errors.New("awskms: encrypt response missing KeyId")
@@ -178,11 +182,7 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 		EncryptionContext: k.context,
 	})
 	if err != nil {
-		classified := k.classifyAWSError("unwrap", err)
-		if classified != err {
-			return nil, classified
-		}
-		return nil, fmt.Errorf("awskms: decrypt: %w", err)
+		return nil, fmt.Errorf("awskms: decrypt: %w", k.classifyAWSError("unwrap", err))
 	}
 	return out.Plaintext, nil
 }

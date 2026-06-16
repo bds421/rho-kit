@@ -534,6 +534,11 @@ func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) er
 // Backoff computes successive exponential backoff delays. It wraps the
 // underlying backoff implementation so callers don't depend on third-party
 // types. Use Policy.NewBackoff to create one.
+//
+// A Backoff is NOT safe for concurrent use. Next and Reset mutate shared
+// state (the wrapped cenkalti/backoff, which is itself documented as not
+// thread-safe) without synchronization. Drive a single Backoff from one
+// goroutine, or create a separate Backoff per goroutine.
 type Backoff struct {
 	bo *backoff.ExponentialBackOff
 }

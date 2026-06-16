@@ -203,6 +203,10 @@ func TestAppErrorInterface(t *testing.T) {
 	var _ AppError = &RateLimitError{}
 	var _ AppError = &OperationFailedError{}
 	var _ AppError = &UnavailableError{}
+	var _ AppError = &ForbiddenError{}
+	var _ AppError = &StorageFullError{}
+	var _ AppError = &TimeoutError{}
+	var _ AppError = &PayloadTooLargeError{}
 }
 
 func TestUnavailableError(t *testing.T) {
@@ -297,6 +301,8 @@ func TestRetryable(t *testing.T) {
 		{"Unavailable", NewUnavailable("down"), true},
 		{"DependencyUnavailable", NewDependencyUnavailable("redis", "down", nil), true},
 		{"StorageFull", NewStorageFull("disk full"), true},
+		{"Timeout", NewTimeout("deadline exceeded"), true},
+		{"PayloadTooLarge", NewPayloadTooLarge("too big", 1024), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -313,6 +319,8 @@ func TestShouldRetry(t *testing.T) {
 	assert.True(t, ShouldRetry(NewRateLimit("slow")))
 	assert.True(t, ShouldRetry(NewRateLimitWithRetryAfter("slow", time.Second)))
 	assert.True(t, ShouldRetry(NewUnavailable("down")))
+	assert.True(t, ShouldRetry(NewStorageFull("disk full")))
+	assert.True(t, ShouldRetry(NewTimeout("deadline exceeded")))
 
 	// Non-retryable app errors return false.
 	assert.False(t, ShouldRetry(NewNotFound("x", 1)))
@@ -320,6 +328,7 @@ func TestShouldRetry(t *testing.T) {
 	assert.False(t, ShouldRetry(NewConflict("dup")))
 	assert.False(t, ShouldRetry(NewPermanent("no")))
 	assert.False(t, ShouldRetry(NewOperationFailed("fail")))
+	assert.False(t, ShouldRetry(NewPayloadTooLarge("too big", 1024)))
 
 	// Non-apperror errors return false (fail-safe).
 	assert.False(t, ShouldRetry(errors.New("generic")))

@@ -523,7 +523,11 @@ func localFileError(op string, err error) error {
 	case errors.Is(err, os.ErrInvalid):
 		return fmt.Errorf("localbackend: %s: %w", op, os.ErrInvalid)
 	default:
-		return fmt.Errorf("localbackend: %s failed", op)
+		// Preserve the cause in the unwrap chain (so errors.Is/As can
+		// reach non-sentinel failures such as EIO, EDQUOT, or arbitrary
+		// reader errors during io.Copy) while still redacting the
+		// message, matching membackend's chain-preserving wrap behaviour.
+		return redact.WrapError(fmt.Sprintf("localbackend: %s failed", op), err)
 	}
 }
 

@@ -242,7 +242,7 @@ var errExtractorPanicked = errors.New("tenant: extractor panicked")
 func safeExtractTenant(extractor Extractor, r *http.Request) (id coretenant.ID, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			slog.Default().Error("tenant: extractor panicked",
+			httpx.Logger(r.Context(), slog.Default()).Error("tenant: extractor panicked",
 				redact.Panic(rec),
 				"stack", string(debug.Stack()),
 			)

@@ -4,7 +4,8 @@
 // services that don't, do not import this package.
 //
 // The Module installs:
-//   - an SLO checker reading from prometheus.DefaultGatherer
+//   - an SLO checker reading from prometheus.DefaultGatherer (override
+//     via [ModuleWith] + [WithGatherer] for services on a custom registry)
 //   - a dependency-check that reports SLO breaches on /readyz
 //   - a JSON /slo handler on the internal-ops server (via the
 //     [SLOCheckerProvider] capability)
@@ -33,28 +34,80 @@ const ResourceCheckerKey = "github.com/bds421/rho-kit/app/slo.checker"
 // ModuleName is the registered Module.Name() value.
 const ModuleName = "slo"
 
+// Option configures [Module]/[ModuleWith].
+type Option func(*config)
+
+type config struct {
+	gatherer prometheus.Gatherer
+}
+
+// WithGatherer overrides the [prometheus.Gatherer] the SLO checker
+// reads from. Default is [prometheus.DefaultGatherer].
+//
+// Use this when the service routes its HTTP/SLI metrics to a custom
+// registry rather than the default one; otherwise SLO checks are
+// evaluated against a gatherer that lacks the series, so breaches can
+// never be detected and /slo silently reports no-data.
+//
+// Panics if g is nil.
+func WithGatherer(g prometheus.Gatherer) Option {
+	if g == nil {
+		panic("app/slo: WithGatherer requires a non-nil Gatherer")
+	}
+	return func(c *config) { c.gatherer = g }
+}
+
 // Module returns an [app.Module] that wires SLO monitoring. The
 // SLO list is copied at construction time so later mutation of
 // the slice has no effect.
 //
+// The checker reads from [prometheus.DefaultGatherer]; use
+// [ModuleWith] with [WithGatherer] to point it at a custom registry.
+//
 // Panics if no SLOs are supplied — registering the module with an
 // empty list is almost always a programming mistake.
 func Module(slos ...slo.SLO) app.Module {
+	return ModuleWith(nil, slos...)
+}
+
+// ModuleWith returns an [app.Module] that wires SLO monitoring,
+// applying the supplied [Option]s. It behaves like [Module] but lets
+// callers override the [prometheus.Gatherer] via [WithGatherer]. The
+// SLO list is copied at construction time so later mutation of the
+// slice has no effect.
+//
+// Panics if no SLOs are supplied, or if any option is nil.
+func ModuleWith(opts []Option, slos ...slo.SLO) app.Module {
 	if len(slos) == 0 {
 		panic("app/slo: Module requires at least one SLO")
 	}
-	return &sloModule{slos: append([]slo.SLO(nil), slos...)}
+	cfg := config{gatherer: prometheus.DefaultGatherer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("app/slo: Module option must not be nil")
+		}
+		opt(&cfg)
+	}
+	return &sloModule{
+		slos:     append([]slo.SLO(nil), slos...),
+		gatherer: cfg.gatherer,
+	}
 }
 
 type sloModule struct {
-	slos    []slo.SLO
-	checker *slo.Checker
+	slos     []slo.SLO
+	gatherer prometheus.Gatherer
+	checker  *slo.Checker
 }
 
 func (m *sloModule) Name() string { return ModuleName }
 
 func (m *sloModule) Init(_ context.Context, mc app.ModuleContext) error {
-	m.checker = slo.NewChecker(prometheus.DefaultGatherer, m.slos...)
+	gatherer := m.gatherer
+	if gatherer == nil {
+		gatherer = prometheus.DefaultGatherer
+	}
+	m.checker = slo.NewChecker(gatherer, m.slos...)
 	mc.Logger.Info("slo checker initialized", "slo_count", len(m.slos))
 	return nil
 }

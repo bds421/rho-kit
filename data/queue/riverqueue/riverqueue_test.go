@@ -199,34 +199,12 @@ func TestPublisherEnqueueTx_RejectsOversizePayloadBeforeInsert(t *testing.T) {
 	assert.True(t, errors.Is(err, kitqueue.ErrMessageTooLarge), "err=%v", err)
 }
 
-func TestEnvelopeWorker_DispatchesToHandler(t *testing.T) {
-	called := false
-	handler := func(_ context.Context, msg kitqueue.Message) error {
-		called = true
-		assert.Equal(t, "abc", msg.ID)
-		assert.Equal(t, "user.created", msg.Type)
-		assert.JSONEq(t, `{"id":42}`, string(msg.Payload))
-		return nil
-	}
-
-	w := riverqueue.NewEnvelopeWorker(handler)
-	type envelopeArgs struct {
-		ID      string          `json:"id"`
-		Type    string          `json:"type"`
-		Payload json.RawMessage `json:"payload"`
-	}
-	_ = envelopeArgs{} // ensure the test is at least syntactically aware of the args shape
-
-	// Construct a fake river.Job. River uses generics; we can't
-	// directly construct one without going through river.JobArgs
-	// machinery, so we lean on the fact that Worker.Work is exposed
-	// and exercise it through a synthetic in-package test in River
-	// itself. For the kit's purpose we just confirm the wiring (the
-	// handler hookup) compiles. River's own integration tests cover
-	// the dispatch invariant.
-	_ = w
-	_ = called
-}
+// EnvelopeWorker dispatch (handler hookup + payload clone) is exercised by
+// TestEnvelopeWorker_WorkDispatchesValidatedClone in the internal test
+// file, which can construct a river.Job[envelopeArgs] directly. The
+// external package cannot reference the unexported envelopeArgs type, so a
+// dispatch test here could not build a river.Job and would only restate
+// that internal coverage — hence no vacuous placeholder is kept here.
 
 // Compile-time guard: the adapter implements [kitqueue.Publisher].
 // (river.WorkerDefaults itself is parameterised by a JobArgs type;

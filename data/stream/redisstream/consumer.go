@@ -255,6 +255,13 @@ func WithBlockDuration(d time.Duration) ConsumerOption {
 
 // WithClaimMinIdle sets the minimum idle time before claiming pending messages.
 // The duration must be positive.
+//
+// For safety, keep claimMinIdle larger than the handler+ack execution window
+// (the handler shutdown timeout of 30s plus the 10s ack window). A value below
+// that lets XAUTOCLAIM transfer a message whose handler is still running on the
+// original consumer, producing concurrent duplicate processing and competing
+// ACK/dead-letter writes. At-least-once duplication is inherent, but a too-small
+// claimMinIdle makes it routine rather than crash-only.
 func WithClaimMinIdle(d time.Duration) ConsumerOption {
 	if d <= 0 {
 		panic("redisstream: WithClaimMinIdle requires a positive duration")
@@ -390,13 +397,21 @@ func NewConsumer(client goredis.UniversalClient, group string, opts ...ConsumerO
 		maxPayloadSize:   defaultStreamMaxPayloadSize,
 		handlerTimeout:   handlerShutdownTimeout,
 		deadLetterMaxLen: defaultDeadLetterMaxLen,
-		metrics:          defaultConsumerMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
 			panic("redisstream: NewConsumer option must not be nil")
 		}
 		o(c)
+	}
+	// Materialise the default metrics only if no option supplied a registerer.
+	// Doing this eagerly before the option loop would register all
+	// redis_stream_* collectors on prometheus.DefaultRegisterer even when the
+	// caller opted out via WithConsumerRegisterer, and could panic at
+	// MustRegisterOrGet if the caller had already registered an incompatible
+	// same-name collector there.
+	if c.metrics == nil {
+		c.metrics = defaultConsumerMetrics()
 	}
 	return c, nil
 }

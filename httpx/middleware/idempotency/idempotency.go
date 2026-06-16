@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -298,8 +297,12 @@ func WithRequiredMethods(methods ...string) Option {
 }
 
 // WithoutRequiredMethods disables the "method requires an idempotency
-// key" enforcement entirely — every request becomes optional even for
-// mutating methods. The long, explicit name is deliberate: this is
+// key" enforcement entirely. With no required methods every request —
+// including mutating ones — takes the early pass-through: the middleware
+// performs NO deduplication or caching, and an Idempotency-Key header a
+// client sends anyway is ignored, not honoured opportunistically. (This
+// is also why non-required methods under the default config carry their
+// key straight through.) The long, explicit name is deliberate: this is
 // the unsafe-by-default escape hatch that turns off the middleware's
 // main protection. Use only when the caller has an out-of-band reason
 // (an upstream gateway already enforces idempotency, or the routes
@@ -648,7 +651,13 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 
 			headers := make(map[string][]string, len(rec.Header()))
 			for k, vals := range rec.Header() {
-				if !cfg.preserveHeaders[k] && identityResponseHeaders[http.CanonicalHeaderKey(k)] {
+				// Canonicalise the key for BOTH the preserve override and the
+				// strip list. preserveHeaders keys are stored canonical, so a
+				// handler that wrote an identity header via direct map access
+				// (rc.Header()["set-cookie"] = ...) would otherwise miss the
+				// override and be stripped even when WithPreserveHeaders named it.
+				canonical := http.CanonicalHeaderKey(k)
+				if !cfg.preserveHeaders[canonical] && identityResponseHeaders[canonical] {
 					continue
 				}
 				cp := make([]string, len(vals))
@@ -855,20 +864,12 @@ func canonicalRequestPath(u *url.URL) string {
 // canonicalQuery serializes a url.Values with deterministic key
 // ordering. Two requests whose query strings differ only in
 // parameter order produce identical canonical forms.
+//
+// url.Values.Encode already sorts keys (and preserves per-key value
+// order), so it is exactly the canonical form we need — there is no
+// need to pre-sort into a second url.Values.
 func canonicalQuery(v url.Values) string {
-	if len(v) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(v))
-	for k := range v {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	out := url.Values{}
-	for _, k := range keys {
-		out[k] = v[k]
-	}
-	return out.Encode()
+	return v.Encode()
 }
 
 func replay(w http.ResponseWriter, cached *idem.CachedResponse) {
@@ -897,6 +898,15 @@ func (rc *responseCapture) Header() http.Header {
 }
 
 func (rc *responseCapture) WriteHeader(code int) {
+	// 1xx are informational, repeatable responses (e.g. 103 Early Hints):
+	// net/http allows emitting them before the single final WriteHeader.
+	// Forward them to the wire but do NOT latch — otherwise the first 1xx
+	// would lock statusCode and suppress the real final status, and every
+	// replay would serve the 1xx code with a body as the final response.
+	if code >= 100 && code < 200 {
+		rc.ResponseWriter.WriteHeader(code)
+		return
+	}
 	if rc.wroteHeader {
 		return
 	}

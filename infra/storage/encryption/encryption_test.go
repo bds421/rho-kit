@@ -348,6 +348,93 @@ func TestEncryptedStorage_WrongKey(t *testing.T) {
 	assert.Contains(t, err.Error(), "encryption")
 }
 
+// TestEncryptedStorage_GetReturnsEmptyMetaOnError asserts that Get returns a
+// zero-value ObjectMeta on every error path, matching sibling backends (azure,
+// gcs, s3, local, mem, sftp) which all return storage.ObjectMeta{} with errors.
+// A caller that inspects meta without first checking err must never receive
+// metadata for content that failed authentication, decryption, or a read.
+func TestEncryptedStorage_GetReturnsEmptyMetaOnError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// nonEmptyMeta is what a real backend would hand back alongside an
+	// error/object; the encryption layer must NOT propagate it on errors.
+	nonEmptyMeta := func() storage.ObjectMeta {
+		return storage.ObjectMeta{
+			Size:        4096,
+			ContentType: "application/octet-stream",
+			ETag:        "leaked-etag",
+		}
+	}
+
+	t.Run("backend get error", func(t *testing.T) {
+		t.Parallel()
+		backendErr := errors.New("backend get failed")
+		enc := New(&noListerBackend{
+			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
+			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+				return nil, nonEmptyMeta(), backendErr
+			},
+			del: func(context.Context, string) error { return nil },
+			ex:  func(context.Context, string) (bool, error) { return false, nil },
+		}, StaticKey(testKey(t)))
+
+		_, meta, err := enc.Get(ctx, "file.txt")
+		require.Error(t, err)
+		assert.Equal(t, storage.ObjectMeta{}, meta, "backend get error must not leak backend meta")
+	})
+
+	t.Run("backend read error", func(t *testing.T) {
+		t.Parallel()
+		readErr := errors.New("ciphertext read failed")
+		enc := New(&noListerBackend{
+			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
+			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+				return io.NopCloser(errReader{err: readErr}), nonEmptyMeta(), nil
+			},
+			del: func(context.Context, string) error { return nil },
+			ex:  func(context.Context, string) (bool, error) { return false, nil },
+		}, StaticKey(testKey(t)))
+
+		_, meta, err := enc.Get(ctx, "file.txt")
+		require.Error(t, err)
+		assert.Equal(t, storage.ObjectMeta{}, meta, "read error must not leak backend meta")
+	})
+
+	t.Run("ciphertext exceeds max size", func(t *testing.T) {
+		t.Parallel()
+		const gcmOverhead = 12 + 16
+		oversized := bytes.Repeat([]byte{0xAB}, MaxEncryptableSize+gcmOverhead+1)
+		enc := New(&noListerBackend{
+			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
+			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+				return io.NopCloser(bytes.NewReader(oversized)), nonEmptyMeta(), nil
+			},
+			del: func(context.Context, string) error { return nil },
+			ex:  func(context.Context, string) (bool, error) { return false, nil },
+		}, StaticKey(testKey(t)))
+
+		_, meta, err := enc.Get(ctx, "file.txt")
+		require.Error(t, err)
+		assert.Equal(t, storage.ObjectMeta{}, meta, "size-limit error must not leak backend meta")
+	})
+
+	t.Run("decrypt failure on wrong key", func(t *testing.T) {
+		t.Parallel()
+		backend := membackend.New()
+		writer := New(backend, StaticKey(testKey(t)))
+		reader := New(backend, StaticKey(testKey(t)))
+
+		require.NoError(t, writer.Put(ctx, "secret.txt",
+			bytes.NewReader([]byte("data")),
+			storage.ObjectMeta{ContentType: "text/plain"}))
+
+		_, meta, err := reader.Get(ctx, "secret.txt")
+		require.Error(t, err)
+		assert.Equal(t, storage.ObjectMeta{}, meta, "decrypt failure must not leak backend meta")
+	})
+}
+
 func TestEncryptedStorage_ExistsAndDelete(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

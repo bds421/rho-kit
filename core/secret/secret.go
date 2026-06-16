@@ -205,6 +205,17 @@ func (s *String) Equal(other *String) bool {
 		b = append(b, other.inner.buf...)
 		other.inner.mu.RUnlock()
 	}
+	// Wipe the temporary plaintext copies before returning, mirroring
+	// Use's lifetime-bounding semantics: Equal must not leave unzeroed
+	// plaintext in GC-managed heap memory after the comparison.
+	defer func() {
+		for i := range a {
+			a[i] = 0
+		}
+		for i := range b {
+			b[i] = 0
+		}
+	}()
 	return constantTimeEqual(a, b)
 }
 

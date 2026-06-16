@@ -3,6 +3,7 @@ package logattr
 import (
 	"errors"
 	"log/slog"
+	"strconv"
 	"testing"
 	"time"
 
@@ -129,6 +130,32 @@ func TestURL_RelativePathDropsQueryAndFragment(t *testing.T) {
 func TestURL_EmptyAndInvalid(t *testing.T) {
 	assert.Equal(t, "<redacted empty>", URL("").Value.String())
 	assert.Equal(t, "[INVALID URL]", URL("://invalid").Value.String())
+}
+
+// TestURL_LenientParseStillRedacts pins the documented contract that url.Parse
+// is only a gross-syntax filter: strings that "look" invalid but parse cleanly
+// (no scheme, opaque scheme, plain text) must still take the length-only
+// redacted path rather than the "[INVALID URL]" marker. This guards against a
+// future change that tightens parsing in a way that would surface attacker
+// text — and confirms the marker is a cosmetic hint, not validation. The raw
+// value must never appear verbatim on either path.
+func TestURL_LenientParseStillRedacts(t *testing.T) {
+	lenient := []string{
+		"not a url",
+		"javascript:alert(1)",
+		"data:text/html,<script>secret</script>",
+		"//host/path?token=secret",
+	}
+	for _, raw := range lenient {
+		got := URL(raw).Value.String()
+		assert.Equalf(t, redactedLen(len(raw)), got, "URL(%q) must be length-redacted, not [INVALID URL]", raw)
+		assert.NotContainsf(t, got, "secret", "URL(%q) leaked raw value", raw)
+		assert.NotEqualf(t, "[INVALID URL]", got, "URL(%q) unexpectedly took the invalid-marker path", raw)
+	}
+}
+
+func redactedLen(n int) string {
+	return "<redacted " + strconv.Itoa(n) + " bytes>"
 }
 
 func TestEmail_Masking(t *testing.T) {

@@ -21,10 +21,10 @@ import (
 //     [promutil.OpaqueLabelValue] as a cardinality safety net so a
 //     misbehaving classifier cannot inflate the label set.
 type Metrics struct {
-	connectsTotal     *prometheus.CounterVec
-	disconnectsTotal  *prometheus.CounterVec
-	subscribesTotal   *prometheus.CounterVec
-	publishesTotal    *prometheus.CounterVec
+	connectsTotal    *prometheus.CounterVec
+	disconnectsTotal *prometheus.CounterVec
+	subscribesTotal  *prometheus.CounterVec
+	publishesTotal   *prometheus.CounterVec
 }
 
 // MetricsOption configures [NewMetrics].

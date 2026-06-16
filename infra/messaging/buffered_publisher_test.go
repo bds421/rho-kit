@@ -588,12 +588,46 @@ func TestBufferedPublisher_BufferFull(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when buffer full")
 	}
+	if !errors.Is(err, ErrBufferFull) {
+		t.Fatalf("buffer-full drop must be errors.Is(ErrBufferFull) so callers can shed load programmatically, got %v", err)
+	}
 	if strings.Contains(err.Error(), "2 messages") {
 		t.Fatalf("buffer full error leaked configured size: %v", err)
 	}
 
 	if pub.Pending() != 2 {
 		t.Fatalf("expected 2 pending, got %d", pub.Pending())
+	}
+}
+
+// TestBufferedPublisher_BufferFullAfterDirectFailure exercises the second
+// drop path: a direct publish fails, then the post-failure capacity re-check
+// finds the buffer full and drops the message. It must also carry the
+// ErrBufferFull sentinel.
+func TestBufferedPublisher_BufferFullAfterDirectFailure(t *testing.T) {
+	// Publisher always fails the direct publish so the failure-path append
+	// is taken; maxSize=1 with one buffered message means the re-check drops.
+	fp := &fakePublisher{failUntil: 1000}
+	var healthy atomic.Bool
+	healthy.Store(true)
+	pub := testBufferedPublisherWithHealthPtr(fp, &healthy, WithMaxSize(1))
+
+	// First publish: direct fails, buffer has room (0 -> 1).
+	msg1, _ := NewMessage("test.event", "m1")
+	if err := pub.Publish(context.Background(), "ex", "rk", msg1); err != nil {
+		t.Fatalf("first publish should buffer after direct failure, got %v", err)
+	}
+	if pub.Pending() != 1 {
+		t.Fatalf("expected 1 pending after direct failure, got %d", pub.Pending())
+	}
+
+	// Second publish: buffer already at capacity. Whether it takes the
+	// direct-failure re-check drop or the reserved-slot drop, the result
+	// must be the sentinel.
+	msg2, _ := NewMessage("test.event", "m2")
+	err := pub.Publish(context.Background(), "ex", "rk", msg2)
+	if !errors.Is(err, ErrBufferFull) {
+		t.Fatalf("over-capacity drop must be errors.Is(ErrBufferFull), got %v", err)
 	}
 }
 
@@ -1411,6 +1445,9 @@ func TestBufferedPublisher_PersistFailureAfterDirectPublishFail(t *testing.T) {
 // on-disk pending list stale and creating a duplicate-replay risk
 // on the next process crash.
 func TestBufferedPublisherDrain_SaveErrorFiresHookAndLastSaveError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based failure injection is bypassed when running as root")
+	}
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "buffered.json")
 

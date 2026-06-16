@@ -75,10 +75,24 @@ func TestEncryptDecrypt_TamperedHeaderRejected(t *testing.T) {
 	blob, err := enc.Encrypt(context.Background(), []byte("payload"), nil)
 	require.NoError(t, err)
 
-	// Flip a bit in the keyID byte (offset 5+).
-	blob[5] ^= 0x01
+	// v3 header layout: magic[0:3] ‖ version[3] ‖ uint16 keyID length[4:6] ‖
+	// keyID bytes[6:6+kL] ‖ ... . Corrupt a byte INSIDE the keyID region so
+	// the parse still succeeds but the embedded keyID no longer matches a
+	// registered key — this pins keyID-tamper detection specifically rather
+	// than just shifting the length prefix (which would surface as a parse
+	// error and is already covered by the truncation/malformed tests).
+	kL := int(binary.BigEndian.Uint16(blob[4:6]))
+	require.Greater(t, kL, 0, "keyID region must be non-empty to tamper with")
+	keyIDStart := 6
+	blob[keyIDStart] ^= 0x01
 	_, err = enc.Decrypt(context.Background(), blob, nil)
-	require.Error(t, err) // either unknown keyID or auth-failed
+	require.Error(t, err)
+	// A tampered keyID resolves to an unknown key, so Unwrap rejects it
+	// before the body is ever opened. It must NOT silently fall back to a
+	// known key and it must NOT be reported as a body auth failure.
+	assert.Contains(t, err.Error(), "unwrap DEK",
+		"tampered keyID must be rejected on the unwrap path, not silently accepted")
+	assert.NotErrorIs(t, err, envelope.ErrAuthFailed)
 }
 
 func TestEncryptDecrypt_EmptyPlaintextRoundTrips(t *testing.T) {

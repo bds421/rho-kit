@@ -67,6 +67,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -137,15 +138,19 @@ func main() {
 		ServiceCount: len(services),
 		Services:     services,
 	}
+	var emitErr error
 	switch format {
 	case "json":
-		emitJSON(m)
+		emitErr = emitJSON(os.Stdout, m)
 	case "table":
-		emitTable(m)
+		emitErr = emitTable(os.Stdout, m)
 	case "csv":
-		emitCSV(m)
+		emitErr = emitCSV(os.Stdout, m)
 	default:
 		fail("unknown -format %q (json|table|csv)", format)
+	}
+	if emitErr != nil {
+		fail("write %s manifest: %v", format, emitErr)
 	}
 }
 
@@ -316,44 +321,68 @@ func filterByImport(services []service, target string) []service {
 	return out
 }
 
-func emitJSON(m manifest) {
-	enc := json.NewEncoder(os.Stdout)
+func emitJSON(out io.Writer, m manifest) error {
+	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(m)
+	if err := enc.Encode(m); err != nil {
+		return fmt.Errorf("encode json: %w", err)
+	}
+	return nil
 }
 
-func emitTable(m manifest) {
-	fmt.Printf("kit-catalog: %d service(s) scanned at %s\n\n", m.ServiceCount, m.ScannedAt)
+func emitTable(out io.Writer, m manifest) error {
+	if _, err := fmt.Fprintf(out, "kit-catalog: %d service(s) scanned at %s\n\n", m.ServiceCount, m.ScannedAt); err != nil {
+		return err
+	}
 	for _, s := range m.Services {
-		fmt.Printf("== %s\n   path: %s\n   kit packages (%d):\n", s.Module, s.Path, len(s.KitPackages))
+		if _, err := fmt.Fprintf(out, "== %s\n   path: %s\n   kit packages (%d):\n", s.Module, s.Path, len(s.KitPackages)); err != nil {
+			return err
+		}
 		for _, p := range s.KitPackages {
-			fmt.Printf("     - %s\n", p)
+			if _, err := fmt.Fprintf(out, "     - %s\n", p); err != nil {
+				return err
+			}
 		}
 		if len(s.KitVersions) > 0 {
-			fmt.Println("   kit module pins:")
+			if _, err := fmt.Fprintln(out, "   kit module pins:"); err != nil {
+				return err
+			}
 			keys := make([]string, 0, len(s.KitVersions))
 			for k := range s.KitVersions {
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
-				fmt.Printf("     - %s @ %s\n", k, s.KitVersions[k])
+				if _, err := fmt.Fprintf(out, "     - %s @ %s\n", k, s.KitVersions[k]); err != nil {
+					return err
+				}
 			}
 		}
-		fmt.Println()
+		if _, err := fmt.Fprintln(out); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-func emitCSV(m manifest) {
-	w := csv.NewWriter(os.Stdout)
-	defer w.Flush()
-	_ = w.Write([]string{"service_module", "service_path", "kit_package", "kit_module", "kit_version"})
+func emitCSV(out io.Writer, m manifest) error {
+	w := csv.NewWriter(out)
+	if err := w.Write([]string{"service_module", "service_path", "kit_package", "kit_module", "kit_version"}); err != nil {
+		return err
+	}
 	for _, s := range m.Services {
 		for _, pkg := range s.KitPackages {
 			mod := moduleForImport(pkg, s.KitVersions)
-			_ = w.Write([]string{s.Module, s.Path, pkg, mod, s.KitVersions[mod]})
+			if err := w.Write([]string{s.Module, s.Path, pkg, mod, s.KitVersions[mod]}); err != nil {
+				return err
+			}
 		}
 	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return fmt.Errorf("flush csv: %w", err)
+	}
+	return nil
 }
 
 func fail(format string, args ...any) {

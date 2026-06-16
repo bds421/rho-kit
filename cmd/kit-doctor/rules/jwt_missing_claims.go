@@ -51,6 +51,12 @@ func (r jwtMissingClaimsRule) Run(fset *token.FileSet, file *ast.File) []Finding
 		if !isPackageAliasCall(call, aliases, "Module") {
 			return true
 		}
+		// Options spread from a slice (Module(url, opts...)) cannot be
+		// inspected statically — staying silent avoids a Critical false
+		// positive on conditionally-built option slices.
+		if callOptionsUnverifiable(call) {
+			return true
+		}
 		hasIssuer := callHasOption(call, "WithIssuer") || callHasOption(call, "WithoutIssuer")
 		hasAud := callHasOption(call, "WithAudience") || callHasOption(call, "WithoutAudience")
 

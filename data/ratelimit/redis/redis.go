@@ -255,16 +255,35 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 	if err != nil {
 		return false, 0, redact.WrapError("ratelimit/redis: script", err)
 	}
+	allowed, retryUS, err := parseScriptResult(res)
+	if err != nil {
+		return false, 0, err
+	}
+	if allowed {
+		return true, 0, nil
+	}
+	return false, durationFromMicros(retryUS), nil
+}
+
+// parseScriptResult decodes the GCRA Lua script's reply, which is expected to
+// be a 2-element array of int64 {allowed (0|1), retryAfter microseconds}. Any
+// other shape — wrong length OR non-int64 members — is reported as an explicit
+// error rather than coerced into a silent deny, so a malformed reply is never
+// indistinguishable from a legitimate rate-limit rejection.
+func parseScriptResult(res any) (allowed bool, retryUS int64, err error) {
 	pair, ok := res.([]any)
 	if !ok || len(pair) != 2 {
 		return false, 0, errors.New("ratelimit/redis: unexpected script result shape")
 	}
-	allowed, _ := pair[0].(int64)
-	retryUS, _ := pair[1].(int64)
-	if allowed == 1 {
-		return true, 0, nil
+	allowedRaw, ok := pair[0].(int64)
+	if !ok {
+		return false, 0, errors.New("ratelimit/redis: unexpected script result shape")
 	}
-	return false, durationFromMicros(retryUS), nil
+	retryUS, ok = pair[1].(int64)
+	if !ok {
+		return false, 0, errors.New("ratelimit/redis: unexpected script result shape")
+	}
+	return allowedRaw == 1, retryUS, nil
 }
 
 const maxDurationValue = time.Duration(1<<63 - 1)

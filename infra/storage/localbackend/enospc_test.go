@@ -2,6 +2,7 @@ package localbackend
 
 import (
 	"errors"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -24,6 +25,31 @@ func TestWrapInsufficientCapacity(t *testing.T) {
 	}
 	if !apperror.IsStorageFull(wrapped) {
 		t.Fatalf("expected IsStorageFull true, got false")
+	}
+}
+
+// TestLocalFileError_DefaultBranchPreservesCause verifies that a non-sentinel
+// cause (e.g. EIO, EDQUOT, or an arbitrary reader error during io.Copy) routed
+// through localFileError's default branch remains reachable via errors.Is while
+// the rendered message stays redacted. Matching membackend's chain-preserving
+// wrap keeps observability uniform across sibling backends: the old default
+// branch dropped the cause (no %w), so errors.Is/As could not reach it.
+func TestLocalFileError_DefaultBranchPreservesCause(t *testing.T) {
+	// EIO is not one of the named os.Err* sentinels, so it falls through to
+	// the default branch.
+	cause := &pathErr{op: "read", path: "/secret/internal/path", err: syscall.EIO}
+	mapped := localFileError("write object", cause)
+
+	if !errors.Is(mapped, cause) {
+		t.Fatalf("expected mapped error to chain to the original cause, got %v", mapped)
+	}
+	if !errors.Is(mapped, syscall.EIO) {
+		t.Fatalf("expected mapped error to chain to syscall.EIO, got %v", mapped)
+	}
+	// The redacted message must not leak the cause's sensitive text (the
+	// internal path) verbatim.
+	if msg := mapped.Error(); strings.Contains(msg, "/secret/internal/path") {
+		t.Fatalf("redacted message leaked cause text: %q", msg)
 	}
 }
 

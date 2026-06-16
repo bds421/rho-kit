@@ -18,6 +18,12 @@ const (
 const (
 	pingResultOK      = "ok"
 	pingResultTimeout = "timeout"
+	// pingResultError covers a ping that failed for a reason other than
+	// the pong deadline expiring — typically a peer reset or a
+	// connection already torn down by a racing read-error path. Kept
+	// distinct from pingResultTimeout so the timeout bucket reflects
+	// genuine pong-deadline expiry rather than ordinary connection death.
+	pingResultError = "error"
 )
 
 // Rejection reasons for the upgrade-rejected metric. Kept as a
@@ -99,7 +105,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 			Namespace: "httpx",
 			Subsystem: "websocket",
 			Name:      "pings_total",
-			Help:      "Heartbeat pings exchanged with peers by result (ok=pong received within deadline, timeout=deadline expired and connection was closed).",
+			Help:      "Heartbeat pings exchanged with peers by result (ok=pong received within deadline, timeout=pong deadline expired and connection was closed, error=ping failed for another reason such as a peer reset).",
 		}, []string{"result"}),
 		rejected: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "httpx",

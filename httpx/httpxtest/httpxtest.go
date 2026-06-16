@@ -149,6 +149,13 @@ func DoRealServerRequest(t *testing.T, handler http.Handler, req *http.Request) 
 		t.Fatalf("httpxtest: build request: %v", err)
 	}
 	target.Header = req.Header.Clone()
+	// http.NewRequestWithContext only infers ContentLength/GetBody for
+	// *bytes.Buffer, *bytes.Reader, and *strings.Reader. Pre-built requests
+	// (e.g. from httptest.NewRequest) wrap the body in an opaque NopCloser,
+	// so the rebuilt request would default to a chunked transfer with no
+	// declared length. Preserve the original request's framing instead.
+	target.ContentLength = req.ContentLength
+	target.GetBody = req.GetBody
 	if req.Host != "" {
 		target.Host = req.Host
 	}

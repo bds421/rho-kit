@@ -61,8 +61,12 @@ func TestPublisherConsumer_Roundtrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
+	// done is buffered and signalled at most once: a redelivery or duplicate
+	// handler invocation must not block (buffered) nor panic (closed-once via
+	// sync.Once), so the test fails on its assertions rather than on a
+	// negative WaitGroup counter that would mask the real condition.
+	done := make(chan struct{}, 1)
+	var once sync.Once
 	var received atomic.Value
 
 	go func() {
@@ -70,13 +74,19 @@ func TestPublisherConsumer_Roundtrip(t *testing.T) {
 			BindingSpec: messaging.BindingSpec{Exchange: streamName, ConsumerGroup: group, WithoutRetry: true},
 		}, func(_ context.Context, d messaging.Delivery) error {
 			received.Store(d)
-			wg.Done()
-			cancel()
+			once.Do(func() {
+				done <- struct{}{}
+				cancel()
+			})
 			return nil
 		})
 	}()
 
-	wg.Wait()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("consumer did not deliver a message within timeout: %v", ctx.Err())
+	}
 
 	d, ok := received.Load().(messaging.Delivery)
 	require.True(t, ok, "Consume must hand a Delivery to the handler")

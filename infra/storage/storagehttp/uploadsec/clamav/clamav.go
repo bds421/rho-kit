@@ -350,6 +350,14 @@ func readResponse(r io.Reader) (string, error) {
 			}
 		}
 		if err != nil {
+			// clamd normally NUL-terminates its verdict, but a clean
+			// connection close (io.EOF) after a complete-but-unterminated
+			// response would otherwise discard the accumulated verdict and
+			// fail closed. Treat a non-empty buffer at EOF as a terminated
+			// response so e.g. "stream: OK" is not lost on socket close.
+			if errors.Is(err, io.EOF) && b.Len() > 0 {
+				return b.String(), nil
+			}
 			return "", err
 		}
 	}

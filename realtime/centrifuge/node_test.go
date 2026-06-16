@@ -172,25 +172,69 @@ func TestNewMetrics_RegistersCollectors(t *testing.T) {
 	m := rtcentrifuge.NewMetrics(rtcentrifuge.WithRegisterer(reg))
 	require.NotNil(t, m)
 
-	families, err := reg.Gather()
-	require.NoError(t, err)
-
-	names := map[string]bool{}
-	for _, f := range families {
-		names[f.GetName()] = true
+	// reg.Gather only emits metric families with at least one observed
+	// labelset, and the observe* helpers are unexported, so a Gather
+	// assertion here would be vacuous (the original bug: it touched
+	// names[n] and asserted nothing). Instead assert that NewMetrics
+	// actually registered each collector by re-registering an identical
+	// one and demanding an AlreadyRegisteredError — which only happens
+	// if NewMetrics already claimed that name/label-shape on reg.
+	// The probe must be IDENTICAL to the registered collector (same
+	// name, labels AND help text) for AlreadyRegisteredError; a
+	// mismatched probe yields a descriptor-conflict error instead. So
+	// these probes double as a pin on the wire-form metric name, label
+	// keys, and help strings operators build dashboards against.
+	cases := []struct {
+		name        string
+		subsystemFn func() *prometheus.CounterVec
+	}{
+		{
+			name: "realtime_centrifuge_connects_total",
+			subsystemFn: func() *prometheus.CounterVec {
+				return prometheus.NewCounterVec(prometheus.CounterOpts{
+					Namespace: "realtime", Subsystem: "centrifuge",
+					Name: "connects_total",
+					Help: "Total centrifuge connection attempts by outcome (accepted=auth passed, rejected=auth refused, error=internal failure).",
+				}, []string{"outcome"})
+			},
+		},
+		{
+			name: "realtime_centrifuge_disconnects_total",
+			subsystemFn: func() *prometheus.CounterVec {
+				return prometheus.NewCounterVec(prometheus.CounterOpts{
+					Namespace: "realtime", Subsystem: "centrifuge",
+					Name: "disconnects_total",
+					Help: "Total centrifuge disconnects by reason (clean=client-initiated, stale=server kicked).",
+				}, []string{"reason"})
+			},
+		},
+		{
+			name: "realtime_centrifuge_subscribes_total",
+			subsystemFn: func() *prometheus.CounterVec {
+				return prometheus.NewCounterVec(prometheus.CounterOpts{
+					Namespace: "realtime", Subsystem: "centrifuge",
+					Name: "subscribes_total",
+					Help: "Total centrifuge channel subscriptions by channel class.",
+				}, []string{"class"})
+			},
+		},
+		{
+			name: "realtime_centrifuge_publishes_total",
+			subsystemFn: func() *prometheus.CounterVec {
+				return prometheus.NewCounterVec(prometheus.CounterOpts{
+					Namespace: "realtime", Subsystem: "centrifuge",
+					Name: "publishes_total",
+					Help: "Total messages published to centrifuge channels by channel class.",
+				}, []string{"class"})
+			},
+		},
 	}
-	expected := []string{
-		"realtime_centrifuge_connects_total",
-		"realtime_centrifuge_disconnects_total",
-		"realtime_centrifuge_subscribes_total",
-		"realtime_centrifuge_publishes_total",
-	}
-	for _, n := range expected {
-		// Gather only returns families that have been used. NewMetrics
-		// only registers; usage happens at first call. So families
-		// might be empty until first emit. Trigger one of each by
-		// constructing the node and exercising the option surface.
-		_ = names[n] // touch to silence unused
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := reg.Register(tc.subsystemFn())
+			require.Error(t, err, "expected %s already registered by NewMetrics", tc.name)
+			require.IsType(t, prometheus.AlreadyRegisteredError{}, err)
+		})
 	}
 }
 

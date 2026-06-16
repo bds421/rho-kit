@@ -725,9 +725,11 @@ func (q *Queue) enqueueOpts(queue, msgID string) []asynq.Option {
 // optional per-handler run timeout ([WithInvisibilityTimeout]) is failed and
 // retried. Either path can deliver the same task more than once.
 //
-// Panics if queue name is empty, handler is nil, or another Process call
-// is already active for the same queue name on this Queue instance — fail
-// fast at startup rather than on the first message.
+// Panics if queue name is empty, handler is nil, another Process call is
+// already active for the same queue name on this Queue instance, or the
+// underlying asynq server fails to start — fail fast at startup rather than on
+// the first message. Under [StartProcessors] a Start-failure panic is caught
+// and routed to shutdownFn so the app does not keep running without a consumer.
 func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	if err := q.ready(); err != nil {
 		panic("redisqueue: Process requires an initialised queue")
@@ -767,13 +769,20 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	// once the pool is ready. We then block on the parent context so the
 	// kit's lifecycle (StartProcessors + waitgroup) keeps working
 	// unchanged: Process returns when ctx is cancelled.
+	//
+	// A Start failure means the consumer never came up — a startup failure
+	// indistinguishable, from the caller's point of view, from the other
+	// fail-fast conditions above. We log (with the kit's redact discipline,
+	// since the panic value below is a fixed string) and then panic so
+	// StartProcessors' recover path engages and invokes shutdownFn; a silent
+	// return would leave the app running with no consumer and no signal.
 	if err := srv.Start(asynqHandler); err != nil {
 		q.logger.Error("asynq server failed to start",
 			redact.String("queue", queue),
 			redact.String("consumer_id", q.consumerID),
 			redact.Error(err),
 		)
-		return
+		panic("redisqueue: Process failed to start the asynq server")
 	}
 	<-ctx.Done()
 	// Shutdown drains in-flight handlers up to ShutdownTimeout. Per
@@ -845,6 +854,7 @@ func (q *Queue) handlerForQueue(queue string, handler Handler) asynq.Handler {
 		}
 
 		retryCount, _ := asynq.GetRetryCount(ctx)
+		maxRetry, _ := asynq.GetMaxRetry(ctx)
 		// asynq's retry count is zero-based for the first attempt. The kit's
 		// pre-v2 Message.Attempt was one-based — preserve that for handler
 		// compatibility.
@@ -860,7 +870,15 @@ func (q *Queue) handlerForQueue(queue string, handler Handler) asynq.Handler {
 				// Permanent errors skip retries and route straight to the archive.
 				return redact.WrapSentinel(asynq.SkipRetry, err)
 			}
-			q.metrics.messagesRetried.WithLabelValues(label).Inc()
+			// Only count a retry when asynq will actually re-enqueue this
+			// task. On the final attempt (retryCount == maxRetry) asynq
+			// archives instead of retrying, and onTaskError increments
+			// messagesDeadLettered; counting a retry here too would inflate
+			// messages_retried_total by one per dead-lettered task and skew
+			// retry/DLQ ratio dashboards.
+			if retryCount < maxRetry {
+				q.metrics.messagesRetried.WithLabelValues(label).Inc()
+			}
 			return err
 		}
 		q.metrics.messagesProcessed.WithLabelValues(label).Inc()

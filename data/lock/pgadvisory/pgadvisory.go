@@ -46,6 +46,36 @@ type Locker struct {
 	logger *slog.Logger
 }
 
+// MaxLockKeyLen caps the byte length of a lock key passed to
+// [Locker.Acquire] / [Locker.AcquireTx]. Mirrors
+// [redislock.MaxLockKeyLen]: the key is hashed before it reaches
+// Postgres, but the same hygiene applies so unvalidated bytes never
+// flow into spans/logs and the validation behavior matches its
+// redislock/redlock siblings across the [lock.Locker] interface.
+const MaxLockKeyLen = 1024
+
+// validateLockKey enforces the kit's lock-key shape: non-empty, no
+// control bytes, length within MaxLockKeyLen. pgadvisory hashes the key
+// to an int64 (so an empty key would otherwise hash to a valid id and
+// silently acquire), but it shares this guard with redislock/redlock so
+// code swapping backends through [lock.Locker] gets identical key
+// validation rather than a silent divergence.
+func validateLockKey(key string) error {
+	if key == "" {
+		return errors.New("pgadvisory: lock key must not be empty")
+	}
+	if len(key) > MaxLockKeyLen {
+		return errors.New("pgadvisory: lock key exceeds maximum length")
+	}
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		if c < 0x20 || c == 0x7f {
+			return errors.New("pgadvisory: lock key contains control bytes")
+		}
+	}
+	return nil
+}
+
 // Option configures a [Locker] at construction.
 type Option func(*Locker)
 
@@ -91,9 +121,12 @@ func New(db *sql.DB, opts ...Option) *Locker {
 // Release is called.
 //
 // Returns (nil, false, nil) when the lock is held by another session.
-// Returns (nil, false, err) on backend errors. A nil ctx is rejected
-// (L142) — a nil context is a wiring bug that would otherwise panic
-// deep inside database/sql.
+// Returns (nil, false, err) on backend errors. A nil ctx is rejected —
+// a nil context is a wiring bug that would otherwise panic deep inside
+// database/sql. The key is validated the same way as redislock/redlock
+// (non-empty, no control bytes, within [MaxLockKeyLen]); an invalid key
+// returns (nil, false, err) so backends stay swappable through
+// [lock.Locker].
 func (l *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, error) {
 	if ctx == nil {
 		return nil, false, fmt.Errorf("pgadvisory: Acquire requires a non-nil context")
@@ -106,6 +139,9 @@ func (l *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, erro
 }
 
 func (l *Locker) doAcquire(ctx context.Context, key string) (lock.Lock, bool, error) {
+	if err := validateLockKey(key); err != nil {
+		return nil, false, err
+	}
 	conn, err := l.db.Conn(ctx)
 	if err != nil {
 		return nil, false, redact.WrapError("pgadvisory: acquire conn", err)
@@ -157,6 +193,9 @@ func (l *Locker) AcquireTx(ctx context.Context, tx *sql.Tx, key string) (bool, e
 	}
 	if tx == nil {
 		return false, fmt.Errorf("pgadvisory: tx must not be nil")
+	}
+	if err := validateLockKey(key); err != nil {
+		return false, err
 	}
 	ctx, span := startSpan(ctx, "lock.AcquireTx")
 	defer span.End()

@@ -269,15 +269,20 @@ func (r *Relay) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	r.mu.Lock()
-	if r.started {
-		r.mu.Unlock()
-		cancel()
-		return errors.New("outbox: Relay already started")
-	}
+	// Check stopped before started so a relay that already ran and was
+	// stopped reports the actual terminal state ("already stopped") on a
+	// restart attempt, rather than the misleading "already started". A
+	// relay that is currently running (started && !stopped) still reports
+	// "already started" via the second branch.
 	if r.stopped {
 		r.mu.Unlock()
 		cancel()
 		return errors.New("outbox: Relay already stopped")
+	}
+	if r.started {
+		r.mu.Unlock()
+		cancel()
+		return errors.New("outbox: Relay already started")
 	}
 	r.started = true
 	r.cancel = cancel

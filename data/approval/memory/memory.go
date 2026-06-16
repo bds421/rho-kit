@@ -148,6 +148,11 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 		limit = defaultLimit
 	}
 
+	// Collect shallow struct copies during the scan — the Payload slice
+	// header is shared, so no payload bytes are copied yet. cloneRequest
+	// (a per-request, up-to-MaxPayloadSize byte copy) is deferred until
+	// after cursor/limit trimming so only the rows actually returned to
+	// the caller pay the deep-copy cost, not every match.
 	matched := make([]approval.Request, 0, limit+1)
 	i := 0
 	for _, r := range s.requests {
@@ -160,7 +165,7 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 		if !match(r, q) {
 			continue
 		}
-		matched = append(matched, cloneRequest(r))
+		matched = append(matched, r)
 	}
 	sort.Slice(matched, func(i, j int) bool {
 		ti, tj := matched[i].CreatedAt, matched[j].CreatedAt
@@ -186,6 +191,11 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 		last := matched[limit-1]
 		next = s.cursorSigner.Encode(last.CreatedAt, last.ID)
 		matched = matched[:limit]
+	}
+	// Deep-copy only the page we hand back so callers cannot mutate the
+	// stored Payload bytes through the returned slice.
+	for idx := range matched {
+		matched[idx] = cloneRequest(matched[idx])
 	}
 	return matched, next, nil
 }
@@ -268,6 +278,16 @@ func (s *Store) decide(ctx context.Context, id, decidedBy, reason string, approv
 }
 
 // MarkExecuted moves an approved request to executed.
+//
+// ExpiresAt gates only the pending->decision transition (see decide):
+// it is deliberately NOT re-checked here. Once a request is
+// StateApproved it stays executable regardless of how much later
+// MarkExecuted runs, so an approval is a durable execution token that
+// does not silently lapse mid-flight while the executor is doing its
+// work. Callers that need a bounded approval-to-execution window must
+// enforce it above the store (e.g. compare ExpiresAt before invoking
+// MarkExecuted). This matches the [approval.Store.MarkExecuted]
+// contract and the postgres implementation.
 func (s *Store) MarkExecuted(ctx context.Context, id string) (approval.Request, error) {
 	if err := ctx.Err(); err != nil {
 		return approval.Request{}, err

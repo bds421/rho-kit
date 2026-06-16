@@ -128,22 +128,33 @@ func TestLocker_RetryRespectsContextCancellation(t *testing.T) {
 }
 
 func TestLocker_ReleaseOnlyByOwner(t *testing.T) {
-	_, client := setupRedis(t)
+	mr, client := setupRedis(t)
 	ctx := context.Background()
 
-	lc := redislock.NewLocker(client)
+	lc := redislock.NewLocker(client, redislock.WithTTL(10*time.Second))
 
+	// Acquire the lock; the handle owns the key under its own token.
 	l1, ok, err := lc.Acquire(ctx, "test:lock")
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	// Releasing the first handle frees the lock.
-	require.NoError(t, l1.Release(ctx))
+	// Simulate another process reclaiming the key under a different
+	// token (e.g. after a TTL race). The handle no longer owns the key.
+	const foreignToken = "owned-by-someone-else"
+	require.NoError(t, mr.Set("test:lock", foreignToken))
 
-	// A second handle's Release on the same (now empty) key returns nil
-	// (no-op), not ErrLockLost — handle never had a token.
-	l2 := struct{ lock.Lock }{}
-	_ = l2
+	// The original handle's Release must be token-fenced: it surfaces
+	// ErrLockLost rather than silently succeeding...
+	relErr := l1.Release(ctx)
+	assert.ErrorIs(t, relErr, lock.ErrLockLost,
+		"Release by a non-owner must surface ErrLockLost, not succeed")
+
+	// ...and it must NOT delete the foreign holder's key. An unfenced
+	// (unconditional DEL) release would clobber the other owner here.
+	got, getErr := mr.Get("test:lock")
+	require.NoError(t, getErr)
+	assert.Equal(t, foreignToken, got,
+		"Release must not delete a key owned by a different token")
 }
 
 func TestLocker_ReleaseSurfacesErrLockLost(t *testing.T) {

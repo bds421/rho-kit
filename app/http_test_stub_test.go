@@ -18,16 +18,16 @@ import (
 // into app/http.Module() options in wave 94.
 type stubHTTPConfig struct {
 	BaseModule
-	plaintext            bool
-	optClientCerts       bool
-	internalNonLoopback  bool
-	reloadingTLSActive   bool
-	reloadingTLSOpts     []netutil.FilesCertificateSourceOption
-	tlsReloadSignals     []os.Signal
-	disableDefaultStack  bool
-	stackOptionList      []stack.Option
-	serverOptionList     []httpx.ServerOption
-	customReadinessImpl  http.Handler
+	plaintext           bool
+	optClientCerts      bool
+	internalNonLoopback bool
+	reloadingTLSActive  bool
+	reloadingTLSOpts    []netutil.FilesCertificateSourceOption
+	tlsReloadSignals    []os.Signal
+	disableDefaultStack bool
+	stackOptionList     []stack.Option
+	serverOptionList    []httpx.ServerOption
+	customReadinessImpl http.Handler
 }
 
 // HTTPConfigProvider implementation.

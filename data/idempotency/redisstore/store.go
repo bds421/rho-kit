@@ -284,9 +284,9 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
 	ctx, span := s.startSpan(ctx, "idempotency.TryLock")
 	defer span.End()
-	token, ok, fingerprintMatch, err := s.doTryLock(ctx, key, fingerprint, ttl)
+	token, fingerprintMismatch, ok, err := s.doTryLock(ctx, key, fingerprint, ttl)
 	recordResult(span, err)
-	return token, ok, fingerprintMatch, err
+	return token, fingerprintMismatch, ok, err
 }
 
 func (s *Store) doTryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {

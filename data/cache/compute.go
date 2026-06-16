@@ -18,6 +18,14 @@ import (
 var ErrCacheClosed = errors.New("cache: ComputeCache is closed")
 
 // ComputeFunc computes a cache value. Returns the value, its TTL, and any error.
+//
+// The ctx passed to ComputeFunc is NOT the caller's context. Because a
+// single compute is shared across all concurrent callers (singleflight),
+// it is derived from a detached background context: it carries no caller
+// context values (trace spans, auth tokens, tenant IDs, request-scoped
+// loggers) and its deadline is the LEADER's deadline (see [ComputeCache.GetOrCompute]).
+// A ComputeFunc that makes authenticated or traced backend calls must
+// source those values from the closure it is defined in, not from ctx.
 type ComputeFunc[T any] func(ctx context.Context) (T, time.Duration, error)
 
 // envelope is the structure stored in the cache backend.
@@ -160,7 +168,14 @@ type ComputeCache[T any] struct {
 }
 
 // NewComputeCache creates a ComputeCache that wraps the given backend.
-// The prefix is prepended to all keys to avoid collisions.
+// The prefix is prepended verbatim to all keys (full = prefix + key) to
+// avoid collisions between caches sharing one backend.
+//
+// The prefix is concatenated WITHOUT an inserted delimiter, so callers
+// MUST include a trailing separator (e.g. "users:") to keep the keyspace
+// unambiguous. Without one, related prefixes collide — prefix "user" with
+// key "s1" maps to the same backend key as prefix "users" with key "1",
+// letting two caches silently read each other's envelopes.
 //
 // Returns an error if backend is nil, or if the prefix contains invalid
 // characters or is too long.
@@ -235,6 +250,19 @@ func (cc *ComputeCache[T]) fullKey(key string) (string, error) {
 //     computes the value, stores it, and returns.
 //
 // Errors from fn are propagated to all waiters and are NOT cached.
+//
+// Shared-compute caveats (singleflight): on a cache miss the FIRST
+// concurrent caller for a key becomes the leader and runs fn; later
+// callers are followers that wait on the leader's single result.
+//   - Context values are detached: fn runs on a background-derived
+//     context with none of any caller's context values. See [ComputeFunc].
+//   - Deadline amplification: fn is bound to the LEADER's deadline (or
+//     [WithComputeTimeout] when the leader has none). If the leader has a
+//     short deadline, fn may be cancelled before a follower with a larger
+//     budget would have needed — every waiting follower then receives the
+//     leader's context.DeadlineExceeded. Because errors are not cached, a
+//     herd may retry. A follower may still abort early on its OWN ctx and
+//     receive that ctx's error without aborting the shared compute.
 func (cc *ComputeCache[T]) GetOrCompute(ctx context.Context, key string, fn ComputeFunc[T]) (T, error) {
 	var zero T
 
@@ -369,6 +397,15 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 	waitStart := time.Now()
 	if isFollower {
 		cc.recordSingleflightFollower()
+	} else {
+		// The caller that stored the entry owns its removal. Cleaning up
+		// here (rather than inside the DoChan closure below) guarantees
+		// the entry is dropped even when this foreground call JOINS an
+		// existing singleflight leader — e.g. a triggerBackgroundRefresh
+		// already holds leadership for this key, so the foreground closure
+		// never runs. Without this the stale entry would persist and
+		// misclassify every later caller as a follower.
+		defer cc.inflight.Delete(full)
 	}
 
 	// FR-048 [MED]: use DoChan + select on ctx so a short-deadline
@@ -379,7 +416,6 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 		// for the duration of the actual compute.
 		cc.recordSingleflightInflightInc()
 		defer cc.recordSingleflightInflightDec()
-		defer cc.inflight.Delete(full)
 		val, execErr := cc.executeCompute(computeCtx, full, fn)
 		if execErr != nil {
 			cc.recordError()

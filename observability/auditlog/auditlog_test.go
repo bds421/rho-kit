@@ -703,7 +703,7 @@ func TestAppend_BuildsHMACChain(t *testing.T) {
 			"event[%d].PrevHMAC must equal event[%d].HMAC", i, i-1,
 		)
 		// HMAC must be recomputable from content.
-		expected := computeHMAC(testChainKey, events[i].PrevHMAC, eventWithoutHMAC(events[i]))
+		expected := computeHMAC(testChainKey, eventWithoutHMAC(events[i]))
 		assert.Equal(t, expected, events[i].HMAC,
 			"event[%d].HMAC must be recomputable", i)
 	}
@@ -711,6 +711,44 @@ func TestAppend_BuildsHMACChain(t *testing.T) {
 	// And the canonical entry point validates the whole chain.
 	require.NoError(t, VerifyChain(events, testChainKey))
 	require.NoError(t, l.VerifyChain(ctx))
+}
+
+// TestCanonicalEvent_OnDiskFormatGolden pins the canonical HMAC encoding to a
+// hard-coded golden value. The encoding is part of the on-disk contract (see
+// canonicalEvent's doc): changing it silently invalidates every previously
+// written chain. This test is the trip-wire — if the byte layout, field
+// order, length-prefixing, timestamp width, or the (intentionally duplicated)
+// PrevHMAC placement ever changes, the golden HMAC will no longer match and
+// this test fails, forcing a deliberate decision plus a migration note.
+func TestCanonicalEvent_OnDiskFormatGolden(t *testing.T) {
+	ev := Event{
+		ID:        "01890000-0000-7000-8000-000000000001",
+		Timestamp: time.Unix(0, 1_700_000_000_000_000_123).UTC(),
+		Actor:     "alice",
+		Action:    "create",
+		Resource:  "orders/42",
+		Status:    "success",
+		IPAddress: "203.0.113.7",
+		TraceID:   "0af7651916cd43dd8448eb211c80319c",
+		Metadata:  json.RawMessage(`{"k":"v"}`),
+		PrevHMAC:  bytes.Repeat([]byte{0xAB}, hmacSize),
+	}
+
+	// Golden HMAC-SHA256 over canonicalEvent(ev) keyed by testChainKey.
+	const wantHex = "99d1af0020a42715ba0ab9988b1229cf1e0cb28b2fab335cd82b02a6fc4a6d8a"
+	got := fmt.Sprintf("%x", computeHMAC(testChainKey, ev))
+	assert.Equal(t, wantHex, got,
+		"canonical on-disk HMAC format changed; existing chains would no longer verify")
+
+	// The encoder must read PrevHMAC from the event field alone: mutating
+	// PrevHMAC must change the HMAC (proves the link is actually covered),
+	// and two events differing only by PrevHMAC must not collide.
+	other := ev
+	other.PrevHMAC = bytes.Repeat([]byte{0xCD}, hmacSize)
+	assert.NotEqual(t,
+		fmt.Sprintf("%x", computeHMAC(testChainKey, ev)),
+		fmt.Sprintf("%x", computeHMAC(testChainKey, other)),
+		"PrevHMAC must be covered by the canonical HMAC")
 }
 
 // TestAppend_TamperedRecordDetected makes the threat-model claim concrete:
@@ -768,7 +806,7 @@ func TestVerifyChain_RejectsPrependedRecord(t *testing.T) {
 	// Attacker even computes a "plausible" HMAC with their own key — but
 	// it cannot match the legitimate chain key.
 	attackerKey := bytes.Repeat([]byte("z"), MinChainKeyLen)
-	forged.HMAC = computeHMAC(attackerKey, nil, forged)
+	forged.HMAC = computeHMAC(attackerKey, forged)
 
 	prepended := append([]Event{forged}, original...)
 	err := VerifyChain(prepended, testChainKey)

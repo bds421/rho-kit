@@ -278,7 +278,38 @@ func TestAllowedMIMETypes(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "hello world", string(got))
 	})
+
+	t.Run("preserves unwrap chain on sniff read error", func(t *testing.T) {
+		t.Parallel()
+		meta := ObjectMeta{}
+		v := AllowedMIMETypes("image/png")
+
+		_, err := v(context.Background(), failingReader{err: context.Canceled}, &meta)
+		require.Error(t, err)
+		// The cause must remain reachable so callers can classify it.
+		assert.ErrorIs(t, err, context.Canceled)
+		// It is a transport read failure, not a validation rejection.
+		assert.NotErrorIs(t, err, ErrValidation)
+	})
+
+	t.Run("sniff read error does not leak the cause text", func(t *testing.T) {
+		t.Parallel()
+		meta := ObjectMeta{}
+		v := AllowedMIMETypes("image/png")
+
+		_, err := v(context.Background(), failingReader{err: errors.New("secret-token leak")}, &meta)
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "secret-token")
+	})
 }
+
+// failingReader always fails its first read with a fixed error, simulating a
+// cancelled or transient transport failure during MIME sniffing.
+type failingReader struct {
+	err error
+}
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
 
 func TestMaxFileSize(t *testing.T) {
 	t.Parallel()

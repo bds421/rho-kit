@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"log/slog"
@@ -330,6 +331,84 @@ func TestLogger_Logs500AndRepanicsWhenHandlerPanicsBeforeHeaders(t *testing.T) {
 	}()
 
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic", nil))
+}
+
+func TestWithClientIPResolver_PanicsOnNilResolver(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil resolver")
+		}
+	}()
+	WithClientIPResolver(nil)
+}
+
+// hijackableRecorder is an httptest.ResponseRecorder that also implements
+// http.Hijacker, returning a nil error so the kit's ResponseRecorder latches
+// WasHijacked() (mirroring a successful WebSocket upgrade).
+type hijackableRecorder struct {
+	*httptest.ResponseRecorder
+}
+
+func (h *hijackableRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	// Return a non-nil net.Conn so the recorder treats the hijack as
+	// successful; the conn is never used by the test handler.
+	c1, _ := net.Pipe()
+	return c1, bufio.NewReadWriter(bufio.NewReader(c1), bufio.NewWriter(c1)), nil
+}
+
+func TestLogger_HijackedRequestLogs101AndHijackedAttr(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := Logger(logger, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatalf("wrapped writer did not expose http.Hijacker")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack failed: %v", err)
+		}
+		_ = conn.Close()
+		// Deliberately do NOT call WriteHeader: a hijacked WebSocket upgrade
+		// writes 101 to the raw conn, so the recorder's status stays at its
+		// default 200 unless the middleware special-cases hijacking.
+	}))
+
+	rec := &hijackableRecorder{ResponseRecorder: httptest.NewRecorder()}
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	handler.ServeHTTP(rec, req)
+
+	logOutput := buf.String()
+	if !bytes.Contains(buf.Bytes(), []byte("status=101")) {
+		t.Fatalf("expected status=101 for hijacked request, got: %s", logOutput)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("hijacked=true")) {
+		t.Fatalf("expected hijacked=true attr, got: %s", logOutput)
+	}
+	if bytes.Contains(buf.Bytes(), []byte("status=200")) {
+		t.Fatalf("hijacked request must not be logged with bogus status=200, got: %s", logOutput)
+	}
+}
+
+func TestLogger_NonHijackedRequestOmitsHijackedAttr(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := Logger(logger, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if bytes.Contains(buf.Bytes(), []byte("hijacked=true")) {
+		t.Fatalf("non-hijacked request must not carry hijacked attr, got: %s", buf.String())
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("status=200")) {
+		t.Fatalf("expected status=200 for normal request, got: %s", buf.String())
+	}
 }
 
 func TestLogger_PanicAfterHeaderLogsWrittenStatusAndRepanics(t *testing.T) {

@@ -3,6 +3,7 @@ package saga
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 )
@@ -29,7 +30,12 @@ func NewMemoryStateStore() *MemoryStateStore {
 // Put implements [StateStore].
 func (m *MemoryStateStore) Put(_ context.Context, inst Instance) error {
 	if inst.ID == "" {
-		return ErrInstanceNotFound // misuse: ID-less Put is a programmer bug
+		// Misuse: an ID-less Put is a programmer bug, not a missing
+		// instance. Returning ErrInstanceNotFound here would make a
+		// caller's errors.Is(err, ErrInstanceNotFound) misclassify the
+		// validation failure as "instance absent". Mirror the pgstore
+		// backend, which returns a distinct validation error.
+		return errors.New("saga: Put requires a non-empty Instance.ID")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

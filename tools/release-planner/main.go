@@ -19,14 +19,13 @@ import (
 )
 
 type module struct {
-	Dir             string
-	Path            string
-	Requires        []string
-	Deps            []string
-	ChangedFiles    []string
-	RootImpacted    bool
-	PreviousTag     string
-	ChangedSinceTag bool
+	Dir          string
+	Path         string
+	Requires     []string
+	Deps         []string
+	ChangedFiles []string
+	RootImpacted bool
+	PreviousTag  string
 }
 
 func main() {
@@ -69,9 +68,6 @@ func main() {
 		}
 		sort.Strings(m.Deps)
 		m.PreviousTag = latestTag(dir)
-		if m.PreviousTag != "" {
-			m.ChangedSinceTag = gitHasChanges(m.PreviousTag, dir)
-		}
 	}
 
 	changedFiles, warnings := collectChangedFiles(*base, *includeWorktree)
@@ -434,11 +430,6 @@ func latestTag(dir string) string {
 		return ""
 	}
 	return strings.TrimSpace(lines[0])
-}
-
-func gitHasChanges(ref, dir string) bool {
-	cmd := exec.Command("git", "diff", "--quiet", ref+"..HEAD", "--", dir)
-	return cmd.Run() != nil
 }
 
 func commandOK(name string, args ...string) bool {

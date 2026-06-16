@@ -111,6 +111,13 @@ func classifyRetryOutcome(err error, ctx context.Context) string {
 // against. validateLabel guards against an unbounded Policy.Name
 // inflating series cardinality; bad names are recorded under
 // "_invalid" so the operator still sees the event.
+//
+// attempts is the total fn() invocations the call made. It is 0 only
+// for the failed_ctx_cancelled outcome when ctx was already cancelled
+// before the first invocation; that 0 falls below the histogram's
+// smallest bucket (1) on purpose — the outcomes counter still records
+// the cancellation, and a 0-attempt sample is the truthful "fn never
+// ran" signal rather than a fabricated attempts=1.
 func (m *Metrics) recordOutcome(name, outcome string, attempts int) {
 	if m == nil {
 		return

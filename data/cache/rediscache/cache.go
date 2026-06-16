@@ -160,13 +160,20 @@ func NewCache(client goredis.UniversalClient, name string, opts ...CacheOption) 
 		client:       client,
 		name:         name,
 		maxValueSize: defaultMaxValueSize,
-		metrics:      defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
 			panic("rediscache: NewCache option must not be nil")
 		}
 		o(rc)
+	}
+	// Only fall back to the default-registry metrics when no option set
+	// them. Evaluating defaultMetrics() in the struct literal above would
+	// register hits_total/misses_total on prometheus.DefaultRegisterer on
+	// the first NewCache call even when every caller passes
+	// WithMetricsRegisterer, polluting the global registry.
+	if rc.metrics == nil {
+		rc.metrics = defaultMetrics()
 	}
 	if rc.logger == nil {
 		rc.logger = slog.Default()
@@ -225,6 +232,10 @@ func (rc *Cache) Get(ctx context.Context, key string) (val []byte, err error) {
 			"max_bytes", rc.maxValueSize,
 			redact.String("key", key),
 		)
+		// Count as a miss for consistent hit-ratio accounting: this slot
+		// yielded no usable value, matching the pre-GET oversize path and
+		// the capped-MGet TOCTOU branch.
+		rc.metrics.misses.WithLabelValues(rc.name).Inc()
 		return nil, fmt.Errorf("redis cache get: %w", sharedcache.ErrValueTooLarge)
 	}
 	rc.metrics.hits.WithLabelValues(rc.name).Inc()
@@ -330,6 +341,10 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 			}
 			s, ok := v.(string)
 			if !ok {
+				// A non-string MGET reply (e.g. a wrong-typed key) yields
+				// no usable value; count it as a miss to match the nil
+				// case and the capped path's per-key miss accounting.
+				rc.metrics.misses.WithLabelValues(rc.name).Inc()
 				continue
 			}
 			rc.metrics.hits.WithLabelValues(rc.name).Inc()

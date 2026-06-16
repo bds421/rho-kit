@@ -93,7 +93,16 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // WithStatusCode overrides the response status. Default: 500.
+//
+// The code must be a valid HTTP status (100–999, the range net/http's
+// WriteHeader accepts); anything else panics at construction. This fails
+// fast rather than letting WriteHeader panic later from inside the deferred
+// recovery path — where the panic would escape to net/http and abort the
+// connection with no JSON body.
 func WithStatusCode(code int) Option {
+	if code < 100 || code > 999 {
+		panic("middleware/recover: WithStatusCode requires a valid HTTP status code (100–999)")
+	}
 	return func(c *config) { c.statusCode = code }
 }
 

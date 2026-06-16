@@ -309,30 +309,26 @@ func (r *Runner) stopAll(parent context.Context) error {
 		perStep = perStepMinimum
 	}
 
-	// salvageBudget is the tiny budget given to components whose Stop
-	// is invoked AFTER the shared deadline has fired. We still call
-	// Stop so each component can release goroutines / file handles,
-	// but we cap the time so a stuck Stop cannot block shutdown
-	// indefinitely.
-	const salvageBudget = 1 * time.Second
-
 	var errs []error
 	for i := n - 1; i >= 0; i-- {
 		var stepCtx context.Context
 		var stepCancel context.CancelFunc
 		if sharedCtx.Err() != nil {
-			// Deadline already exceeded — still invoke Stop with a
-			// short salvage budget so each component sees the
-			// shutdown signal. This prevents goroutine leaks when
-			// an earlier component consumes the full stopTimeout.
-			// The salvage context is derived from the force-cancel
-			// parent (NOT from a fresh context.Background()) so a
-			// second SIGINT immediately interrupts an in-flight
-			// salvage stop instead of the operator having to wait
-			// up to salvageBudget per remaining component (L-147).
-			r.logger.Warn("shutdown deadline exceeded, stopping remaining component with salvage budget",
+			// Deadline already exceeded — still invoke Stop so each
+			// component can release goroutines / file handles, but
+			// derive the step context from sharedCtx (already
+			// deadline-exceeded) instead of starting a fresh
+			// per-component timer. This keeps the documented
+			// contract honest: stopTimeout is the HARD ceiling, so a
+			// Stop that respects ctx observes ctx.Done() immediately
+			// rather than getting a fresh budget that would let total
+			// shutdown drift to stopTimeout + N×budget. A second
+			// SIGINT cancels parent, which already cancels sharedCtx
+			// (its child), so the salvage path stays force-
+			// interruptible (L-147).
+			r.logger.Warn("shutdown deadline exceeded, stopping remaining component with cancelled context",
 				logattr.Component(r.components[i].name))
-			stepCtx, stepCancel = context.WithTimeout(parent, salvageBudget)
+			stepCtx, stepCancel = context.WithCancel(sharedCtx)
 		} else {
 			stepCtx, stepCancel = context.WithTimeout(sharedCtx, perStep)
 		}

@@ -39,6 +39,14 @@ var ErrInvalidMethod = errors.New("openapigen: invalid HTTP method")
 // registration call. The kit does not silently substitute "/".
 var ErrEmptyPath = errors.New("openapigen: empty path")
 
+// ErrInvalidPath is returned when a non-empty path does not start with
+// "/". OAS 3.1 path templates are absolute; a relative path such as
+// "widgets" yields an OAS-invalid document and, via [Handle], a mux
+// pattern ("METHOD widgets") that net/http rejects with a panic.
+// Rejecting it in [Spec.Register] keeps the spec and the mux
+// consistent.
+var ErrInvalidPath = errors.New("openapigen: path must start with \"/\"")
+
 // ErrSchemaGeneration wraps any error returned by [validate.SchemaFor]
 // during registration so callers can [errors.Is] against it.
 var ErrSchemaGeneration = errors.New("openapigen: schema generation failed")
@@ -69,9 +77,9 @@ type Spec struct {
 // `<method, path>` pair. Stored in a map keyed by "<METHOD> <path>"
 // so duplicate registration surfaces ErrRouteAlreadyRegistered.
 type routeState struct {
-	method      string
-	path        string
-	op          Operation
+	method string
+	path   string
+	op     Operation
 	// responses is the working map; flushed into op.Responses at render.
 	responses map[int]Response
 	// requestSchema is held separately so subsequent option calls
@@ -201,6 +209,9 @@ func (s *Spec) Register(method, path string, opts ...RouteOption) error {
 	if path == "" {
 		return ErrEmptyPath
 	}
+	if !strings.HasPrefix(path, "/") {
+		return fmt.Errorf("%w: %q", ErrInvalidPath, path)
+	}
 	normMethod, ok := normaliseMethod(method)
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrInvalidMethod, method)
@@ -279,6 +290,9 @@ func (s *Spec) Register(method, path string, opts ...RouteOption) error {
 		statusSet[status] = struct{}{}
 	}
 	for status := range cfg.responseDescriptions {
+		statusSet[status] = struct{}{}
+	}
+	for status := range cfg.responseExamples {
 		statusSet[status] = struct{}{}
 	}
 
@@ -426,6 +440,20 @@ func (s *Spec) build() Document {
 // the supplied PathItem, picking the verb slot by method.
 func applyOperation(item *PathItem, rs *routeState) {
 	op := rs.op
+	// rs.op is a shallow struct copy; its Tags/Parameters slices and
+	// Security pointer still alias routeState. Detach them so a caller
+	// that mutates the returned Document (per the "caller owns the
+	// result" contract on Document) cannot corrupt the Spec.
+	if len(op.Tags) > 0 {
+		op.Tags = append([]string(nil), op.Tags...)
+	}
+	if len(op.Parameters) > 0 {
+		op.Parameters = append([]Parameter(nil), op.Parameters...)
+	}
+	if op.Security != nil {
+		clone := cloneSecurity(*op.Security)
+		op.Security = &clone
+	}
 	if rs.requestSchema != nil {
 		mt := MediaType{Schema: rs.requestSchema}
 		if ex, ok := rs.requestExamples[rs.requestType]; ok {
@@ -447,7 +475,7 @@ func applyOperation(item *PathItem, rs *routeState) {
 		}
 		sort.Ints(statuses)
 		for _, st := range statuses {
-			op.Responses[strconv.Itoa(st)] = rs.responses[st]
+			op.Responses[strconv.Itoa(st)] = cloneResponse(rs.responses[st])
 		}
 	}
 	switch rs.method {
@@ -470,13 +498,42 @@ func applyOperation(item *PathItem, rs *routeState) {
 	}
 }
 
-// cloneSecurity returns a deep copy of the security requirement.
+// cloneResponse returns a copy of the response with detached Headers
+// and Content maps so a caller that mutates the returned Document does
+// not reach back into the Spec's routeState. The contained
+// *jsonschema.Schema pointers are shared (treated as immutable, the
+// same tradeoff cloneComponents makes).
+func cloneResponse(in Response) Response {
+	out := Response{Description: in.Description}
+	if len(in.Headers) > 0 {
+		out.Headers = make(map[string]Header, len(in.Headers))
+		for k, v := range in.Headers {
+			out.Headers[k] = v
+		}
+	}
+	if len(in.Content) > 0 {
+		out.Content = make(map[string]MediaType, len(in.Content))
+		for k, v := range in.Content {
+			out.Content[k] = v
+		}
+	}
+	return out
+}
+
+// cloneSecurity returns a deep copy of the security requirement. The
+// empty-vs-nil distinction of each scope slice is preserved: a scheme
+// registered with an empty (non-nil) scope list must render as
+// `"scheme": []`, not `"scheme": null`.
 func cloneSecurity(in []map[string][]string) []map[string][]string {
 	out := make([]map[string][]string, len(in))
 	for i, m := range in {
 		clone := make(map[string][]string, len(m))
 		for k, v := range m {
-			clone[k] = append([]string(nil), v...)
+			if v == nil {
+				clone[k] = nil
+				continue
+			}
+			clone[k] = append([]string{}, v...)
 		}
 		out[i] = clone
 	}

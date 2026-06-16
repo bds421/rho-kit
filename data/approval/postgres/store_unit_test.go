@@ -95,3 +95,38 @@ func TestDecide_UsesSharedValidationBeforeDBUse(t *testing.T) {
 	_, err := store.Approve(context.Background(), "r1", strings.Repeat("a", approval.MaxActorLen+1), "ok")
 	assert.ErrorIs(t, err, approval.ErrInvalidApprover)
 }
+
+// TestToPgTimestamp_TruncatesToMicroseconds locks in the precision
+// contract Create relies on: timestamptz only keeps microseconds, so the
+// timestamps Create echoes back must already be truncated. Otherwise the
+// Request returned by Create would carry sub-microsecond nanoseconds that
+// no subsequent Get/List round-trip could reproduce.
+func TestToPgTimestamp_TruncatesToMicroseconds(t *testing.T) {
+	// 123456789ns has a 789ns tail below microsecond resolution.
+	in := time.Date(2026, 6, 16, 10, 30, 0, 123456789, time.UTC)
+	got := toPgTimestamp(in)
+
+	want := time.Date(2026, 6, 16, 10, 30, 0, 123456000, time.UTC)
+	assert.True(t, got.Equal(want), "got %v, want %v", got, want)
+	assert.Equal(t, 0, got.Nanosecond()%1000, "sub-microsecond digits must be zero")
+	// A value already at microsecond precision must survive a round-trip
+	// through toPgTimestamp unchanged (no double-truncation drift).
+	assert.True(t, want.Equal(toPgTimestamp(want)))
+}
+
+// TestToPgTimestamp_NormalisesToUTC ensures a non-UTC input is converted
+// so it matches the UTC values Get/List scan back out of the DB.
+func TestToPgTimestamp_NormalisesToUTC(t *testing.T) {
+	loc := time.FixedZone("UTC+2", 2*60*60)
+	in := time.Date(2026, 6, 16, 12, 0, 0, 0, loc)
+	got := toPgTimestamp(in)
+
+	assert.Equal(t, time.UTC, got.Location())
+	assert.True(t, got.Equal(in), "instant must be preserved across the UTC shift")
+}
+
+// TestToPgTimestamp_PreservesZero keeps the zero value detectable so
+// nullableTime and IsZero branches still recognise an unset timestamp.
+func TestToPgTimestamp_PreservesZero(t *testing.T) {
+	assert.True(t, toPgTimestamp(time.Time{}).IsZero())
+}

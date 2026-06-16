@@ -74,8 +74,13 @@ func (s *Store) Create(ctx context.Context, r approval.Request) (approval.Reques
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = s.clock()
 	}
-	r.CreatedAt = r.CreatedAt.UTC()
-	r.ExpiresAt = r.ExpiresAt.UTC()
+	// timestamptz keeps microsecond precision, so truncate before the
+	// insert AND in the Request we echo back. Otherwise Create would
+	// return nanosecond timestamps that no subsequent Get/List can
+	// reproduce, breaking round-trip equality and any caller-side keyset
+	// comparison built from the Create return value.
+	r.CreatedAt = toPgTimestamp(r.CreatedAt)
+	r.ExpiresAt = toPgTimestamp(r.ExpiresAt)
 
 	const q = `
 INSERT INTO approval_requests
@@ -413,6 +418,16 @@ func nullableTime(t time.Time) any {
 		return nil
 	}
 	return t.UTC()
+}
+
+// toPgTimestamp normalises a wall-clock value to what Postgres stores in
+// a timestamptz column: UTC, truncated to microsecond precision. A zero
+// time is left untouched so it can still be detected as zero downstream.
+func toPgTimestamp(t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	return t.UTC().Truncate(time.Microsecond)
 }
 
 func (s *Store) ready() error {

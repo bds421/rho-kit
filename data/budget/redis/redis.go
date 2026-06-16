@@ -364,8 +364,11 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 	if !ok || len(pair) != 2 {
 		return false, 0, 0, errors.New("budget/redis: unexpected script result shape")
 	}
-	allowed, _ := pair[0].(int64)
-	remaining, _ := pair[1].(int64)
+	allowed, allowedOK := pair[0].(int64)
+	remaining, remainingOK := pair[1].(int64)
+	if !allowedOK || !remainingOK {
+		return false, 0, 0, errors.New("budget/redis: unexpected script result shape")
+	}
 
 	if allowed == 1 {
 		return true, remaining, 0, nil
@@ -411,7 +414,10 @@ func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, e
 	if err != nil {
 		return 0, redact.WrapError("budget/redis: script", err)
 	}
-	rem, _ := res.(int64)
+	rem, ok := res.(int64)
+	if !ok {
+		return 0, errors.New("budget/redis: unexpected script result shape")
+	}
 	return rem, nil
 }
 
@@ -455,6 +461,9 @@ func (b *Budget) Peek(ctx context.Context, key string) (int64, error) {
 	if err != nil {
 		return 0, redact.WrapError("budget/redis: script", err)
 	}
-	rem, _ := res.(int64)
+	rem, ok := res.(int64)
+	if !ok {
+		return 0, errors.New("budget/redis: unexpected script result shape")
+	}
 	return rem, nil
 }

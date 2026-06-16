@@ -29,9 +29,32 @@ var ErrInvalidOffsetConfig = errors.New("pagination: invalid offset configuratio
 // always trace back to a missing or zero-or-negative limit allowing a
 // runaway scan, or a maxLimit that wasn't enforced.
 //
+// ParseOffset leaves the offset upper-bound to the caller: any non-negative
+// client offset is accepted. For endpoints backed by a relational store this
+// invites the classic deep-offset scan (e.g. ?offset=9223372036854775807),
+// the offset-side equivalent of the runaway-limit bug. Use
+// [ParseOffsetWithMax] when you want the kit to cap the offset too.
+//
 // Returns (limit, offset, error) in that order. The OffsetParams struct is
 // also exposed for callers that prefer named fields.
 func ParseOffset(r *http.Request, defaultLimit, defaultOffset, maxLimit int) (limit, offset int, err error) {
+	return ParseOffsetWithMax(r, defaultLimit, defaultOffset, maxLimit, 0)
+}
+
+// ParseOffsetWithMax behaves like [ParseOffset] but additionally clamps the
+// resolved offset to maxOffset. A maxOffset of 0 (or negative) disables the
+// offset cap, making the call identical to [ParseOffset] — so existing
+// behaviour is preserved when callers opt out.
+//
+// Capping the offset closes the deep-offset scan: a relational OFFSET N forces
+// the engine to walk and discard N rows, so an unbounded client offset is a
+// cheap denial-of-service against an otherwise well-behaved endpoint. Bound it
+// the same way you bound limit.
+//
+// defaultOffset must itself be within [0, maxOffset] when a cap is set;
+// a defaultOffset above maxOffset is a configuration error and returns
+// [ErrInvalidOffsetConfig].
+func ParseOffsetWithMax(r *http.Request, defaultLimit, defaultOffset, maxLimit, maxOffset int) (limit, offset int, err error) {
 	if defaultLimit <= 0 {
 		return 0, 0, fmt.Errorf("%w: defaultLimit must be positive", ErrInvalidLimitConfig)
 	}
@@ -40,6 +63,9 @@ func ParseOffset(r *http.Request, defaultLimit, defaultOffset, maxLimit int) (li
 	}
 	if defaultOffset < 0 {
 		return 0, 0, fmt.Errorf("%w: defaultOffset must be non-negative", ErrInvalidOffsetConfig)
+	}
+	if maxOffset > 0 && defaultOffset > maxOffset {
+		return 0, 0, fmt.Errorf("%w: defaultOffset must not exceed maxOffset", ErrInvalidOffsetConfig)
 	}
 
 	q, err := requestQuery(r)
@@ -73,6 +99,9 @@ func ParseOffset(r *http.Request, defaultLimit, defaultOffset, maxLimit int) (li
 	}
 	if offset < 0 {
 		offset = 0
+	}
+	if maxOffset > 0 && offset > maxOffset {
+		offset = maxOffset
 	}
 
 	return limit, offset, nil

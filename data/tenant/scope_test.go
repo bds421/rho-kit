@@ -56,6 +56,15 @@ func TestScope_WhereClause(t *testing.T) {
 	assert.Equal(t, "tenant-3", arg)
 }
 
+func TestScope_WhereClause_PanicsOnNegativeCount(t *testing.T) {
+	scope := MustNewScope(coretenant.MustNewID("tenant-3"))
+	// A negative current arg count is a programmer error: there is no
+	// such thing as a query with fewer than zero existing placeholders.
+	// Fail loud rather than silently emitting an out-of-range "$0"/"$-1"
+	// that only surfaces later as an obscure pgx error at query time.
+	assert.Panics(t, func() { scope.WhereClause(-1) })
+}
+
 func TestScope_Key(t *testing.T) {
 	scope := MustNewScope(coretenant.MustNewID("tenant-4"))
 	key, err := scope.Key("budget", "weekly")

@@ -1,14 +1,48 @@
 package main
 
 import (
+	"bytes"
+	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// failWriter returns errFailWriter once okBytes have been written,
+// simulating a broken pipe / short write mid-stream.
+type failWriter struct {
+	written int
+	okBytes int
+}
+
+var errFailWriter = errors.New("write failed")
+
+func (f *failWriter) Write(p []byte) (int, error) {
+	if f.written >= f.okBytes {
+		return 0, errFailWriter
+	}
+	f.written += len(p)
+	return len(p), nil
+}
+
+func sampleManifest() manifest {
+	return manifest{
+		ScannedAt:    "2026-05-16T00:00:00Z",
+		ServiceCount: 1,
+		Services: []service{{
+			Module:      "github.com/example/svc",
+			Path:        "/tmp/svc",
+			KitPackages: []string{"github.com/bds421/rho-kit/httpx/v2"},
+			KitVersions: map[string]string{"github.com/bds421/rho-kit/httpx/v2": "v2.0.3"},
+		}},
+	}
+}
 
 func TestParseGoMod_ExtractsModuleAndKitVersions(t *testing.T) {
 	content := `module github.com/example/orders-api
@@ -90,7 +124,7 @@ var _ = struct{}{}
 
 func TestModuleForImport_PicksLongestPrefix(t *testing.T) {
 	versions := map[string]string{
-		"github.com/bds421/rho-kit/data/v2":                    "v2.0.0",
+		"github.com/bds421/rho-kit/data/v2":                     "v2.0.0",
 		"github.com/bds421/rho-kit/data/idempotency/pgstore/v2": "v2.0.1",
 	}
 	mod := moduleForImport(
@@ -185,4 +219,64 @@ func TestManifest_JSONRoundTrip(t *testing.T) {
 	var back manifest
 	require.NoError(t, json.Unmarshal(buf, &back))
 	assert.Equal(t, m, back)
+}
+
+func TestEmitJSON_WritesValidManifest(t *testing.T) {
+	var buf bytes.Buffer
+	require.NoError(t, emitJSON(&buf, sampleManifest()))
+
+	var back manifest
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &back))
+	assert.Equal(t, sampleManifest(), back)
+}
+
+// TestEmitJSON_ReportsWriteError pins the contract that a failed
+// write surfaces an error (so main exits non-zero) rather than being
+// silently swallowed while the process exits 0.
+func TestEmitJSON_ReportsWriteError(t *testing.T) {
+	err := emitJSON(&failWriter{okBytes: 0}, sampleManifest())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errFailWriter)
+}
+
+func TestEmitTable_WritesRows(t *testing.T) {
+	var buf bytes.Buffer
+	require.NoError(t, emitTable(&buf, sampleManifest()))
+
+	out := buf.String()
+	assert.Contains(t, out, "github.com/example/svc")
+	assert.Contains(t, out, "github.com/bds421/rho-kit/httpx/v2")
+	assert.Contains(t, out, "v2.0.3")
+}
+
+func TestEmitTable_ReportsWriteError(t *testing.T) {
+	err := emitTable(&failWriter{okBytes: 0}, sampleManifest())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errFailWriter)
+}
+
+func TestEmitCSV_WritesRows(t *testing.T) {
+	var buf bytes.Buffer
+	require.NoError(t, emitCSV(&buf, sampleManifest()))
+
+	records, err := csv.NewReader(strings.NewReader(buf.String())).ReadAll()
+	require.NoError(t, err)
+	require.Len(t, records, 2) // header + one row
+	assert.Equal(t, []string{"service_module", "service_path", "kit_package", "kit_module", "kit_version"}, records[0])
+	assert.Equal(t, []string{
+		"github.com/example/svc",
+		"/tmp/svc",
+		"github.com/bds421/rho-kit/httpx/v2",
+		"github.com/bds421/rho-kit/httpx/v2",
+		"v2.0.3",
+	}, records[1])
+}
+
+// TestEmitCSV_ReportsFlushError pins that the csv writer's buffered
+// flush error (w.Error()) is surfaced, not swallowed. The header write
+// succeeds into the bufio buffer, then the flush fails on the writer.
+func TestEmitCSV_ReportsFlushError(t *testing.T) {
+	err := emitCSV(&failWriter{okBytes: 0}, sampleManifest())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errFailWriter)
 }

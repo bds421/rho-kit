@@ -167,6 +167,53 @@ func TestComputeBindings_DefaultRetryDoesNotMutateInput(t *testing.T) {
 	assert.Equal(t, 3, bindings[0].Retry.MaxRetries)
 }
 
+func TestComputeBindingsWithWarnings_SurfacesDefaultRetryWarning(t *testing.T) {
+	specs := []messaging.BindingSpec{{
+		Exchange:      "ex",
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: "q",
+		RoutingKey:    "rk",
+		// no Retry, no WithoutRetry — kit applies DefaultRetryPolicy and
+		// must report it so operators see the default in the startup log.
+	}}
+
+	bindings, warnings, err := messaging.ComputeBindingsWithWarnings(specs...)
+	require.NoError(t, err)
+	require.Len(t, bindings, 1)
+	require.NotNil(t, bindings[0].Retry, "default retry must still be applied")
+
+	require.Len(t, warnings, 1, "default-retry application must be surfaced as a warning")
+	assert.Contains(t, warnings[0], "DefaultRetryPolicy")
+}
+
+func TestComputeBindingsWithWarnings_NoWarningWhenExplicit(t *testing.T) {
+	specs := []messaging.BindingSpec{{
+		Exchange:      "ex",
+		ExchangeType:  messaging.ExchangeFanout,
+		ConsumerGroup: "q",
+		WithoutRetry:  true,
+	}}
+
+	bindings, warnings, err := messaging.ComputeBindingsWithWarnings(specs...)
+	require.NoError(t, err)
+	require.Len(t, bindings, 1)
+	assert.Empty(t, warnings, "WithoutRetry opts out of the default — no warning expected")
+}
+
+func TestComputeBindingsWithWarnings_ForwardsValidationError(t *testing.T) {
+	specs := []messaging.BindingSpec{{
+		// Empty exchange fails ValidateBindingSpecs.
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: "q",
+		RoutingKey:    "rk",
+	}}
+
+	bindings, warnings, err := messaging.ComputeBindingsWithWarnings(specs...)
+	require.Error(t, err)
+	assert.Nil(t, bindings)
+	assert.Nil(t, warnings)
+}
+
 func TestNormalizeBindingSpecs_WarningDoesNotReflectQueueName(t *testing.T) {
 	specs := []messaging.BindingSpec{{
 		Exchange:      "ex",

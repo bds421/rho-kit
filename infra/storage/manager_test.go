@@ -169,6 +169,28 @@ func TestManager(t *testing.T) {
 	})
 }
 
+func TestManagerClosedHidesBackends(t *testing.T) {
+	t.Parallel()
+
+	mgr := storage.NewManager()
+	mgr.Register("alpha", newTestBackend(t))
+	mgr.Register("beta", newTestBackend(t))
+
+	// Before Close the backends are visible.
+	require.True(t, mgr.Has("alpha"))
+	require.Equal(t, []string{"alpha", "beta"}, mgr.Names())
+
+	require.NoError(t, mgr.Close())
+
+	// After Close, Backend reports the closed sentinel, so Has and Names must
+	// not advertise backends a caller can no longer resolve.
+	_, err := mgr.Backend("alpha")
+	require.ErrorIs(t, err, storage.ErrManagerClosed)
+
+	assert.False(t, mgr.Has("alpha"), "Has must return false after Close")
+	assert.Nil(t, mgr.Names(), "Names must return nil after Close")
+}
+
 type closeFailBackend struct{}
 
 func (closeFailBackend) Put(context.Context, string, io.Reader, storage.ObjectMeta) error {

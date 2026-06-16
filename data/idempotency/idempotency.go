@@ -676,9 +676,17 @@ func copyResponseForStorage(resp CachedResponse) CachedResponse {
 	return cp
 }
 
+// cloneBytes returns an independent copy of b that preserves nil-vs-empty
+// distinction. A non-nil empty fingerprint ([]byte{}) must stay non-nil:
+// the fingerprint guards in Get/TryLock only compare when both sides are
+// non-nil, so collapsing []byte{} to nil would silently disable mismatch
+// detection for that key. This mirrors the SQL backends, where an empty
+// bytea is stored non-NULL and keeps mismatch detection active.
 func cloneBytes(b []byte) []byte {
 	if b == nil {
 		return nil
 	}
-	return append([]byte(nil), b...)
+	cp := make([]byte, len(b))
+	copy(cp, b)
+	return cp
 }

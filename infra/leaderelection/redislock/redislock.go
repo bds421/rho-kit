@@ -347,6 +347,7 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
+	cbStart := time.Now()
 	cbDone := make(chan callbackResult, 1)
 	go func() {
 		var result callbackResult
@@ -395,6 +396,15 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 			cancel()
 			return joinDrainResult(parent.Err(), awaitCallback())
 		case result := <-cbDone:
+			// Happy path: the callback returned on its own before
+			// leadership ended. awaitCallbackDrain is not invoked here, so
+			// record the terminal drained observation directly to honour
+			// the "terminal duration is always recorded" contract — the
+			// drained-state histogram must be non-empty for SLO dashboards
+			// even when the callback never had to be cancelled.
+			if e.metrics != nil {
+				e.metrics.observeDrainDuration(time.Since(cbStart), e.key, drainStateDrained)
+			}
 			if result.panicValue != nil {
 				return onAcquiredPanicError(result.panicValue)
 			}

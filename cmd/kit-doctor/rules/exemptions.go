@@ -146,11 +146,20 @@ func matchesSuppression(comment, ruleName string) bool {
 	body := strings.TrimSpace(strings.TrimPrefix(comment, "//"))
 	body = strings.TrimSpace(strings.TrimPrefix(body, "/*"))
 	body = strings.TrimSpace(strings.TrimSuffix(body, "*/"))
-	idx := strings.Index(body, inlineSuppressionPrefix)
-	if idx < 0 {
+	// The marker must be the first token of the comment body, not merely
+	// mentioned somewhere inside it. A substring match would let prose
+	// like `// TODO: kit-doctor:allow X here` silence a rule, which the
+	// package doc explicitly disallows.
+	rest, ok := strings.CutPrefix(body, inlineSuppressionPrefix)
+	if !ok {
 		return false
 	}
-	rest := strings.TrimSpace(body[idx+len(inlineSuppressionPrefix):])
+	// The prefix must be followed by whitespace (or end of body) so a
+	// longer accidental token like `kit-doctor:allowance` does not match.
+	if rest != "" && rest[0] != ' ' && rest[0] != '\t' {
+		return false
+	}
+	rest = strings.TrimSpace(rest)
 	if rest == "" {
 		return false
 	}

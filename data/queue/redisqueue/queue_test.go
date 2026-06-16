@@ -13,12 +13,31 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/hibiken/asynq"
+	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/core/v2/apperror"
 	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 )
+
+// counterValue reads the current value of the named counter series (with a
+// single "queue" label) from reg. Returns 0 when the family/series is absent,
+// which is the correct reading for a counter that was never incremented.
+func counterValue(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+		require.Len(t, mf.Metric, 1, "expected exactly one series for %s", name)
+		return mf.Metric[0].GetCounter().GetValue()
+	}
+	return 0
+}
 
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
 
@@ -662,6 +681,132 @@ func TestHandlerForQueue_RejectsInvalidDecodedEnvelope(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, asynq.SkipRetry))
 	assert.False(t, called, "invalid decoded messages must not reach handlers")
+}
+
+// TestHandlerForQueue_FinalAttemptDoesNotCountRetry pins the retry-metric
+// fix: when asynq will archive instead of retry (the current attempt is the
+// last one — retryCount == maxRetry), a non-permanent handler error must NOT
+// bump messages_retried_total. Otherwise every dead-lettered task inflates the
+// retried counter by one and skews retry/DLQ ratio dashboards. The asynq
+// handler context built here carries no retry metadata, so GetRetryCount and
+// GetMaxRetry both report 0 — i.e. the maxRetries==0 ("archive on first
+// failure") boundary, the cleanest in-process reproduction of the final attempt.
+func TestHandlerForQueue_FinalAttemptDoesNotCountRetry(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	reg := prometheus.NewRegistry()
+	q := NewQueue(client, WithMetricsRegisterer(reg))
+	t.Cleanup(func() { _ = q.Close() })
+
+	handler := q.handlerForQueue("test-queue", func(context.Context, Message) error {
+		return errors.New("transient failure")
+	})
+
+	msg, err := NewMessage("job.process", map[string]string{"task": "test"})
+	require.NoError(t, err)
+	data, err := jsonMarshal(msg)
+	require.NoError(t, err)
+
+	err = handler.ProcessTask(context.Background(), asynq.NewTask(envelopeTaskType, data))
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, asynq.SkipRetry),
+		"a non-permanent error must be returned as-is so asynq makes the retry/archive decision")
+
+	// The failure is always counted...
+	assert.Equal(t, float64(1), counterValue(t, reg, "redis_queue_messages_failed_total"))
+	// ...but the retry counter must stay at zero, because this attempt
+	// (retryCount==maxRetry==0) is the final one that asynq will archive.
+	assert.Equal(t, float64(0), counterValue(t, reg, "redis_queue_messages_retried_total"),
+		"final (to-be-archived) attempt must not increment messages_retried_total")
+}
+
+// TestHandlerForQueue_PermanentErrorSkipsRetryMetric confirms a permanent
+// error short-circuits to SkipRetry and never touches the retry counter (it is
+// archived directly), keeping messages_failed_total and the retry counter
+// decoupled.
+func TestHandlerForQueue_PermanentErrorSkipsRetryMetric(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	reg := prometheus.NewRegistry()
+	q := NewQueue(client, WithMetricsRegisterer(reg))
+	t.Cleanup(func() { _ = q.Close() })
+
+	handler := q.handlerForQueue("test-queue", func(context.Context, Message) error {
+		return apperror.NewPermanent("unrecoverable")
+	})
+
+	msg, err := NewMessage("job.process", map[string]string{"task": "test"})
+	require.NoError(t, err)
+	data, err := jsonMarshal(msg)
+	require.NoError(t, err)
+
+	err = handler.ProcessTask(context.Background(), asynq.NewTask(envelopeTaskType, data))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, asynq.SkipRetry),
+		"permanent errors must wrap asynq.SkipRetry so the task is archived without retries")
+
+	assert.Equal(t, float64(1), counterValue(t, reg, "redis_queue_messages_failed_total"))
+	assert.Equal(t, float64(0), counterValue(t, reg, "redis_queue_messages_retried_total"),
+		"permanent errors must not increment messages_retried_total")
+}
+
+// TestProcess_StartFailurePanics pins that a server Start failure is treated
+// as a fail-fast startup error: Process panics rather than silently returning.
+// A silent return would leave the app running with no consumer and no signal.
+func TestProcess_StartFailurePanics(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client, WithLogger(slog.New(slog.NewTextHandler(testWriter{t}, nil))))
+	t.Cleanup(func() { _ = q.Close() })
+
+	q.serverFactory = func(_ asynq.Config) asynqServer {
+		return &fakeAsynqServer{
+			start: func(asynq.Handler) error { return errors.New("redis dial failed") },
+		}
+	}
+
+	assert.Panics(t, func() {
+		q.Process(context.Background(), "test-queue", func(context.Context, Message) error { return nil })
+	}, "a Start failure must panic so the fail-fast startup contract holds")
+}
+
+// TestStartProcessors_StartFailureTriggersShutdown is the end-to-end guard for
+// the Start-failure path: when Process panics because the asynq server cannot
+// start, StartProcessors' per-goroutine recover must invoke shutdownFn so the
+// app does not keep running with no consumer.
+func TestStartProcessors_StartFailureTriggersShutdown(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client, WithLogger(slog.New(slog.NewTextHandler(testWriter{t}, nil))))
+	t.Cleanup(func() { _ = q.Close() })
+
+	q.serverFactory = func(_ asynq.Config) asynqServer {
+		return &fakeAsynqServer{
+			start: func(asynq.Handler) error { return errors.New("redis dial failed") },
+		}
+	}
+
+	shutdownCh := make(chan struct{}, 1)
+	var wg sync.WaitGroup
+	bindings := []Binding{
+		{Queue: "test-queue", Handler: func(context.Context, Message) error { return nil }},
+	}
+
+	err := StartProcessors(context.Background(), q, bindings, &wg, slog.Default(), func() {
+		shutdownCh <- struct{}{}
+	})
+	require.NoError(t, err, "validation passes; the failure happens at Start time in the goroutine")
+
+	select {
+	case <-shutdownCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdownFn was not invoked after the asynq server failed to start")
+	}
+	wg.Wait()
 }
 
 // TestStartProcessors_PanicsOnNilQueue is preserved from pre-v2.

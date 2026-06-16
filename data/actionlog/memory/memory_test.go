@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -165,6 +166,83 @@ func TestStore_CopiesPreviousEntryPassedToBuild(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "original", got.Metadata["reason"])
 	assert.Equal(t, "value", got.Metadata["nested"].(map[string]any)["key"])
+}
+
+// TestStore_LatestForTenantPicksHighestSeq pins the contract that the
+// per-tenant latest lookup (backed by the latestByTenant index) returns
+// the highest-Seq entry regardless of insertion order, and isolates
+// tenants from one another. It would fail if the index recorded merely
+// the last-appended entry instead of the max-Seq one, or leaked another
+// tenant's entry.
+func TestStore_LatestForTenantPicksHighestSeq(t *testing.T) {
+	store := New(testCursorSigner(t))
+	ctx := context.Background()
+
+	// Append t1 entries out of Seq order: 2 then 1. The latest must be
+	// the Seq=2 entry, not the most recently appended Seq=1 entry.
+	for _, seq := range []int64{2, 1} {
+		seq := seq
+		_, err := store.AppendChained(ctx, "t1", func(actionlog.Entry, int64) (actionlog.Entry, error) {
+			e := validStoreEntry("t1-seq-"+itoa(seq), "t1", nil)
+			e.Seq = seq
+			return e, nil
+		})
+		require.NoError(t, err)
+	}
+
+	// A separate tenant with its own chain must not influence t1.
+	_, err := store.AppendChained(ctx, "t2", func(actionlog.Entry, int64) (actionlog.Entry, error) {
+		e := validStoreEntry("t2-seq-9", "t2", nil)
+		e.Seq = 9
+		return e, nil
+	})
+	require.NoError(t, err)
+
+	var gotPrev actionlog.Entry
+	var gotPrevSeq int64
+	_, err = store.AppendChained(ctx, "t1", func(prev actionlog.Entry, prevSeq int64) (actionlog.Entry, error) {
+		gotPrev, gotPrevSeq = prev, prevSeq
+		e := validStoreEntry("t1-seq-3", "t1", nil)
+		e.Seq = 3
+		return e, nil
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(2), gotPrevSeq, "latest prevSeq must be the highest Seq, not the last appended")
+	assert.Equal(t, "t1-seq-2", gotPrev.ID)
+	assert.Equal(t, "t1", gotPrev.TenantID, "must not leak another tenant's entry")
+}
+
+// TestStore_LatestForTenantNoPositiveSeq pins the edge case the original
+// full-scan honoured: when a tenant's only entries have Seq <= 0, the
+// latest lookup yields the zero Entry and prevSeq 0 (bestSeq started at
+// 0 with a strict >). The index-backed version must match so chaining
+// semantics are unchanged.
+func TestStore_LatestForTenantNoPositiveSeq(t *testing.T) {
+	store := New(testCursorSigner(t))
+	ctx := context.Background()
+
+	_, err := store.AppendChained(ctx, "t", func(actionlog.Entry, int64) (actionlog.Entry, error) {
+		return validStoreEntry("entry-seq0", "t", nil), nil // Seq defaults to 0
+	})
+	require.NoError(t, err)
+
+	var gotPrev actionlog.Entry
+	var gotPrevSeq int64
+	_, err = store.AppendChained(ctx, "t", func(prev actionlog.Entry, prevSeq int64) (actionlog.Entry, error) {
+		gotPrev, gotPrevSeq = prev, prevSeq
+		e := validStoreEntry("entry-2", "t", nil)
+		e.Seq = 1
+		return e, nil
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(0), gotPrevSeq)
+	assert.Equal(t, actionlog.Entry{}, gotPrev, "Seq<=0-only tenant must yield the zero entry")
+}
+
+func itoa(n int64) string {
+	return strconv.FormatInt(n, 10)
 }
 
 func TestStore_RejectsInvalidBuiltEntryBeforeClone(t *testing.T) {
