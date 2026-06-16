@@ -166,6 +166,15 @@ func (q *QuorumLocker) Acquire(ctx context.Context, key string) (lock.Lock, bool
 	if isContentionError(err) {
 		return nil, false, nil
 	}
+	// The internal maxWait timeout (lockCtx) can fire *during* a redsync
+	// command on the final try, in which case redsync returns the raw node
+	// errors (RedisErrors wrapping context.DeadlineExceeded) rather than a
+	// contention sentinel. The caller's ctx is still alive here, so this is
+	// an internal maxWait expiry: honour the documented (nil, false, nil)
+	// "contention exhausted" contract instead of leaking it as a backend error.
+	if lockCtx.Err() != nil {
+		return nil, false, nil
+	}
 	return nil, false, redact.WrapError("redlock: acquire failed", err)
 }
 
@@ -219,7 +228,12 @@ type handle struct {
 
 func (l *handle) Release(ctx context.Context) error {
 	if l.released {
-		return nil
+		// A second Release reports ErrLockLost rather than nil so the
+		// quorum locker matches redislock/pgadvisory and the kit's
+		// lock.Lock contract (locktest testDoubleReleaseLost). Callers
+		// wanting idempotent cleanup catch it via
+		// errors.Is(err, lock.ErrLockLost).
+		return lock.ErrLockLost
 	}
 	ok, err := l.mutex.UnlockContext(ctx)
 	if ok {
@@ -300,4 +314,3 @@ func isLockLostError(err error) bool {
 	var nodeTaken *redsync.ErrNodeTaken
 	return errors.As(err, &nodeTaken)
 }
-

@@ -83,8 +83,9 @@
 // Retry / dead-letter behaviour is intentionally NOT mapped from
 // [messaging.RetryPolicy]. Kafka exposes no per-message TTL or
 // delayed-redelivery primitive; a faithful implementation would need
-// a separate broker-side retry topic + scheduler. The backend logs a
-// warning when a Binding declares non-nil Retry and instructs callers
-// to either set Binding.WithoutRetry=true or wrap their handler in
-// the kit's [resilience/retry] package.
+// a separate broker-side retry topic + scheduler. A Binding that
+// declares a non-nil Retry is REJECTED at Consume entry with
+// [messaging.ErrRetryUnsupported] (wave 141); callers must either set
+// Binding.WithoutRetry=true or wrap their handler in the kit's
+// [resilience/retry] package.
 package kafkabackend

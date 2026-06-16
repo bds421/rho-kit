@@ -725,3 +725,79 @@ func TestDeliveryHeaderMaps_RejectsOversizedCount(t *testing.T) {
 	require.LessOrEqual(t, len(headers), maxNatsDeliveryHeaders,
 		"materialised header count must not exceed maxNatsDeliveryHeaders")
 }
+
+// TestDeliveryHeaderMaps_StripsKitInternalHeaders pins H-001: the four
+// kit-internal X-* headers that Publisher.Publish writes onto the NATS
+// envelope (X-Message-Id, X-Message-Type, X-Exchange, X-Routing-Key) must
+// not be materialised back into the user-facing header maps. They are
+// transport metadata reconstructed via extractExchangeAndRoutingKey — if
+// they leaked, they would (a) be visible to every handler and (b) count
+// toward MaxMessageHeaders, so a message published with the maximum
+// allowed user headers would fail inbound ValidateMessage and be dropped.
+func TestDeliveryHeaderMaps_StripsKitInternalHeaders(t *testing.T) {
+	h := nats.Header{}
+	h.Set("X-Message-Id", "id-1")
+	h.Set("X-Message-Type", "order.created")
+	h.Set(headerExchange, "orders")
+	h.Set(headerRoutingKey, "created")
+	h.Set(messaging.HeaderCorrelationID, "corr-1")
+	h.Set("X-Custom", "keep")
+
+	headers, msgHeaders := deliveryHeaderMaps(h)
+	require.NotNil(t, headers)
+	require.NotNil(t, msgHeaders)
+
+	for _, internal := range []string{"X-Message-Id", "X-Message-Type", headerExchange, headerRoutingKey} {
+		_, inAny := headers[internal]
+		_, inStr := msgHeaders[internal]
+		assert.False(t, inAny, "kit-internal header %q must not leak into delivery headers", internal)
+		assert.False(t, inStr, "kit-internal header %q must not leak into message headers", internal)
+	}
+
+	assert.Equal(t, "corr-1", msgHeaders[messaging.HeaderCorrelationID])
+	assert.Equal(t, "keep", msgHeaders["X-Custom"])
+	assert.Len(t, msgHeaders, 2, "only the two genuine user headers must survive")
+}
+
+// TestDispatch_MaxUserHeadersSurviveRoundTrip pins H-001 end-to-end: a
+// message carrying the maximum number of user headers allowed at publish
+// (MaxMessageHeaders) must still pass inbound validation and reach the
+// handler. Before the fix, the four kit-internal X-* headers were merged
+// into the materialised map, pushing the count to MaxMessageHeaders+4 and
+// causing ValidateMessage to Term-discard a perfectly valid message.
+func TestDispatch_MaxUserHeadersSurviveRoundTrip(t *testing.T) {
+	msg, err := messaging.NewMessage("order.created", map[string]string{"id": "42"})
+	require.NoError(t, err)
+	data, err := json.Marshal(msg)
+	require.NoError(t, err)
+
+	h := nats.Header{}
+	// Kit-internal headers that Publisher.Publish always writes.
+	h.Set("X-Message-Id", msg.ID)
+	h.Set("X-Message-Type", msg.Type)
+	h.Set(headerExchange, "orders")
+	h.Set(headerRoutingKey, "created")
+	// The maximum number of user headers permitted at publish time.
+	for i := 0; i < messaging.MaxMessageHeaders; i++ {
+		h.Set(fmt.Sprintf("X-User-%03d", i), "v")
+	}
+
+	jm := &fakeJetstreamMsg{subject: "orders.created", data: data, headers: h}
+	c := &Consumer{logger: slog.Default()}
+
+	var handlerCalled bool
+	var seen messaging.Delivery
+	c.dispatch(t.Context(), jm, func(_ context.Context, d messaging.Delivery) error {
+		handlerCalled = true
+		seen = d
+		return nil
+	})
+
+	assert.True(t, handlerCalled, "a message with the max allowed user headers must reach the handler")
+	assert.True(t, jm.acked)
+	assert.False(t, jm.termed, "valid message must not be Term-discarded")
+	assert.Len(t, seen.Message.Headers, messaging.MaxMessageHeaders,
+		"all user headers must survive; kit-internal X-* headers must be stripped")
+	assert.Equal(t, "orders", seen.Exchange)
+	assert.Equal(t, "created", seen.RoutingKey)
+}

@@ -12,25 +12,25 @@
 //
 // # How it works
 //
-// 1. Discovers every benchmark in the configured target packages.
-// 2. Runs them with -count=COUNT -benchmem -benchtime=N (default
-//    3 runs × 1s) and parses the `go test -bench` output.
-// 3. Picks the BEST (lowest ns/op) run per benchmark — multi-run
-//    averaging is left for the operator's local workflow; CI
-//    prefers a stable lower bound.
-// 4. Compares each benchmark against the value in
-//    benchmarks-baseline.txt. Failure threshold:
-//      ns/op > baseline_ns * tolerance  (default 1.25 — 25% regression)
-//      OR
-//      allocs/op > baseline_allocs * 2  (alloc count doubling is loud)
-// 5. Exit 1 on any regression with a diff-friendly report.
+//  1. Discovers every benchmark in the configured target packages.
+//  2. Runs them with -count=COUNT -benchmem -benchtime=N (default
+//     3 runs × 1s) and parses the `go test -bench` output.
+//  3. Picks the BEST (lowest ns/op) run per benchmark — multi-run
+//     averaging is left for the operator's local workflow; CI
+//     prefers a stable lower bound.
+//  4. Compares each benchmark against the value in
+//     benchmarks-baseline.txt. Failure threshold:
+//     ns/op > baseline_ns * tolerance  (default 1.25 — 25% regression)
+//     OR
+//     allocs/op > baseline_allocs * 2  (alloc count doubling is loud)
+//  5. Exit 1 on any regression with a diff-friendly report.
 //
 // # Updating the baseline
 //
 // When a known-acceptable change moves a number (refactor, etc.),
 // re-run with -update to overwrite the baseline:
 //
-//   tools/check-bench-regression.sh -update
+//	tools/check-bench-regression.sh -update
 //
 // Commit the updated benchmarks-baseline.txt alongside the change.
 //
@@ -38,11 +38,11 @@
 //
 // Baseline file format (one benchmark per line):
 //
-//   BenchmarkName  ns_per_op  allocs_per_op  bytes_per_op
+//	BenchmarkName  ns_per_op  allocs_per_op  bytes_per_op
 //
 // e.g.
 //
-//   BenchmarkWrapError 145 1 48
+//	BenchmarkWrapError 145 1 48
 //
 // Comments (#) and blank lines are ignored.
 package main
@@ -60,20 +60,20 @@ import (
 )
 
 type benchResult struct {
-	Name     string
-	NsPerOp  float64
-	Allocs   int64
-	Bytes    int64
+	Name    string
+	NsPerOp float64
+	Allocs  int64
+	Bytes   int64
 }
 
 type config struct {
-	repoRoot    string
-	baseline    string
-	tolerance   float64
-	count       int
-	benchTime   string
-	update      bool
-	pkgsArg     string
+	repoRoot  string
+	baseline  string
+	tolerance float64
+	count     int
+	benchTime string
+	update    bool
+	pkgsArg   string
 }
 
 func main() {
@@ -169,7 +169,7 @@ func runBenchmarks(cfg config, pkgs []string) ([]benchResult, error) {
 // format is documented at https://pkg.go.dev/testing — each
 // benchmark line looks like:
 //
-//   BenchmarkName-N    iterations    X ns/op    Y B/op    Z allocs/op
+//	BenchmarkName-N    iterations    X ns/op    Y B/op    Z allocs/op
 //
 // We collapse the trailing `-N` (GOMAXPROCS suffix) so the same
 // benchmark across multiple -count runs maps to one entry.
@@ -184,12 +184,14 @@ func parseBenchOutput(out string) []benchResult {
 		// Find "ns/op" and read the preceding number.
 		var nsPerOp float64
 		var allocs, bytes int64
+		var haveNs bool
 		for i := 1; i < len(fields)-1; i++ {
 			switch fields[i+1] {
 			case "ns/op":
 				v, err := strconv.ParseFloat(fields[i], 64)
 				if err == nil {
 					nsPerOp = v
+					haveNs = true
 				}
 			case "B/op":
 				v, err := strconv.ParseInt(fields[i], 10, 64)
@@ -203,7 +205,13 @@ func parseBenchOutput(out string) []benchResult {
 				}
 			}
 		}
-		if nsPerOp == 0 {
+		// Skip lines that carry no completed ns/op measurement (e.g. a
+		// benchmark header without results). A genuine sub-1ns benchmark
+		// reports "0.0000 ns/op"; that is a real measurement and must be
+		// retained so it reaches the baseline comparison instead of
+		// silently vanishing from results (and never tripping the
+		// "NOT in baseline" notice).
+		if !haveNs {
 			continue
 		}
 		r := benchResult{Name: name, NsPerOp: nsPerOp, Allocs: allocs, Bytes: bytes}

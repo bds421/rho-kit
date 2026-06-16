@@ -251,6 +251,60 @@ func waitForKeyedLimiterRunStarted(t *testing.T, rl *KeyedLimiter) {
 	t.Fatal("KeyedLimiter.Start did not start")
 }
 
+func TestKeyedLimiter_RunRejectsStartAfterStop(t *testing.T) {
+	rl := NewKeyedLimiter(5, time.Hour)
+
+	// Stop before Start latches stopped=true. A subsequent Start must be
+	// rejected so it cannot launch a cleanup goroutine that the original
+	// Stop has already promised to wait on — mirroring lifecycle.FuncComponent.
+	if err := rl.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop before Start returned %v", err)
+	}
+
+	err := rl.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("expected already stopped error, got %v", err)
+	}
+}
+
+func TestKeyedLimiter_StopAfterStopBeforeStartDoesNotLeak(t *testing.T) {
+	rl := NewKeyedLimiter(5, time.Hour)
+
+	// Stop before Start: with the latch bug, this sets stopped=true while
+	// started stays false.
+	if err := rl.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop before Start returned %v", err)
+	}
+
+	// A Start that slips past the stopped guard would launch a cleanup
+	// goroutine. If Start is correctly rejected, no goroutine exists.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- rl.Start(ctx) }()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "stopped") {
+			t.Fatalf("expected already stopped error, got %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Start after Stop launched a cleanup goroutine that never returned (leak)")
+	}
+
+	// A second Stop must remain a clean no-op and must not hang.
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- rl.Stop(context.Background()) }()
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("second Stop returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second Stop hung")
+	}
+}
+
 func TestKeyedMiddleware(t *testing.T) {
 	rl := NewKeyedLimiter(2, time.Minute)
 

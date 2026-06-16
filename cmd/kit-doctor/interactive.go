@@ -17,6 +17,21 @@ import (
 	"github.com/bds421/rho-kit/cmd/kit-doctor/v2/rules"
 )
 
+// interactiveResult reports the outcome of an interactive session.
+//
+// applied is the number of fixes the operator successfully applied.
+//
+// unresolved holds the findings interactive mode did NOT clear:
+// findings without a Fix, findings the operator declined, findings
+// whose Fix errored, and every finding still pending when the operator
+// answered "skip-all" or closed stdin. The caller computes the exit
+// code from unresolved so successfully applied fixes stop driving
+// exit-1, while declined/failed ones keep surfacing through it.
+type interactiveResult struct {
+	applied    int
+	unresolved []rules.Finding
+}
+
 // runInteractive prompts the operator for each finding that carries
 // a Fix function. Findings without Fix are skipped silently — they
 // already appear in the standard text output.
@@ -29,10 +44,24 @@ import (
 // calls are printed but do NOT abort the loop — the operator can
 // still apply the remaining fixes.
 func runInteractive(in io.Reader, out io.Writer, findings []rules.Finding) int {
+	return runInteractiveSession(in, out, findings).applied
+}
+
+// runInteractiveSession runs the interactive prompt loop and reports
+// both the applied-fix count and the findings that remain unresolved.
+//
+// It carries the same prompt contract as the original loop: the only
+// difference is that it also tracks which findings interactive mode
+// could not clear so the caller can keep them — and only them —
+// counting toward the exit code.
+func runInteractiveSession(in io.Reader, out io.Writer, findings []rules.Finding) interactiveResult {
 	reader := bufio.NewReader(in)
-	applied := 0
-	for _, f := range findings {
+	res := interactiveResult{}
+	for i, f := range findings {
 		if f.Fix == nil {
+			// Not fixable in interactive mode; interactive cannot
+			// clear it, so it keeps counting toward the exit code.
+			res.unresolved = append(res.unresolved, f)
 			continue
 		}
 		writef(out, "\n[%s] %s: %s\n", f.Severity, f.Rule, f.Message)
@@ -51,25 +80,31 @@ func runInteractive(in io.Reader, out io.Writer, findings []rules.Finding) int {
 		ans, err := readAnswer(reader)
 		if err != nil {
 			writef(out, "\n  (input closed; treating as no)\n")
-			return applied
+			// This finding and every one after it stays unresolved.
+			res.unresolved = append(res.unresolved, findings[i:]...)
+			return res
 		}
 		switch ans {
 		case "skip-all":
 			writef(out, "  → skip-all: aborting interactive prompts\n")
-			return applied
+			// This finding and every one after it stays unresolved.
+			res.unresolved = append(res.unresolved, findings[i:]...)
+			return res
 		case "y", "yes":
 			summary, err := f.Fix()
 			if err != nil {
 				writef(out, "  ✗ fix failed: %v\n", err)
+				res.unresolved = append(res.unresolved, f)
 				continue
 			}
 			writef(out, "  ✓ %s\n", summary)
-			applied++
+			res.applied++
 		default:
 			writef(out, "  → skipped\n")
+			res.unresolved = append(res.unresolved, f)
 		}
 	}
-	return applied
+	return res
 }
 
 // writef is a fmt.Fprintf wrapper that intentionally discards both

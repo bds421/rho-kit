@@ -291,8 +291,10 @@ func (r *Runner) stopAll(parent context.Context) error {
 	// Per-component budget. The previous formula returned tiny per-step
 	// budgets when N was large (e.g. 100 components × 30s budget = 300ms
 	// each, capped at 5s). FR-095 [LOW] introduces perStepMinimum so
-	// every component gets at least 1s of stop time, with the overall
-	// stopTimeout still acting as the global cap via sharedCtx.
+	// every component gets at least 1s of stop time — unless the global
+	// stopTimeout is itself smaller than 1s, in which case stepCtx is
+	// still bounded by sharedCtx (= stopTimeout) and the clamp is
+	// effectively capped by that global deadline.
 	n := len(r.components)
 	if n == 0 {
 		return nil

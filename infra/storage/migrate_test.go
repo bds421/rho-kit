@@ -99,13 +99,57 @@ func TestMigrate_DryRun(t *testing.T) {
 	result, err := storage.Migrate(ctx, src, dst, storage.MigrateOptions{DryRun: true})
 	require.NoError(t, err)
 
-	assert.Equal(t, int64(0), result.Copied)
-	assert.Equal(t, int64(1), result.Skipped)
+	// The object would be copied, so a dry run previews it as Copied — not
+	// Skipped (which is reserved for objects that already exist).
+	assert.Equal(t, int64(1), result.Copied)
+	assert.Equal(t, int64(0), result.Skipped)
 
 	// Nothing actually copied.
 	ok, err := dst.Exists(ctx, "a.txt")
 	require.NoError(t, err)
 	assert.False(t, ok)
+}
+
+func TestMigrate_DryRunDistinguishesWouldCopyFromSkipped(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	src := membackend.New()
+	dst := membackend.New()
+
+	// "exists.txt" already exists in dst → genuinely skipped.
+	// "new.txt" does not → would be copied.
+	require.NoError(t, src.Put(ctx, "exists.txt", bytes.NewReader([]byte("s")), storage.ObjectMeta{}))
+	require.NoError(t, src.Put(ctx, "new.txt", bytes.NewReader([]byte("n")), storage.ObjectMeta{}))
+	require.NoError(t, dst.Put(ctx, "exists.txt", bytes.NewReader([]byte("old")), storage.ObjectMeta{}))
+
+	progress := make(map[string]bool) // key -> copied flag reported
+	result, err := storage.Migrate(ctx, src, dst, storage.MigrateOptions{
+		DryRun: true,
+		OnProgress: func(key string, copied bool, err error) {
+			require.NoError(t, err)
+			progress[key] = copied
+		},
+	})
+	require.NoError(t, err)
+
+	// Dry run previews exactly one copy and one skip.
+	assert.Equal(t, int64(1), result.Copied)
+	assert.Equal(t, int64(1), result.Skipped)
+
+	// The callback distinguishes the two: would-copy=true, skipped=false.
+	assert.True(t, progress["new.txt"], "would-copy object must report copied=true")
+	assert.False(t, progress["exists.txt"], "already-existing object must report copied=false")
+
+	// Nothing actually transferred; the pre-existing object is untouched.
+	ok, err := dst.Exists(ctx, "new.txt")
+	require.NoError(t, err)
+	assert.False(t, ok)
+	rc, _, err := dst.Get(ctx, "exists.txt")
+	require.NoError(t, err)
+	data, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	assert.Equal(t, []byte("old"), data)
 }
 
 func TestMigrate_KeyTransform(t *testing.T) {

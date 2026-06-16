@@ -7,23 +7,18 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
 )
 
-// Metadata key names mirror the server-side interceptor so
-// correlation/request IDs propagate end-to-end across hops.
-const (
-	correlationIDKey = "x-correlation-id"
-	requestIDKey     = "x-request-id"
-)
-
 // LoggingUnary returns a unary client interceptor that logs each
-// completed call with method, status code, and duration. Propagates
-// kit correlation_id + request_id from the caller's ctx to the wire
-// metadata so the server-side LoggingUnary sees them.
+// completed call with method, status code, and duration.
+//
+// Correlation/request-ID propagation onto the wire is handled by the
+// always-on [PropagationUnaryClientInterceptor] (wired ahead of logging
+// in [client.NewClient]), so logging can be disabled without severing
+// end-to-end trace joins.
 //
 // Level: Info on OK / Canceled / DeadlineExceeded (expected), Warn on
 // every other code. Canceled / DeadlineExceeded are not warnings
@@ -40,7 +35,6 @@ func LoggingUnary(logger *slog.Logger) grpc.UnaryClientInterceptor {
 		invoker grpc.UnaryInvoker,
 		opts ...grpc.CallOption,
 	) error {
-		ctx = injectIDs(ctx)
 		start := time.Now()
 		err := invoker(ctx, method, req, reply, cc, opts...)
 		logCall(ctx, logger, method, err, time.Since(start))
@@ -64,31 +58,11 @@ func LoggingStream(logger *slog.Logger) grpc.StreamClientInterceptor {
 		streamer grpc.Streamer,
 		opts ...grpc.CallOption,
 	) (grpc.ClientStream, error) {
-		ctx = injectIDs(ctx)
 		start := time.Now()
 		cs, err := streamer(ctx, desc, cc, method, opts...)
 		logCall(ctx, logger, method, err, time.Since(start))
 		return cs, err
 	}
-}
-
-// injectIDs copies kit correlation/request IDs from ctx into outgoing
-// metadata so the server side sees them. If the ID is not present on
-// ctx, nothing is added — the server's adoptOrGenerate will allocate.
-func injectIDs(ctx context.Context) context.Context {
-	md, _ := metadata.FromOutgoingContext(ctx)
-	if md == nil {
-		md = metadata.MD{}
-	} else {
-		md = md.Copy()
-	}
-	if cid := contextutil.CorrelationID(ctx); cid != "" && len(md.Get(correlationIDKey)) == 0 {
-		md.Set(correlationIDKey, cid)
-	}
-	if rid := contextutil.RequestID(ctx); rid != "" && len(md.Get(requestIDKey)) == 0 {
-		md.Set(requestIDKey, rid)
-	}
-	return metadata.NewOutgoingContext(ctx, md)
 }
 
 func logCall(ctx context.Context, logger *slog.Logger, method string, err error, duration time.Duration) {

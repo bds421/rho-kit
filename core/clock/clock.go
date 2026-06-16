@@ -85,9 +85,10 @@ func (s *Stub) Now() time.Time { return s.now.Load() }
 func (s *Stub) Set(t time.Time) { s.now.Store(t) }
 
 // Advance moves the stub forward by d. Negative d moves backwards —
-// useful for tests that exercise clock-skew handling.
+// useful for tests that exercise clock-skew handling. The increment is
+// applied atomically, so concurrent Advance calls never lose updates.
 func (s *Stub) Advance(d time.Duration) {
-	s.now.Store(s.now.Load().Add(d))
+	s.now.Add(d)
 }
 
 // Func returns a [Func] backed by this stub. Pass to constructors

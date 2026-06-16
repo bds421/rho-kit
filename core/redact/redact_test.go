@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStringValueRedactsPayload(t *testing.T) {
@@ -103,6 +104,116 @@ func TestErrorChainTypes(t *testing.T) {
 			t.Fatalf("chain length = %d, want bounded to 16", len(chain))
 		}
 	})
+}
+
+// cyclicError is a pathological custom error whose Unwrap returns an
+// ancestor, forming a cycle. It models the threat the package documents
+// for ErrorChainTypes ("a pathological wrap-loop cannot exhaust memory")
+// and exercises the same bound on ErrorValue's unwrap loop.
+type cyclicError struct {
+	next error
+}
+
+func (c *cyclicError) Error() string { return "cyclic" }
+func (c *cyclicError) Unwrap() error { return c.next }
+
+func TestErrorValueBoundsCyclicUnwrap(t *testing.T) {
+	// A two-node cycle: a -> b -> a. An unbounded unwrap loop would
+	// spin forever; ErrorValue must terminate and return a type marker.
+	a := &cyclicError{}
+	b := &cyclicError{next: a}
+	a.next = b
+
+	done := make(chan string, 1)
+	go func() {
+		done <- ErrorValue(a)
+	}()
+
+	select {
+	case got := <-done:
+		if !strings.Contains(got, "<redacted error:") {
+			t.Fatalf("ErrorValue cyclic = %q, want redacted type marker", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ErrorValue did not terminate on a cyclic unwrap chain")
+	}
+}
+
+func TestErrorChainTypesBoundsCyclicUnwrap(t *testing.T) {
+	a := &cyclicError{}
+	b := &cyclicError{next: a}
+	a.next = b
+
+	done := make(chan []string, 1)
+	go func() {
+		done <- ErrorChainTypes(a)
+	}()
+
+	select {
+	case chain := <-done:
+		if len(chain) == 0 {
+			t.Fatal("ErrorChainTypes cyclic returned empty chain")
+		}
+		if len(chain) > 16 {
+			t.Fatalf("ErrorChainTypes cyclic length = %d, want bounded to 16", len(chain))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ErrorChainTypes did not terminate on a cyclic unwrap chain")
+	}
+}
+
+func TestErrorValueFollowsMultiErrorCause(t *testing.T) {
+	// WrapSentinel uses Unwrap() []error. errors.Unwrap returns nil for
+	// such wrappers, so ErrorValue must descend into the cause branch
+	// explicitly to surface the deepest cause type for triage.
+	sentinel := errors.New("kit: ErrUnavailable")
+	cause := fmt.Errorf("dial tenant-secret.internal: token=secret")
+	wrapped := WrapSentinel(sentinel, cause)
+
+	got := ErrorValue(wrapped)
+	for _, forbidden := range []string{"tenant-secret", "token=secret"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("ErrorValue leaked %q in %q", forbidden, got)
+		}
+	}
+	if !strings.Contains(got, "*errors.errorString") {
+		t.Fatalf("ErrorValue should surface deepest cause type, got %q", got)
+	}
+	if strings.Contains(got, "sentinelWrappedError") {
+		t.Fatalf("ErrorValue stopped at the multi-error wrapper: %q", got)
+	}
+
+	// errors.Join is another Unwrap() []error wrapper.
+	joined := errors.Join(fmt.Errorf("a"), fmt.Errorf("b"))
+	if got := ErrorValue(joined); strings.Contains(got, "joinError") {
+		t.Fatalf("ErrorValue stopped at errors.Join wrapper: %q", got)
+	}
+}
+
+func TestErrorChainTypesFollowsMultiError(t *testing.T) {
+	sentinel := errors.New("kit: ErrUnavailable")
+	cause := fmt.Errorf("dial tenant-secret.internal: token=secret")
+	wrapped := WrapSentinel(sentinel, cause)
+
+	chain := ErrorChainTypes(wrapped)
+	if len(chain) < 2 {
+		t.Fatalf("ErrorChainTypes multi-error chain = %v, want it to descend past the wrapper", chain)
+	}
+	if chain[0] != "*redact.sentinelWrappedError" {
+		t.Fatalf("ErrorChainTypes first frame = %q, want the wrapper type", chain[0])
+	}
+	var sawCause bool
+	for _, entry := range chain {
+		if strings.Contains(entry, "tenant-secret") || strings.Contains(entry, "token=secret") {
+			t.Fatalf("ErrorChainTypes leaked payload: %v", chain)
+		}
+		if entry == "*errors.errorString" {
+			sawCause = true
+		}
+	}
+	if !sawCause {
+		t.Fatalf("ErrorChainTypes did not include the cause type: %v", chain)
+	}
 }
 
 func TestErrorChainAttr(t *testing.T) {

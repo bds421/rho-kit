@@ -141,6 +141,64 @@ func TestPublisher_RejectsOversizePayloadBeforeInsert(t *testing.T) {
 	assert.True(t, errors.Is(err, kitqueue.ErrMessageTooLarge), "err=%v", err)
 }
 
+// EnqueueTx is the additive transactional-enqueue path advertised by
+// the package doc ("the Publish call accepts a pgx.Tx, so the job
+// appears iff the transaction commits"). These tests pin its existence
+// and that the same validation guards as Enqueue run before the tx is
+// touched (a nil tx is safe because validation fails first).
+
+func TestPublisherEnqueueTx_InvalidReceiverReturnsError(t *testing.T) {
+	cases := []struct {
+		name string
+		p    *riverqueue.Publisher
+	}{
+		{"nil", nil},
+		{"zero", &riverqueue.Publisher{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.p.EnqueueTx(context.Background(), nil, "queue", kitqueue.Message{ID: "msg-1", Type: "test"})
+			assert.ErrorIs(t, err, kitqueue.ErrInvalidQueue)
+		})
+	}
+}
+
+func TestPublisherEnqueueTx_RejectsInvalidQueueNameBeforeInsert(t *testing.T) {
+	pub := riverqueue.NewPublisher(new(river.Client[pgx.Tx]))
+
+	err := pub.EnqueueTx(context.Background(), nil, "bad\nqueue", kitqueue.Message{
+		ID:      "msg-1",
+		Type:    "user.created",
+		Payload: json.RawMessage(`{"id":42}`),
+	})
+
+	assert.True(t, errors.Is(err, kitqueue.ErrInvalidName), "err=%v", err)
+}
+
+func TestPublisherEnqueueTx_RejectsInvalidMessageBeforeInsert(t *testing.T) {
+	pub := riverqueue.NewPublisher(new(river.Client[pgx.Tx]))
+
+	err := pub.EnqueueTx(context.Background(), nil, "jobs", kitqueue.Message{
+		ID:      "msg-1",
+		Type:    "",
+		Payload: json.RawMessage(`{"id":42}`),
+	})
+
+	assert.True(t, errors.Is(err, kitqueue.ErrInvalidMessage), "err=%v", err)
+}
+
+func TestPublisherEnqueueTx_RejectsOversizePayloadBeforeInsert(t *testing.T) {
+	pub := riverqueue.NewPublisher(new(river.Client[pgx.Tx]), riverqueue.WithMaxMessageBytes(4))
+
+	err := pub.EnqueueTx(context.Background(), nil, "jobs", kitqueue.Message{
+		ID:      "msg-1",
+		Type:    "user.created",
+		Payload: json.RawMessage(strings.Repeat("x", 5)),
+	})
+
+	assert.True(t, errors.Is(err, kitqueue.ErrMessageTooLarge), "err=%v", err)
+}
+
 func TestEnvelopeWorker_DispatchesToHandler(t *testing.T) {
 	called := false
 	handler := func(_ context.Context, msg kitqueue.Message) error {

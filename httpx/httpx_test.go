@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -61,6 +62,24 @@ func TestWriteJSON_MarshalError(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "internal error") {
 		t.Fatalf("expected internal error in body, got: %s", rec.Body.String())
+	}
+}
+
+func TestWriteJSON_MarshalError_LogsViaRequestLogger(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req = req.WithContext(SetLogger(req.Context(), logger))
+
+	rec := httptest.NewRecorder()
+	// Channels cannot be marshaled to JSON.
+	err := WriteJSON(rec, req, http.StatusOK, make(chan int))
+	if err == nil {
+		t.Fatal("expected marshal error, got nil")
+	}
+	if !strings.Contains(buf.String(), "httpx: response marshal failed") {
+		t.Fatalf("expected marshal failure to be logged, got: %q", buf.String())
 	}
 }
 
@@ -158,6 +177,53 @@ func TestParsePathID_InvalidUUID(t *testing.T) {
 	}
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+// ParsePathID must reject non-canonical UUID forms (urn:uuid: prefixes, braces,
+// raw 32-hex, and uppercase). Accepting them lets many distinct path strings
+// address one logical resource, splitting caches/audit logs/DB lookups.
+func TestParsePathID_RejectsNonCanonicalForms(t *testing.T) {
+	canonical := "01961234-5678-7abc-8def-0123456789ab"
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "uppercase", raw: "01961234-5678-7ABC-8DEF-0123456789AB"},
+		{name: "urn prefix", raw: "urn:uuid:" + canonical},
+		{name: "braced", raw: "{" + canonical + "}"},
+		{name: "raw 32 hex", raw: "019612345678" + "7abc8def0123456789ab"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/test/id", nil)
+			req.SetPathValue("id", tt.raw)
+			rec := httptest.NewRecorder()
+
+			_, ok := ParsePathID(rec, req, "id")
+			if ok {
+				t.Fatalf("expected ok=false for non-canonical form %q", tt.raw)
+			}
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for %q, got %d", tt.raw, rec.Code)
+			}
+		})
+	}
+}
+
+// The canonical form must still be accepted and returned verbatim.
+func TestParsePathID_AcceptsCanonicalForm(t *testing.T) {
+	canonical := "01961234-5678-7abc-8def-0123456789ab"
+	req := httptest.NewRequest(http.MethodGet, "/test/id", nil)
+	req.SetPathValue("id", canonical)
+	rec := httptest.NewRecorder()
+
+	id, ok := ParsePathID(rec, req, "id")
+	if !ok {
+		t.Fatal("expected ok=true for canonical UUID")
+	}
+	if id != canonical {
+		t.Fatalf("id = %q, want %q", id, canonical)
 	}
 }
 

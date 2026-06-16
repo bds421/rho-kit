@@ -83,8 +83,18 @@ func safeAuditIPAddress(ip string) string {
 	if ip == "" || len(ip) > auditstore.MaxIPAddressBytes || !utf8.ValidString(ip) {
 		return ""
 	}
-	if _, err := netip.ParseAddr(ip); err != nil {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
 		return ""
+	}
+	// netip.ParseAddr accepts any non-empty IPv6 zone after '%' without
+	// character validation, so control characters or spaces smuggled into the
+	// zone would otherwise be stored verbatim (audit-log injection). Reject any
+	// zone containing control or space characters.
+	for _, r := range addr.Zone() {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return ""
+		}
 	}
 	return ip
 }

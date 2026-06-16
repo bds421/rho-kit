@@ -262,9 +262,15 @@ func GenerateToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// memoryStoreMaxEntries caps the in-memory store before lazy eviction runs.
-// Prevents unbounded memory growth in long-running tests or misuse outside
-// of test environments.
+// memoryStoreMaxEntries is the size threshold at which Set and TryLock force a
+// lazy eviction pass instead of waiting for the periodic interval. It is NOT a
+// hard cap: eviction only reclaims *expired* entries, so a working set of live
+// long-TTL entries (or in-flight locks) can still grow past this number. It
+// bounds memory only against the expired-but-not-yet-swept backlog, which is
+// the realistic failure mode in long-running tests or misuse outside test
+// environments. Operators with high live-key cardinality should run
+// [MemoryStore.Run] and rely on a real backend ([pgstore]/[redisstore]) in
+// production, where TTL expiry caps memory at the datastore.
 const memoryStoreMaxEntries = 10_000
 
 // MemoryStore is an in-memory Store for testing. Not suitable for production
@@ -278,7 +284,8 @@ type MemoryStore struct {
 	runMu   sync.Mutex
 	started bool
 
-	setCount uint64
+	setCount     uint64
+	tryLockCount uint64
 }
 
 // MemoryStoreOption configures a MemoryStore.
@@ -388,6 +395,12 @@ func (m *MemoryStore) Get(ctx context.Context, key string, fingerprint []byte) (
 // evictInterval controls how often Set() scans for expired entries.
 const evictInterval = 100
 
+// tryLockEvictInterval controls how often TryLock() scans for expired locks.
+// Set() also sweeps locks, but a churning workload whose handlers crash after
+// TryLock (never reaching Set/Unlock) would otherwise leak abandoned locks
+// indefinitely, because nothing on the lock-acquisition path reclaimed them.
+const tryLockEvictInterval = 100
+
 // evictBudget caps the number of entries one Set-time eviction pass scans
 // under the write lock. With 10k items this previously walked the whole
 // map, blocking concurrent reads/writes for the duration. Bounding the
@@ -470,6 +483,16 @@ func (m *MemoryStore) TryLock(ctx context.Context, key string, fingerprint []byt
 
 	now := m.now()
 
+	// Opportunistically reclaim abandoned locks. Without this, a workload
+	// whose handlers crash after TryLock (never reaching Set or Unlock) would
+	// leak expired locks indefinitely, since Set's sweep is the only other
+	// path that touches the locks map. Bounded by evictBudget so lock
+	// acquisition stays responsive even with high key cardinality.
+	m.tryLockCount++
+	if len(m.locks) >= memoryStoreMaxEntries || m.tryLockCount%tryLockEvictInterval == 0 {
+		m.sweepExpiredLocksLocked(evictBudget)
+	}
+
 	// If a cached response with mismatched fingerprint exists and is still
 	// fresh, the key has been *consumed* with different bytes — 422.
 	if entry, ok := m.items[key]; ok && now.Before(entry.expiresAt) {
@@ -537,24 +560,37 @@ func (m *MemoryStore) Unlock(ctx context.Context, key, token string) error {
 	return nil
 }
 
-// sweepExpiredLocked deletes up to budget expired entries (items + locks).
-// Caller MUST hold m.mu.Lock(). budget <= 0 means unbounded — used only by
-// tests; production callers should pass [evictBudget].
+// sweepExpiredLocked deletes expired entries from both the items map and the
+// locks map. Each map gets its own independent scan budget so a full items map
+// can never starve the lock sweep: a single shared counter previously meant an
+// items map larger than budget consumed the entire allowance before the locks
+// loop ran, leaving abandoned locks (TryLock without a following Set/Unlock) to
+// accumulate without bound. Caller MUST hold m.mu.Lock(). budget <= 0 means
+// unbounded — used only by tests; production callers should pass [evictBudget].
 func (m *MemoryStore) sweepExpiredLocked(budget int) {
 	now := m.now()
 	scanned := 0
 	for k, entry := range m.items {
 		if budget > 0 && scanned >= budget {
-			return
+			break
 		}
 		scanned++
 		if now.After(entry.expiresAt) {
 			delete(m.items, k)
 		}
 	}
+	m.sweepExpiredLocksLocked(budget)
+}
+
+// sweepExpiredLocksLocked deletes up to budget expired locks. Caller MUST hold
+// m.mu.Lock(). Split out so the lock-acquisition path (TryLock) can reclaim
+// abandoned locks without spending its scan budget walking the items map.
+func (m *MemoryStore) sweepExpiredLocksLocked(budget int) {
+	now := m.now()
+	scanned := 0
 	for k, l := range m.locks {
 		if budget > 0 && scanned >= budget {
-			return
+			break
 		}
 		scanned++
 		if now.After(l.expiresAt) {

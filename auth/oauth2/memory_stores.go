@@ -24,11 +24,26 @@ func NewMemorySessionStore() *MemorySessionStore {
 	return &MemorySessionStore{sessions: make(map[string]memorySession)}
 }
 
-// Put implements [SessionStore].
+// Put implements [SessionStore]. Opportunistically sweeps already-expired
+// sessions so abandoned entries (a login whose owner never returns) cannot
+// accumulate without bound.
 func (m *MemorySessionStore) Put(_ context.Context, id string, sess Session, ttl time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sessions[id] = memorySession{sess: sess, expiresAt: time.Now().Add(ttl)}
+	now := time.Now()
+	for key, entry := range m.sessions {
+		if now.After(entry.expiresAt) {
+			// Zeroize secrets on eviction, matching Get/Delete.
+			if entry.sess.AccessToken != nil {
+				entry.sess.AccessToken.Zero()
+			}
+			if entry.sess.RefreshToken != nil {
+				entry.sess.RefreshToken.Zero()
+			}
+			delete(m.sessions, key)
+		}
+	}
+	m.sessions[id] = memorySession{sess: sess, expiresAt: now.Add(ttl)}
 	return nil
 }
 
@@ -89,11 +104,19 @@ func NewMemoryStateStore() *MemoryStateStore {
 	return &MemoryStateStore{entries: make(map[string]memoryStateEntry)}
 }
 
-// Put implements [StateStore].
+// Put implements [StateStore]. Opportunistically sweeps already-expired
+// entries so abandoned logins (a callback that never arrives) cannot
+// accumulate without bound.
 func (m *MemoryStateStore) Put(_ context.Context, state string, entry StateEntry, ttl time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.entries[state] = memoryStateEntry{entry: entry, expiresAt: time.Now().Add(ttl)}
+	now := time.Now()
+	for key, existing := range m.entries {
+		if now.After(existing.expiresAt) {
+			delete(m.entries, key)
+		}
+	}
+	m.entries[state] = memoryStateEntry{entry: entry, expiresAt: now.Add(ttl)}
 	return nil
 }
 

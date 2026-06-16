@@ -76,13 +76,17 @@ func WithKeyedClock(fn func() time.Time) KeyedOption {
 // the per-shard LRU surfaces as
 // `http_ratelimit_keyed_limiter_active_keys{limiter}` before it pages
 // on memory.
+//
+// Registration with the active-keys collector is deferred to the end of
+// [NewKeyedLimiter] so the limiter is only published once its shards and
+// name are fully initialized; publishing mid-construction would race a
+// concurrent scrape that reads those fields.
 func WithKeyedMetrics(m *Metrics) KeyedOption {
 	if m == nil {
 		panic("middleware/ratelimit: WithKeyedMetrics requires non-nil metrics")
 	}
 	return func(rl *KeyedLimiter) {
 		rl.metrics = m
-		m.trackKeyedLimiter(rl)
 	}
 }
 
@@ -118,6 +122,11 @@ func NewKeyedLimiter(limit int, window time.Duration, opts ...KeyedOption) *Keye
 		cache, _ := lru.New[string, *keyedRateLimitEntry](defaultMaxKeyedPerShard)
 		rl.shards[i].entries = cache
 	}
+	// Publish to the active-keys collector only after shards and name are
+	// fully initialized. trackKeyedLimiter takes the collector mutex, which
+	// establishes the happens-before a concurrent scrape's Collect relies on
+	// when it reads rl.shards and rl.Name().
+	rl.metrics.trackKeyedLimiter(rl)
 	return rl
 }
 
@@ -221,6 +230,13 @@ func (rl *KeyedLimiter) Start(ctx context.Context) error {
 	if rl.started {
 		rl.startMu.Unlock()
 		return errors.New("ratelimit: KeyedLimiter.Start already started")
+	}
+	if rl.stopped {
+		// Stop ran before Start and latched stopped=true. Launching the
+		// cleanup loop now would orphan a goroutine the prior Stop already
+		// promised to wait on. Reject, mirroring lifecycle.FuncComponent.
+		rl.startMu.Unlock()
+		return errors.New("ratelimit: KeyedLimiter.Start already stopped")
 	}
 	rl.started = true
 	runCtx, cancel := context.WithCancel(ctx)

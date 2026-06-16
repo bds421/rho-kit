@@ -345,7 +345,11 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 	for i, k := range keys {
 		strLens[i] = pipe.StrLen(ctx, k)
 	}
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) {
+	// Exec returns the first command error, which may be a per-key
+	// server reply (e.g. WRONGTYPE for a co-tenant's list/hash). Those
+	// are handled per command below; only transport/pipeline failures
+	// abort the batch. See isServerCmdError.
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) && !isServerCmdError(err) {
 		return nil, redact.WrapError("redis cache mget strlen pipeline", err)
 	}
 
@@ -358,6 +362,15 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 	for i, k := range keys {
 		sz, slErr := strLens[i].Result()
 		if slErr != nil {
+			// A per-key server error (e.g. WRONGTYPE for a key holding
+			// a list/hash) is treated as a miss, matching the uncapped
+			// MGET path where Redis returns nil for wrong-typed keys.
+			// Failing the whole batch here would let one hostile
+			// co-tenant deny every capped request containing that key.
+			if isServerCmdError(slErr) {
+				rc.metrics.misses.WithLabelValues(rc.name).Inc()
+				continue
+			}
 			return nil, redact.WrapError("redis cache mget strlen", slErr)
 		}
 		if sz > int64(rc.maxValueSize) {
@@ -376,7 +389,7 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 	for i, k := range getKeys {
 		gets[i] = pipe.Get(ctx, k)
 	}
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) {
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) && !isServerCmdError(err) {
 		return nil, redact.WrapError("redis cache mget get pipeline", err)
 	}
 	for i, k := range getKeys {
@@ -386,6 +399,13 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 			continue
 		}
 		if gErr != nil {
+			// As with STRLEN above, a per-key server error (e.g. the
+			// value's type changed to a list/hash between STRLEN and
+			// GET) is treated as a miss rather than failing the batch.
+			if isServerCmdError(gErr) {
+				rc.metrics.misses.WithLabelValues(rc.name).Inc()
+				continue
+			}
 			return nil, redact.WrapError("redis cache mget get", gErr)
 		}
 		if len(val) > rc.maxValueSize {
@@ -397,6 +417,20 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 		out[k] = val
 	}
 	return out, nil
+}
+
+// isServerCmdError reports whether err is a per-key error reply returned
+// by the Redis server (e.g. WRONGTYPE) as opposed to a transport or
+// pipeline failure. Server command errors implement [goredis.Error];
+// connection/transport errors do not. The redis.Nil sentinel is also a
+// server reply but callers treat it explicitly as a miss before reaching
+// here, so it is excluded.
+func isServerCmdError(err error) bool {
+	if err == nil || errors.Is(err, goredis.Nil) {
+		return false
+	}
+	var re goredis.Error
+	return errors.As(err, &re)
 }
 
 // MSet stores multiple keys with a shared TTL. Implemented as a pipelined

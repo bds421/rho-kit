@@ -414,6 +414,21 @@ func (c *Connection) Close() error {
 	return err
 }
 
+// isClosed reports whether Close() has run. Because Close() closes c.closed
+// before flipping health under c.mu, a checkHealth that observes the post-Close
+// health state under the same lock also observes isClosed()==true.
+func (c *Connection) isClosed() bool {
+	if c.closed == nil {
+		return false
+	}
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
+	}
+}
+
 // healthLoop periodically pings Redis and manages health state transitions.
 // A single ticker replaces the previous 3-goroutine state machine. go-redis
 // handles per-command reconnection; we only track health for readiness probes
@@ -459,6 +474,15 @@ func (c *Connection) checkHealth() {
 	}
 
 	c.mu.Lock()
+	// A ping that started before Close() can land here after Close() marked
+	// the connection unhealthy. Since healthLoop exits via the closed
+	// channel, committing healthy=true now would never be corrected, leaving
+	// a closed connection reporting Healthy()==true and the gauge stuck at 1.
+	// Leave the closed state untouched.
+	if err == nil && c.isClosed() {
+		c.mu.Unlock()
+		return
+	}
 	wasHealthy := c.healthy
 	c.healthy = err == nil
 

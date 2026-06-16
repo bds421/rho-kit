@@ -182,6 +182,47 @@ func TestRun_CancelledContextBeforeForwardTriggersRollback(t *testing.T) {
 	assert.Equal(t, []string{"b", "a"}, r.compensated, "both completed forwards must be compensated")
 }
 
+// TestRun_RollbackDetachedFromCancelledContext proves the documented contract:
+// when the parent ctx is cancelled (which itself triggers rollback), a
+// ctx-respecting Compensate still runs to completion rather than aborting on the
+// inherited cancellation. Best-effort rollback must not be defeated by the same
+// cancellation that started it.
+func TestRun_RollbackDetachedFromCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var compensated []string
+	var compCtxErr error
+	def := saga.MustDefinition(
+		saga.Step{
+			Name:    "a",
+			Forward: func(context.Context, any) error { return nil },
+			Compensate: func(cctx context.Context, _ any) error {
+				// A ctx-respecting Compensate: under the bug it sees the
+				// cancelled parent ctx and refuses to do its work.
+				compCtxErr = cctx.Err()
+				if cctx.Err() != nil {
+					return cctx.Err()
+				}
+				compensated = append(compensated, "a")
+				return nil
+			},
+		},
+		saga.Step{
+			Name: "b",
+			Forward: func(context.Context, any) error {
+				cancel() // cancel the parent; ctx.Err() is checked before step c
+				return nil
+			},
+		},
+		saga.Step{Name: "c", Forward: func(context.Context, any) error { return nil }},
+	)
+
+	err := saga.Run(ctx, def, nil)
+	require.Error(t, err)
+	require.NoError(t, compCtxErr, "Compensate must receive a non-cancelled (detached) context")
+	require.Equal(t, []string{"a"}, compensated, "ctx-respecting compensation must run to completion")
+}
+
 func TestRun_NilDefinitionReturnsError(t *testing.T) {
 	err := saga.Run(context.Background(), nil, nil)
 	require.Error(t, err)

@@ -30,6 +30,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -112,7 +113,13 @@ func (l *Locker) doAcquire(ctx context.Context, key string) (lock.Lock, bool, er
 	id := keyToInt64(key)
 	var got bool
 	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", id).Scan(&got); err != nil {
-		_ = conn.Close()
+		// The query failed client-side, but pg_try_advisory_lock may have
+		// already succeeded server-side (e.g. ctx cancelled mid-flight, the
+		// response was lost). Returning the connection to the pool would leak
+		// the granted session-scoped lock indefinitely — it has no TTL.
+		// Discard the connection so Postgres terminates the session and frees
+		// any lock it holds.
+		discardConn(conn)
 		return nil, false, redact.WrapError("pgadvisory: pg_try_advisory_lock", err)
 	}
 	if !got {
@@ -120,6 +127,21 @@ func (l *Locker) doAcquire(ctx context.Context, key string) (lock.Lock, bool, er
 		return nil, false, nil
 	}
 	return &sessionLock{conn: conn, id: id, logger: l.logger}, true, nil
+}
+
+// discardConn forces the underlying physical connection to be removed from the
+// pool instead of recycled. A session-scoped advisory lock is released only
+// when its backing session ends, so whenever the unlock round trip cannot be
+// confirmed the connection must be torn down rather than handed back to another
+// caller still holding the lock.
+//
+// Returning [driver.ErrBadConn] from the [sql.Conn.Raw] callback marks the
+// driver connection bad; database/sql then closes it on Close rather than
+// returning it to the idle pool. If Raw itself fails (the conn is already
+// done), Close still runs as a best-effort fallback.
+func discardConn(conn *sql.Conn) {
+	_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	_ = conn.Close()
 }
 
 // AcquireTx takes a transaction-scoped advisory lock inside tx. The
@@ -170,7 +192,6 @@ func (s *sessionLock) Release(ctx context.Context) error {
 }
 
 func (s *sessionLock) doRelease(ctx context.Context) error {
-	defer func() { _ = s.conn.Close() }()
 	var ok bool
 	if err := s.conn.QueryRowContext(ctx, "SELECT pg_advisory_unlock($1)", s.id).Scan(&ok); err != nil {
 		// A second Release call hits a conn the first Release
@@ -183,14 +204,25 @@ func (s *sessionLock) doRelease(ctx context.Context) error {
 		if errors.Is(err, sql.ErrConnDone) {
 			// Contract-correct ErrLockLost path; also log at debug
 			// so repeated occurrences are visible — they imply
-			// caller code is double-releasing.
+			// caller code is double-releasing. The conn is already
+			// closed, so Close is a no-op here.
+			_ = s.conn.Close()
 			s.logger.Debug("pgadvisory: Release on a closed conn (double-release)",
 				"lock_id", s.id,
 			)
 			return lock.ErrLockLost
 		}
+		// The unlock round trip failed (e.g. ctx cancelled mid-flight). We
+		// cannot confirm pg_advisory_unlock ran, so the session may still
+		// hold the lock. Session-scoped locks have no TTL: returning this
+		// connection to the pool would wedge the key permanently. Discard the
+		// connection so Postgres ends the session and frees the lock.
+		discardConn(s.conn)
 		return redact.WrapError("pgadvisory: pg_advisory_unlock", err)
 	}
+	// Unlock executed successfully (lock freed, or it was never held by this
+	// session). The session is healthy — return the connection to the pool.
+	_ = s.conn.Close()
 	if !ok {
 		return lock.ErrLockLost
 	}

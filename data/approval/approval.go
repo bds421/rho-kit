@@ -274,6 +274,10 @@ type Store interface {
 // ExpiresAt MUST be set and in the future. Direct store callers can
 // otherwise create permanent pending approvals that never auto-expire,
 // which defeats the kit's bounded-decision-window invariant.
+//
+// DecidedBy and DecidedAt MUST be unset: a new request enters
+// [StatePending] undecided, so any decider metadata supplied at create
+// time is forged and would pollute the audit trail.
 func ValidateForCreate(r Request, now time.Time) error {
 	if !validTenantID(r.TenantID) ||
 		!validTextField(r.Actor, MaxActorLen, true) ||
@@ -289,6 +293,13 @@ func ValidateForCreate(r Request, now time.Time) error {
 		return ErrInvalidRequest
 	}
 	if r.State != "" && r.State != StatePending {
+		return ErrInvalidRequest
+	}
+	// A new request is created in StatePending; it has not been decided
+	// yet, so any decider metadata is forged. Reject it here at the
+	// package boundary so both stores cannot persist a pending request
+	// that already shows a decider/decision timestamp (audit pollution).
+	if r.DecidedBy != "" || !r.DecidedAt.IsZero() {
 		return ErrInvalidRequest
 	}
 	if r.ExpiresAt.IsZero() {

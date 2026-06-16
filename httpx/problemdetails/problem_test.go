@@ -160,6 +160,55 @@ func TestFromError_GenericErrorReturns500(t *testing.T) {
 	assert.NotContains(t, p.Detail, "secret")
 }
 
+func TestFromError_TimeoutReturns408(t *testing.T) {
+	p := FromError(apperror.NewTimeout("query exceeded deadline on postgres://user:secret@10.0.0.5/app"))
+	assert.Equal(t, http.StatusRequestTimeout, p.Status)
+	assert.Equal(t, "request timeout", p.Detail)
+	assert.NotContains(t, p.Detail, "10.0.0.5")
+	assert.NotContains(t, p.Detail, "secret")
+}
+
+func TestFromError_PayloadTooLargeReturns413(t *testing.T) {
+	p := FromError(apperror.NewPayloadTooLarge("body 12345678 bytes exceeds /internal/limit", 1024))
+	assert.Equal(t, http.StatusRequestEntityTooLarge, p.Status)
+	assert.Equal(t, "payload too large", p.Detail)
+	assert.NotContains(t, p.Detail, "12345678")
+	assert.NotContains(t, p.Detail, "/internal/limit")
+}
+
+// TestMapStatusParity guards mapStatus against drift from httpx.HTTPStatus.
+// problemdetails cannot import httpx without a circular dependency, so the
+// expected status codes are pinned here per apperror.Code. Adding a new code
+// to apperror requires extending mapStatus and this table together.
+func TestMapStatusParity(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "not found", err: apperror.NewNotFound("user", 1), want: http.StatusNotFound},
+		{name: "validation", err: apperror.NewValidation("bad"), want: http.StatusBadRequest},
+		{name: "conflict", err: apperror.NewConflict("dup"), want: http.StatusConflict},
+		{name: "permanent", err: apperror.NewPermanent("nope"), want: http.StatusUnprocessableEntity},
+		{name: "auth required", err: apperror.NewAuthRequired("auth"), want: http.StatusUnauthorized},
+		{name: "rate limit", err: apperror.NewRateLimit("slow"), want: http.StatusTooManyRequests},
+		{name: "forbidden", err: apperror.NewForbidden("no"), want: http.StatusForbidden},
+		{name: "unavailable self", err: apperror.NewUnavailable("down"), want: http.StatusServiceUnavailable},
+		{name: "dependency unavailable", err: apperror.NewDependencyUnavailable("redis", "msg", nil), want: http.StatusBadGateway},
+		{name: "operation failed", err: apperror.NewOperationFailed("fail"), want: http.StatusInternalServerError},
+		{name: "storage full", err: apperror.NewStorageFull("disk"), want: http.StatusInsufficientStorage},
+		{name: "timeout", err: apperror.NewTimeout("deadline"), want: http.StatusRequestTimeout},
+		{name: "payload too large", err: apperror.NewPayloadTooLarge("big", 1), want: http.StatusRequestEntityTooLarge},
+		{name: "generic", err: errors.New("boom"), want: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, mapStatus(tt.err))
+		})
+	}
+}
+
 func TestSafeDetail(t *testing.T) {
 	tests := []struct {
 		name string

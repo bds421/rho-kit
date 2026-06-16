@@ -33,9 +33,9 @@ type ScanReport struct {
 }
 
 // ScanDir walks root looking for "// asvs: ..." annotations in .go
-// files. Vendor directories and _test.go files are skipped — the
-// kit's claim is "production code on the request path satisfies
-// this control"; tests are documentation, not enforcement.
+// files. Vendor, testdata directories and _test.go files are skipped —
+// the kit's claim is "production code on the request path satisfies
+// this control"; tests and fixtures are documentation, not enforcement.
 //
 // FR-007 [HIGH]: ScanDir's output is DOCUMENTATION-ONLY and MUST
 // NOT be used as compliance evidence. A service author can claim
@@ -60,7 +60,7 @@ func ScanDir(root string) (ScanReport, error) {
 				return nil
 			}
 			name := d.Name()
-			if name == "vendor" || strings.HasPrefix(name, ".") || name == "node_modules" {
+			if name == "vendor" || strings.HasPrefix(name, ".") || name == "node_modules" || name == "testdata" {
 				return filepath.SkipDir
 			}
 			return nil

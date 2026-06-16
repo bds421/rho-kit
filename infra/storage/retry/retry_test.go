@@ -330,6 +330,66 @@ func TestAsPublicURLer_ReachesUnderlyingThroughRetry(t *testing.T) {
 	assert.Equal(t, "https://public/key", url)
 }
 
+func TestRetryStorage_Put_RewindsToInitialOffsetOnRetry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var (
+		attempts atomic.Int32
+		captured [][]byte
+	)
+	backend := &capturingPutBackend{
+		putFn: func(r io.Reader) error {
+			data, err := io.ReadAll(r)
+			if err != nil {
+				return err
+			}
+			captured = append(captured, data)
+			if attempts.Add(1) == 1 {
+				return storage.NewTransientError("put", "key", errors.New("timeout"))
+			}
+			return nil
+		},
+	}
+
+	// Reader positioned mid-stream: the first 4 bytes ("HEAD") have already
+	// been consumed by the caller before handing the reader to Put.
+	sr := bytes.NewReader([]byte("HEADbody"))
+	_, err := sr.Seek(4, io.SeekStart)
+	require.NoError(t, err)
+
+	r := New(backend, WithMaxAttempts(3), WithBaseDelay(time.Millisecond))
+	require.NoError(t, r.Put(ctx, "key", sr, storage.ObjectMeta{}))
+
+	require.Len(t, captured, 2)
+	// Both attempts must upload identical content starting from the caller's
+	// initial offset — not byte 0 on retry.
+	assert.Equal(t, []byte("body"), captured[0])
+	assert.Equal(t, []byte("body"), captured[1])
+}
+
+// capturingPutBackend records the bytes seen by each Put attempt and can inject
+// errors so retries can be observed.
+type capturingPutBackend struct {
+	putFn func(r io.Reader) error
+}
+
+func (b *capturingPutBackend) Put(_ context.Context, _ string, r io.Reader, _ storage.ObjectMeta) error {
+	if b.putFn != nil {
+		return b.putFn(r)
+	}
+	_, err := io.Copy(io.Discard, r)
+	return err
+}
+
+func (b *capturingPutBackend) Get(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+	return nil, storage.ObjectMeta{}, errors.New("not implemented")
+}
+
+func (b *capturingPutBackend) Delete(context.Context, string) error { return nil }
+
+func (b *capturingPutBackend) Exists(context.Context, string) (bool, error) { return false, nil }
+
 // failingBackend wraps MemBackend but can inject errors per-operation.
 type failingBackend struct {
 	underlying *membackend.Backend

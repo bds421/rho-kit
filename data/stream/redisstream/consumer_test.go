@@ -478,3 +478,131 @@ func TestStartConsumers_NilLoggerNormalized(t *testing.T) {
 	err = StartConsumers(context.TODO(), consumer, nil, &sync.WaitGroup{}, nil, nil)
 	require.NoError(t, err)
 }
+
+func TestWithHandlerTimeout_Defaults(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	c, err := NewConsumer(client, "test-group")
+	require.NoError(t, err)
+	assert.Equal(t, handlerShutdownTimeout, c.handlerTimeout)
+}
+
+func TestWithHandlerTimeout_Override(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	c, err := NewConsumer(client, "test-group", WithHandlerTimeout(2*time.Minute))
+	require.NoError(t, err)
+	assert.Equal(t, 2*time.Minute, c.handlerTimeout)
+}
+
+func TestWithHandlerTimeout_PanicsOnNonPositive(t *testing.T) {
+	for name, d := range map[string]time.Duration{
+		"zero":     0,
+		"negative": -time.Second,
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Panics(t, func() { WithHandlerTimeout(d) })
+		})
+	}
+}
+
+// TestHandleMessage_HandlerDeadlineUsesConfiguredTimeout verifies that the
+// deadline handed to a handler in the normal (non-cancelled) path reflects the
+// configured handler timeout rather than the hard-coded 30s default.
+func TestHandleMessage_HandlerDeadlineUsesConfiguredTimeout(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	stream := "test:stream:handler-timeout"
+	group := "g"
+	dlStream := stream + ":dead"
+	require.NoError(t, client.XGroupCreateMkStream(ctx, stream, group, "0").Err())
+
+	c, err := NewConsumer(client, group,
+		WithConsumerName("worker-timeout"),
+		WithHandlerTimeout(90*time.Minute),
+	)
+	require.NoError(t, err)
+
+	raw := goredis.XMessage{
+		ID: "1-0",
+		Values: map[string]any{
+			"id":      "msg-1",
+			"type":    "test.event",
+			"payload": `{"ok":true}`,
+			"ts":      time.Now().UTC().Format(time.RFC3339Nano),
+		},
+	}
+
+	var gotDeadline time.Time
+	var hadDeadline bool
+	c.handleMessage(ctx, stream, dlStream, raw, func(hctx context.Context, _ Message) error {
+		gotDeadline, hadDeadline = hctx.Deadline()
+		return nil
+	}, 1)
+
+	require.True(t, hadDeadline, "handler context must carry a deadline")
+	// The deadline must be far beyond the hard-coded 30s default — proving the
+	// configured timeout is honoured, not the constant.
+	assert.Greater(t, time.Until(gotDeadline), time.Hour,
+		"handler deadline must reflect the configured 90m timeout, not the 30s default")
+}
+
+// TestHandleMessage_InFlightHandlerGetsGracePeriod verifies the documented
+// shutdown grace period: a handler that is already running when the parent
+// context is cancelled keeps a live (non-cancelled) context so it can finish
+// its work, rather than being aborted mid-flight.
+func TestHandleMessage_InFlightHandlerGetsGracePeriod(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	stream := "test:stream:grace"
+	group := "g"
+	consumer := "worker-grace"
+	dlStream := stream + ":dead"
+	require.NoError(t, client.XGroupCreateMkStream(ctx, stream, group, "0").Err())
+	_, err := client.XAdd(ctx, &goredis.XAddArgs{
+		Stream: stream,
+		Values: map[string]any{
+			"id":      "msg-1",
+			"type":    "test.event",
+			"payload": `{"ok":true}`,
+			"ts":      time.Now().UTC().Format(time.RFC3339Nano),
+		},
+	}).Result()
+	require.NoError(t, err)
+	delivered, err := client.XReadGroup(ctx, &goredis.XReadGroupArgs{
+		Group:    group,
+		Consumer: consumer,
+		Streams:  []string{stream, ">"},
+		Count:    1,
+		Block:    -1,
+	}).Result()
+	require.NoError(t, err)
+	require.Len(t, delivered, 1)
+	require.Len(t, delivered[0].Messages, 1)
+
+	c, err := NewConsumer(client, group, WithConsumerName(consumer))
+	require.NoError(t, err)
+
+	// Parent context is live at dispatch time, then cancelled while the
+	// handler runs.
+	dispatchCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var errDuringHandler error
+	c.handleMessage(dispatchCtx, stream, dlStream, delivered[0].Messages[0], func(hctx context.Context, _ Message) error {
+		// Simulate the parent being cancelled (shutdown signalled) while the
+		// handler is mid-work.
+		cancel()
+		errDuringHandler = hctx.Err()
+		return nil
+	}, 1)
+
+	assert.NoError(t, errDuringHandler,
+		"in-flight handler must keep a live context (grace period), not be cancelled mid-work")
+}

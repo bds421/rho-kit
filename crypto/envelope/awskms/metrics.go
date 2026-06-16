@@ -1,6 +1,7 @@
 package awskms
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -64,12 +65,22 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	)
 	if err := cfg.registerer.Register(requestErrors); err != nil {
 		var are prometheus.AlreadyRegisteredError
-		if as, ok := err.(prometheus.AlreadyRegisteredError); ok {
-			are = as
-			if existing, ok := are.ExistingCollector.(*prometheus.CounterVec); ok {
-				requestErrors = existing
-			}
+		if !errors.As(err, &are) {
+			// Any non-AlreadyRegistered failure (e.g. a name collision
+			// with a differently-shaped collector) means the counter was
+			// never registered; returning it would silently leave an
+			// unscraped metric — exactly the scrape-time gap WithRegisterer
+			// promises to prevent. Fail loudly at startup instead.
+			panic("awskms: NewMetrics registration failed: " + err.Error())
 		}
+		existing, ok := are.ExistingCollector.(*prometheus.CounterVec)
+		if !ok {
+			// The fully-qualified name is already held by a collector that
+			// is not our *prometheus.CounterVec; recording against the fresh
+			// (unregistered) collector would never be scraped.
+			panic("awskms: NewMetrics found request_errors_total registered as an incompatible collector type")
+		}
+		requestErrors = existing
 	}
 	return &Metrics{requestErrors: requestErrors}
 }

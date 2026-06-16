@@ -3,6 +3,7 @@ package gcpkms
 import (
 	"context"
 	"errors"
+	"hash/crc32"
 	"log/slog"
 	"strings"
 	"testing"
@@ -121,6 +122,40 @@ func TestAllowsKeyIDAcceptsVersionedSuffix(t *testing.T) {
 	}
 	if !allowsKeyID(parent, parent+"/cryptoKeyVersions/3") {
 		t.Fatal("expected version-qualified suffix to pass")
+	}
+}
+
+func TestUnwrapDecryptRequestTargetsParentCryptoKey(t *testing.T) {
+	parent := "projects/p/locations/l/keyRings/r/cryptoKeys/k"
+	k, err := NewKEK(&kms.KeyManagementClient{}, Config{
+		KeyResource:                 parent,
+		AdditionalAuthenticatedData: []byte("tenant=acme"),
+	})
+	if err != nil {
+		t.Fatalf("NewKEK: %v", err)
+	}
+
+	// Wrap returns the version-qualified CryptoKeyVersion name, which is
+	// stored as the envelope keyID. Decrypt's Name field, however, must be
+	// the parent CryptoKey resource — GCP KMS rejects a version-qualified
+	// name on (symmetric) Decrypt with INVALID_ARGUMENT and selects the
+	// version from the ciphertext itself.
+	keyID := parent + "/cryptoKeyVersions/3"
+	wrapped := []byte("ciphertext")
+
+	req := k.decryptRequest(keyID, wrapped)
+
+	if got := req.GetName(); got != parent {
+		t.Fatalf("DecryptRequest.Name = %q, want parent CryptoKey %q", got, parent)
+	}
+	if got := req.GetCiphertext(); string(got) != string(wrapped) {
+		t.Fatalf("DecryptRequest.Ciphertext = %q, want %q", got, wrapped)
+	}
+	if req.GetCiphertextCrc32C().GetValue() != int64(crc32.Checksum(wrapped, crc32cTable)) {
+		t.Fatalf("DecryptRequest.CiphertextCrc32C mismatch")
+	}
+	if string(req.GetAdditionalAuthenticatedData()) != "tenant=acme" {
+		t.Fatalf("DecryptRequest.AdditionalAuthenticatedData = %q, want AAD", req.GetAdditionalAuthenticatedData())
 	}
 }
 

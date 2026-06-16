@@ -107,6 +107,16 @@ func Module(amqpURL string, opts ...Option) app.Module {
 	}
 	if amqpURL != "" && !mc.allowPlaintext {
 		enforceTransportSafety(amqpURL)
+		// The construction check above lets loopback amqp:// URLs through
+		// (local-dev fixtures "bypass the check"). The backend dial path
+		// is stricter: without an explicit plaintext opt-in it rejects
+		// amqp:// — or, when service TLS is configured, silently upgrades
+		// it to amqps:// and fails the handshake against a plaintext local
+		// broker. Thread the loopback exemption into allowPlaintext so the
+		// dial path honors the same decision construction already made.
+		if isLoopbackPlaintextURL(amqpURL) {
+			mc.allowPlaintext = true
+		}
 	}
 	return &messagingModule{
 		url:                amqpURL,
@@ -261,6 +271,25 @@ func enforceTransportSafety(amqpURL string) {
 		return
 	}
 	panic("amqp: Module requires amqps:// for non-loopback hosts (use WithoutTLS for local dev)")
+}
+
+// isLoopbackPlaintextURL reports whether amqpURL is a plaintext amqp://
+// URL targeting a loopback host — the exact case enforceTransportSafety
+// exempts from its panic. It mirrors that parsing so the dial path can be
+// told to accept the same URL the construction check waved through.
+func isLoopbackPlaintextURL(amqpURL string) bool {
+	u, err := url.Parse(amqpURL)
+	if err != nil {
+		return false
+	}
+	if strings.ToLower(u.Scheme) != "amqp" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+	return isLoopbackHost(host)
 }
 
 func isLoopbackHost(host string) bool {

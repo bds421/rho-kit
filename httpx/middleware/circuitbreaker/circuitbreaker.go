@@ -23,10 +23,13 @@
 package circuitbreaker
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -241,8 +244,8 @@ func defaultOnOpenRespond(w http.ResponseWriter, _ *http.Request, retryAfter tim
 // parent package and would create an import cycle).
 type statusRecorder struct {
 	http.ResponseWriter
-	status     int
-	wroteHead  bool
+	status    int
+	wroteHead bool
 }
 
 func newStatusRecorder(w http.ResponseWriter) *statusRecorder {
@@ -255,6 +258,16 @@ func (s *statusRecorder) WriteHeader(code int) {
 	}
 	if code < 100 || code > 999 {
 		code = http.StatusInternalServerError
+	}
+	// 1xx informational responses (e.g. 103 Early Hints) are sent
+	// immediately and may be followed by the real final status, per
+	// net/http: "Any number of 1xx headers may be written, followed
+	// by at most one 2xx-5xx header." Forward them without latching
+	// so the subsequent final WriteHeader still wins — both for the
+	// client and for shouldTrip's status evaluation.
+	if code >= 100 && code < 200 {
+		s.ResponseWriter.WriteHeader(code)
+		return
 	}
 	s.status = code
 	s.wroteHead = true
@@ -269,3 +282,48 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 }
 
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// Flush delegates to the underlying writer if it implements
+// http.Flusher. Required so streaming handlers (e.g. SSE) behind the
+// breaker can flush; a missing Flush silently disables streaming.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack implements http.Hijacker by delegating to the underlying
+// ResponseWriter. Required for WebSocket upgrades (gorilla/websocket
+// asserts http.Hijacker on the writer it is handed).
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := s.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("middleware/circuitbreaker: underlying ResponseWriter does not implement http.Hijacker")
+}
+
+// Push delegates to the underlying writer when it implements
+// [http.Pusher], preserving HTTP/2 server push.
+func (s *statusRecorder) Push(target string, opts *http.PushOptions) error {
+	if p, ok := s.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+// ReadFrom delegates to the underlying writer's optimized copy path
+// (sendfile) when available, while still recording the implicit 200
+// status, matching net/http's response writer behavior.
+func (s *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	if !s.wroteHead {
+		s.WriteHeader(http.StatusOK)
+	}
+	if rf, ok := s.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(src)
+	}
+	return io.Copy(writerOnly{s.ResponseWriter}, src)
+}
+
+// writerOnly hides any io.ReaderFrom on the wrapped writer so io.Copy
+// uses a plain Write loop in the fallback path.
+type writerOnly struct{ io.Writer }

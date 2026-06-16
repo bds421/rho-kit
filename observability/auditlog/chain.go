@@ -116,14 +116,53 @@ func constantTimeEqualHMAC(a, b []byte) bool {
 // chainKey must match the key used at [Logger.LogE] time; the comparison
 // is constant-time so attackers cannot probe key bytes via timing.
 func VerifyChain(events []Event, chainKey []byte) error {
+	return VerifyChainFrom(events, chainKey, nil)
+}
+
+// VerifyChainFrom is the retention-aware sibling of [VerifyChain]. It
+// validates the same tamper-evident HMAC chain but anchors the head to a
+// caller-supplied watermark instead of requiring a genesis (empty/zero)
+// PrevHMAC.
+//
+// A watermark is the HMAC of the last event that was removed from the
+// head of the chain by a retention sweep (see [RetentionJob]). Passing
+// the watermark lets verification accept the new oldest event whose
+// PrevHMAC links to that now-deleted record, which the genesis-anchored
+// [VerifyChain] would otherwise reject as [ErrChainBroken] forever after
+// the first retention run.
+//
+// Watermark semantics:
+//
+//   - An empty or nil watermark requires a genesis head (event[0].PrevHMAC
+//     empty or all-zero) — i.e. VerifyChainFrom(events, key, nil) is
+//     identical to [VerifyChain](events, key).
+//   - A non-empty watermark requires event[0].PrevHMAC to equal it. The
+//     comparison is constant-time. This does NOT weaken tamper-evidence:
+//     every event's HMAC is still recomputed over its content, and the
+//     internal links (event[i].PrevHMAC == event[i-1].HMAC for i > 0) are
+//     still enforced. An attacker who truncates the head to an arbitrary
+//     point cannot supply a matching watermark without the chain key, and
+//     cannot alter content without breaking a per-event HMAC.
+//
+// Operators who wire the documented @daily retention job and also want
+// tamper-evidence should persist the watermark (the deleted tail HMAC)
+// alongside the surviving records and feed it here.
+//
+// VerifyChainFrom treats an empty slice as a valid (degenerate) chain
+// regardless of the watermark.
+func VerifyChainFrom(events []Event, chainKey []byte, watermark []byte) error {
 	if len(chainKey) < MinChainKeyLen {
 		return fmt.Errorf("%w: chain key must be at least %d bytes", ErrChainBroken, MinChainKeyLen)
 	}
 	var prev []byte
 	for i, event := range events {
 		if i == 0 {
-			if len(event.PrevHMAC) != 0 && !isZeroBytes(event.PrevHMAC) {
-				return fmt.Errorf("%w: event[0] PrevHMAC must be empty or zero", ErrChainBroken)
+			if len(watermark) == 0 {
+				if len(event.PrevHMAC) != 0 && !isZeroBytes(event.PrevHMAC) {
+					return fmt.Errorf("%w: event[0] PrevHMAC must be empty or zero", ErrChainBroken)
+				}
+			} else if !constantTimeEqualHMAC(event.PrevHMAC, watermark) {
+				return fmt.Errorf("%w: event[0] PrevHMAC does not match retention watermark", ErrChainBroken)
 			}
 		} else {
 			if !constantTimeEqualHMAC(event.PrevHMAC, prev) {

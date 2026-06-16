@@ -52,6 +52,14 @@ func Move(ctx context.Context, s Storage, srcKey, dstKey string) error {
 	if err := Copy(ctx, s, srcKey, dstKey); err != nil {
 		return redact.WrapError("storage.Move", err)
 	}
+	// Guard against srcKey == dstKey: Copy onto the same key succeeds (e.g.
+	// localbackend's temp+rename), so the following Delete would remove the
+	// only copy and destroy the object. A Move onto itself is a no-op. Keys
+	// are validated by Copy above, so an invalid identical key has already
+	// been rejected.
+	if srcKey == dstKey {
+		return nil
+	}
 	if err := s.Delete(ctx, srcKey); err != nil {
 		return redact.WrapError("storage.Move: delete source", err)
 	}

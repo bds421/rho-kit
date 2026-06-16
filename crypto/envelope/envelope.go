@@ -209,7 +209,7 @@ func (e *Encryptor) Rewrap(ctx context.Context, blob []byte) ([]byte, error) {
 	if err := e.validate(ctx); err != nil {
 		return nil, err
 	}
-	_, _, keyID, wrapped, body, err := parseBlob(blob)
+	version, _, keyID, wrapped, body, err := parseBlob(blob)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +241,14 @@ func (e *Encryptor) Rewrap(ctx context.Context, blob []byte) ([]byte, error) {
 	if len(newWrapped) > 0xFFFF {
 		return nil, fmt.Errorf("envelope: wrapped DEK exceeds 64 KiB")
 	}
-	newHeader := buildHeader(newKeyID, newWrapped)
+	// Re-emit a header of the SAME version as the input blob. The body
+	// is left untouched and stays sealed under its original-version AAD,
+	// so flipping the header version (e.g. v2 -> v3) would make Decrypt
+	// derive a different AAD and fail closed, corrupting the record.
+	newHeader, err := buildHeaderVersion(version, newKeyID, newWrapped)
+	if err != nil {
+		return nil, err
+	}
 
 	out := make([]byte, 0, len(newHeader)+len(body))
 	out = append(out, newHeader...)
@@ -249,24 +256,65 @@ func (e *Encryptor) Rewrap(ctx context.Context, blob []byte) ([]byte, error) {
 	return out, nil
 }
 
-// buildHeader serialises the v3 header: magic, version, uint16
-// keyID length, keyID bytes, uint16 wrapped-DEK length, wrapped DEK.
-// Bumping keyID's length prefix from uint8 (v2) to uint16 (v3) gives
-// room for fully-qualified GCP and Azure key resources without
-// touching the wrapped-DEK length prefix that already used 16 bits.
+// buildHeader serialises the current (v3) header. It is a thin wrapper
+// over buildHeaderVersion for the default Encrypt write path; v2 cannot
+// fail validation here because the only caller (Encrypt) writes v3.
 func buildHeader(keyID string, wrappedDEK []byte) []byte {
-	out := make([]byte, 0, 3+1+2+len(keyID)+2+len(wrappedDEK))
-	out = append(out, blobMagic[:]...)
-	out = append(out, blobVersion)
-	var kp [2]byte
-	binary.BigEndian.PutUint16(kp[:], uint16(len(keyID)))
-	out = append(out, kp[:]...)
-	out = append(out, []byte(keyID)...)
-	var lp [2]byte
-	binary.BigEndian.PutUint16(lp[:], uint16(len(wrappedDEK)))
-	out = append(out, lp[:]...)
-	out = append(out, wrappedDEK...)
+	out, err := buildHeaderVersion(blobVersion, keyID, wrappedDEK)
+	if err != nil {
+		// blobVersion is a constant and v3 imposes no extra constraints
+		// beyond the validation Encrypt already performed, so this is
+		// unreachable for the default write path.
+		panic(err)
+	}
 	return out
+}
+
+// buildHeaderVersion serialises a header for the given blob version.
+//
+// v3: magic, version, uint16 keyID length, keyID bytes, uint16
+// wrapped-DEK length, wrapped DEK. Bumping keyID's length prefix from
+// uint8 (v2) to uint16 (v3) gives room for fully-qualified GCP and
+// Azure key resources without touching the wrapped-DEK length prefix
+// that already used 16 bits.
+//
+// v2: magic, version, uint8 keyID length, keyID bytes, uint16
+// wrapped-DEK length, wrapped DEK. Rewrap must be able to re-emit a v2
+// header so a legacy v2 blob (whose body is sealed under the v2 AAD)
+// stays decryptable after key rotation; emitting a v3 header would
+// change the AAD derivation and permanently corrupt the record.
+func buildHeaderVersion(version uint8, keyID string, wrappedDEK []byte) ([]byte, error) {
+	switch version {
+	case blobVersionV2:
+		if len(keyID) > 0xFF {
+			return nil, fmt.Errorf("envelope: keyID exceeds v2 uint8 length prefix")
+		}
+		out := make([]byte, 0, 3+1+1+len(keyID)+2+len(wrappedDEK))
+		out = append(out, blobMagic[:]...)
+		out = append(out, blobVersionV2)
+		out = append(out, byte(len(keyID)))
+		out = append(out, []byte(keyID)...)
+		var lp [2]byte
+		binary.BigEndian.PutUint16(lp[:], uint16(len(wrappedDEK)))
+		out = append(out, lp[:]...)
+		out = append(out, wrappedDEK...)
+		return out, nil
+	case blobVersionV3:
+		out := make([]byte, 0, 3+1+2+len(keyID)+2+len(wrappedDEK))
+		out = append(out, blobMagic[:]...)
+		out = append(out, blobVersionV3)
+		var kp [2]byte
+		binary.BigEndian.PutUint16(kp[:], uint16(len(keyID)))
+		out = append(out, kp[:]...)
+		out = append(out, []byte(keyID)...)
+		var lp [2]byte
+		binary.BigEndian.PutUint16(lp[:], uint16(len(wrappedDEK)))
+		out = append(out, lp[:]...)
+		out = append(out, wrappedDEK...)
+		return out, nil
+	default:
+		return nil, fmt.Errorf("envelope: buildHeaderVersion: unknown version %d", version)
+	}
 }
 
 // parseBlob splits a blob into (version, header, keyID, wrappedDEK,

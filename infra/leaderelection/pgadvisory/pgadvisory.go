@@ -39,6 +39,14 @@ import (
 // restart the process rather than retrying the elector in-place.
 var ErrCallbackDrainTimeout = errors.New("leaderelection/pgadvisory: OnAcquired callback drain timed out")
 
+// acquirer is the subset of [pgalock.Locker] the Elector depends on.
+// Narrowing the field to this interface keeps the public API unchanged
+// (New still takes *sql.DB) while letting tests inject a fake locker to
+// exercise the Run acquire/retry loop without a live Postgres.
+type acquirer interface {
+	Acquire(ctx context.Context, key string) (lock.Lock, bool, error)
+}
+
 // Elector is a [leaderelection.Elector] backed by a Postgres advisory
 // lock.
 //
@@ -47,7 +55,7 @@ var ErrCallbackDrainTimeout = errors.New("leaderelection/pgadvisory: OnAcquired 
 // and call user callbacks out of order. [Elector.IsLeader] is safe
 // for concurrent reads.
 type Elector struct {
-	locker        *pgalock.Locker
+	locker        acquirer
 	key           string
 	retryInterval time.Duration
 	healthCheck   time.Duration
@@ -143,6 +151,12 @@ func WithCallbackDrainWarnInterval(d time.Duration) Option {
 // re-enter leader work from the same process can still observe an
 // overlap until the orphan exits — the orchestrator MUST treat the
 // timeout as a fatal signal and exit/restart rather than retrying.
+//
+// This breaks the usual [leaderelection.Callbacks] ordering guarantee:
+// after a drain timeout the elector still invokes OnLost for the term,
+// so OnLost may run concurrently with the orphaned OnAcquired goroutine
+// rather than strictly after it returns. OnLost teardown must not free
+// resources the orphan could still be using.
 //
 // Use this option when an external orchestrator (Kubernetes, systemd)
 // will SIGKILL the process within a bounded grace window anyway and
@@ -255,6 +269,21 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		if lostErr != nil {
 			return errors.Join(holdErr, lostErr)
 		}
+		// A drain-timeout means an OnAcquired goroutine from the
+		// previous term is still running inside this process. We have
+		// no way to interrupt it (Go has no goroutine kill), so
+		// retrying acquire would risk a within-process double-leader:
+		// the new term could call OnAcquired again while the orphan
+		// goroutine still holds resources. Bail out and let the
+		// orchestrator restart the process (L-141). Mirrors the
+		// sibling redislock guard.
+		if holdErr != nil && errors.Is(holdErr, ErrCallbackDrainTimeout) {
+			e.logger.Error("leader-election: OnAcquired drain timed out; refusing to re-acquire — restart the process",
+				redact.String("key", e.key),
+				redact.Error(holdErr),
+			)
+			return holdErr
+		}
 		if holdErr == nil {
 			e.logger.Info("leader-election: leadership callback returned; retrying",
 				redact.String("key", e.key),
@@ -323,9 +352,11 @@ type callbackResult struct {
 //
 // The drain watchdog logs a warning and records a pending-drain
 // observation every [Elector.drainWarnTick] (default 30s) while
-// waiting on a stalled OnAcquired — round-3 removed the hard drain
-// timeout, so this is the only operator-visible signal that a buggy
-// callback is pinning the elector.
+// waiting on a stalled OnAcquired. By default the elector waits
+// forever for the callback to return; [WithCallbackDrainTimeout]
+// optionally caps that wait, in which case the watchdog warn ticker
+// fires until either the callback returns or the configured deadline
+// elapses and holdLeadership returns [ErrCallbackDrainTimeout].
 func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb leaderelection.Callbacks) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -379,6 +410,10 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 	for {
 		select {
 		case <-parent.Done():
+			// Leadership is ending: drop the leader flag before the
+			// (possibly long) callback drain so IsLeader stops
+			// reporting true while another replica may already lead.
+			e.leader.Store(false)
 			cancel()
 			return joinDrainResult(parent.Err(), awaitCallback())
 		case result := <-cbDone:
@@ -387,15 +422,39 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 			}
 			return nil
 		case <-healthTicker.C:
-			if ok, err := handle.Extend(ctx); err != nil {
+			// Bound each probe: the health-check round-trips the pinned
+			// session connection, and a silent network drop would
+			// otherwise block ExecContext until the OS TCP retransmit
+			// timeout (minutes) — defeating the lost-leader detection
+			// this probe exists for. A probe that overruns the
+			// health-check window is treated as loss.
+			ok, err := e.probe(ctx, handle)
+			if err != nil {
+				// Loss detected: drop the leader flag immediately so
+				// IsLeader reflects reality during the callback drain.
+				e.leader.Store(false)
 				cancel()
 				return joinDrainResult(redact.WrapError("extend", err), awaitCallback())
-			} else if !ok {
+			}
+			if !ok {
+				e.leader.Store(false)
 				cancel()
 				return joinDrainResult(errors.New("leader-election: handle reports lost"), awaitCallback())
 			}
 		}
 	}
+}
+
+// probe runs a single health-check Extend bounded by a per-probe
+// deadline derived from the health-check interval. The Extend
+// round-trips the pinned session connection; without a deadline a
+// silent network drop blocks until the OS TCP retransmit timeout, so a
+// probe that does not complete within the health-check window is
+// surfaced as an error and treated as a leadership loss by the caller.
+func (e *Elector) probe(ctx context.Context, handle lock.Lock) (bool, error) {
+	pctx, cancel := context.WithTimeout(ctx, e.healthCheck)
+	defer cancel()
+	return handle.Extend(pctx)
 }
 
 // awaitCallbackDrain blocks until the OnAcquired goroutine has

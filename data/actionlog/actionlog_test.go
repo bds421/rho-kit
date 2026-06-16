@@ -944,3 +944,88 @@ func TestNewStaticSecrets_PanicsOnEmptyKeyIDInMap(t *testing.T) {
 		})
 	})
 }
+
+// usStore wraps a memStore but truncates OccurredAt to microsecond
+// precision on the way in, mimicking a TIMESTAMPTZ-backed store (e.g.
+// Postgres via pgx, which encodes sub-microsecond nanoseconds away on a
+// TIMESTAMPTZ column). It is the minimal model that exercises the
+// signing/persistence precision mismatch without a database.
+type usStore struct {
+	inner *memStore
+}
+
+func newUSStore() *usStore { return &usStore{inner: newMemStore()} }
+
+func (s *usStore) AppendChained(ctx context.Context, tenantID string, build func(prev Entry, prevSeq int64) (Entry, error)) (Entry, error) {
+	return s.inner.AppendChained(ctx, tenantID, func(prev Entry, prevSeq int64) (Entry, error) {
+		e, err := build(prev, prevSeq)
+		if err != nil {
+			return Entry{}, err
+		}
+		e.OccurredAt = e.OccurredAt.Truncate(time.Microsecond)
+		return e, nil
+	})
+}
+
+func (s *usStore) Get(ctx context.Context, id string) (Entry, error) {
+	return s.inner.Get(ctx, id)
+}
+
+func (s *usStore) List(ctx context.Context, q Query) ([]Entry, string, error) {
+	return s.inner.List(ctx, q)
+}
+
+func (s *usStore) RangeByTenantSeq(ctx context.Context, tenantID string, fn func(Entry) error) error {
+	return s.inner.RangeByTenantSeq(ctx, tenantID, fn)
+}
+
+// TestAppend_SurvivesMicrosecondTruncatingStore is the regression test
+// for the precision mismatch: canonicalForm signs OccurredAt at
+// RFC3339Nano (full ns), but TIMESTAMPTZ-backed stores persist at µs
+// granularity. With a ns-precision clock, the entry read back has a
+// different canonical form and Get/List/VerifyChain reject it unless
+// Append truncates OccurredAt to µs before signing.
+func TestAppend_SurvivesMicrosecondTruncatingStore(t *testing.T) {
+	store := newUSStore()
+	// A clock whose nanosecond component is non-zero modulo a
+	// microsecond — exactly what time.Now() yields on Linux.
+	nsClock := func() time.Time {
+		return time.Date(2026, 6, 15, 12, 0, 0, 123456789, time.UTC)
+	}
+	logger := New(store, newTestSecrets(t), WithClock(nsClock))
+
+	written, err := logger.Append(context.Background(), Entry{
+		TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+	})
+	require.NoError(t, err)
+
+	got, err := logger.Get(context.Background(), written.ID)
+	require.NoError(t, err)
+	assert.Equal(t, written.OccurredAt, got.OccurredAt)
+
+	out, _, err := logger.List(context.Background(), Query{TenantID: "t"})
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+
+	require.NoError(t, logger.VerifyChain(context.Background(), "t"))
+}
+
+// TestAppend_TruncatesCallerSuppliedOccurredAt verifies the truncation
+// also applies when the caller supplies a ns-precision OccurredAt rather
+// than relying on the clock.
+func TestAppend_TruncatesCallerSuppliedOccurredAt(t *testing.T) {
+	store := newUSStore()
+	logger := New(store, newTestSecrets(t))
+
+	occurred := time.Date(2026, 6, 15, 12, 0, 0, 987654321, time.UTC)
+	written, err := logger.Append(context.Background(), Entry{
+		TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+		OccurredAt: occurred,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, occurred.Truncate(time.Microsecond), written.OccurredAt)
+
+	got, err := logger.Get(context.Background(), written.ID)
+	require.NoError(t, err)
+	assert.Equal(t, written.OccurredAt, got.OccurredAt)
+}

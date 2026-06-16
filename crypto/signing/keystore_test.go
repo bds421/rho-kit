@@ -266,3 +266,54 @@ func TestStaticKeyStore_Close_NilReceiverIsSafe(t *testing.T) {
 		t.Fatalf("nil Close: %v", err)
 	}
 }
+
+// TestStaticKeyStore_KeyRaceWithCloseNeverReturnsNilNil exercises the
+// window between the presence check and the secret read in Key /
+// CurrentKeyID. A concurrent Close that zeroes the wrapped secret
+// between those two steps must never produce a success-shaped result
+// with a nil secret: Key must return ErrUnknownKeyID, and CurrentKeyID
+// must report the cleared key by returning an empty id.
+func TestStaticKeyStore_KeyRaceWithCloseNeverReturnsNilNil(t *testing.T) {
+	ctx := context.Background()
+	for iter := 0; iter < 5000; iter++ {
+		store := MustNewStaticKeyStore(map[string][]byte{"k1": testKey(32, 1)}, "k1")
+
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = store.Close()
+		}()
+
+		readers := 8
+		for r := 0; r < readers; r++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				// Spin so a reader is mid-flight when Close lands,
+				// hitting the window between the presence check and
+				// the secret read.
+				for i := 0; i < 64; i++ {
+					if k, err := store.Key(ctx, "k1"); err == nil && k == nil {
+						t.Errorf("Key returned (nil, nil): success-shaped result with no key")
+						return
+					}
+					if id, k, err := store.CurrentKeyID(ctx); err == nil && id != "" && k == nil {
+						t.Errorf("CurrentKeyID returned (%q, nil, nil): id present but no secret", id)
+						return
+					}
+				}
+			}()
+		}
+
+		close(start)
+		wg.Wait()
+		if t.Failed() {
+			return
+		}
+	}
+}

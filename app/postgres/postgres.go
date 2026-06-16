@@ -148,11 +148,16 @@ func (m *pgxModule) HealthChecks() []health.DependencyCheck {
 	if m.pool == nil {
 		return nil
 	}
+	// Capture the pool in a local so the check closure never re-reads the
+	// mutable m.pool field. Stop nils m.pool during shutdown, and a lingering
+	// or timed-out check goroutine can outlive Stop; reading m.pool here would
+	// race that write. Pool.Close is safe to call while a captured Ping runs.
+	pool := m.pool
 	return []health.DependencyCheck{
 		{
 			Name: "postgres",
 			Check: func(ctx context.Context) string {
-				if err := m.pool.Ping(ctx); err != nil {
+				if err := pool.Ping(ctx); err != nil {
 					return health.StatusUnhealthy
 				}
 				return health.StatusHealthy

@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -89,6 +90,13 @@ var ErrCyclicSchema = errors.New("mcp: schema generation: cyclic type reference"
 // JSON-Schema mapping (e.g. channels, function types, non-string map
 // keys).
 var ErrUnsupportedType = errors.New("mcp: schema generation: unsupported type")
+
+// errHandlerPanicked is the generic, caller-safe error recorded when a
+// tool handler panics. The recovered panic value is logged server-side
+// (redacted) but never surfaced to the caller or written verbatim to
+// the audit reason, preserving the kit's "do not reflect handler
+// internals to the caller" invariant.
+var errHandlerPanicked = errors.New("mcp: tool handler panicked")
 
 // Tool describes one MCP tool. Every handler registered via
 // [Register] becomes one Tool. The fields are the kit-visible surface
@@ -697,6 +705,9 @@ func resolveInputSchema[In any](override json.RawMessage) (json.RawMessage, erro
 	if err != nil {
 		return nil, fmt.Errorf("marshal schema: %w", err)
 	}
+	if err := requireObjectSchema("input", raw); err != nil {
+		return nil, err
+	}
 	return raw, nil
 }
 
@@ -711,6 +722,9 @@ func resolveOutputSchema[Out any](override json.RawMessage) (json.RawMessage, er
 	raw, err := json.Marshal(schema)
 	if err != nil {
 		return nil, fmt.Errorf("marshal schema: %w", err)
+	}
+	if err := requireObjectSchema("output", raw); err != nil {
+		return nil, err
 	}
 	return raw, nil
 }
@@ -754,10 +768,33 @@ func validateSchemaOverride(kind string, schema json.RawMessage) (json.RawMessag
 	if obj == nil {
 		return nil, fmt.Errorf("%s schema must be a JSON object", kind)
 	}
-	if typ, _ := obj["type"].(string); typ != "" && typ != "object" {
+	// The SDK's AddTool panics unless the schema's "type" is exactly the
+	// string "object". An override that omits the key, or sets it to a
+	// non-string value, would otherwise reach AddTool and crash the
+	// caller after the registration slot was already reserved — so we
+	// require the canonical form up front and return an error instead.
+	if typ, ok := obj["type"].(string); !ok || typ != "object" {
 		return nil, fmt.Errorf("%s schema must have type \"object\"", kind)
 	}
 	return append(json.RawMessage(nil), schema...), nil
+}
+
+// requireObjectSchema asserts that a marshalled JSON-Schema declares
+// `"type": "object"`. The MCP SDK's AddTool panics on any other shape
+// (scalar, array, type-less); validate.SchemaFor emits a non-object
+// schema for non-struct In/Out types (string, int, slice, time.Time,
+// json.RawMessage). Catching it here lets Register honour its
+// documented error contract instead of panicking after the catalog
+// slot has been reserved.
+func requireObjectSchema(kind string, schema json.RawMessage) error {
+	var obj map[string]any
+	if err := json.Unmarshal(schema, &obj); err != nil {
+		return fmt.Errorf("%s schema must be a valid JSON object: %w", kind, err)
+	}
+	if typ, ok := obj["type"].(string); !ok || typ != "object" {
+		return fmt.Errorf("%s schema must have type \"object\" (only struct, map, and pointer-to-struct %s types are supported)", kind, kind)
+	}
+	return nil
 }
 
 func validActionLogTextField(s string, maxLen int, required bool) bool {
@@ -799,6 +836,23 @@ func withVendorExtension(schema json.RawMessage, key string, value any) (json.Ra
 		return nil, fmt.Errorf("marshal schema: %w", err)
 	}
 	return out, nil
+}
+
+// sanitiseReason prepares a handler error message for storage in an
+// audit entry's Reason field. The action-log signed-store contract
+// (data/actionlog) rejects any Reason that contains a NUL byte or
+// invalid UTF-8 anywhere — a handler error wrapping raw caller bytes
+// would otherwise make the append fail, silently dropping the audit
+// entry for an executed tool call (and, in strict sync mode, masking
+// the mapped caller message as a bare "internal error"). We replace
+// invalid UTF-8 sequences with the Unicode replacement character,
+// strip NUL bytes, then cap the length.
+func sanitiseReason(s string) string {
+	s = strings.ToValidUTF8(s, "�")
+	if strings.IndexByte(s, 0) >= 0 {
+		s = strings.ReplaceAll(s, "\x00", "")
+	}
+	return truncateReason(s)
 }
 
 // truncateReason caps an error message at MaxReasonLength bytes.
@@ -943,7 +997,7 @@ func wrapToolHandler[In any, Out any](s *Server, name string, h Handler[In, Out]
 			return errorResult(mapErrorForCaller(s, ctx, err)), nil
 		}
 
-		out, callErr := h(ctx, in)
+		out, callErr, panicked := callHandlerSafely(s, ctx, name, h, in)
 
 		// Marshal the response payload BEFORE auditing so a
 		// marshal-failure on a "successful" handler return surfaces
@@ -971,10 +1025,11 @@ func wrapToolHandler[In any, Out any](s *Server, name string, h Handler[In, Out]
 			}
 		}
 		if callErr != nil {
-			if marshalFailed {
-				// Already logged above; skip the default-branch
-				// logInternalError inside mapErrorForCaller to
-				// avoid a duplicate server-side entry.
+			if marshalFailed || panicked {
+				// Already logged above (marshal) or inside
+				// callHandlerSafely (panic); skip the default-branch
+				// logInternalError inside mapErrorForCaller to avoid a
+				// duplicate server-side entry.
 				return errorResult("internal error"), nil
 			}
 			return errorResult(mapErrorForCaller(s, ctx, callErr)), nil
@@ -987,6 +1042,36 @@ func wrapToolHandler[In any, Out any](s *Server, name string, h Handler[In, Out]
 			StructuredContent: json.RawMessage(outBytes),
 		}, nil
 	}
+}
+
+// callHandlerSafely invokes the typed tool handler, converting a panic
+// into a returned error so the dispatch path can audit and mask it like
+// any other failure.
+//
+// The MCP SDK's dispatch path (v1.6.1) contains no recover(); a
+// panicking handler would otherwise unwind past wrapToolHandler into
+// the SDK's jsonrpc2 goroutine and crash the process — and, because the
+// panic happens before recordActionLog runs, no failure entry would be
+// written, breaking the strict-audit invariant that every executed tool
+// call produces a signed entry. Recovering here turns the panic into a
+// generic, caller-safe error ([errHandlerPanicked]) and logs the
+// recovered value server-side (redacted). The bool return signals the
+// caller to skip the duplicate default-branch log in mapErrorForCaller.
+func callHandlerSafely[In any, Out any](s *Server, ctx context.Context, name string, h Handler[In, Out], in In) (out Out, err error, panicked bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			panicked = true
+			err = errHandlerPanicked
+			var zero Out
+			out = zero
+			s.cfg.logger.ErrorContext(ctx, "mcp: tool handler panicked",
+				redact.String("tool", name),
+				redact.Panic(rec),
+			)
+		}
+	}()
+	out, err = h(ctx, in)
+	return out, err, false
 }
 
 // errorResult builds a CallToolResult with IsError=true and the

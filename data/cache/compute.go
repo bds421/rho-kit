@@ -321,8 +321,11 @@ var envelopeCodec = JSONCodec[envelope]{}
 // deadline with cc.bgCtx — so Close cancels in-flight foreground
 // computes (preventing leaked goroutines that keep hitting the backend
 // after shutdown) while a single cancelled follower does not abort work
-// other waiters still need. Each leader goroutine is tracked in
-// foregroundWg so Close can wait for it to drain.
+// other waiters still need. The compute itself runs in singleflight's own
+// goroutine; foregroundWg holds a slot for its full lifetime — released by
+// the waiting leader on the happy path, or handed to a drainer goroutine
+// (see drainAbandonedLeader) when the leader abandons early — so Close can
+// wait for the compute to drain even if the caller has already returned.
 func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn ComputeFunc[T]) (T, error) {
 	var zero T
 
@@ -335,13 +338,28 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 	}
 	cc.foregroundWg.Add(1)
 	cc.bgMu.Unlock()
-	defer cc.foregroundWg.Done()
 
 	// computeCtx for the leader: anchored on bgCtx so Close cancels it,
 	// with the caller's deadline preserved (or computeTimeout when no
 	// deadline was set) so a slow fn cannot block followers forever.
 	computeCtx, cancelCompute := computeContext(cc.bgCtx, ctx, cc.cfg.computeTimeout)
-	defer cancelCompute()
+
+	// The DoChan closure runs the compute in singleflight's own goroutine,
+	// which foregroundWg does not track. When the unique leader (the caller
+	// that created the singleflight call) abandons early via ctx/bgCtx, its
+	// release of the foregroundWg slot would let Close/Wait return before the
+	// still-running compute finishes (and before its backend.Set). To keep
+	// the documented "Close can wait for it to drain" guarantee, the leader
+	// hands the slot (and cancelCompute) off to a drainer that waits on resCh
+	// instead of releasing them on return. handedOff guards that transfer so
+	// the deferred cleanup does not double-release.
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			cancelCompute()
+			cc.foregroundWg.Done()
+		}
+	}()
 
 	// Leader/follower classification for observability: the first caller
 	// to claim the key becomes the leader; concurrent callers that see
@@ -379,11 +397,14 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 		}
 		result, err = res.Val, res.Err
 	case <-ctx.Done():
-		// Follower aborted — leader continues. Surface the caller's
-		// cancel reason so the request boundary maps to a 499/context
-		// error rather than a generic "cache compute" error.
+		// Caller aborted — the compute continues for any other waiters.
+		// Surface the caller's cancel reason so the request boundary maps
+		// to a 499/context error rather than a generic "cache compute"
+		// error.
 		if isFollower {
 			cc.observeSingleflightWait(time.Since(waitStart))
+		} else {
+			handedOff = cc.drainAbandonedLeader(resCh, cancelCompute)
 		}
 		return zero, ctx.Err()
 	case <-cc.bgCtx.Done():
@@ -392,6 +413,8 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 		// the follower so callers stop retrying.
 		if isFollower {
 			cc.observeSingleflightWait(time.Since(waitStart))
+		} else {
+			handedOff = cc.drainAbandonedLeader(resCh, cancelCompute)
 		}
 		return zero, ErrCacheClosed
 	}
@@ -408,6 +431,26 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 		return zero, fmt.Errorf("cache compute: unexpected result type %T", result)
 	}
 	return val, nil
+}
+
+// drainAbandonedLeader transfers ownership of the foregroundWg slot (and the
+// leader's cancelCompute) to a goroutine that waits for the singleflight
+// compute to finish. It is called only by the unique leader caller when it
+// abandons before the compute completes (its own ctx or bgCtx fired). resCh is
+// the leader's DoChan result channel; singleflight broadcasts the result to it
+// once fn returns, so receiving from it marks the compute as drained.
+//
+// Returns true so the caller records the slot as handed off and skips its own
+// foregroundWg.Done()/cancelCompute — the drainer now owns both. This keeps
+// Close/Wait blocked until the abandoned leader compute (and its backend.Set)
+// actually finishes, rather than returning while it runs on untracked.
+func (cc *ComputeCache[T]) drainAbandonedLeader(resCh <-chan singleflight.Result, cancelCompute context.CancelFunc) bool {
+	go func() {
+		defer cc.foregroundWg.Done()
+		defer cancelCompute()
+		<-resCh
+	}()
+	return true
 }
 
 // executeCompute calls fn, marshals the result into an envelope, and stores it.

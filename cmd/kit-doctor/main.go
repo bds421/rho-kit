@@ -78,11 +78,12 @@ func main() {
 	// stays byte-for-byte identical.
 	if *interactive {
 		repoFindings := runRepoCheckers(path, repoCheckers())
-		runInteractive(os.Stdin, os.Stdout, repoFindings)
-		// Repo findings still count toward exit code so a missing
-		// CODEOWNERS entry that the operator declined to fix is
-		// surfaced through exit-1.
-		if exitCode(repoFindings, floor) == 1 {
+		res := runInteractiveSession(os.Stdin, os.Stdout, repoFindings)
+		// Only the repo findings the operator did NOT resolve count
+		// toward the exit code: a missing CODEOWNERS entry the operator
+		// declined (or failed) to fix is surfaced through exit-1, but
+		// one they applied must not. See interactiveResult.
+		if exitCode(res.unresolved, floor) == 1 {
 			os.Exit(1)
 		}
 	}

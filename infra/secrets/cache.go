@@ -9,6 +9,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
@@ -145,7 +146,7 @@ func (c *CachedLoader) Get(ctx context.Context, key string) (Secret, error) {
 		if now.After(entry.refreshAt) {
 			c.spawnRefresh(key)
 		}
-		return entry.value, nil
+		return copyForCaller(entry.value), nil
 	}
 
 	// Miss or expired — coalesce concurrent fetches per key.
@@ -154,7 +155,7 @@ func (c *CachedLoader) Get(ctx context.Context, key string) (Secret, error) {
 		return c.fetchAndStore(ctx, key, now)
 	})
 	if err == nil {
-		return val, nil
+		return copyForCaller(val), nil
 	}
 	// On loader-unavailable, fall back to a stale cached value if
 	// within the stale window. Surface other errors directly.
@@ -170,9 +171,9 @@ func (c *CachedLoader) Get(ctx context.Context, key string) (Secret, error) {
 	c.cfg.logger.Warn("secrets: returning stale cached value (loader unavailable)",
 		slog.String("key", key),
 		slog.Duration("stale_age", staleAge),
-		slog.String("error", err.Error()),
+		redact.Error(err),
 	)
-	return entry.value, nil
+	return copyForCaller(entry.value), nil
 }
 
 // Invalidate drops the cached entry for key (and zeroes its secret
@@ -212,6 +213,20 @@ func (c *CachedLoader) fetchAndStore(ctx context.Context, key string, now time.T
 // invalidate the cached entry: the next foreground Get will retry.
 func (c *CachedLoader) spawnRefresh(key string) {
 	go func() {
+		// A panicking loader (now propagated by singleflight rather than
+		// poisoning the key) must not crash the process from this
+		// background goroutine — recover and log it like a failed
+		// refresh. The foreground Get path still surfaces the panic to
+		// its own caller.
+		defer func() {
+			if r := recover(); r != nil {
+				c.metrics.refreshErrors.Inc()
+				c.cfg.logger.Warn("secrets: background refresh panicked",
+					slog.String("key", key),
+					redact.Panic(r),
+				)
+			}
+		}()
 		// Use a short standalone context so a cancelled caller ctx
 		// doesn't abort the refresh.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -224,10 +239,33 @@ func (c *CachedLoader) spawnRefresh(key string) {
 			c.metrics.refreshErrors.Inc()
 			c.cfg.logger.Warn("secrets: background refresh failed",
 				slog.String("key", key),
-				slog.String("error", err.Error()),
+				redact.Error(err),
 			)
 		}
 	}()
+}
+
+// copyForCaller returns a Secret whose Value is an independent
+// [secret.String] copy of src's bytes. The cache hands callers a copy
+// rather than the shared cache-owned buffer so that:
+//
+//   - a caller following the documented `defer s.Value.Zero()` contract
+//     only wipes its own copy, not the cache's shared entry; and
+//   - the cache zeroing a displaced/invalidated value (fetchAndStore,
+//     Invalidate) cannot zero a buffer a concurrent caller is still
+//     using.
+//
+// The cache retains sole ownership of the zeroizable backing buffer.
+func copyForCaller(src Secret) Secret {
+	out := src
+	if src.Value != nil {
+		b := src.Value.Reveal()
+		out.Value = secret.New(b)
+		for i := range b {
+			b[i] = 0
+		}
+	}
+	return out
 }
 
 // MakeSecret is a small constructor backends use to build a [Secret]

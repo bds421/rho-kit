@@ -19,10 +19,19 @@ import (
 // Default debounce duration for file watchers.
 const defaultDebounce = 100 * time.Millisecond
 
+// Default poll interval for the FileWatcher's resolved-path fallback. fsnotify
+// does not reliably deliver events for the atomic `..data` symlink swap that
+// Kubernetes uses to update mounted ConfigMaps/Secrets (kqueue on macOS drops
+// them; some Linux filesystems coalesce them), so a low-frequency poll of the
+// resolved real path guarantees such updates are eventually detected. Events
+// still provide fast response for ordinary edits; the poll is only a backstop.
+const defaultPollInterval = 10 * time.Second
+
 // watcherConfig holds shared options for watchers.
 type watcherConfig struct {
 	logger        *slog.Logger
 	debounce      time.Duration
+	pollInterval  time.Duration  // FileWatcher resolved-path poll fallback; 0 disables
 	signalCh      chan os.Signal // optional external signal channel for EnvReloader
 	immediateLoad bool
 }
@@ -63,6 +72,21 @@ func WithDebounce(d time.Duration) WatcherOption {
 	}
 }
 
+// WithPollInterval sets how often the FileWatcher re-resolves the watched
+// path (via filepath.EvalSymlinks) as a fallback for detecting Kubernetes
+// ConfigMap/Secret `..data` symlink swaps, whose fsnotify events are not
+// reliably delivered. The default is 10s. Pass 0 to disable polling and rely
+// solely on fsnotify events (only safe when the config file is never a
+// symlink into a k8s projected volume). Has no effect on EnvReloader.
+func WithPollInterval(d time.Duration) WatcherOption {
+	if d < 0 {
+		panic("config: WithPollInterval requires a non-negative duration")
+	}
+	return func(c *watcherConfig) {
+		c.pollInterval = d
+	}
+}
+
 // WithImmediateLoad makes [EnvReloader.Start] perform an initial reload
 // before entering the SIGHUP wait. Without it, the Watchable holds whatever
 // `initial` value was passed to [NewWatchable] until the first SIGHUP — any
@@ -76,8 +100,9 @@ func WithImmediateLoad() WatcherOption {
 
 func applyWatcherOpts(opts []WatcherOption) watcherConfig {
 	cfg := watcherConfig{
-		logger:   slog.Default(),
-		debounce: defaultDebounce,
+		logger:       slog.Default(),
+		debounce:     defaultDebounce,
+		pollInterval: defaultPollInterval,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -169,8 +194,11 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 		}
 	}()
 
-	// Watch the directory so we also catch atomic-rename saves where
-	// the original file is removed and a new one is created.
+	// Watch the directory so we also catch atomic-rename saves where the
+	// original file is removed and a new one is created, as well as Kubernetes
+	// ConfigMap/Secret updates that swap the mount's `..data` symlink (those
+	// events name `..data` / `..data_tmp` / a timestamped dir, never the
+	// config file itself).
 	dir := filepath.Dir(fw.path)
 	if err := watcher.Add(dir); err != nil {
 		return err
@@ -192,6 +220,41 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 
 	base := filepath.Base(fw.path)
 
+	// Track the resolved real path so we can detect Kubernetes ConfigMap /
+	// Secret updates. k8s swaps the mount's `..data` symlink atomically, so
+	// events never fire for the logical config file (config.yaml ->
+	// ..data/config.yaml); only the resolved target changes. EvalSymlinks may
+	// fail if the file is briefly absent mid-swap — treat that as "unchanged"
+	// and rely on a later event once the swap settles.
+	resolvedPath := func() string {
+		real, err := filepath.EvalSymlinks(fw.path)
+		if err != nil {
+			return ""
+		}
+		return real
+	}
+	lastResolved := resolvedPath()
+
+	// Arm the debounce timer; shared by both the fsnotify and poll paths so
+	// rapid changes from either source coalesce into a single reload.
+	armDebounce := func() {
+		if debounceTimer == nil {
+			debounceTimer = time.NewTimer(fw.cfg.debounce)
+			debounceCh = debounceTimer.C
+		} else {
+			debounceTimer.Reset(fw.cfg.debounce)
+		}
+	}
+
+	// Poll fallback: re-resolve the real path on a ticker so Kubernetes
+	// `..data` symlink swaps are detected even when fsnotify drops the event.
+	var pollCh <-chan time.Time
+	if fw.cfg.pollInterval > 0 {
+		ticker := time.NewTicker(fw.cfg.pollInterval)
+		defer ticker.Stop()
+		pollCh = ticker.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -200,24 +263,36 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 			}
 			return nil
 
+		case <-pollCh:
+			// Resolved real path changed without (or before) a matching event:
+			// the hallmark of a k8s ConfigMap/Secret symlink swap.
+			if real := resolvedPath(); real != "" && real != lastResolved {
+				lastResolved = real
+				armDebounce()
+			}
+
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return nil
 			}
-			// Only react to our specific file.
-			if filepath.Base(event.Name) != base {
-				continue
-			}
 			if !isRelevantEvent(event) {
 				continue
 			}
-			// Reset or start debounce timer.
-			if debounceTimer == nil {
-				debounceTimer = time.NewTimer(fw.cfg.debounce)
-				debounceCh = debounceTimer.C
-			} else {
-				debounceTimer.Reset(fw.cfg.debounce)
+			// React when either the watched file's base name matches (ordinary
+			// edits / atomic-rename saves) or the resolved real path changed
+			// (Kubernetes ..data symlink swap, which never names the config
+			// file in its events).
+			matchesBase := filepath.Base(event.Name) == base
+			if !matchesBase {
+				if real := resolvedPath(); real == "" || real == lastResolved {
+					continue
+				} else {
+					lastResolved = real
+				}
+			} else if real := resolvedPath(); real != "" {
+				lastResolved = real
 			}
+			armDebounce()
 
 		case watchErr, ok := <-watcher.Errors:
 			if !ok {
@@ -226,7 +301,13 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 			fw.cfg.logger.Warn("file watcher error", redact.Error(watchErr))
 
 		case <-debounceCh:
+			// Disarm and clear the timer so the next change event re-creates
+			// it and re-arms debounceCh. Without resetting debounceTimer to
+			// nil, every subsequent event would take the Reset branch while
+			// debounceCh stayed nil — meaning only the first change ever
+			// triggered a reload.
 			debounceCh = nil
+			debounceTimer = nil
 			reload()
 		}
 	}

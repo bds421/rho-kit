@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
+	"os"
 	"testing"
 
 	"go.opentelemetry.io/otel/trace"
@@ -209,5 +211,218 @@ func TestTraceHandler_withGroup(t *testing.T) {
 	grouped := handler.WithGroup("grp")
 	if _, ok := grouped.(*traceHandler); !ok {
 		t.Error("WithGroup should return a *traceHandler")
+	}
+}
+
+// TestTraceHandler_traceIDsTopLevelUnderGroup verifies that trace/log
+// correlation keys stay at the top level of the record even when the logger
+// has an open slog group. Pipelines key off top-level trace_id/span_id, so
+// nesting them under a group (e.g. "req") silently breaks correlation.
+func TestTraceHandler_traceIDsTopLevelUnderGroup(t *testing.T) {
+	var buf bytes.Buffer
+	inner := slog.NewJSONHandler(&buf, nil)
+	// Construct as New() does: root captures the group-free base handler.
+	logger := slog.New(&traceHandler{inner: inner, root: inner}).WithGroup("req")
+
+	traceID, _ := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	spanID, _ := trace.SpanIDFromHex("00f067aa0ba902b7")
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	logger.InfoContext(ctx, "test message", "path", "/v1/things")
+
+	var logEntry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &logEntry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+
+	// trace_id/span_id must be at the top level for correlation.
+	if logEntry["trace_id"] != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("top-level trace_id = %v, want 4bf92f3577b34da6a3ce929d0e0e4736", logEntry["trace_id"])
+	}
+	if logEntry["span_id"] != "00f067aa0ba902b7" {
+		t.Errorf("top-level span_id = %v, want 00f067aa0ba902b7", logEntry["span_id"])
+	}
+
+	// The user's own attribute must still be nested under the open group.
+	grp, ok := logEntry["req"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected req group object, got %v", logEntry["req"])
+	}
+	if grp["path"] != "/v1/things" {
+		t.Errorf("req.path = %v, want /v1/things", grp["path"])
+	}
+	// The trace IDs must NOT be nested under the group.
+	if _, nested := grp["trace_id"]; nested {
+		t.Error("trace_id should not be nested under the open group")
+	}
+	if _, nested := grp["span_id"]; nested {
+		t.Error("span_id should not be nested under the open group")
+	}
+}
+
+// TestTraceHandler_traceIDsWithAttrsNoGroup verifies that attributes applied
+// via WithAttrs (no open group) continue to appear correctly alongside the
+// injected trace IDs at the top level.
+func TestTraceHandler_traceIDsWithAttrsNoGroup(t *testing.T) {
+	var buf bytes.Buffer
+	inner := slog.NewJSONHandler(&buf, nil)
+	logger := slog.New(&traceHandler{inner: inner}).With("service.name", "svc")
+
+	traceID, _ := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	spanID, _ := trace.SpanIDFromHex("00f067aa0ba902b7")
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	logger.InfoContext(ctx, "test message")
+
+	var logEntry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &logEntry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+
+	if logEntry["service.name"] != "svc" {
+		t.Errorf("service.name = %v, want svc", logEntry["service.name"])
+	}
+	if logEntry["trace_id"] != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("trace_id = %v, want 4bf92f3577b34da6a3ce929d0e0e4736", logEntry["trace_id"])
+	}
+	if logEntry["span_id"] != "00f067aa0ba902b7" {
+		t.Errorf("span_id = %v, want 00f067aa0ba902b7", logEntry["span_id"])
+	}
+
+	// Sanity: trace IDs must be top-level, not nested under any group.
+	if _, ok := logEntry["service.name"].(map[string]any); ok {
+		t.Fatal("service.name should be a scalar, not a group")
+	}
+}
+
+// TestTraceHandler_nestedGroupsAndHandlerAttrs verifies the chain replay keeps
+// trace IDs at the top level while preserving nested groups and handler-level
+// attributes added both before and after the group is opened.
+func TestTraceHandler_nestedGroupsAndHandlerAttrs(t *testing.T) {
+	var buf bytes.Buffer
+	inner := slog.NewJSONHandler(&buf, nil)
+	logger := slog.New(&traceHandler{inner: inner, root: inner}).
+		With("service.name", "svc").
+		WithGroup("req").
+		With("rid", "r-1").
+		WithGroup("inner")
+
+	traceID, _ := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	spanID, _ := trace.SpanIDFromHex("00f067aa0ba902b7")
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	logger.InfoContext(ctx, "msg", "field", "v")
+
+	var logEntry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &logEntry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+
+	if logEntry["trace_id"] != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("top-level trace_id = %v, want set", logEntry["trace_id"])
+	}
+	if logEntry["span_id"] != "00f067aa0ba902b7" {
+		t.Errorf("top-level span_id = %v, want set", logEntry["span_id"])
+	}
+	// service.name was added before any group, so it stays top-level.
+	if logEntry["service.name"] != "svc" {
+		t.Errorf("service.name = %v, want svc", logEntry["service.name"])
+	}
+
+	req, ok := logEntry["req"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected req group, got %v", logEntry["req"])
+	}
+	if req["rid"] != "r-1" {
+		t.Errorf("req.rid = %v, want r-1", req["rid"])
+	}
+	innerGrp, ok := req["inner"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected req.inner group, got %v", req["inner"])
+	}
+	if innerGrp["field"] != "v" {
+		t.Errorf("req.inner.field = %v, want v", innerGrp["field"])
+	}
+	// Trace IDs must not leak into any nested group.
+	if _, nested := req["trace_id"]; nested {
+		t.Error("trace_id leaked into req group")
+	}
+	if _, nested := innerGrp["trace_id"]; nested {
+		t.Error("trace_id leaked into req.inner group")
+	}
+}
+
+// TestNew_traceIDsTopLevelUnderGroupE2E exercises the public New() API end to
+// end: a grouped logger from New(...) must still emit trace_id/span_id at the
+// top level of the JSON record written to stdout.
+func TestNew_traceIDsTopLevelUnderGroupE2E(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+
+	logger := New(Config{ServiceName: "svc"}).WithGroup("req")
+
+	traceID, _ := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	spanID, _ := trace.SpanIDFromHex("00f067aa0ba902b7")
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	logger.InfoContext(ctx, "msg", "path", "/v1")
+
+	if cerr := w.Close(); cerr != nil {
+		t.Fatalf("close write pipe: %v", cerr)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+
+	var logEntry map[string]any
+	if err := json.Unmarshal(out, &logEntry); err != nil {
+		t.Fatalf("unmarshal log %q: %v", string(out), err)
+	}
+
+	if logEntry["trace_id"] != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("top-level trace_id = %v, want 4bf92f3577b34da6a3ce929d0e0e4736", logEntry["trace_id"])
+	}
+	if logEntry["span_id"] != "00f067aa0ba902b7" {
+		t.Errorf("top-level span_id = %v, want 00f067aa0ba902b7", logEntry["span_id"])
+	}
+	// service.name added by New() stays top-level (pre-group).
+	if logEntry["service.name"] != "svc" {
+		t.Errorf("service.name = %v, want svc", logEntry["service.name"])
+	}
+	req, ok := logEntry["req"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected req group, got %v", logEntry["req"])
+	}
+	if req["path"] != "/v1" {
+		t.Errorf("req.path = %v, want /v1", req["path"])
+	}
+	if _, nested := req["trace_id"]; nested {
+		t.Error("trace_id should not be nested under req")
 	}
 }

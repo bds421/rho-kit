@@ -17,7 +17,10 @@ import (
 //     params are replaced; other query params are preserved.
 //   - total is the total number of items across all pages. When total is
 //     unknown (a streaming list), pass a negative value and only "next" is
-//     emitted, conditioned on the current page being full.
+//     emitted. Because this function has no item-count input it cannot
+//     detect the final page, so "next" is always emitted (except on
+//     integer overflow of the next offset); clients must stop following
+//     it once a page returns fewer items than limit.
 //   - offset and limit describe the current page.
 //
 // Skipped relations:
@@ -41,10 +44,11 @@ func WriteLinkHeader(w http.ResponseWriter, u *url.URL, total, offset, limit int
 	parts := make([]string, 0, 4)
 
 	if total < 0 {
-		// Unknown total: only emit next, and only when this page is full.
-		// The "page is full" heuristic is the standard one — without total
-		// we cannot tell that the next page will be empty, but most
-		// streaming list APIs document this caveat.
+		// Unknown total: emit next unconditionally. Without total (and
+		// with no item-count input) we cannot tell whether the next page
+		// will be empty, so next is always emitted unless the next offset
+		// would overflow. Clients must stop following next once a page
+		// returns fewer items than limit.
 		if next, ok := nextPageOffset(offset, limit); ok {
 			parts = appendLink(parts, u, "next", next, limit)
 		}

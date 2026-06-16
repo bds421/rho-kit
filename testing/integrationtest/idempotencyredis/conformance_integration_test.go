@@ -18,8 +18,10 @@ func TestRedisStore_Conformance(t *testing.T) {
 	idempotencytest.Run(t, func(t *testing.T) idempotency.Store {
 		client := redisClient(t)
 		t.Cleanup(func() {
-			// Drop the test-namespace keys; FLUSHDB would be
-			// destructive against a shared Redis.
+			// Wipe the ephemeral testcontainer DB so leftover keys
+			// don't leak into other subtests. The container is a
+			// dedicated per-process Redis (see redistest.Start), so a
+			// full FLUSHDB is the intended isolation strategy here.
 			_ = client.FlushDB(context.Background()).Err()
 		})
 		return redisstore.New(client)

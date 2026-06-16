@@ -95,12 +95,14 @@ func ClientIPWithTrustedProxies(r *http.Request, trusted []*net.IPNet) string {
 			if candidate == "" {
 				continue
 			}
-			candidateIP := net.ParseIP(candidate)
+			candidateIP := parseForwardedForIP(candidate)
 			if candidateIP == nil {
-				// Skip unparseable entries (hostnames, garbage) rather than
-				// returning them as a "client IP" — downstream consumers
-				// expect a valid IP address.
-				continue
+				// An entry that is neither a bare IP nor a valid host:port
+				// (hostnames, truncated values, garbage) means the chain can
+				// no longer be trusted: walking further left would return an
+				// earlier, fully client-controlled hop. Fail closed to
+				// RemoteAddr rather than continuing into untrusted territory.
+				return remoteIPString(r.RemoteAddr)
 			}
 			if !isIPInTrustedCIDRs(candidateIP, trusted) {
 				return candidateIP.String()
@@ -109,6 +111,22 @@ func ClientIPWithTrustedProxies(r *http.Request, trusted []*net.IPNet) string {
 	}
 
 	return remoteIPString(r.RemoteAddr)
+}
+
+// parseForwardedForIP parses a single X-Forwarded-For entry into an IP. It
+// accepts both a bare IP and the "ip:port" / "[ipv6]:port" forms that some
+// proxies (Azure Application Gateway, IIS/ARR) append. It returns nil when
+// the entry is not a valid IP in any of those forms.
+func parseForwardedForIP(entry string) net.IP {
+	if ip := net.ParseIP(entry); ip != nil {
+		return ip
+	}
+	if host, _, err := net.SplitHostPort(entry); err == nil {
+		if ip := net.ParseIP(host); ip != nil {
+			return ip
+		}
+	}
+	return nil
 }
 
 func singletonHeaderValue(h http.Header, name string) (string, bool) {

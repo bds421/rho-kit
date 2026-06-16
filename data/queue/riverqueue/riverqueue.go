@@ -6,7 +6,7 @@
 //
 // Why River:
 //   - No new infrastructure: uses your existing Postgres.
-//   - Atomic enqueue + business write: the Publish call accepts a
+//   - Atomic enqueue + business write: [Publisher.EnqueueTx] accepts a
 //     pgx.Tx, so the job appears iff the transaction commits.
 //   - Replay + introspection: River's web UI shows queued, running,
 //     and failed jobs against the same database operators already
@@ -55,8 +55,8 @@ type Publisher struct {
 // The kit's data/queue.Publisher signature only enqueues; consume is
 // done by registering River workers directly against the client.
 //
-// Default: dedupe by (queue, args) for messages whose Message.ID is
-// non-empty (audit FR-059). Pass [WithoutUniqueByID] for "every
+// Default: dedupe by (queue, Message.ID) for messages whose Message.ID
+// is non-empty (audit FR-059). Pass [WithoutUniqueByID] for "every
 // Enqueue executes" semantics.
 func NewPublisher(client *river.Client[pgx.Tx], opts ...PublisherOption) *Publisher {
 	if client == nil {
@@ -89,19 +89,55 @@ func (p *Publisher) ready() error {
 // default to its "default" queue.
 //
 // FR-059 [MED]: by default, River is configured to dedupe by (queue,
-// kind, args) for jobs that share a Message.ID - a second Enqueue with
-// the same ID is a no-op rather than a duplicate execution. Callers who
-// want classic "every Enqueue executes" semantics can opt out via
-// [WithoutUniqueByID].
+// kind, Message.ID) for jobs that share a Message.ID - a second Enqueue
+// with the same ID is a no-op rather than a duplicate execution, even if
+// the payload differs (the ID is treated as the idempotency token, via
+// the river:"unique" tag on envelopeArgs.ID). Callers who want classic
+// "every Enqueue executes" semantics can opt out via [WithoutUniqueByID].
 func (p *Publisher) Enqueue(ctx context.Context, queue string, msg kitqueue.Message) error {
-	if err := p.ready(); err != nil {
+	job, opts, err := p.prepareInsert(queue, msg)
+	if err != nil {
 		return err
 	}
+	if _, err := p.client.Insert(ctx, job, opts); err != nil {
+		return redact.WrapError("riverqueue: insert", err)
+	}
+	return nil
+}
+
+// EnqueueTx is the transactional variant of [Publisher.Enqueue]: the
+// job is inserted on the supplied pgx.Tx, so it becomes visible to
+// workers iff that transaction commits and is discarded if it rolls
+// back. This is the "atomic enqueue + business write" path described in
+// the package doc — perform the business INSERT/UPDATE and the Enqueue
+// on the same tx, then commit once.
+//
+// Validation (queue name, message shape, payload cap) and the FR-059
+// dedupe-by-Message.ID behaviour match [Publisher.Enqueue]. The tx is
+// only dereferenced after validation succeeds.
+func (p *Publisher) EnqueueTx(ctx context.Context, tx pgx.Tx, queue string, msg kitqueue.Message) error {
+	job, opts, err := p.prepareInsert(queue, msg)
+	if err != nil {
+		return err
+	}
+	if _, err := p.client.InsertTx(ctx, tx, job, opts); err != nil {
+		return redact.WrapError("riverqueue: insert", err)
+	}
+	return nil
+}
+
+// prepareInsert validates the queue and message and builds the River
+// args + insert options shared by [Publisher.Enqueue] and
+// [Publisher.EnqueueTx].
+func (p *Publisher) prepareInsert(queue string, msg kitqueue.Message) (envelopeArgs, *river.InsertOpts, error) {
+	if err := p.ready(); err != nil {
+		return envelopeArgs{}, nil, err
+	}
 	if err := kitqueue.ValidateName(queue, "queue"); err != nil {
-		return redact.WrapError("riverqueue", err)
+		return envelopeArgs{}, nil, redact.WrapError("riverqueue", err)
 	}
 	if err := kitqueue.ValidateMessage(msg, p.maxPayloadBytes); err != nil {
-		return redact.WrapError("riverqueue", err)
+		return envelopeArgs{}, nil, redact.WrapError("riverqueue", err)
 	}
 	job := envelopeArgs{
 		ID:      msg.ID,
@@ -115,10 +151,7 @@ func (p *Publisher) Enqueue(ctx context.Context, queue string, msg kitqueue.Mess
 			ByQueue: true,
 		}
 	}
-	if _, err := p.client.Insert(ctx, job, opts); err != nil {
-		return redact.WrapError("riverqueue: insert", err)
-	}
-	return nil
+	return job, opts, nil
 }
 
 // WithoutUniqueByID opts out of the FR-059 deduplication-by-args
@@ -149,8 +182,15 @@ type PublisherOption func(*Publisher)
 
 // envelopeArgs is the River job payload for kit-mediated messages.
 // River requires args to implement Kind() and JSON-serialise.
+//
+// The ID field carries `river:"unique"` so that, when ByArgs uniqueness
+// is enabled (the FR-059 default), River scopes the uniqueness hash to
+// the message ID alone rather than the whole args blob. This keeps the
+// idempotency-token semantics: a re-Enqueue with the same ID is a no-op
+// regardless of payload, matching the redisqueue sibling which keys on
+// the message ID. Type and Payload must stay untagged.
 type envelopeArgs struct {
-	ID      string          `json:"id"`
+	ID      string          `json:"id" river:"unique"`
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload"`
 }

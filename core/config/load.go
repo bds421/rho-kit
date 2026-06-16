@@ -75,20 +75,38 @@ func MustLoad[T any]() T {
 }
 
 func load(v reflect.Value) error {
-	_, err := loadWithEnvTracking(v)
+	_, err := loadWithEnvTracking(v, map[reflect.Type]struct{}{})
 	return err
 }
+
+// ErrConfigCycle is returned by [Load] when the config type T (or a nested
+// type) refers back to itself through a struct or pointer-to-struct field.
+// Such a type cannot be loaded because recursion would never terminate.
+var ErrConfigCycle = errors.New("config: type contains a recursive (self-referential) struct field")
 
 // hasEnvTags checks whether a struct type (or any nested struct within it)
 // has at least one field with an "env" struct tag. This prevents silent
 // misconfiguration when Load is called with a type that has no tags.
+//
+// Self-referential types (a struct that reaches itself through a struct or
+// pointer-to-struct field) are walked with a visited set so the pre-check
+// terminates instead of overflowing the stack; the cycle itself contributes
+// no new tagged fields, so a revisited type is treated as "no further tags".
 func hasEnvTags(t reflect.Type) bool {
+	return hasEnvTagsVisited(t, map[reflect.Type]struct{}{})
+}
+
+func hasEnvTagsVisited(t reflect.Type, visited map[reflect.Type]struct{}) bool {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
 		return false
 	}
+	if _, seen := visited[t]; seen {
+		return false
+	}
+	visited[t] = struct{}{}
 	for i := range t.NumField() {
 		field := t.Field(i)
 		if !field.IsExported() {
@@ -101,7 +119,7 @@ func hasEnvTags(t reflect.Type) bool {
 		if ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
 		}
-		if ft.Kind() == reflect.Struct && hasEnvTags(ft) {
+		if ft.Kind() == reflect.Struct && hasEnvTagsVisited(ft, visited) {
 			return true
 		}
 	}
@@ -111,8 +129,18 @@ func hasEnvTags(t reflect.Type) bool {
 // loadWithEnvTracking recursively loads environment variables into the struct
 // and returns true if any env var was actually read from the environment
 // (as opposed to only defaults being applied).
-func loadWithEnvTracking(v reflect.Value) (envRead bool, _ error) {
+//
+// visited records the struct types currently on the recursion stack. A
+// self-referential type (e.g. `type Node struct { Next *Node }`) would
+// otherwise recurse forever and crash the process with an unrecoverable
+// stack overflow; instead we return [ErrConfigCycle].
+func loadWithEnvTracking(v reflect.Value, visited map[reflect.Type]struct{}) (envRead bool, _ error) {
 	t := v.Type()
+	if _, seen := visited[t]; seen {
+		return false, ErrConfigCycle
+	}
+	visited[t] = struct{}{}
+	defer delete(visited, t)
 	for i := range t.NumField() {
 		field := t.Field(i)
 		if !field.IsExported() {
@@ -123,7 +151,7 @@ func loadWithEnvTracking(v reflect.Value) (envRead bool, _ error) {
 
 		// Recurse into nested structs without an env tag.
 		if field.Type.Kind() == reflect.Struct && field.Tag.Get("env") == "" {
-			childRead, err := loadWithEnvTracking(fv)
+			childRead, err := loadWithEnvTracking(fv, visited)
 			if err != nil {
 				return false, err
 			}
@@ -138,7 +166,7 @@ func loadWithEnvTracking(v reflect.Value) (envRead bool, _ error) {
 		// value from the environment, preserving nil-means-disabled convention.
 		if field.Type.Kind() == reflect.Pointer && field.Type.Elem().Kind() == reflect.Struct && field.Tag.Get("env") == "" {
 			tmp := reflect.New(field.Type.Elem())
-			childRead, err := loadWithEnvTracking(tmp.Elem())
+			childRead, err := loadWithEnvTracking(tmp.Elem(), visited)
 			if err != nil {
 				return false, err
 			}
@@ -241,9 +269,12 @@ func parseEnvTag(tag, fieldName string) (envName string, required bool, _ error)
 // volumes use atomic symlink swaps that make the race window negligible.
 //
 // For _FILE-sourced secrets, the on-disk bytes are read into a []byte that
-// is zeroed inside setField after the value has been parsed / copied into
-// its final destination. This bounds the heap lifetime of the raw secret
-// bytes (Lens F A.9).
+// the caller zeroes after the value has been parsed / copied into its final
+// destination. Note this only bounds the lifetime of that intermediate file
+// buffer: the value is first converted with string(b) below, so an immutable
+// heap copy of the secret already exists by the time the buffer is zeroed, and
+// that string lives for the program's lifetime when the target is a string
+// field (Lens F A.9).
 func resolveWithSource(envName string, isSecret bool) (val string, valBytes []byte, fromEnv bool, _ error) {
 	if isSecret {
 		filePath := os.Getenv(envName + "_FILE")

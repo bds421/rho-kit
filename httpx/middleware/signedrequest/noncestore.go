@@ -13,7 +13,8 @@ import (
 // on a nil or otherwise uninitialized store.
 var ErrInvalidNonceStore = errors.New("signedrequest: nonce store is not initialized")
 
-// MemoryNonceStore is an in-process [NonceStore] backed by a sync.Map.
+// MemoryNonceStore is an in-process [NonceStore] backed by a
+// mutex-guarded map.
 // Entries expire after TTL on the next SeenOrStore call that probes
 // the same nonce, plus a periodic sweep on every Nth call.
 //

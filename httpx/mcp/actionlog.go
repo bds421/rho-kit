@@ -130,7 +130,7 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 	reason := ""
 	if callErr != nil {
 		outcome = actionlog.OutcomeFailure
-		reason = truncateReason(callErr.Error())
+		reason = sanitiseReason(callErr.Error())
 	}
 
 	entry := actionlog.Entry{

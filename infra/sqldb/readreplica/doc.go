@@ -16,18 +16,18 @@
 //
 //   - Single-primary deployments. Use [infra/sqldb/pgx] directly.
 //   - Workloads that MUST see writes the caller just made on the same
-//     connection (read-your-writes). The pool exposes
-//     [AcquireOption.WithReadAfterWrite] but the simpler policy is
-//     "don't route those reads to a replica" — use a plain primary
-//     Acquire for the whole transactional unit instead.
+//     connection (read-your-writes). There is no read-after-write option;
+//     instead, omit [WithReadOnly] so the Acquire is routed to the primary
+//     for the whole transactional unit.
 //   - Cross-database transactions. Postgres has no XA equivalent in
 //     the kit; replicas are read-only.
 //
 // # Sibling packages
 //
 //   - [infra/sqldb/pgx]    — the kit's primary Postgres pool wrapper
-//     ([pgx.Pool]). RoutingPool composes one Primary pgx.Pool plus N
-//     Replicas pgx.Pool.
+//     ([pgx.Pool]). RoutingPool composes one Primary [Acquirer] plus N
+//     replica Acquirers; the underlying *pgxpool.Pool (reached via
+//     [pgx.Pool.Pool]) satisfies [Acquirer].
 //   - [app/postgres]       — Builder adapter. A future
 //     [postgres.WithReadReplicas] option threads a RoutingPool through
 //     the kit's lifecycle.
@@ -38,9 +38,11 @@
 //	replicaA, _ := pgx.Connect(ctx, replicaCfgA)
 //	replicaB, _ := pgx.Connect(ctx, replicaCfgB)
 //
+//	// Config.Primary/Replicas are Acquirer; the kit's *pgx.Pool exposes
+//	// the underlying *pgxpool.Pool (an Acquirer) via Pool().
 //	rp, err := readreplica.New(readreplica.Config{
-//	    Primary:  primary,
-//	    Replicas: []*pgx.Pool{replicaA, replicaB},
+//	    Primary:  primary.Pool(),
+//	    Replicas: []readreplica.Acquirer{replicaA.Pool(), replicaB.Pool()},
 //	}, readreplica.WithLogger(logger))
 //	if err != nil { return err }
 //	defer rp.Close()

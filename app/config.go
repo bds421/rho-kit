@@ -76,7 +76,7 @@ func (c BaseConfig) LogValue() slog.Value {
 func LoadBaseConfig(defaultServerPort int) (BaseConfig, error) {
 	p := &config.Parser{}
 	serverPort := p.Int("SERVER_PORT", defaultServerPort)
-	internalPort := p.Int("INTERNAL_PORT", 9090)
+	internalPort := p.Int("INTERNAL_PORT", defaultInternalPort)
 	if err := p.Err(); err != nil {
 		return BaseConfig{}, err
 	}

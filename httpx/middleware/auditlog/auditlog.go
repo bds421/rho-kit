@@ -64,10 +64,13 @@ func WithStatusFilter(fn func(int) bool) Option {
 
 // WithTrustedProxies configures which CIDRs are trusted to set
 // X-Forwarded-For when resolving the client IP for audit entries.
-// Default: no trusted proxies (only the direct r.RemoteAddr peer is
-// recorded), which matches clientip.ClientIP's loopback-only default
-// posture. Pass the same list as the access-log middleware so the two
-// surfaces agree on what counts as the originating client.
+// Default (nil or empty list): clientip.ClientIPWithTrustedProxies
+// falls back to the loopback-only default set (127.0.0.0/8, ::1/128),
+// so forwarded headers from loopback peers ARE honored. Passing an
+// empty slice does NOT disable proxy trust — to fully opt out, supply a
+// WithClientIPFunc resolver that ignores forwarded headers. Pass the
+// same list as the access-log middleware so the two surfaces agree on
+// what counts as the originating client.
 func WithTrustedProxies(nets []*net.IPNet) Option {
 	copied := cloneIPNets(nets)
 	return func(c *config) { c.trustedProxies = cloneIPNets(copied) }

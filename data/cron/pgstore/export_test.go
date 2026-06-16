@@ -1,6 +1,15 @@
 package pgstore
 
+import "github.com/bds421/rho-kit/runtime/v2/cron"
+
 // Test helpers — exported only to _test files via the test build tag.
+
+// ApplyRecords promotes the unexported applyRecords loop so tests can
+// exercise the per-record decision (register / skip-unknown /
+// skip-invalid) without a live database.
+func ApplyRecords(scheduler *cron.Scheduler, records []ScheduleRecord, jobs map[string]JobFunc) []string {
+	return applyRecords(scheduler, records, jobs)
+}
 
 // ValidateRecord is the unexported validator promoted for tests so we
 // can exercise the Name/Spec rules without touching the DB layer.

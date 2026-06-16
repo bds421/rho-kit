@@ -164,8 +164,9 @@ const lockMarker = "lock:"
 const respMarker = "resp"
 
 // maxStoredEntryBytes caps the size of a stored idempotency entry the
-// Store will accept on read. Set-side bounds via [Store.PutResponse]
-// reject oversized writes; this is the read-side defence so a foreign
+// Store will accept on read. Set-side bounds via [Store.Set]
+// (which calls [idempotency.ValidateCachedResponse]) reject oversized
+// writes; this is the read-side defence so a foreign
 // writer (a legacy app sharing the Redis instance, a misuse, or an
 // attacker with key-write but not key-read access elsewhere) cannot
 // OOM the host by ballooning an existing entry. 8 MiB is comfortably

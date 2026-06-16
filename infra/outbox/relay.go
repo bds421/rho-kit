@@ -21,9 +21,11 @@ const (
 	defaultPublishTimeout   = 2 * time.Minute
 	staleRecoveryMultiplier = 10 // recover stale entries every N polls
 
-	// Exponential backoff bounds for IncrementAttempts: delay = baseDelay * 2^attempts,
-	// clamped at maxBackoff. With 10 attempts (default) the schedule is roughly
-	// 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 300s, 300s — totaling ~17 minutes
+	// Exponential backoff bounds for IncrementAttempts: delay = baseDelay * 2^(attempt-1),
+	// clamped at maxBackoff. With maxAttempts=10 (default), backoff is applied only for
+	// the 9 retries before the final attempt (the 10th attempt goes straight to
+	// MarkFailed without a delay), so the schedule is roughly
+	// 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 300s — totaling ~13.5 minutes
 	// of retries before the row is marked permanently failed.
 	defaultBackoffBase = 2 * time.Second
 	defaultBackoffMax  = 5 * time.Minute
@@ -62,7 +64,23 @@ type Relay struct {
 	started   bool
 	stopped   bool
 	pollCount int
+
+	// claimed tracks ids claimed by FetchPending that have not yet reached
+	// a terminal outcome (published / failed / attempts-incremented). On
+	// shutdown the relay resets whatever remains here via PendingResetter
+	// so a deploy does not strand claimed rows in "processing" until the
+	// slow stale sweep. Guarded by claimedMu (separate from mu so the hot
+	// publish path never contends with lifecycle state).
+	claimedMu sync.Mutex
+	claimed   map[string]struct{}
 }
+
+// resetTimeout bounds the best-effort ResetPending call issued on
+// shutdown. The run context is already cancelled at that point, so the
+// reset uses a fresh context derived from context.Background() with this
+// deadline — long enough for a single UPDATE round-trip, short enough
+// that a wedged database cannot block shutdown indefinitely.
+const resetTimeout = 5 * time.Second
 
 // RelayOption configures a Relay.
 type RelayOption func(*Relay)
@@ -226,6 +244,7 @@ func NewRelay(store RelayStore, publisher Publisher, logger *slog.Logger, opts .
 		failedRetention:      defaultFailedRetention,
 		staleDuration:        defaultStaleDuration,
 		publishTimeout:       defaultPublishTimeout,
+		claimed:              make(map[string]struct{}),
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -266,6 +285,14 @@ func (r *Relay) Start(ctx context.Context) error {
 	r.mu.Unlock()
 
 	defer func() {
+		// The poll loop has returned, so no publish goroutine is still
+		// mutating the claimed set (poll() waits for its worker pool before
+		// returning). Reset any rows this relay claimed but never finished
+		// publishing so a restart does not strand them in "processing" until
+		// the stale sweep. The run ctx is already cancelled, so this uses a
+		// fresh short-deadline context internally. Runs before close(done) so
+		// Stop's wait covers the reset (bounded by resetTimeout).
+		r.resetClaimedOnShutdown()
 		close(done)
 	}()
 
@@ -336,6 +363,73 @@ func (r *Relay) Stop(ctx context.Context) error {
 	return nil
 }
 
+// trackClaimed records ids the relay has claimed but not yet driven to a
+// terminal outcome, so shutdown can reset whatever is still in flight.
+func (r *Relay) trackClaimed(entries []Entry) {
+	r.claimedMu.Lock()
+	defer r.claimedMu.Unlock()
+	for i := range entries {
+		r.claimed[entries[i].ID.String()] = struct{}{}
+	}
+}
+
+// untrackClaimed drops an id once it has reached a terminal outcome
+// (published / failed / attempts-incremented) or is otherwise no longer
+// owned by this relay, so shutdown does not try to reset a row that is
+// already done.
+func (r *Relay) untrackClaimed(id string) {
+	r.claimedMu.Lock()
+	defer r.claimedMu.Unlock()
+	delete(r.claimed, id)
+}
+
+// claimedIDs snapshots the ids still claimed by this relay.
+func (r *Relay) claimedIDs() []string {
+	r.claimedMu.Lock()
+	defer r.claimedMu.Unlock()
+	if len(r.claimed) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(r.claimed))
+	for id := range r.claimed {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// resetClaimedOnShutdown returns rows this relay claimed but never drove
+// to a terminal outcome back to "pending" so a freshly started replica
+// can re-claim them immediately instead of waiting out the stale window.
+//
+// It is a no-op unless the store implements [PendingResetter]. The run
+// context is already cancelled by the time this runs, so the reset uses a
+// fresh, short-deadline context derived from context.Background(); the
+// store's claim fence (where present) ensures only rows still owned by
+// this relay are reset. Best-effort: failures are logged, never fatal.
+func (r *Relay) resetClaimedOnShutdown() {
+	resetter, ok := r.store.(PendingResetter)
+	if !ok {
+		return
+	}
+	ids := r.claimedIDs()
+	if len(ids) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), resetTimeout)
+	defer cancel()
+	if err := resetter.ResetPending(ctx, ids); err != nil {
+		r.logger.Warn("outbox relay: reset claimed-on-shutdown failed — rows wait for stale recovery",
+			"count", len(ids),
+			redact.Error(err))
+		return
+	}
+	for _, id := range ids {
+		r.untrackClaimed(id)
+	}
+	r.logger.Info("outbox relay: reset claimed entries on shutdown",
+		"count", len(ids))
+}
+
 // poll fetches pending entries and publishes them.
 func (r *Relay) poll(ctx context.Context) {
 	if ctx.Err() != nil {
@@ -358,6 +452,21 @@ func (r *Relay) poll(ctx context.Context) {
 		return
 	}
 
+	// Remember the claimed batch so a mid-batch shutdown can reset whatever
+	// never reaches a terminal outcome (see resetClaimedOnShutdown). Each id
+	// is dropped from this set as it is published / failed / re-queued.
+	r.trackClaimed(entries)
+
+	// FetchPending claims the whole batch to "processing" at T0. Every claimed
+	// row — including those still queued behind a slow publish — must be
+	// heartbeated for the lifetime of the batch, or another replica's
+	// ResetStaleProcessing can reclaim a queued row mid-batch and both relays
+	// publish it. A per-entry heartbeat only protects the row currently being
+	// published, so heartbeat the whole batch here and mark each id done as it
+	// reaches a terminal outcome.
+	heartbeat := r.startBatchHeartbeat(ctx, entries)
+	defer heartbeat.stop()
+
 	concurrency := r.maxConcurrentPublish
 	if concurrency <= 1 {
 		// Serial fast path. Preserves FIFO ordering across the batch.
@@ -365,7 +474,7 @@ func (r *Relay) poll(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			r.publishEntry(ctx, entries[i])
+			r.publishEntry(ctx, entries[i], heartbeat)
 		}
 		r.updatePendingGauge(ctx)
 		return
@@ -396,7 +505,7 @@ func (r *Relay) poll(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			r.publishEntry(ctx, entry)
+			r.publishEntry(ctx, entry, heartbeat)
 		}()
 	}
 	wg.Wait()
@@ -404,10 +513,12 @@ func (r *Relay) poll(ctx context.Context) {
 	r.updatePendingGauge(ctx)
 }
 
-// publishEntry attempts to publish a single entry via the Publisher.
-func (r *Relay) publishEntry(ctx context.Context, entry Entry) {
-	heartbeatStop := r.startHeartbeat(ctx, entry.ID.String())
-	defer heartbeatStop()
+// publishEntry attempts to publish a single entry via the Publisher. The
+// batch heartbeat keeps the claim alive; once the entry reaches a terminal
+// outcome it is removed from the heartbeat set so a completed row is not
+// resurrected by a later heartbeat tick.
+func (r *Relay) publishEntry(ctx context.Context, entry Entry, heartbeat *batchHeartbeat) {
+	defer heartbeat.done(entry.ID.String())
 
 	publishCtx := ctx
 	if r.publishTimeout > 0 {
@@ -435,15 +546,22 @@ func (r *Relay) publishEntry(ctx context.Context, entry Entry) {
 		// and publish it again. Log loudly so operators can tune
 		// stale_duration / publish_timeout.
 		if errors.Is(markErr, ErrStaleState) || errors.Is(markErr, ErrNotFound) {
+			// The row is no longer owned by this relay's claim, so it must
+			// not be reset on shutdown — drop it from the claimed set.
+			r.untrackClaimed(entry.ID.String())
 			r.logger.Error("outbox relay: mark published lost row — likely concurrent stale recovery, possible duplicate publish",
 				redact.Error(markErr))
 			return
 		}
+		// Transient store error: the row likely stays in "processing" still
+		// owned by us, so keep it tracked for shutdown reset.
 		r.logger.Error("outbox relay: mark published failed",
 			redact.Error(markErr))
 		return
 	}
 
+	// Terminal success: the row is now "published" and no longer claimed.
+	r.untrackClaimed(entry.ID.String())
 	r.recordPublished()
 
 	r.logger.Debug("outbox relay: published entry",
@@ -460,46 +578,97 @@ func (r *Relay) callPublisher(ctx context.Context, entry Entry) (err error) {
 	return r.publisher.Publish(ctx, entry)
 }
 
-// startHeartbeat refreshes the row's updated_at timestamp on a fixed
-// cadence so a long-running publish does not get reset to pending by
-// another relay's stale-recovery sweep. Returns a stop function the
-// caller MUST defer.
+// batchHeartbeat refreshes the updated_at timestamp of every
+// claimed-but-unfinished row in a poll batch on a fixed cadence, so neither
+// the in-flight publish nor the rows queued behind it get reset to pending by
+// another relay's stale-recovery sweep. Callers mark each id done() as it
+// reaches a terminal outcome and MUST defer stop().
+type batchHeartbeat struct {
+	mu      sync.Mutex
+	pending map[string]struct{}
+
+	stopCh chan struct{}
+	doneCh chan struct{}
+	once   sync.Once
+}
+
+// done removes id from the heartbeat set so a row that has already been marked
+// published/failed (or had its attempts incremented) is not touched by a later
+// heartbeat tick, which could otherwise resurrect a terminal row.
+func (h *batchHeartbeat) done(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.pending, id)
+}
+
+// ids returns the currently-unfinished ids in the batch.
+func (h *batchHeartbeat) ids() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.pending) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(h.pending))
+	for id := range h.pending {
+		out = append(out, id)
+	}
+	return out
+}
+
+// stop halts the heartbeat goroutine and waits for it to exit. Idempotent.
+func (h *batchHeartbeat) stop() {
+	h.once.Do(func() {
+		close(h.stopCh)
+		<-h.doneCh
+	})
+}
+
+// startBatchHeartbeat launches a goroutine that heartbeats every entry in the
+// claimed batch on a fixed cadence until each id is marked done() or stop() is
+// called.
 //
-// The heartbeat fires every staleDuration/3 (clamped at
-// minHeartbeatInterval) — three heartbeats per stale window keeps a
-// publish alive even if one heartbeat round-trip transiently fails.
-func (r *Relay) startHeartbeat(ctx context.Context, id string) func() {
+// The heartbeat fires every staleDuration/3 (clamped at minHeartbeatInterval)
+// — three heartbeats per stale window keeps the claim alive even if one
+// heartbeat round-trip transiently fails.
+func (r *Relay) startBatchHeartbeat(ctx context.Context, entries []Entry) *batchHeartbeat {
+	pending := make(map[string]struct{}, len(entries))
+	for i := range entries {
+		pending[entries[i].ID.String()] = struct{}{}
+	}
+	h := &batchHeartbeat{
+		pending: pending,
+		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
+	}
+
 	interval := r.staleDuration / 3
 	if interval < minHeartbeatInterval {
 		interval = minHeartbeatInterval
 	}
-	stopCh := make(chan struct{})
-	doneCh := make(chan struct{})
+
 	go func() {
-		defer close(doneCh)
+		defer close(h.doneCh)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-stopCh:
+			case <-h.stopCh:
 				return
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if _, err := r.store.Heartbeat(ctx, []string{id}); err != nil {
+				ids := h.ids()
+				if len(ids) == 0 {
+					continue
+				}
+				if _, err := r.store.Heartbeat(ctx, ids); err != nil {
 					r.logger.Warn("outbox relay: heartbeat failed",
 						redact.Error(err))
 				}
 			}
 		}
 	}()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			close(stopCh)
-			<-doneCh
-		})
-	}
+	return h
 }
 
 // handlePublishError increments attempts or marks the entry as failed.
@@ -510,17 +679,24 @@ func (r *Relay) handlePublishError(ctx context.Context, entry Entry, publishErr 
 	if nextAttempt >= r.maxAttempts {
 		if markErr := r.store.MarkFailed(ctx, entry.ID.String(), errMsg); markErr != nil {
 			if errors.Is(markErr, ErrStaleState) || errors.Is(markErr, ErrNotFound) {
+				// No longer owned by this claim — drop from shutdown reset set.
+				r.untrackClaimed(entry.ID.String())
 				r.logger.Error("outbox relay: mark failed lost row — likely concurrent stale recovery",
 					redact.Error(markErr))
 			} else {
+				// Transient store error: row likely still "processing" and ours.
 				r.logger.Error("outbox relay: mark failed error",
 					redact.Error(markErr))
 			}
+		} else {
+			// Terminal "failed": no longer claimed.
+			r.untrackClaimed(entry.ID.String())
 		}
 		r.recordError()
 		r.logger.Error("outbox relay: entry failed permanently",
 			"attempts", nextAttempt,
 			"error", errMsg,
+			redact.ErrorChain(publishErr),
 		)
 		return
 	}
@@ -528,12 +704,18 @@ func (r *Relay) handlePublishError(ctx context.Context, entry Entry, publishErr 
 	nextRetryAt := time.Now().UTC().Add(retryBackoff(nextAttempt))
 	if incErr := r.store.IncrementAttempts(ctx, entry.ID.String(), errMsg, nextRetryAt); incErr != nil {
 		if errors.Is(incErr, ErrStaleState) || errors.Is(incErr, ErrNotFound) {
+			// No longer owned by this claim — drop from shutdown reset set.
+			r.untrackClaimed(entry.ID.String())
 			r.logger.Error("outbox relay: increment attempts lost row — likely concurrent stale recovery",
 				redact.Error(incErr))
 		} else {
+			// Transient store error: row likely still "processing" and ours.
 			r.logger.Error("outbox relay: increment attempts error",
 				redact.Error(incErr))
 		}
+	} else {
+		// Row returned to "pending" for a future retry; no longer claimed.
+		r.untrackClaimed(entry.ID.String())
 	}
 	r.recordError()
 
@@ -541,14 +723,20 @@ func (r *Relay) handlePublishError(ctx context.Context, entry Entry, publishErr 
 		"attempt", nextAttempt,
 		"max_attempts", r.maxAttempts,
 		"error", errMsg,
+		redact.ErrorChain(publishErr),
 	)
 }
 
+// safePublishError renders a publish error into a form safe to persist as
+// last_error and surface to operators. It keeps the concrete error type (so a
+// timeout is distinguishable from an auth or routing failure for triage) while
+// never including the raw Error() text, which from a broker/SDK/user callback
+// may carry tenant-controlled keys, hostnames, or request fragments.
 func safePublishError(err error) string {
 	if err == nil {
 		return ""
 	}
-	return "publish failed"
+	return redact.ErrorValue(err)
 }
 
 // recoverStale resets entries stuck in "processing" status from crashed relays.

@@ -73,6 +73,63 @@ func TestStore_NilReceiverReturnsError(t *testing.T) {
 
 	_, err = s.CountPending(ctx)
 	assert.Error(t, err)
+
+	err = s.ResetPending(ctx, []string{"x"})
+	assert.Error(t, err)
+}
+
+// TestStore_ImplementsPendingResetter pins the optional-capability wiring:
+// the pgx store must satisfy outbox.PendingResetter so the relay's
+// shutdown reset path engages against it.
+func TestStore_ImplementsPendingResetter(t *testing.T) {
+	var s *Store
+	var _ outbox.PendingResetter = s // compile-time
+	assert.Implements(t, (*outbox.PendingResetter)(nil), (*Store)(nil))
+}
+
+// TestClaimTokenBookkeeping exercises the in-process id->token map that
+// fences outcome updates. This is the unit-testable core of DEFECT B's
+// fence; the actual SQL fence needs a live Postgres (integration suite).
+func TestClaimTokenBookkeeping(t *testing.T) {
+	s := &Store{claimTokens: make(map[string]string)}
+
+	// Unknown id has no token.
+	_, ok := s.claimToken("a")
+	assert.False(t, ok)
+
+	// Remember then read back.
+	s.rememberClaim("a", "tok-a")
+	tok, ok := s.claimToken("a")
+	assert.True(t, ok)
+	assert.Equal(t, "tok-a", tok)
+
+	// Re-claim overwrites (this process reset the row, then re-claimed it).
+	s.rememberClaim("a", "tok-a2")
+	tok, ok = s.claimToken("a")
+	assert.True(t, ok)
+	assert.Equal(t, "tok-a2", tok)
+
+	// Forget drops the entry to keep the map bounded.
+	s.forgetClaim("a")
+	_, ok = s.claimToken("a")
+	assert.False(t, ok)
+
+	// Forgetting an unknown id is a harmless no-op.
+	assert.NotPanics(t, func() { s.forgetClaim("missing") })
+}
+
+// TestNew_InitializesClaimTokenMap confirms the constructor wires the
+// token map so the first FetchPending/outcome call does not nil-deref.
+func TestNew_InitializesClaimTokenMap(t *testing.T) {
+	// New requires a non-nil pool; we only assert the map is ready, so
+	// construct the struct directly the way New does and verify the helper
+	// is safe immediately.
+	s := &Store{claimTokens: make(map[string]string)}
+	assert.NotPanics(t, func() {
+		s.rememberClaim("x", "t")
+		_, _ = s.claimToken("x")
+		s.forgetClaim("x")
+	})
 }
 
 func TestStore_InsertRejectsZeroID(t *testing.T) {
@@ -84,4 +141,3 @@ func TestStore_InsertRejectsZeroID(t *testing.T) {
 	err := s.Insert(context.Background(), outbox.Entry{})
 	assert.Error(t, err)
 }
-

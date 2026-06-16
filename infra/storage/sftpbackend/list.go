@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"iter"
 	"path"
+	"sort"
 	"strings"
 
 	"go.opentelemetry.io/otel"
@@ -114,6 +115,16 @@ func (b *Backend) walkDir(
 		yield(storage.ObjectInfo{}, opErr)
 		return opErr
 	}
+
+	// pkg/sftp's client.ReadDir yields entries in server (protocol) order,
+	// which is not guaranteed to be sorted. Sort by name so keys are yielded
+	// in lexicographic order; storage.ListOptions.StartAfter and
+	// storage.ListPage's NextStartAfter cursor are documented as lexicographic
+	// and silently skip or duplicate objects across pages otherwise. Sorting by
+	// entry name (rather than full key) is sufficient here because all keys in a
+	// directory share the same parent prefix, and the depth-first recursion
+	// descends into a subdirectory before processing later siblings.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 
 	for _, entry := range entries {
 		entryPath := path.Join(dir, entry.Name())

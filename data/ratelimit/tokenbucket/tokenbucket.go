@@ -206,15 +206,23 @@ func runSweeper(weakL weak.Pointer[Limiter], interval time.Duration, stopCh, don
 // sweep removes buckets that have refilled to (or above) capacity at
 // the current instant; their state is indistinguishable from a fresh
 // bucket and freeing the entry costs nothing semantically.
+//
+// The threshold is the bucket's real burst (the truncated capacity used
+// to build the *rate.Limiter), not the un-truncated float capacity:
+// x/time/rate caps TokensAt at float64(burst), so a fractional capacity
+// (e.g. 10.5 → burst 10) would never reach l.capacity and no bucket
+// would ever be evicted — defeating the sweeper's bounded-memory
+// guarantee.
 func (l *Limiter) sweep() {
 	if l.ready() != nil {
 		return
 	}
 	now := l.now()
+	full := float64(int(l.capacity))
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for k, b := range l.buckets {
-		if b.lim.TokensAt(now) >= l.capacity {
+		if b.lim.TokensAt(now) >= full {
 			delete(l.buckets, k)
 		}
 	}

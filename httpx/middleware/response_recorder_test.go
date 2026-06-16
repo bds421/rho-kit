@@ -46,6 +46,59 @@ func TestResponseRecorder_WriteImplicitHeader(t *testing.T) {
 	}
 }
 
+// interimRecorder records every WriteHeader call so the test can assert that
+// 1xx interim responses are forwarded to the underlying writer.
+type interimRecorder struct {
+	http.ResponseWriter
+	codes []int
+}
+
+func (i *interimRecorder) WriteHeader(code int) {
+	i.codes = append(i.codes, code)
+	i.ResponseWriter.WriteHeader(code)
+}
+
+func TestResponseRecorder_InterimResponseThenFinalStatus(t *testing.T) {
+	inner := &interimRecorder{ResponseWriter: httptest.NewRecorder()}
+	rec := NewResponseRecorder(inner)
+
+	// net/http allows a 1xx interim response (e.g. Early Hints) followed by
+	// the final status code. The recorder must not latch on the 1xx code.
+	rec.WriteHeader(http.StatusEarlyHints) // 103
+	rec.WriteHeader(http.StatusCreated)    // 201 (final)
+
+	if rec.Status() != http.StatusCreated {
+		t.Errorf("status = %d, want 201 (final status after 1xx interim)", rec.Status())
+	}
+	if rec.WroteHeader() != true {
+		t.Errorf("WroteHeader() = false, want true after final status")
+	}
+	wantCodes := []int{http.StatusEarlyHints, http.StatusCreated}
+	if len(inner.codes) != len(wantCodes) {
+		t.Fatalf("underlying WriteHeader codes = %v, want %v", inner.codes, wantCodes)
+	}
+	for idx, c := range wantCodes {
+		if inner.codes[idx] != c {
+			t.Fatalf("underlying WriteHeader codes = %v, want %v", inner.codes, wantCodes)
+		}
+	}
+}
+
+func TestResponseRecorder_InterimResponseThenWrite(t *testing.T) {
+	inner := &interimRecorder{ResponseWriter: httptest.NewRecorder()}
+	rec := NewResponseRecorder(inner)
+
+	rec.WriteHeader(http.StatusEarlyHints) // 103 interim
+	if rec.WroteHeader() {
+		t.Error("a 1xx interim response should not mark the header as written")
+	}
+	_, _ = rec.Write([]byte("body")) // implicit final 200
+
+	if rec.Status() != http.StatusOK {
+		t.Errorf("status = %d, want 200 (implicit final after 1xx interim)", rec.Status())
+	}
+}
+
 func TestResponseRecorder_Flush(t *testing.T) {
 	inner := httptest.NewRecorder()
 	rec := NewResponseRecorder(inner)

@@ -29,13 +29,16 @@
 // # Quick start
 //
 //	signer := signing.NewSigner()
-//	d := webhook.New(webhook.Config{
+//	d, err := webhook.New(webhook.Config{
 //	    HTTPClient: httpx.NewResilientHTTPClient(),
 //	    Signer:     signer,
 //	    Secret:     []byte(os.Getenv("WEBHOOK_SECRET")),
 //	})
+//	if err != nil {
+//	    return err // misconfiguration: nil client/signer, or secret < 32 bytes
+//	}
 //
-//	err := d.Send(ctx, webhook.Delivery{
+//	err = d.Send(ctx, webhook.Delivery{
 //	    URL:         "https://customer.example.com/webhooks/orders",
 //	    Body:        json.RawMessage(`{"event":"order.created","id":"o-42"}`),
 //	    ContentType: "application/json",

@@ -742,3 +742,66 @@ func TestEnqueueBatch_RejectsUnsafeID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), n, "no message must be enqueued when validation fails")
 }
+
+func TestQueue_Close_ReturnsNilForSharedConnection(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+
+	// asynq.NewClientFromRedisClient / NewInspectorFromRedisClient mark the
+	// connection as shared, so asynq's Close() returns a "redis connection is
+	// shared" error on every call. The kit owns nothing to close here (the
+	// caller owns the Redis client lifecycle), so Close must surface no error.
+	require.NoError(t, q.Close())
+	// Idempotent: a second Close also returns nil.
+	require.NoError(t, q.Close())
+
+	// The caller-owned Redis client is untouched and still usable.
+	_, err := q.Len(context.Background(), "test-queue-close")
+	require.NoError(t, err)
+}
+
+func TestQueue_Close_NilReceiver(t *testing.T) {
+	var q *Queue
+	require.NoError(t, q.Close())
+}
+
+// TestEnqueueOpts_InvisibilityTimeoutMapsToHandlerTimeout pins the documented
+// semantics of WithInvisibilityTimeout: it maps to asynq's per-task
+// asynq.Timeout (a LIVE-handler run limit), and when unset emits no Timeout
+// option so asynq applies its own default (a 30-minute handler deadline, not a
+// 30s invisibility window). Guards the doc comments on WithInvisibilityTimeout
+// and enqueueOpts.
+func TestEnqueueOpts_InvisibilityTimeoutMapsToHandlerTimeout(t *testing.T) {
+	timeoutOpt := func(opts []asynq.Option) (time.Duration, bool) {
+		for _, o := range opts {
+			if o.Type() == asynq.TimeoutOpt {
+				d, ok := o.Value().(time.Duration)
+				return d, ok
+			}
+		}
+		return 0, false
+	}
+
+	t.Run("configured timeout becomes asynq.Timeout", func(t *testing.T) {
+		client := newTestClient(t)
+		t.Cleanup(func() { _ = client.Close() })
+		q := NewQueue(client, WithInvisibilityTimeout(90*time.Second))
+		t.Cleanup(func() { _ = q.Close() })
+
+		d, ok := timeoutOpt(q.enqueueOpts("test-queue", "msg-1"))
+		require.True(t, ok, "WithInvisibilityTimeout must emit an asynq.Timeout option")
+		assert.Equal(t, 90*time.Second, d)
+	})
+
+	t.Run("default emits no Timeout so asynq's default applies", func(t *testing.T) {
+		client := newTestClient(t)
+		t.Cleanup(func() { _ = client.Close() })
+		q := NewQueue(client)
+		t.Cleanup(func() { _ = q.Close() })
+
+		_, ok := timeoutOpt(q.enqueueOpts("test-queue", "msg-1"))
+		assert.False(t, ok, "default (unset) must not emit a Timeout option")
+	})
+}

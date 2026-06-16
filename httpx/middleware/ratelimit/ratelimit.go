@@ -232,11 +232,12 @@ const maxCleanupPerShard = 1000
 // set small between bursts.
 //
 // The two-phase Keys/Peek-Remove pattern is intentional: Keys() snapshots
-// outside the lock so the O(n) slice allocation under an IP-spray attack
-// doesn't block concurrent allow() calls; the per-key Peek-Remove under
-// the lock is racy in theory (a visitor could be re-touched between
-// snapshot and Peek), but Peek doesn't trigger LRU promotion so the
-// re-check is benign and a freshly-touched entry stays even if it was
+// the shard's key set, then the per-key Peek-Remove re-checks each entry's
+// window. Both phases run under the shard lock, so the O(n) Keys()
+// snapshot does briefly serialize with concurrent allow() calls. The
+// per-key Peek-Remove is racy in theory (a visitor could be re-touched
+// between snapshot and Peek), but Peek doesn't trigger LRU promotion so
+// the re-check is benign and a freshly-touched entry stays even if it was
 // stale at snapshot time.
 func (rl *Limiter) cleanup() {
 	if rl.ready() != nil {
@@ -245,8 +246,8 @@ func (rl *Limiter) cleanup() {
 	cutoff := rl.now().Add(-rl.window)
 	for i := range rl.shards {
 		s := &rl.shards[i]
-		// Snapshot keys without holding the lock — avoids blocking
-		// concurrent allow() calls during the O(n) Keys() allocation.
+		// Snapshot keys under the shard lock. The O(n) Keys()
+		// allocation briefly serializes with concurrent allow() calls.
 		s.mu.Lock()
 		keys := s.visitors.Keys()
 		s.mu.Unlock()
@@ -288,6 +289,13 @@ func (rl *Limiter) Start(ctx context.Context) error {
 	if rl.started {
 		rl.startMu.Unlock()
 		return errors.New("ratelimit: Limiter.Start already started")
+	}
+	if rl.stopped {
+		// Stop ran before Start and latched stopped=true. Launching the
+		// cleanup loop now would orphan a goroutine the prior Stop already
+		// promised to wait on. Reject, mirroring lifecycle.FuncComponent.
+		rl.startMu.Unlock()
+		return errors.New("ratelimit: Limiter.Start already stopped")
 	}
 	rl.started = true
 	runCtx, cancel := context.WithCancel(ctx)

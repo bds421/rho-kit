@@ -160,6 +160,104 @@ func TestDurableExecutor_ResumeIsolatesStuckSaga(t *testing.T) {
 	<-done
 }
 
+// TestDurableExecutor_ResumePanicDoesNotCrashBatch proves that a user step that
+// panics during Resume is converted into that instance's ResumeResult.Err rather
+// than crashing the host process, and that a sibling resumable saga still runs to
+// completion — i.e. one panicking step does not short-circuit the batch (the
+// documented Resume contract).
+func TestDurableExecutor_ResumePanicDoesNotCrashBatch(t *testing.T) {
+	store := saga.NewMemoryStateStore()
+	exec, _ := saga.NewDurableExecutor(store)
+	rec := &callRecorder{}
+
+	require.NoError(t, exec.Register(&saga.DurableDefinition{
+		Name: "panics",
+		Steps: []saga.DurableStep{{
+			Name: "boom",
+			Forward: func(context.Context, []byte) ([]byte, error) {
+				panic("secret-token-leak")
+			},
+		}},
+	}))
+	require.NoError(t, exec.Register(&saga.DurableDefinition{
+		Name:  "fast",
+		Steps: []saga.DurableStep{passingStep("quick", rec)},
+	}))
+
+	ctx := context.Background()
+	require.NoError(t, store.Put(ctx, saga.Instance{ID: "panic-1", Definition: "panics", State: saga.StateRunning}))
+	require.NoError(t, store.Put(ctx, saga.Instance{ID: "fast-1", Definition: "fast", State: saga.StateRunning}))
+
+	results, err := exec.Resume(ctx, 0)
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+
+	byID := map[string]error{}
+	for _, r := range results {
+		byID[r.InstanceID] = r.Err
+	}
+	require.Error(t, byID["panic-1"], "panicking instance must surface an error")
+	require.NotContains(t, byID["panic-1"].Error(), "secret-token-leak",
+		"raw panic value must not be exposed")
+	require.NoError(t, byID["fast-1"], "sibling saga must still complete")
+
+	fastInst, _ := store.Get(ctx, "fast-1")
+	require.Equal(t, saga.StateCompleted, fastInst.State)
+}
+
+// TestDurableExecutor_ResumeStuckSagasReleasedByCtxCancel documents the
+// concurrency bound's real contract (Resume is not a per-saga timeout): when at
+// least resumeConcurrency sagas block in a step, every slot fills and Resume can
+// only make progress again once those steps return. The documented mitigation is
+// a cancellable ctx + ctx-respecting steps: cancelling unblocks them and lets
+// Resume return. Without this contract honoured, Resume would hang forever.
+func TestDurableExecutor_ResumeStuckSagasReleasedByCtxCancel(t *testing.T) {
+	const stuck = 16 // >= resumeConcurrency, so all slots fill and the loop blocks
+
+	store := saga.NewMemoryStateStore()
+	exec, _ := saga.NewDurableExecutor(store)
+
+	require.NoError(t, exec.Register(&saga.DurableDefinition{
+		Name: "ctx-block",
+		Steps: []saga.DurableStep{{
+			Name: "wait",
+			Forward: func(ctx context.Context, in []byte) ([]byte, error) {
+				<-ctx.Done() // honours cancellation
+				return nil, ctx.Err()
+			},
+		}},
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	for i := 0; i < stuck; i++ {
+		require.NoError(t, store.Put(ctx, saga.Instance{
+			ID:         "blocked-" + string(rune('a'+i)),
+			Definition: "ctx-block",
+			State:      saga.StateRunning,
+		}))
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = exec.Resume(ctx, 0)
+		close(done)
+	}()
+
+	// Resume should still be running (slots saturated, sagas blocked on ctx).
+	select {
+	case <-done:
+		t.Fatal("Resume returned before stuck sagas were released")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel() // release every stuck step via ctx cancellation
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Resume did not return after ctx cancellation released the stuck sagas")
+	}
+}
+
 func TestDurableExecutor_ResumeAfterCrash(t *testing.T) {
 	store := saga.NewMemoryStateStore()
 	exec, _ := saga.NewDurableExecutor(store)

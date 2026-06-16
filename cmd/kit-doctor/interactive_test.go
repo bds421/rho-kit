@@ -163,6 +163,100 @@ func TestRunInteractive_EOFTreatedAsNo(t *testing.T) {
 	assert.Equal(t, 0, calls)
 }
 
+// TestRunInteractiveSession_AppliedFixesDropFromExit verifies that a
+// finding the operator successfully fixed is NOT reported as
+// unresolved, so it cannot keep driving exit-1. This guards the
+// reported defect: applying every fix must let the run exit 0.
+func TestRunInteractiveSession_AppliedFixesDropFromExit(t *testing.T) {
+	appliedA, appliedB := 0, 0
+	findings := []rules.Finding{
+		{Rule: "a", Severity: rules.High, File: "a", Message: "m", Fix: fixCounter(&appliedA, "did a")},
+		{Rule: "b", Severity: rules.High, File: "b", Message: "m", Fix: fixCounter(&appliedB, "did b")},
+	}
+	in := strings.NewReader("y\ny\n")
+	var out bytes.Buffer
+	res := runInteractiveSession(in, &out, findings)
+
+	assert.Equal(t, 2, res.applied)
+	assert.Empty(t, res.unresolved, "fixes that were applied must not count toward exit")
+	// The pre-fix findings would all be HIGH; the unresolved set must
+	// not trip the default exit floor.
+	assert.Equal(t, 0, exitCode(res.unresolved, rules.High))
+}
+
+// TestRunInteractiveSession_DeclinedFixStaysUnresolved verifies a
+// finding the operator declined still counts toward exit-1.
+func TestRunInteractiveSession_DeclinedFixStaysUnresolved(t *testing.T) {
+	appliedA, appliedB := 0, 0
+	findings := []rules.Finding{
+		{Rule: "a", Severity: rules.High, File: "a", Message: "m", Fix: fixCounter(&appliedA, "did a")},
+		{Rule: "b", Severity: rules.High, File: "b", Message: "m", Fix: fixCounter(&appliedB, "did b")},
+	}
+	// Apply the first, decline the second.
+	in := strings.NewReader("y\nn\n")
+	var out bytes.Buffer
+	res := runInteractiveSession(in, &out, findings)
+
+	assert.Equal(t, 1, res.applied)
+	require.Len(t, res.unresolved, 1)
+	assert.Equal(t, "b", res.unresolved[0].Rule, "declined finding must remain unresolved")
+	assert.Equal(t, 1, exitCode(res.unresolved, rules.High))
+}
+
+// TestRunInteractiveSession_FailedFixStaysUnresolved verifies a Fix
+// that errored is still counted toward exit-1 (not silently dropped).
+func TestRunInteractiveSession_FailedFixStaysUnresolved(t *testing.T) {
+	findings := []rules.Finding{
+		{
+			Rule: "a", Severity: rules.High, File: "a", Message: "m",
+			Fix: func() (string, error) { return "", assertError("kaboom") },
+		},
+	}
+	in := strings.NewReader("y\n")
+	var out bytes.Buffer
+	res := runInteractiveSession(in, &out, findings)
+
+	assert.Equal(t, 0, res.applied)
+	require.Len(t, res.unresolved, 1)
+	assert.Equal(t, "a", res.unresolved[0].Rule)
+}
+
+// TestRunInteractiveSession_SkipAllKeepsRemainingUnresolved verifies
+// that skip-all leaves the not-yet-prompted findings unresolved so
+// they still drive exit-1.
+func TestRunInteractiveSession_SkipAllKeepsRemainingUnresolved(t *testing.T) {
+	a, b, c := 0, 0, 0
+	findings := []rules.Finding{
+		{Rule: "a", Severity: rules.High, File: "a", Message: "m", Fix: fixCounter(&a, "a")},
+		{Rule: "b", Severity: rules.High, File: "b", Message: "m", Fix: fixCounter(&b, "b")},
+		{Rule: "c", Severity: rules.High, File: "c", Message: "m", Fix: fixCounter(&c, "c")},
+	}
+	in := strings.NewReader("y\nskip-all\n")
+	var out bytes.Buffer
+	res := runInteractiveSession(in, &out, findings)
+
+	assert.Equal(t, 1, res.applied)
+	require.Len(t, res.unresolved, 2, "b and c were never resolved")
+	assert.Equal(t, "b", res.unresolved[0].Rule)
+	assert.Equal(t, "c", res.unresolved[1].Rule)
+}
+
+// TestRunInteractiveSession_NonFixableStaysUnresolved verifies a
+// finding without a Fix is never resolvable and keeps counting toward
+// exit-1 (interactive mode cannot make it go away).
+func TestRunInteractiveSession_NonFixableStaysUnresolved(t *testing.T) {
+	findings := []rules.Finding{
+		{Rule: "info", Severity: rules.High, File: "x", Message: "m"},
+	}
+	in := strings.NewReader("")
+	var out bytes.Buffer
+	res := runInteractiveSession(in, &out, findings)
+
+	assert.Equal(t, 0, res.applied)
+	require.Len(t, res.unresolved, 1)
+	assert.Equal(t, "info", res.unresolved[0].Rule)
+}
+
 // assertError is a tiny error type for tests so we don't import
 // errors just to express a single sentinel.
 type assertError string

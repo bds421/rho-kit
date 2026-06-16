@@ -750,6 +750,107 @@ func TestSFTPBackend_List(t *testing.T) {
 		require.ErrorIs(t, seenErr, storage.ErrValidation)
 		assert.Equal(t, 0, calls)
 	})
+
+	t.Run("yields keys in sorted order despite unsorted readdir", func(t *testing.T) {
+		t.Parallel()
+		mock := newMockSFTPClient("/data")
+		mock.store["/data/b.txt"] = []byte("b")
+		mock.store["/data/a.txt"] = []byte("a")
+		mock.store["/data/c/d.txt"] = []byte("d")
+		mock.store["/data/c/a.txt"] = []byte("ca")
+		mock.store["/data/aa.txt"] = []byte("aa")
+		mock.readFn = unsortedReadDir(mock)
+		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
+
+		var keys []string
+		for info, err := range b.List(ctx, "", storage.ListOptions{}) {
+			require.NoError(t, err)
+			keys = append(keys, info.Key)
+		}
+
+		want := []string{"a.txt", "aa.txt", "b.txt", "c/a.txt", "c/d.txt"}
+		assert.Equal(t, want, keys, "List must yield keys in lexicographic order")
+	})
+
+	t.Run("StartAfter pagination is complete and non-duplicating with unsorted readdir", func(t *testing.T) {
+		t.Parallel()
+		mock := newMockSFTPClient("/data")
+		want := []string{
+			"a.txt", "aa.txt", "b.txt", "c/a.txt", "c/d.txt", "c/z.txt", "e.txt",
+		}
+		for _, k := range want {
+			mock.store["/data/"+k] = []byte(k)
+		}
+		mock.readFn = unsortedReadDir(mock)
+		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
+
+		var got []string
+		opts := storage.ListOptions{MaxKeys: 2}
+		for {
+			page, err := storage.ListPage(ctx, b, "", opts)
+			require.NoError(t, err)
+			for _, info := range page.Objects {
+				got = append(got, info.Key)
+			}
+			if !page.Truncated {
+				break
+			}
+			opts.StartAfter = page.NextStartAfter
+		}
+
+		assert.Equal(t, want, got, "paging via StartAfter must return every key exactly once in order")
+	})
+}
+
+// unsortedReadDir returns a ReadDir implementation backed by m.store that
+// yields directory entries in reverse-lexicographic order, simulating a real
+// SFTP server (and pkg/sftp's client.ReadDir), which does not sort results.
+func unsortedReadDir(m *mockSFTPClient) func(string) ([]os.FileInfo, error) {
+	return func(p string) ([]os.FileInfo, error) {
+		prefix := p
+		if !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
+
+		seen := make(map[string]bool)
+		var result []os.FileInfo
+		anyMatch := false
+
+		for key, data := range m.store {
+			if !strings.HasPrefix(key, prefix) {
+				continue
+			}
+			anyMatch = true
+
+			remainder := key[len(prefix):]
+			if remainder == "" {
+				continue
+			}
+
+			if slashIdx := strings.Index(remainder, "/"); slashIdx == -1 {
+				if !seen[remainder] {
+					seen[remainder] = true
+					result = append(result, fakeFileInfo{name: remainder, size: int64(len(data))})
+				}
+			} else {
+				dirName := remainder[:slashIdx]
+				if !seen[dirName] {
+					seen[dirName] = true
+					result = append(result, fakeFileInfo{name: dirName, dir: true})
+				}
+			}
+		}
+
+		if !anyMatch {
+			return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+		}
+
+		// Reverse-lexicographic order: the opposite of what the production
+		// code needs, to prove List sorts internally rather than relying on
+		// server-provided ordering.
+		sort.Slice(result, func(i, j int) bool { return result[i].Name() > result[j].Name() })
+		return result, nil
+	}
 }
 
 func TestSFTPBackend_RejectsSymlinkParent(t *testing.T) {

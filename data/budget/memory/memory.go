@@ -190,16 +190,34 @@ func runSweeper(weakB weak.Pointer[Budget], interval time.Duration, stopCh, done
 }
 
 // sweep removes buckets whose period id is older than the current
-// period. Consume verifies the bucket is still the live map entry
-// before mutating it, so a concurrent sweep cannot orphan an in-flight
-// increment.
+// period.
+//
+// The periodN check and CompareAndDelete are performed under bk.mu so a
+// concurrent Consume cannot have the entry evicted out from under it
+// mid-rollover. Consume's live-entry recheck only protects against an
+// eviction that happens BEFORE it acquires bk.mu; without the lock here
+// sweep could read a stale periodN, then delete the bucket AFTER that
+// recheck while Consume — holding bk.mu — rolls the bucket to the
+// current period and increments used. The charge would land on an
+// orphaned bucket and the next Consume would mint a fresh full cap in
+// the same window. Taking bk.mu makes sweep observe the rolled periodN
+// (== currentPeriod) and skip the live bucket. Mirrors the mutex-guarded
+// sweep in data/ratelimit/tokenbucket.
 func (b *Budget) sweep() {
 	currentPeriod, _ := b.periodOf(b.now())
 	b.buckets.Range(func(k, v any) bool {
 		bk := v.(*bucket)
+		// Hold bk.mu across BOTH the staleness check and the delete: the
+		// pair must be atomic with respect to a Consume that is rolling
+		// this bucket. If the delete happened after dropping the lock,
+		// Consume could acquire bk.mu, pass its live-entry recheck, roll
+		// the bucket and charge it, and only then have sweep evict it —
+		// reintroducing the orphaned-charge bug.
+		bk.mu.Lock()
 		if bk.periodN.Load() < currentPeriod {
 			b.buckets.CompareAndDelete(k, v)
 		}
+		bk.mu.Unlock()
 		return true
 	})
 }
@@ -357,12 +375,25 @@ func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, e
 	now := b.now()
 	periodID, _ := b.periodOf(now)
 
-	v, ok := b.buckets.Load(key)
-	if !ok {
-		return b.cap, nil
+	// Loop to retry against a sweep that evicted our bucket between the
+	// load and the lock acquisition, mirroring Consume. Without this a
+	// refund could credit `used` on an orphaned bucket the next caller
+	// can no longer see, silently dropping the refunded headroom.
+	var bk *bucket
+	for {
+		v, ok := b.buckets.Load(key)
+		if !ok {
+			// Unknown key (never seen, or already swept): nothing to
+			// refund. Returns the full cap, matching the no-op contract.
+			return b.cap, nil
+		}
+		bk = v.(*bucket)
+		bk.mu.Lock()
+		if current, ok := b.buckets.Load(key); ok && current.(*bucket) == bk {
+			break
+		}
+		bk.mu.Unlock()
 	}
-	bk := v.(*bucket)
-	bk.mu.Lock()
 	defer bk.mu.Unlock()
 
 	if bk.periodN.Load() != periodID {

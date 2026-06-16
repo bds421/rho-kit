@@ -194,6 +194,32 @@ func TestNewMetrics_RegistersCollectors(t *testing.T) {
 	}
 }
 
+func TestNewNode_WithMetricsRegisterer_RegistersCollectors(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	node, err := rtcentrifuge.NewNode(
+		rtcentrifuge.WithLogger(newQuietLogger()),
+		rtcentrifuge.WithMetricsRegisterer(reg),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, node)
+
+	// WithMetricsRegisterer must actually build and register the
+	// kit-side metric set on the supplied registerer. A registry that
+	// already has a collector registered rejects a re-registration of
+	// an identical collector with an AlreadyRegisteredError, while an
+	// empty registry accepts it. We use that to assert the node wired
+	// metrics through to reg rather than silently dropping them.
+	probe := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "realtime",
+		Subsystem: "centrifuge",
+		Name:      "connects_total",
+		Help:      "Total centrifuge connection attempts by outcome (accepted=auth passed, rejected=auth refused, error=internal failure).",
+	}, []string{"outcome"})
+	err = reg.Register(probe)
+	require.Error(t, err, "expected connects_total already registered by NewNode(WithMetricsRegisterer)")
+	require.IsType(t, prometheus.AlreadyRegisteredError{}, err)
+}
+
 func TestWithLogLevelOptions_DoNotPanic(t *testing.T) {
 	_, err := rtcentrifuge.NewNode(
 		rtcentrifuge.WithLogger(newQuietLogger()),

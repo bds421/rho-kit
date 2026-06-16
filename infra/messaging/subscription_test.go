@@ -367,6 +367,33 @@ func TestSubscriptionGroup_EmptyIsNoOp(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
+// TestSubscriptionGroup_StopCancelsEmptyRunningGroup verifies that Stop
+// can cancel an empty group that is already running on a never-cancelled
+// parent context. The empty-group Start path now publishes the group's
+// cancel func before parking, so Stop has something to cancel.
+func TestSubscriptionGroup_StopCancelsEmptyRunningGroup(t *testing.T) {
+	g := messaging.NewSubscriptionGroup(newQuietLogger())
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	startDone := make(chan error, 1)
+	go func() { startDone <- g.Start(runCtx) }()
+
+	// Give Start a moment to enter the parked state.
+	time.Sleep(50 * time.Millisecond)
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel()
+	require.NoError(t, g.Stop(stopCtx))
+
+	select {
+	case <-startDone:
+		// Start returned because Stop cancelled the group.
+	case <-time.After(2 * time.Second):
+		t.Fatal("empty group Start did not return after Stop")
+	}
+}
+
 func TestSubscriptionGroup_AddNilPanics(t *testing.T) {
 	g := messaging.NewSubscriptionGroup(newQuietLogger())
 	defer func() {
@@ -382,4 +409,52 @@ func TestSubscriptionGroup_StopBeforeStartIsNoOp(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	require.NoError(t, g.Stop(ctx))
+}
+
+// TestSubscriptionGroup_StopBeforeStartDoesNotDisableLaterStop verifies
+// that a Stop called before Start does not permanently disable
+// cancellation. The previous implementation ran stopOnce.Do
+// unconditionally, so an early Stop burned the once and every later Stop
+// became a no-op on cancellation — the group could then only be stopped
+// via the parent context.
+func TestSubscriptionGroup_StopBeforeStartDoesNotDisableLaterStop(t *testing.T) {
+	cons := &fakeConsumer{}
+	sub := messaging.NewSubscription("a", cons, messaging.Binding{},
+		func(context.Context, messaging.Delivery) error { return nil },
+		messaging.WithSubscriptionLogger(newQuietLogger()),
+	)
+	g := messaging.NewSubscriptionGroup(newQuietLogger())
+	require.NoError(t, g.Add(sub))
+
+	// Stop before Start — must be a harmless no-op, NOT a burn of the
+	// group's one-shot cancel.
+	preCtx, preCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer preCancel()
+	require.NoError(t, g.Stop(preCtx))
+
+	// Start the group under a context we deliberately never cancel, so the
+	// only way the group can exit is via a working Stop.
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	startDone := make(chan error, 1)
+	go func() { startDone <- g.Start(runCtx) }()
+
+	require.Eventually(t, func() bool {
+		return cons.called.Load() >= 1
+	}, 2*time.Second, 10*time.Millisecond, "consumer must enter Consume")
+
+	// A later Stop must actually cancel the group. With its own short
+	// context: if Stop relies on the parent context (because cancellation
+	// was disabled), Start would not return and Stop would block until
+	// this ctx times out.
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel()
+	require.NoError(t, g.Stop(stopCtx))
+
+	select {
+	case <-startDone:
+		// Group exited because Stop cancelled it. Good.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after Stop — early Stop disabled cancellation")
+	}
 }

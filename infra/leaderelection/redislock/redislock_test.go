@@ -36,6 +36,24 @@ func (f *fakeLockHandle) Extend(_ context.Context) (bool, error) {
 	return f.extendOK.Load(), nil
 }
 
+// hangingLockHandle simulates a Redis client without a read timeout: its
+// Extend blocks until the *passed-in* context is cancelled. The only way
+// the renew call can return is if the elector bounds it with a per-call
+// deadline — an un-bounded leader ctx leaves Extend hung, which pins the
+// elector loop and leaves OnAcquired's ctx un-cancelled while another
+// replica becomes leader (overlap past one renewal interval).
+type hangingLockHandle struct {
+	released atomic.Bool
+	extendCt atomic.Int32
+}
+
+func (h *hangingLockHandle) Release(_ context.Context) error { h.released.Store(true); return nil }
+func (h *hangingLockHandle) Extend(ctx context.Context) (bool, error) {
+	h.extendCt.Add(1)
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
 func TestOptions_PanicOnInvalidDurations(t *testing.T) {
 	for name, fn := range map[string]func(){
 		"WithRetryInterval zero":     func() { WithRetryInterval(0) },
@@ -105,6 +123,55 @@ func TestHoldLeadership_RenewalFailureExits(t *testing.T) {
 	}
 	err := runWithStub(t, e, stub, cb)
 	require.Error(t, err) // "handle reports lost"
+}
+
+// TestHoldLeadership_HungExtendDoesNotPinElector pins the renew-call
+// timeout: a hung Extend (Redis client without a read timeout) must not
+// block the elector loop indefinitely. The renew call must be bounded by
+// a per-call deadline so a stuck Extend is treated as a renewal failure,
+// the leader ctx is cancelled, OnAcquired drains, and holdLeadership
+// returns within roughly one renewal interval — keeping the overlap
+// window bounded as the package doc promises.
+func TestHoldLeadership_HungExtendDoesNotPinElector(t *testing.T) {
+	e := &Elector{
+		renewInterval: 20 * time.Millisecond,
+		drainWarnTick: time.Hour, // suppress drain warnings
+	}
+	handle := &hangingLockHandle{}
+
+	var cancelled atomic.Bool
+	cb := leaderelection.Callbacks{
+		OnAcquired: func(ctx context.Context) {
+			<-ctx.Done()
+			cancelled.Store(true)
+		},
+	}
+
+	// Parent ctx is generous: holdLeadership must return on its own via
+	// the bounded renew call, NOT because the parent deadline fired.
+	parent, parentCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer parentCancel()
+
+	result := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		result <- e.holdLeadership(parent, handle, cb)
+	}()
+
+	select {
+	case err := <-result:
+		require.Error(t, err, "hung Extend must surface a renewal failure")
+		require.ErrorContains(t, err, "extend")
+		require.True(t, cancelled.Load(), "leader ctx must be cancelled when Extend hangs")
+		// Must return well within the parent deadline; a few renew
+		// intervals of slack covers scheduling jitter.
+		require.Less(t, time.Since(start), time.Second,
+			"holdLeadership pinned by hung Extend — renew call is not bounded")
+	case <-time.After(2 * time.Second):
+		t.Fatal("holdLeadership pinned by hung Extend — renew call has no per-call deadline")
+	}
+
+	require.GreaterOrEqual(t, handle.extendCt.Load(), int32(1), "Extend must have been attempted")
 }
 
 func TestHoldLeadership_OnAcquiredPanicReturnsError(t *testing.T) {

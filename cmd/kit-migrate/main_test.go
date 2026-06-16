@@ -232,6 +232,47 @@ func TestPublishRejectsSymlinkTargetDir(t *testing.T) {
 	}
 }
 
+// TestPublishRejectsDuplicateGooseVersion guards FR-601: when a
+// publish flattens migrations from multiple kit components into one
+// directory, two components may ship the same numeric goose version
+// prefix (e.g. auditlog 20260514000001_create_audit_log_events and
+// outbox 20260514000001_create_outbox_entries). goose refuses to
+// "up" a directory with a duplicate version ("found duplicate
+// migration version"), so kit-migrate must detect the collision and
+// refuse to publish a directory that goose would reject — rather than
+// silently produce one.
+func TestPublishRejectsDuplicateGooseVersion(t *testing.T) {
+	dir := t.TempDir()
+
+	code, stdout, stderr := runCommand("publish", "--to="+dir)
+	if code == 0 {
+		t.Fatalf("publish-all succeeded but the kit registry ships duplicate goose versions; goose would reject the result. stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "duplicate") {
+		t.Fatalf("stderr = %q, want a duplicate-version refusal", stderr)
+	}
+}
+
+// TestCheckRejectsMissingTargetDir guards FR-601 (check side): a CI
+// drift gate aimed at a typo'd directory must not silently pass. When
+// --to points at a directory that does not exist, check must exit
+// non-zero rather than print "OK: 0 migration(s) in sync".
+func TestCheckRejectsMissingTargetDir(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist")
+
+	code, stdout, stderr := runCommand("check", "--to="+missing)
+	if code == 0 {
+		t.Fatalf("check against a missing directory exited 0; a drift gate must fail loudly. stdout=%q stderr=%q", stdout, stderr)
+	}
+	if strings.Contains(stdout, "OK:") {
+		t.Fatalf("check printed an OK summary for a missing directory: stdout=%q", stdout)
+	}
+	if strings.Contains(stderr, missing) {
+		t.Fatalf("stderr reflected filesystem path: %q", stderr)
+	}
+}
+
 func runCommand(args ...string) (int, string, string) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

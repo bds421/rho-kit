@@ -3,6 +3,7 @@ package interceptor_test
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -203,6 +204,92 @@ func TestStreamIdleTimeout_HandlerErrorPropagated(t *testing.T) {
 	info := &grpc.StreamServerInfo{FullMethod: "/test.Service/Stream"}
 	err := interc(nil, &fakeServerStream{ctx: context.Background()}, info, handler)
 	require.ErrorIs(t, err, want, "handler errors must propagate unchanged when no idle timeout fired")
+}
+
+// TestStreamIdleTimeout_WatchdogFireDoesNotMaskCleanReturn covers the
+// case where the watchdog cancels the derived context (because the
+// handler stopped sending/receiving) but the handler ignores ctx and
+// still completes successfully — e.g. a client-streaming RPC that
+// already replied via SendAndClose. The interceptor must surface the
+// handler's real result, not an unconditional DeadlineExceeded.
+func TestStreamIdleTimeout_WatchdogFireDoesNotMaskCleanReturn(t *testing.T) {
+	interc := interceptor.StreamIdleTimeout(80*time.Millisecond, nil)
+
+	// Handler ignores ctx entirely, does no Send/Recv (so the idle
+	// watchdog fires), then returns nil long after the watchdog cancel.
+	handler := func(_ any, _ grpc.ServerStream) error {
+		time.Sleep(300 * time.Millisecond)
+		return nil
+	}
+
+	info := &grpc.StreamServerInfo{FullMethod: "/test.Service/Stream"}
+	ss := &fakeServerStream{ctx: context.Background()}
+
+	err := interc(nil, ss, info, handler)
+	require.NoError(t, err,
+		"watchdog cancellation must not overwrite a successful handler result")
+}
+
+// TestStreamIdleTimeout_WatchdogFireDoesNotMaskBusinessError covers the
+// same hazard for a non-nil business error: it must propagate unchanged
+// rather than being replaced by DeadlineExceeded.
+func TestStreamIdleTimeout_WatchdogFireDoesNotMaskBusinessError(t *testing.T) {
+	interc := interceptor.StreamIdleTimeout(80*time.Millisecond, nil)
+
+	want := errors.New("application-specific failure")
+	handler := func(_ any, _ grpc.ServerStream) error {
+		time.Sleep(300 * time.Millisecond)
+		return want
+	}
+
+	info := &grpc.StreamServerInfo{FullMethod: "/test.Service/Stream"}
+	ss := &fakeServerStream{ctx: context.Background()}
+
+	err := interc(nil, ss, info, handler)
+	require.ErrorIs(t, err, want,
+		"watchdog cancellation must not overwrite a handler's business error")
+}
+
+// TestStreamIdleTimeout_PanicStopsWatchdogPromptly covers the resource
+// leak where a handler panic unwinds past the watchdog teardown. With a
+// plain (non-deferred) close(done) the panic skips it, so the watchdog
+// goroutine and its ticker linger for the full idle duration. The
+// watchdog must instead exit promptly when the deferred cancel fires.
+func TestStreamIdleTimeout_PanicStopsWatchdogPromptly(t *testing.T) {
+	// Long idle window so a lingering watchdog would obviously outlive
+	// the short wait below.
+	interc := interceptor.StreamIdleTimeout(10*time.Second, nil)
+
+	handler := func(_ any, _ grpc.ServerStream) error {
+		panic("boom")
+	}
+
+	info := &grpc.StreamServerInfo{FullMethod: "/test.Service/Stream"}
+
+	before := runtime.NumGoroutine()
+	const panics = 20
+	for i := 0; i < panics; i++ {
+		func() {
+			defer func() {
+				r := recover()
+				require.NotNil(t, r, "panic must propagate to the outer recovery interceptor")
+			}()
+			_ = interc(nil, &fakeServerStream{ctx: context.Background()}, info, handler)
+		}()
+	}
+
+	// Allow watchdogs that observe cancellation to exit, but far less
+	// than the 10s idle window a lingering watchdog would wait out.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= before+2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	leaked := runtime.NumGoroutine() - before
+	assert.LessOrEqual(t, leaked, 2,
+		"panicked handlers must not leave watchdog goroutines lingering for the idle duration (leaked=%d)", leaked)
 }
 
 func TestNewStreamLimitMetrics_RegistersAllCollectors(t *testing.T) {

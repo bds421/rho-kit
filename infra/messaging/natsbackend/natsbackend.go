@@ -61,11 +61,13 @@ import (
 )
 
 const (
-	headerExchange   = "X-Exchange"
-	headerRoutingKey = "X-Routing-Key"
+	headerExchange    = "X-Exchange"
+	headerRoutingKey  = "X-Routing-Key"
+	headerMessageID   = "X-Message-Id"
+	headerMessageType = "X-Message-Type"
 )
 
-// closeDrainTimeout caps how long [Connection.Close] waits for a graceful
+// closeDrainTimeout caps how long [Connection.Stop] waits for a graceful
 // drain. Beyond this we force-close so an unhealthy broker or stuck pending
 // publish cannot stall shutdown indefinitely.
 const closeDrainTimeout = 5 * time.Second
@@ -369,7 +371,7 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 		nats.MaxReconnects(cfg.MaxReconnects),
 		nats.ReconnectWait(cfg.ReconnectWait),
 		// Bound the internal drain step so a stuck broker cannot stall
-		// shutdown beyond closeDrainTimeout. The outer wrapper in Close()
+		// shutdown beyond closeDrainTimeout. The outer wrapper in Stop()
 		// also force-closes if the goroutine itself does not return.
 		nats.DrainTimeout(closeDrainTimeout),
 	}
@@ -703,8 +705,8 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	for k, v := range msg.Headers {
 		natsMsg.Header.Set(k, v)
 	}
-	natsMsg.Header.Set("X-Message-Id", msg.ID)
-	natsMsg.Header.Set("X-Message-Type", msg.Type)
+	natsMsg.Header.Set(headerMessageID, msg.ID)
+	natsMsg.Header.Set(headerMessageType, msg.Type)
 	natsMsg.Header.Set(headerExchange, exchange)
 	natsMsg.Header.Set(headerRoutingKey, routingKey)
 
@@ -1029,6 +1031,15 @@ func deliveryHeaderMaps(h nats.Header) (map[string]any, map[string]string) {
 		if len(headers) >= maxNatsDeliveryHeaders {
 			break
 		}
+		// Kit-internal transport metadata is reconstructed separately
+		// (exchange/routing-key via extractExchangeAndRoutingKey; id/type
+		// from the JSON body). Skip it here so it neither leaks to handlers
+		// nor counts toward MaxMessageHeaders — otherwise a message carrying
+		// the maximum allowed user headers would fail inbound validation and
+		// be permanently Term-discarded.
+		if isKitInternalHeader(k) {
+			continue
+		}
 		if len(v) > 0 {
 			cost := len(k) + len(v[0])
 			if cost > byteBudget {
@@ -1046,6 +1057,21 @@ func deliveryHeaderMaps(h nats.Header) (map[string]any, map[string]string) {
 		msgHeaders = nil
 	}
 	return headers, msgHeaders
+}
+
+// isKitInternalHeader reports whether k is one of the transport-metadata
+// headers [Publisher.Publish] writes onto the NATS envelope. These are
+// reconstructed independently on the consumer side (exchange/routing-key
+// via [extractExchangeAndRoutingKey]; id/type from the message body), so
+// they must be excluded from the user-facing header maps. The match is
+// case-sensitive to mirror nats.Header.Get used by the extractor.
+func isKitInternalHeader(k string) bool {
+	switch k {
+	case headerExchange, headerRoutingKey, headerMessageID, headerMessageType:
+		return true
+	default:
+		return false
+	}
 }
 
 // composeSubject builds the NATS subject for an (exchange, routingKey)

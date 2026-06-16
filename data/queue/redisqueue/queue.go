@@ -276,8 +276,9 @@ func queueMetricLabel(queue string) string {
 }
 
 // Queue provides a kit-friendly seam over [hibiken/asynq]. Replaces the
-// pre-v2 LIST + heartbeat scheme with asynq's claim model and
-// invisibility-timeout (configurable via [WithInvisibilityTimeout]).
+// pre-v2 LIST + heartbeat scheme with asynq's claim model and lease-based
+// crash recovery, with an optional per-handler run timeout configurable via
+// [WithInvisibilityTimeout].
 //
 // The kit's [Queue] interface is preserved; consumers continue to call
 // [Queue.Enqueue]/[Queue.EnqueueBatch] and [Queue.Process] with the same
@@ -285,10 +286,11 @@ func queueMetricLabel(queue string) string {
 //
 // Wire envelope: every enqueue creates an [asynq.Task] of type
 // `rho.envelope` whose payload is the kit's [Message] JSON. Asynq's queue
-// (the per-tenant queue name) becomes the routing key. Stuck-task recovery
-// is governed by asynq's invisibility timeout — a worker that crashes
-// mid-handler has its task re-enqueued after the timeout (default 30s)
-// instead of the kit's per-task heartbeat scheme.
+// (the per-tenant queue name) becomes the routing key. Recovery of tasks
+// whose worker crashed mid-handler is governed by asynq's lease/heartbeat
+// model (a fixed ~30s lease cutoff), replacing the kit's pre-v2 heartbeat
+// scheme. The separate [WithInvisibilityTimeout] knob bounds how long a live
+// handler may run (see that option's docs); it does not change crash recovery.
 //
 // Concurrency: Enqueue and Len are safe for concurrent use. Process is
 // single-call per queue name — calling Process concurrently on the same
@@ -433,11 +435,21 @@ func WithConcurrency(n int) Option {
 	}
 }
 
-// WithInvisibilityTimeout sets how long asynq waits before re-enqueueing
-// an in-flight task whose worker has not acknowledged completion. Replaces
-// the pre-v2 heartbeat scheme: a worker that crashes mid-handler leaks its
-// task only for the invisibility timeout. Default matches asynq's
-// upstream default (30s). Must be positive.
+// WithInvisibilityTimeout caps how long a single handler invocation may run
+// before asynq fails the attempt and retries it. It maps to asynq's per-task
+// [asynq.Timeout] option, which bounds the run time of a LIVE worker: when the
+// timeout elapses before the handler returns, the attempt is failed and a
+// retry is consumed. It is NOT a re-enqueue/invisibility window for crashed
+// workers — recovery of tasks whose worker died is lease/heartbeat based in
+// asynq (a fixed ~30s lease cutoff) and is unaffected by this knob.
+//
+// When unset (the default, zero), asynq applies its own upstream default of a
+// 30-MINUTE handler timeout, not 30s. Set this only to bound healthy
+// long-running handlers; small values will kill slow-but-healthy handlers, and
+// large values do not delay crash recovery. Must be positive.
+//
+// The name is retained for v2 API compatibility; treat it as a per-handler run
+// timeout.
 func WithInvisibilityTimeout(d time.Duration) Option {
 	if d <= 0 {
 		panic("redisqueue: WithInvisibilityTimeout requires a positive duration")
@@ -540,33 +552,60 @@ func (q *Queue) ConsumerID() string {
 	return q.consumerID
 }
 
-// Close releases the underlying asynq client + inspector. The Redis client
-// supplied to [NewQueue] is NOT closed (asynq's docs require the caller to
-// own its lifecycle). Returns the first non-nil close error.
+// Close releases any asynq resources the Queue owns. The Redis client
+// supplied to [NewQueue] is NOT closed: asynq's docs require the caller to own
+// its lifecycle, and the kit always builds its asynq client + inspector from a
+// shared connection (see [NewQueue]). In that shared-connection mode asynq's
+// own Close() unconditionally returns a "redis connection is shared" sentinel
+// — there is nothing for the kit to release — so Close filters that sentinel
+// and returns the first genuine close error, or nil. Safe to call multiple
+// times and on a nil receiver.
 func (q *Queue) Close() error {
 	if q == nil {
 		return nil
 	}
 	var firstErr error
 	if q.client != nil {
-		if err := q.client.Close(); err != nil {
+		if err := q.client.Close(); err != nil && !isSharedConnectionCloseErr(err) {
 			firstErr = redact.WrapError("close asynq client", err)
 		}
 	}
 	if q.inspector != nil {
-		if err := q.inspector.Close(); err != nil && firstErr == nil {
+		if err := q.inspector.Close(); err != nil && !isSharedConnectionCloseErr(err) && firstErr == nil {
 			firstErr = redact.WrapError("close asynq inspector", err)
 		}
 	}
 	return firstErr
 }
 
+// sharedConnectionCloseMarker is the stable substring asynq emits from
+// Client.Close / Inspector.Close when the redis connection is caller-owned
+// (built via NewClientFromRedisClient / NewInspectorFromRedisClient). asynq
+// returns a bare fmt.Errorf with no sentinel or type to match on, so the
+// message substring is the only available discriminator.
+const sharedConnectionCloseMarker = "redis connection is shared"
+
+// isSharedConnectionCloseErr reports whether err is asynq's benign
+// shared-connection close sentinel. Such errors mean "nothing to close here",
+// not a failure, so the kit must not propagate them from [Queue.Close].
+func isSharedConnectionCloseErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), sharedConnectionCloseMarker)
+}
+
 // Enqueue adds a message to the named queue. Returns an error if the
 // serialized message exceeds the configured max payload size or if
 // Message.ID is not a safe identifier (see [validateMessageID]).
-// Caller-supplied IDs are used as asynq's per-queue unique TaskID, which
-// gives FR-059 idempotency by default — a second Enqueue with the same
-// (queue, id) returns [asynq.ErrTaskIDConflict] wrapped in a non-nil error.
+// Caller-supplied IDs are used as asynq's per-queue unique TaskID: while a
+// task with the same (queue, id) still exists, a second Enqueue returns
+// [asynq.ErrTaskIDConflict] wrapped in a non-nil error, giving FR-059
+// idempotency.
+//
+// The dedupe window lasts only as long as the task exists. asynq deletes a
+// completed task immediately unless retention is configured, and the default
+// retentionTTL is 0 (no retention), so a producer retry that arrives after a
+// consumer has already succeeded will enqueue and run a duplicate. Set
+// [WithRetention] to a value larger than your worst-case producer retry delay
+// to keep the dedupe guarantee covering completed tasks.
 func (q *Queue) Enqueue(ctx context.Context, queue string, msg Message) error {
 	if err := q.ready(); err != nil {
 		return err
@@ -656,10 +695,10 @@ func (q *Queue) envelopeLimit() int {
 // enqueueOpts builds the per-message asynq option set. The TaskID is set
 // to the caller-supplied Message.ID so duplicate enqueues of the same ID
 // to the same queue collapse via asynq's idempotency (FR-059); the
-// per-message Timeout enforces the kit's invisibility-timeout contract
-// (asynq has no per-server knob for this); the per-queue Retention keeps
-// completed tasks visible in the asynq UI when [WithRetention] is
-// configured.
+// per-message [asynq.Timeout] (set only when [WithInvisibilityTimeout] is
+// configured) bounds how long a live handler may run for this task before the
+// attempt is failed and retried; the per-queue Retention keeps completed tasks
+// visible in the asynq UI when [WithRetention] is configured.
 func (q *Queue) enqueueOpts(queue, msgID string) []asynq.Option {
 	opts := []asynq.Option{
 		asynq.Queue(queue),
@@ -680,9 +719,11 @@ func (q *Queue) enqueueOpts(queue, msgID string) []asynq.Option {
 // [asynq.Server] scoped to this single queue; multiple Process calls (on
 // the same or different queue names) each run independent servers.
 //
-// Important: handlers must be idempotent. Asynq re-enqueues stuck tasks
-// after the invisibility timeout; a worker that crashed mid-handler may
-// see the same task delivered again to another worker.
+// Important: handlers must be idempotent. A worker that crashes mid-handler
+// has its task recovered via asynq's lease/heartbeat model (a fixed ~30s lease
+// cutoff) and re-delivered to another worker; a handler that exceeds the
+// optional per-handler run timeout ([WithInvisibilityTimeout]) is failed and
+// retried. Either path can deliver the same task more than once.
 //
 // Panics if queue name is empty, handler is nil, or another Process call
 // is already active for the same queue name on this Queue instance — fail
@@ -747,9 +788,11 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 // concurrent Process calls on the same Queue instance do not race on
 // asynq's internal scheduling.
 //
-// Asynq's "invisibility timeout" is enforced per-task via the
-// [asynq.Timeout] enqueue option (see [enqueueOpts]) rather than via a
-// per-server knob — this method only translates server-scoped concerns.
+// The optional per-handler run timeout ([WithInvisibilityTimeout]) is applied
+// per-task via the [asynq.Timeout] enqueue option (see [enqueueOpts]) rather
+// than via a per-server knob — this method only translates server-scoped
+// concerns. Crash recovery uses asynq's lease/heartbeat model and is not
+// configured here.
 func (q *Queue) buildServerConfig(queue string, _ Handler) asynq.Config {
 	return asynq.Config{
 		Concurrency: q.concurrency,

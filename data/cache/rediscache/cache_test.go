@@ -312,6 +312,41 @@ func TestMGet_OversizeValueDroppedSilently(t *testing.T) {
 	assert.False(t, hasMissing)
 }
 
+// TestMGet_WrongTypeKeyDoesNotFailBatch pins that a single wrong-typed
+// key (e.g. a co-tenant planting a list under a key the capped path
+// then STRLENs/GETs) must NOT abort the whole batch. The uncapped MGET
+// path already treats WRONGTYPE keys as misses (Redis MGET returns nil
+// for them); the capped STRLEN+GET path must match that contract so one
+// hostile entry cannot deny the entire request.
+func TestMGet_WrongTypeKeyDoesNotFailBatch(t *testing.T) {
+	for name, maxSize := range map[string]int{
+		"capped":   64,
+		"uncapped": 0,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := newTestClient(t)
+			t.Cleanup(func() { _ = client.Close() })
+
+			rc, err := NewCache(client, "test", WithCacheMaxValueSize(maxSize))
+			require.NoError(t, err)
+
+			ctx := context.Background()
+			require.NoError(t, client.Set(ctx, "ok", []byte("payload"), time.Minute).Err())
+			// Co-tenant plants a list under "poisoned": STRLEN/GET both
+			// return WRONGTYPE for it.
+			require.NoError(t, client.RPush(ctx, "poisoned", "a", "b").Err())
+
+			out, err := rc.MGet(ctx, []string{"ok", "poisoned", "missing"})
+			require.NoError(t, err, "a single wrong-typed key must not fail the whole batch")
+			assert.Equal(t, []byte("payload"), out["ok"])
+			_, hasPoisoned := out["poisoned"]
+			assert.False(t, hasPoisoned, "wrong-typed entry must be treated as a miss")
+			_, hasMissing := out["missing"]
+			assert.False(t, hasMissing)
+		})
+	}
+}
+
 func TestWithCacheMaxValueSize_PanicsOnNegative(t *testing.T) {
 	assert.Panics(t, func() {
 		WithCacheMaxValueSize(-1)

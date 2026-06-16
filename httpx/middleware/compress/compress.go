@@ -109,9 +109,12 @@ func WithoutGzip() Option {
 	}
 }
 
-// WithLogger overrides the slog.Logger used for warn-level diagnostics
-// (oversized prefix bypass, handler panics during compression).
-// Defaults to [slog.Default].
+// WithLogger sets the slog.Logger held by the middleware. A nil
+// argument is accepted; the default is [slog.Default].
+//
+// Note: the middleware does not currently emit any log records — the
+// compression bail-out and finalize paths are silent. This option only
+// overrides the stored logger for future use.
 func WithLogger(l *slog.Logger) Option {
 	return func(c *config) { c.logger = l }
 }
@@ -172,6 +175,12 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 			}
 			defer cw.finalize()
 			next.ServeHTTP(cw, r)
+			// Mark normal completion. finalize (deferred above) only
+			// commits/flushes the response when this flag is set; on a
+			// handler panic it stays false so finalize leaves the writer
+			// untouched for an outer recover middleware to send a clean
+			// 500 instead of a committed 200.
+			cw.completed = true
 		})
 	}
 }

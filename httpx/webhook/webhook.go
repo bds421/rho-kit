@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/id"
@@ -17,13 +19,23 @@ import (
 	"github.com/bds421/rho-kit/resilience/v2/retry"
 )
 
-// Default header names. Receivers wired with
-// [httpx/middleware/signedrequest] expect this triplet.
+// Default header names. The dispatcher signs the body only (via
+// [crypto/signing] Signer.Sign), so receivers verify deliveries with
+// [crypto/signing.Verify], reading the timestamp and signature from
+// this triplet. (This wire format differs from
+// [httpx/middleware/signedrequest], which expects its own
+// X-Signature-* headers over a method/path/nonce canonical string and
+// will not validate these X-Kit-* deliveries.)
 const (
 	DefaultSignatureHeader = "X-Kit-Signature"
 	DefaultTimestampHeader = "X-Kit-Timestamp"
 	DefaultIDHeader        = "X-Kit-Delivery-Id"
 )
+
+// minSecretLen mirrors crypto/signing's unexported 32-byte HMAC-SHA256
+// secret floor. New rejects shorter secrets so misconfiguration surfaces
+// at construction instead of failing every Send at runtime.
+const minSecretLen = 32
 
 // Config configures a [Dispatcher].
 type Config struct {
@@ -99,6 +111,12 @@ func New(cfg Config, opts ...Option) (*Dispatcher, error) {
 	if len(cfg.Secret) == 0 {
 		return nil, errors.New("webhook: Config.Secret is required (non-empty)")
 	}
+	if len(cfg.Secret) < minSecretLen {
+		// crypto/signing rejects secrets below this floor at Sign time;
+		// enforce it here so a too-short secret fails fast at
+		// construction instead of on every runtime Send.
+		return nil, fmt.Errorf("webhook: Config.Secret must be at least %d bytes", minSecretLen)
+	}
 	d := &Dispatcher{
 		cfg:             cfg,
 		signatureHeader: DefaultSignatureHeader,
@@ -152,6 +170,9 @@ func (d *Dispatcher) Send(ctx context.Context, del Delivery) error {
 	if del.URL == "" {
 		return errors.New("webhook: Delivery.URL is required")
 	}
+	if err := validateURL(del.URL); err != nil {
+		return err
+	}
 	if del.DeliveryID == "" {
 		del.DeliveryID = id.New()
 	}
@@ -168,6 +189,31 @@ func (d *Dispatcher) Send(ctx context.Context, del Delivery) error {
 		}
 		return d.attempt(ctx, del, signature, timestamp)
 	}, retry.WithRetryIf(isRetryable))
+}
+
+// validateURL is a baseline SSRF guard: the dispatcher signs a body and
+// POSTs it to a caller- (often customer-) supplied URL, so it must only
+// ever speak HTTP(S). A non-http(s) scheme (file://, gopher://, ftp://,
+// or a relative/scheme-less value) is rejected before any request is
+// built so the signed payload and X-Kit-* headers never leak to an
+// unexpected transport.
+//
+// This is intentionally a scheme-only check. It does NOT block private,
+// link-local, or metadata IP destinations — deployments that dispatch to
+// untrusted customer endpoints should additionally route through an
+// SSRF-aware transport (see security/netutil.SSRFSafeTransport) wired
+// into Config.HTTPClient.
+func validateURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return permanent(fmt.Errorf("webhook: parse Delivery.URL: %w", err))
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		return nil
+	default:
+		return permanent(fmt.Errorf("webhook: Delivery.URL scheme %q not allowed (must be http or https)", u.Scheme))
+	}
 }
 
 // attempt performs one HTTP delivery. Returns nil on 2xx, a wrapped

@@ -114,8 +114,11 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path 
 		applyNumericConstraints(ctx, s, constraintTag)
 		return s, nil
 	case reflect.Slice, reflect.Array:
-		if t.Elem().Kind() == reflect.Uint8 {
-			// []byte marshals as a base64 string.
+		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+			// []byte marshals as a base64 string. encoding/json only
+			// base64-encodes byte *slices*; a byte *array* ([16]byte
+			// UUID, [32]byte hash) marshals as a JSON array of numbers,
+			// so it falls through to the array-of-integer schema below.
 			return &jsonschemago.Schema{Type: "string"}, nil
 		}
 		if ctx.visiting[t] {
@@ -208,7 +211,7 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 			continue
 		}
 
-		name, _, skip := jsonFieldName(f)
+		name, omitEmpty, skip := jsonFieldName(f)
 		if skip {
 			continue
 		}
@@ -232,7 +235,8 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 		if d := descriptionFromJSONSchemaTag(jsTag); d != "" {
 			field.Description = d
 		}
-		if jsonschemaTagHasRequired(jsTag) {
+		isRequired := jsonschemaTagHasRequired(jsTag)
+		if isRequired {
 			required = append(required, name)
 			// For string/array required fields, also enforce non-
 			// empty. The error renderer maps a minLength / minItems
@@ -241,6 +245,18 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 			// the empty value was rejected by a stricter min rule
 			// (e.g. `required,min=2`).
 			markRequiredNonEmpty(ctx, field, childPath)
+		}
+		// A nil pointer/slice/map field marshals as JSON `null` when the
+		// json tag has no omitempty, so the inferred schema must admit
+		// null for those fields — otherwise an absent optional value is
+		// rejected with "must be array/object/string". Required fields
+		// keep the strict single type so null (the zero value) still
+		// fails; omitempty fields never emit null, so they need no
+		// widening either. A field that declares a positive lower bound
+		// (min/len → minItems/minLength) is treated as wanting a present,
+		// non-empty value, so null stays rejected there too.
+		if !isRequired && !omitEmpty && marshalsAsJSONNull(f.Type) && !hasPositiveLowerBound(field) {
+			admitNull(field)
 		}
 		out.Properties[name] = field
 		order = append(order, name)
@@ -254,6 +270,60 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 		out.PropertyOrder = order
 	}
 	return out, nil
+}
+
+// marshalsAsJSONNull reports whether a nil value of type t encodes to
+// JSON `null` under encoding/json. Pointers, slices, and maps all
+// marshal their nil value as null; fixed-size arrays cannot be nil and
+// always marshal as a JSON array, so they are excluded. Interfaces are
+// not considered here: the walker already emits the permissive empty
+// schema for them, which admits null.
+func marshalsAsJSONNull(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Map:
+		return true
+	default:
+		return false
+	}
+}
+
+// hasPositiveLowerBound reports whether a schema declares a presence
+// constraint (minItems / minLength) greater than zero. Such a field is
+// treated as wanting a non-empty value, so a nil (null) instance must
+// still fail rather than be admitted by null-widening.
+func hasPositiveLowerBound(s *jsonschemago.Schema) bool {
+	if s.MinItems != nil && *s.MinItems > 0 {
+		return true
+	}
+	if s.MinLength != nil && *s.MinLength > 0 {
+		return true
+	}
+	return false
+}
+
+// admitNull widens a property schema so a JSON `null` is accepted in
+// addition to the field's inferred type. The type-specific keywords
+// (minLength, minItems, properties, ...) only apply to instances of
+// their own type under JSON Schema, so adding "null" to the type list
+// does not relax the constraints that guard a non-null value. A schema
+// with no declared type already admits any value (including null) and
+// is left untouched.
+func admitNull(s *jsonschemago.Schema) {
+	switch {
+	case s.Type != "":
+		if s.Type == "null" {
+			return
+		}
+		s.Types = []string{s.Type, "null"}
+		s.Type = ""
+	case len(s.Types) > 0:
+		for _, t := range s.Types {
+			if t == "null" {
+				return
+			}
+		}
+		s.Types = append(s.Types, "null")
+	}
 }
 
 // markRequiredNonEmpty records the field's path so the error renderer
@@ -321,7 +391,7 @@ func jsonschemaTagHasRequired(tag string) bool {
 	if tag == "" {
 		return false
 	}
-	for _, part := range strings.Split(tag, ",") {
+	for _, part := range splitTagFields(tag) {
 		if strings.TrimSpace(part) == "required" {
 			return true
 		}
@@ -377,7 +447,7 @@ func descriptionFromJSONSchemaTag(tag string) string {
 	if tag == "" {
 		return ""
 	}
-	parts := strings.Split(tag, ",")
+	parts := splitTagFields(tag)
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		key, _ := splitRule(strings.TrimSpace(p))
@@ -398,7 +468,7 @@ func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) {
 	if tag == "" {
 		return
 	}
-	for _, raw := range strings.Split(tag, ",") {
+	for _, raw := range splitTagFields(tag) {
 		rule := strings.TrimSpace(raw)
 		if rule == "" || rule == "required" {
 			continue
@@ -449,7 +519,7 @@ func applyNumericConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) 
 	if tag == "" {
 		return
 	}
-	for _, raw := range strings.Split(tag, ",") {
+	for _, raw := range splitTagFields(tag) {
 		rule := strings.TrimSpace(raw)
 		if rule == "" || rule == "required" {
 			continue
@@ -507,7 +577,7 @@ func applyArrayConstraints(s *jsonschemago.Schema, tag string) {
 	if tag == "" {
 		return
 	}
-	for _, raw := range strings.Split(tag, ",") {
+	for _, raw := range splitTagFields(tag) {
 		rule := strings.TrimSpace(raw)
 		if rule == "" || rule == "required" {
 			continue
@@ -569,6 +639,62 @@ func parametricName(key, value string) string {
 		return "excludes-all:" + value
 	}
 	return key + ":" + value
+}
+
+// splitTagFields splits a `jsonschema:"..."` tag into its
+// comma-separated segments, mirroring strings.Split(tag, ",") for the
+// common case while preserving commas that belong to a single value.
+//
+// Two kinds of comma are NOT treated as segment separators:
+//
+//   - a comma nested inside a `{...}`, `[...]`, or `(...)` group, so a
+//     bounded regex quantifier (`pattern=^[a-z]{2,5}$`) or character
+//     class (`pattern=[a,b]`) survives intact instead of being
+//     truncated into an invalid pattern plus a stray description token;
+//   - a backslash-escaped comma (`\,`), for callers that need a literal
+//     comma at the top level of a value. The escaping backslash is
+//     dropped from the emitted segment.
+//
+// Backslashes that do not precede a comma are preserved verbatim so
+// regex escapes such as `\d` and `\,` outside-of-value text are
+// unaffected.
+func splitTagFields(tag string) []string {
+	var out []string
+	var b strings.Builder
+	depth := 0
+	for i := 0; i < len(tag); i++ {
+		c := tag[i]
+		switch c {
+		case '\\':
+			// Drop the backslash only when it escapes a comma; otherwise
+			// keep it so regex escapes pass through unchanged.
+			if i+1 < len(tag) && tag[i+1] == ',' {
+				b.WriteByte(',')
+				i++
+				continue
+			}
+			b.WriteByte(c)
+		case '{', '[', '(':
+			depth++
+			b.WriteByte(c)
+		case '}', ']', ')':
+			if depth > 0 {
+				depth--
+			}
+			b.WriteByte(c)
+		case ',':
+			if depth > 0 {
+				b.WriteByte(c)
+				continue
+			}
+			out = append(out, b.String())
+			b.Reset()
+		default:
+			b.WriteByte(c)
+		}
+	}
+	out = append(out, b.String())
+	return out
 }
 
 // splitRule splits a `key=value` rule into its parts. Bare rules

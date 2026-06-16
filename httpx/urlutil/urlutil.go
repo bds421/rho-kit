@@ -191,21 +191,32 @@ func containsDecodedPathControl(s string) bool {
 }
 
 func isDotSegmentByte(s string, i, size int) bool {
-	before := i == 0 || s[i-1] == '/'
-	after := i+size == len(s) || s[i+size] == '/'
+	before := i == 0 || isPathSegmentSeparator(s[i-1])
+	after := i+size == len(s) || isPathSegmentSeparator(s[i+size])
 	if before && after {
 		return true
 	}
 
 	if i+size < len(s) && s[i+size] == '.' {
 		secondEnd := i + size + 1
-		return before && (secondEnd == len(s) || s[secondEnd] == '/')
+		return before && (secondEnd == len(s) || isPathSegmentSeparator(s[secondEnd]))
 	}
 	if i > 0 && s[i-1] == '.' {
 		firstStart := i - 1
-		return (firstStart == 0 || s[firstStart-1] == '/') && after
+		return (firstStart == 0 || isPathSegmentSeparator(s[firstStart-1])) && after
 	}
 	return false
+}
+
+// isPathSegmentSeparator reports whether b delimits path segments for the
+// purpose of detecting "." / ".." segments. It treats '\\' as a separator in
+// addition to '/' so that backslash-delimited dot segments are %2E-escaped,
+// matching the separator handling in containsDecodedPathControl. Some
+// downstream normalizers (e.g. IIS, certain proxies/CDNs) collapse backslashes
+// to slashes, so a raw-dot "a\\..\\b" would otherwise become a "a/../b"
+// traversal.
+func isPathSegmentSeparator(b byte) bool {
+	return b == '/' || b == '\\'
 }
 
 func isHex(b byte) bool {

@@ -13,10 +13,11 @@ import (
 	"github.com/bds421/rho-kit/runtime/v2/saga"
 )
 
-// ErrConcurrentUpdate is returned by Put when the row's updated_at
-// has advanced since the Instance the caller read. Surfaces the
-// optimistic-concurrency conflict so the executor can re-read state
-// instead of overwriting a sibling replica's progress.
+// ErrConcurrentUpdate is returned by Put when the write affected no
+// row: either an insert lost the ON CONFLICT race (another writer
+// created the row first) or an update found the row already gone (a
+// concurrent Delete). It signals the caller should re-read state rather
+// than assume the write landed.
 var ErrConcurrentUpdate = errors.New("pgstore: saga instance updated concurrently")
 
 var validIdent = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$`)
@@ -56,18 +57,20 @@ func New(db *sql.DB, opts ...Option) *Store {
 // Put implements [saga.StateStore]. Routes to two distinct SQL paths
 // based on whether the caller's Instance carries a non-zero UpdatedAt:
 //
-//   - UpdatedAt zero → INSERT ... ON CONFLICT (id) DO NOTHING. A row
-//     with the same ID already existing surfaces as ErrConcurrentUpdate
-//     (the executor will re-read and re-decide). NEVER overwrites.
-//   - UpdatedAt non-zero → UPDATE ... WHERE updated_at = $old. Strict
-//     optimistic concurrency: any other replica's write since the
-//     caller read state surfaces as ErrConcurrentUpdate.
+//   - UpdatedAt zero → INSERT ... ON CONFLICT (id) DO NOTHING. This is
+//     the first write of a fresh instance; a row with the same ID
+//     already existing surfaces as ErrConcurrentUpdate (the executor
+//     will re-read and re-decide). NEVER overwrites.
+//   - UpdatedAt non-zero → UPDATE the existing row in place by ID. The
+//     caller has already read the instance via Get, so this overwrites
+//     its mutable columns, matching the "writes (or overwrites)"
+//     contract of [saga.StateStore.Put]. A vanished row (concurrent
+//     Delete) surfaces as ErrConcurrentUpdate.
 //
-// Splitting the paths closes the v2.0 blocker B2: a single
-// INSERT…ON CONFLICT DO UPDATE WHERE (updated_at=$9 OR $9 IS NULL)
-// had a `IS NULL` escape that let a misbehaving caller bypass the
-// concurrency check by passing a fresh Instance{} with an existing
-// ID. Two-path implementation has no such escape.
+// The UPDATE path does NOT gate on updated_at: the executor reads an
+// Instance once and then Puts repeatedly without re-reading, so its
+// in-memory UpdatedAt is stale after the first write. See
+// putUpdateOptimistic for the full rationale.
 func (s *Store) Put(ctx context.Context, inst saga.Instance) error {
 	if inst.ID == "" {
 		return errors.New("pgstore: Put requires Instance.ID")
@@ -113,8 +116,21 @@ func (s *Store) putInsertOnly(ctx context.Context, inst saga.Instance, compensat
 	return nil
 }
 
-// putUpdateOptimistic handles state-advance semantics: UPDATE only
-// when updated_at still matches what the caller read. No NULL escape.
+// putUpdateOptimistic handles state-advance semantics: UPDATE the row
+// in place by ID, overwriting its mutable columns.
+//
+// It deliberately does NOT gate on `updated_at` matching the caller's
+// snapshot. The [saga.StateStore.Put] contract is "writes (or
+// overwrites) the instance"; it carries no read-your-write token, and
+// saga.DurableExecutor.executeInstance reads an Instance ONCE via Get
+// and then calls Put repeatedly without re-reading. The server stamps a
+// fresh updated_at on every write, so after the first Put the caller's
+// in-memory UpdatedAt is stale by design. Gating on it would make every
+// Put after the first match zero rows and fail every multi-step saga.
+//
+// A zero-row result here means the row vanished between the caller's Get
+// and this Put (e.g. a concurrent Delete) — surfaced as
+// ErrConcurrentUpdate so the executor does not silently no-op.
 func (s *Store) putUpdateOptimistic(ctx context.Context, inst saga.Instance, compensatedJSON, resultsJSON []byte) error {
 	query := fmt.Sprintf(`UPDATE %s SET
 		  state         = $1,
@@ -123,12 +139,12 @@ func (s *Store) putUpdateOptimistic(ctx context.Context, inst saga.Instance, com
 		  step_results  = $4::jsonb,
 		  last_error    = $5,
 		  updated_at    = now()
-		WHERE id = $6 AND updated_at = $7`,
+		WHERE id = $6`,
 		s.table)
 	res, err := s.db.ExecContext(ctx, query,
 		string(inst.State), inst.CurrentStep,
 		string(compensatedJSON), string(resultsJSON), inst.LastError,
-		inst.ID, inst.UpdatedAt,
+		inst.ID,
 	)
 	if err != nil {
 		return redact.WrapError("pgstore: Put update", err)

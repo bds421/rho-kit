@@ -1,7 +1,9 @@
 package httpx
 
 import (
+	"context"
 	"crypto/tls"
+	"errors"
 	"net/http"
 	"time"
 
@@ -90,7 +92,13 @@ func WithCBResetTimeout(d time.Duration) ResilientOption {
 
 // WithCBShouldTrip sets a custom predicate for deciding whether a response/error
 // should count toward the circuit breaker failure threshold. By default,
-// transport errors and HTTP 5xx responses trip the breaker.
+// transport errors and HTTP 5xx responses trip the breaker, except caller-driven
+// cancellation (context.Canceled), which is never counted.
+//
+// Returning false for a non-nil error excludes that error from the failure
+// count: the breaker does not advance toward tripping, and the caller still
+// receives the original error from RoundTrip. This lets callers exclude e.g.
+// context.Canceled or DNS errors from opening the breaker.
 //
 // Panics if fn is nil — a nil predicate would compile but crash on the
 // first outbound request through the transport, long after construction.
@@ -155,12 +163,7 @@ func NewResilientHTTPClient(opts ...ResilientOption) *http.Client {
 		timeout:     10 * time.Second,
 		cbThreshold: 5,
 		cbReset:     30 * time.Second,
-		shouldTrip: func(resp *http.Response, err error) bool {
-			if err != nil {
-				return true
-			}
-			return resp != nil && resp.StatusCode >= 500
-		},
+		shouldTrip:  defaultShouldTrip,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -173,26 +176,14 @@ func NewResilientHTTPClient(opts ...ResilientOption) *http.Client {
 		idleConnTimeout: cfg.idleConnTimeout,
 	}, "httpx: NewResilientHTTPClient")
 
-	var cbOpts []circuitbreaker.Option
+	var stateChange func(from, to circuitbreaker.State)
 	if cfg.onStateChange != nil {
-		cbOpts = append(cbOpts, circuitbreaker.WithOnStateChange(func(_ string, from, to circuitbreaker.State) {
-			cfg.onStateChange(from, to)
-		}))
+		stateChange = cfg.onStateChange
 	}
-	cbOpts = append(cbOpts, circuitbreaker.WithIsSuccessful(func(err error) bool {
-		// Errors from the circuit-breaker transport are either transport
-		// errors (non-nil err) or sentinel serverError (5xx). Both are
-		// reported as failures. All other outcomes are successes.
-		return err == nil
-	}))
 
-	cb := circuitbreaker.NewCircuitBreaker(cfg.cbThreshold, cfg.cbReset, cbOpts...)
-
-	var rt http.RoundTripper = &circuitBreakerTransport{
-		base:       transport,
-		cb:         cb,
-		shouldTrip: cfg.shouldTrip,
-	}
+	var rt http.RoundTripper = newCircuitBreakerTransport(
+		transport, cfg.shouldTrip, cfg.cbThreshold, cfg.cbReset, stateChange,
+	)
 
 	if cfg.deadlineBudget {
 		rt = &deadlineBudgetTransport{
@@ -209,6 +200,44 @@ func NewResilientHTTPClient(opts ...ResilientOption) *http.Client {
 	}
 }
 
+// newCircuitBreakerTransport bundles the circuit breaker construction with the
+// transport so the breaker's IsSuccessful predicate always recognises the
+// notCountedError sentinel. Keeping both together guarantees a shouldTrip
+// predicate that excludes an error (returns false for a non-nil error) actually
+// prevents that error from advancing the failure threshold.
+func newCircuitBreakerTransport(
+	base http.RoundTripper,
+	shouldTrip func(resp *http.Response, err error) bool,
+	threshold int,
+	reset time.Duration,
+	onStateChange func(from, to circuitbreaker.State),
+) *circuitBreakerTransport {
+	var cbOpts []circuitbreaker.Option
+	if onStateChange != nil {
+		cbOpts = append(cbOpts, circuitbreaker.WithOnStateChange(func(_ string, from, to circuitbreaker.State) {
+			onStateChange(from, to)
+		}))
+	}
+	cbOpts = append(cbOpts, circuitbreaker.WithIsSuccessful(func(err error) bool {
+		// Errors from the circuit-breaker transport are either failures the
+		// shouldTrip predicate decided should count (transport errors or the
+		// sentinel serverError for 5xx) or a notCountedError wrapping an error
+		// the predicate explicitly excluded. Only the former count as failures;
+		// the latter and a nil error are successes.
+		if err == nil {
+			return true
+		}
+		var nc *notCountedError
+		return errors.As(err, &nc)
+	}))
+
+	return &circuitBreakerTransport{
+		base:       base,
+		cb:         circuitbreaker.NewCircuitBreaker(threshold, reset, cbOpts...),
+		shouldTrip: shouldTrip,
+	}
+}
+
 // circuitBreakerTransport wraps an http.RoundTripper with circuit breaker logic.
 type circuitBreakerTransport struct {
 	base       http.RoundTripper
@@ -220,7 +249,9 @@ type circuitBreakerTransport struct {
 // is open, it returns circuitbreaker.ErrCircuitOpen immediately.
 func (t *circuitBreakerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var resp *http.Response
+	var executed bool
 	err := t.cb.Execute(func() error {
+		executed = true
 		var rtErr error
 		resp, rtErr = t.base.RoundTrip(req)
 		if t.shouldTrip(resp, rtErr) {
@@ -231,8 +262,35 @@ func (t *circuitBreakerTransport) RoundTrip(req *http.Request) (*http.Response, 
 			// a failure, but we still return the actual response to the caller.
 			return &serverError{code: resp.StatusCode}
 		}
-		return rtErr
+		if rtErr != nil {
+			// The predicate excluded this error from the failure count. Wrap it
+			// in a non-counting sentinel so the breaker's IsSuccessful predicate
+			// treats it as a success; it is unwrapped before returning so the
+			// caller still observes the original error.
+			return &notCountedError{err: rtErr}
+		}
+		return nil
 	})
+
+	// The circuit rejected the call without invoking the closure (open or
+	// half-open over the probe limit). Per the http.RoundTripper contract the
+	// request body must still be closed, since base.RoundTrip never ran.
+	if !executed {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, err
+	}
+
+	// A predicate-excluded transport error was wrapped to avoid counting it.
+	// Unwrap so the caller observes the original error, with no response.
+	var nc *notCountedError
+	if errors.As(err, &nc) {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, nc.err
+	}
 
 	// If the circuit tripped on a 5xx, the actual response is still valid.
 	// Return it so the caller can inspect the status code and read the body.
@@ -261,4 +319,30 @@ type serverError struct {
 
 func (e *serverError) Error() string {
 	return http.StatusText(e.code)
+}
+
+// notCountedError wraps a transport error that the shouldTrip predicate
+// explicitly excluded from the failure count. The breaker's IsSuccessful
+// predicate recognises it as a success so it does not advance the failure
+// threshold; RoundTrip unwraps it before returning to the caller.
+type notCountedError struct {
+	err error
+}
+
+func (e *notCountedError) Error() string { return e.err.Error() }
+
+func (e *notCountedError) Unwrap() error { return e.err }
+
+// defaultShouldTrip is the default circuit-breaker failure predicate for
+// [NewResilientHTTPClient]. Transport errors and HTTP 5xx responses count
+// toward the failure threshold, with the exception of caller-driven
+// cancellation (context.Canceled): a client aborting an in-flight request
+// is not evidence the downstream is unhealthy, so a flood of cancelled
+// requests must not open the breaker and harm unrelated callers. Server-side
+// timeouts (context.DeadlineExceeded) still count as failures.
+func defaultShouldTrip(resp *http.Response, err error) bool {
+	if err != nil {
+		return !errors.Is(err, context.Canceled)
+	}
+	return resp != nil && resp.StatusCode >= 500
 }

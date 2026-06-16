@@ -89,6 +89,16 @@ type EncryptedStorage struct {
 	// The semaphore is sized to runtime.NumCPU() by default; override
 	// with [WithMaxConcurrentEncryptions].
 	putSem chan struct{}
+
+	// getSem caps concurrent Get decryptions to bound peak memory under
+	// load. A Get holds up to MaxEncryptableSize+overhead bytes of
+	// ciphertext plus a full plaintext buffer that is retained until the
+	// returned reader is Closed (~512 MiB at the default cap), so the OOM
+	// profile matches Put — and download endpoints typically fan out wider
+	// than uploads. The slot is held for the lifetime of the returned
+	// reader and released on its Close. Sized to runtime.NumCPU() by
+	// default; override with [WithMaxConcurrentDecryptions].
+	getSem chan struct{}
 }
 
 // Option configures an EncryptedStorage.
@@ -112,6 +122,28 @@ func WithMaxConcurrentEncryptions(n int) Option {
 func WithoutMaxConcurrentEncryptions() Option {
 	return func(e *EncryptedStorage) {
 		e.putSem = nil
+	}
+}
+
+// WithMaxConcurrentDecryptions caps the number of in-flight Get decryptions.
+// Default: runtime.NumCPU(). The value must be positive; use
+// [WithoutMaxConcurrentDecryptions] only when an external admission
+// controller already bounds download concurrency. A slot is held for the
+// lifetime of the [io.ReadCloser] returned by Get and released on its Close.
+func WithMaxConcurrentDecryptions(n int) Option {
+	if n <= 0 {
+		panic("storage/encryption: WithMaxConcurrentDecryptions requires n > 0")
+	}
+	return func(e *EncryptedStorage) {
+		e.getSem = make(chan struct{}, n)
+	}
+}
+
+// WithoutMaxConcurrentDecryptions disables the in-process decryption
+// concurrency cap.
+func WithoutMaxConcurrentDecryptions() Option {
+	return func(e *EncryptedStorage) {
+		e.getSem = nil
 	}
 }
 
@@ -161,6 +193,7 @@ func New(backend storage.Storage, keys KeyProvider, opts ...Option) storage.Stor
 		backend: backend,
 		keys:    keys,
 		putSem:  make(chan struct{}, runtime.NumCPU()),
+		getSem:  make(chan struct{}, runtime.NumCPU()),
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -288,10 +321,47 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 }
 
 // Get retrieves and decrypts the stored content.
+//
+// Holds up to ~MaxEncryptableSize of ciphertext plus a full plaintext buffer
+// while decrypting; the plaintext buffer is retained by the returned reader
+// until Close. Concurrent Get calls are bounded by the semaphore set in [New]
+// (default runtime.NumCPU()) — a public download endpoint without this cap can
+// exhaust memory under fan-out. The slot is held for the lifetime of the
+// returned reader and released on its Close; on any error before the reader is
+// returned the slot is released immediately. ctx cancellation during the wait
+// returns ctx.Err().
 func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	if ctx == nil {
+		// Normalise a nil context up front so the semaphore acquire and
+		// the underlying backend never see one, mirroring Put.
+		ctx = context.Background()
+	}
 	if err := storage.ValidateKey(key); err != nil {
 		return nil, storage.ObjectMeta{}, err
 	}
+
+	// Acquire the decryption slot before pulling ciphertext into memory so
+	// the peak-memory bound covers the read+decrypt window. The slot is
+	// released either on an error path below or by the returned reader's
+	// Close. release is nil when the cap is disabled.
+	var release func()
+	if e.getSem != nil {
+		select {
+		case e.getSem <- struct{}{}:
+			release = func() { <-e.getSem }
+		case <-ctx.Done():
+			return nil, storage.ObjectMeta{}, redact.WrapError("encryption", ctx.Err())
+		}
+	}
+	// releaseOnError frees the slot on any early return; cleared once the
+	// reader takes ownership of the release on success.
+	releaseOnError := release
+	defer func() {
+		if releaseOnError != nil {
+			releaseOnError()
+		}
+	}()
+
 	// Resolve the decryption key BEFORE pulling ciphertext into memory.
 	// Wave 71 closed a hostile-review finding that the prior order
 	// (Get → read N MiB → DecryptionKey lookup) let a misconfigured
@@ -337,19 +407,30 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	}
 
 	meta.Size = int64(len(plaintext))
-	return &cleaningReader{Reader: bytes.NewReader(plaintext), buf: plaintext}, meta, nil
+	// Hand the slot release to the returned reader: the plaintext buffer is
+	// retained until Close, so the memory bound must persist until then.
+	releaseOnError = nil
+	return &cleaningReader{Reader: bytes.NewReader(plaintext), buf: plaintext, release: release}, meta, nil
 }
 
 // cleaningReader wraps a bytes.Reader and zeros the underlying plaintext
 // buffer when Close is called, preventing decrypted data from lingering
-// in memory after the caller is done reading.
+// in memory after the caller is done reading. It also releases the Get
+// decryption semaphore slot (if any) so the peak-memory bound is held for
+// the full lifetime of the buffer.
 type cleaningReader struct {
 	*bytes.Reader
-	buf []byte
+	buf     []byte
+	release func()
 }
 
 func (c *cleaningReader) Close() error {
 	zeroBytes(c.buf)
+	if c.release != nil {
+		c.release()
+		// Guard against a double release if Close is called more than once.
+		c.release = nil
+	}
 	return nil
 }
 

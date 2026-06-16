@@ -34,7 +34,7 @@ func NewResponseRecorder(w http.ResponseWriter) *ResponseRecorder {
 }
 
 // WriteHeader records the status code and delegates to the underlying writer.
-// Only the first call takes effect; subsequent calls are no-ops.
+// Only the first non-interim call takes effect; subsequent calls are no-ops.
 //
 // Invalid status codes (outside 100..999) are mapped to 500 BEFORE
 // delegating so the recorder cannot trigger the stdlib panic that
@@ -42,12 +42,24 @@ func NewResponseRecorder(w http.ResponseWriter) *ResponseRecorder {
 // finding for this surface: a buggy handler returning a stale int
 // would otherwise crash the request after the recorder had already
 // updated its internal state.
+//
+// 1xx interim responses (100..199, e.g. 103 Early Hints) are forwarded
+// to the underlying writer but do NOT latch the recorder: net/http
+// permits any number of interim responses followed by the single final
+// status. Latching on a 1xx code would swallow the final WriteHeader and
+// cause Status() to report the interim code, corrupting metrics and logs.
 func (r *ResponseRecorder) WriteHeader(code int) {
 	if r.wroteHeader {
 		return
 	}
 	if code < 100 || code > 999 {
 		code = http.StatusInternalServerError
+	}
+	// Interim 1xx responses do not commit the final status. Forward them
+	// to the underlying writer and keep waiting for the final code.
+	if code >= 100 && code < 200 {
+		r.ResponseWriter.WriteHeader(code)
+		return
 	}
 	r.statusCode = code
 	r.wroteHeader = true

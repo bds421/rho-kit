@@ -264,9 +264,17 @@ func WithAllowedOrigins(origins ...string) Option {
 // disabled when this option is set.
 //
 // The extractor must return a non-empty string for every authenticated
-// state-changing request; an empty result causes the middleware to 403
-// rather than fall back to per-process pinning (which would defeat the
-// purpose of session binding).
+// state-changing request; an empty result on a state-changing request
+// causes the middleware to 403 rather than fall back to per-process
+// pinning (which would defeat the purpose of session binding).
+//
+// An empty result on a safe method (GET/HEAD/OPTIONS) — an anonymous
+// page load — passes through without a cookie, so a globally-mounted
+// middleware does not 403 every unauthenticated request. An empty result
+// on a state-changing request that is matched by [WithSkipCheck] (a
+// bearer/API-key client with no browser session) is likewise allowed,
+// honouring the skip contract. A non-empty but malformed session value is
+// rejected for every method.
 func WithSessionExtractor(fn func(*http.Request) string) Option {
 	if fn == nil {
 		panic("csrf: WithSessionExtractor requires a non-nil extractor")
@@ -543,7 +551,27 @@ func sessionBoundMiddleware(cfg *config, issuer, currentIssuer *securitycsrf.Iss
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			session, ok := safeSessionExtractor(cfg.sessionExtractor, r)
-			if !ok || securitycsrf.ValidateSessionID(session) != nil {
+			if !ok {
+				// The extractor panicked — fail closed rather than guess
+				// at an anonymous-vs-authenticated state.
+				httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
+				return
+			}
+			if session == "" {
+				// Anonymous request: there is no session to bind a token
+				// to, so no cookie is issued. The session requirement is
+				// scoped (per WithSessionExtractor docs) to authenticated
+				// state-changing requests; safe methods and skip-matched
+				// requests must still pass so a globally-mounted middleware
+				// does not 403 every anonymous page load or break the
+				// documented WithSkipCheck bearer/API-key contract.
+				handleAnonymousSessionBound(cfg, next, w, r)
+				return
+			}
+			if securitycsrf.ValidateSessionID(session) != nil {
+				// A session value is present but malformed (control chars,
+				// over-length, …): treat as a security signal and reject
+				// before issuing a cookie, for every method.
 				httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
 				return
 			}
@@ -632,6 +660,37 @@ func sessionBoundMiddleware(cfg *config, issuer, currentIssuer *securitycsrf.Iss
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// handleAnonymousSessionBound serves a request whose session extractor
+// returned the empty string (an unauthenticated caller). No token cookie
+// can be bound without a session, so none is issued. Safe methods pass
+// through, and state-changing requests honour the origin allowlist and the
+// skip predicate (same ordering as the authenticated path) before the
+// session-required gate finally rejects mutating requests.
+func handleAnonymousSessionBound(cfg *config, next http.Handler, w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	// Origin allowlist runs BEFORE the skip-check predicate for the same
+	// defense-in-depth reasoning as the authenticated path above.
+	if len(cfg.allowedOrigins) > 0 && !originAllowed(r, cfg.allowedOrigins) {
+		httpx.WriteError(w, http.StatusForbidden, "untrusted origin")
+		return
+	}
+
+	if cfg.skipCheck != nil && safeSkipCheck(cfg.skipCheck, r) {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	// A state-changing request without a session is rejected rather than
+	// falling back to per-process pinning, which would defeat the purpose
+	// of session binding.
+	httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
 }
 
 func safeSkipCheck(skip func(*http.Request) bool, r *http.Request) (matched bool) {

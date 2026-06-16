@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -447,6 +447,105 @@ func TestSigningProvider_RefreshSwapsKey(t *testing.T) {
 	// paseto test.
 	if _, err := ksNew.Verify(tokOld, time.Now()); err == nil {
 		t.Fatal("expected old token to fail verification under new key")
+	}
+}
+
+func ed25519PrivForTest(t *testing.T) ed25519.PrivateKey {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519: %v", err)
+	}
+	return priv
+}
+
+// TestSigningProvider_RefreshRejectsWrongShapeKey covers the rotation
+// hazard: a KeyRotator that hands back a key whose shape does not match
+// the configured algorithm (e.g. an RSA key for an ES256 provider) must
+// be rejected by refresh so the OnSigningRefreshError callback fires and
+// the previously-good key is retained. Without the guard, refresh would
+// "succeed" silently, overwrite the good key, and poison every later
+// Sign forever.
+func TestSigningProvider_RefreshRejectsWrongShapeKey(t *testing.T) {
+	cases := []struct {
+		name    string
+		alg     jwa.SignatureAlgorithm
+		good    func(*testing.T) crypto.PrivateKey
+		wrong   func(*testing.T) crypto.PrivateKey
+		wantKty string
+	}{
+		{
+			name:    "ES256_rotated_to_RSA",
+			alg:     jwa.ES256(),
+			good:    func(t *testing.T) crypto.PrivateKey { return mustECDSAKey(t) },
+			wrong:   func(t *testing.T) crypto.PrivateKey { return mustRSAKey(t) },
+			wantKty: "RSA",
+		},
+		{
+			name:    "RS256_rotated_to_EC",
+			alg:     jwa.RS256(),
+			good:    func(t *testing.T) crypto.PrivateKey { return mustRSAKey(t) },
+			wrong:   func(t *testing.T) crypto.PrivateKey { return mustECDSAKey(t) },
+			wantKty: "EC",
+		},
+		{
+			name:    "EdDSA_rotated_to_EC",
+			alg:     jwa.EdDSA(),
+			good:    func(t *testing.T) crypto.PrivateKey { return ed25519PrivForTest(t) },
+			wrong:   func(t *testing.T) crypto.PrivateKey { return mustECDSAKey(t) },
+			wantKty: "EC",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			good := tc.good(t)
+			wrong := tc.wrong(t)
+			var cur atomic.Pointer[crypto.PrivateKey]
+			cur.Store(&good)
+			src := func(_ context.Context) (crypto.PrivateKey, error) { return *cur.Load(), nil }
+
+			var cbErr atomic.Pointer[error]
+			p, err := NewSigningProvider(context.Background(), src,
+				WithSigningRotationInterval(time.Hour),
+				WithSigningExpectedIssuer("svc"), WithSigningAllowAnyAudience(),
+				WithSigningDefaultLifetime(time.Minute),
+				WithSigningMethod(tc.alg),
+				WithOnSigningRefreshError(func(e error) { cbErr.Store(&e) }),
+			)
+			if err != nil {
+				t.Fatalf("NewSigningProvider: %v", err)
+			}
+			defer func() { _ = p.Close() }()
+
+			// Baseline: the good key signs fine.
+			if _, err := p.Sign(Claims{Subject: "alice"}); err != nil {
+				t.Fatalf("initial Sign: %v", err)
+			}
+
+			// Rotate to a wrong-shape key. refresh must reject it.
+			cur.Store(&wrong)
+			rerr := p.refresh(context.Background())
+			if rerr == nil {
+				t.Fatalf("refresh accepted a %s key for alg %s; want rejection", tc.wantKty, tc.alg)
+			}
+			if !strings.Contains(rerr.Error(), "incompatible") {
+				t.Fatalf("refresh error = %v, want it to mention incompatibility", rerr)
+			}
+
+			// The loop path surfaces refresh errors via the callback;
+			// exercise that wiring directly so a stalled rotation alerts.
+			p.callOnRefreshError(rerr)
+			if got := cbErr.Load(); got == nil || *got == nil {
+				t.Fatal("OnSigningRefreshError callback was not invoked for the wrong-shape rotation")
+			}
+
+			// The previously-good key must be retained: Sign still works.
+			if _, err := p.Sign(Claims{Subject: "bob"}); err != nil {
+				t.Fatalf("Sign after rejected rotation should use the retained key, got: %v", err)
+			}
+		})
 	}
 }
 

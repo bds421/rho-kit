@@ -75,6 +75,26 @@ package x
 	assert.Equal(t, []asvs.ID{"V2.1.5"}, got.Claimed)
 }
 
+// testdata directories are skipped — annotations in Go fixtures under
+// testdata/ (golden files, example sources) are documentation for tests,
+// not controls the service actually claims on the request path. This
+// matches the sibling ScanImports, which also skips testdata.
+func TestScanDir_SkipsTestdata(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "live.go"), []byte(`// asvs: V2.1.5
+package live
+`), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "testdata", "fixtures"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "testdata", "fixtures", "golden.go"), []byte(`// asvs: V77.0.0
+package fixtures
+`), 0o644))
+
+	got, err := asvs.ScanDir(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []asvs.ID{"V2.1.5"}, got.Claimed,
+		"ScanDir must not harvest annotations from testdata fixtures")
+}
+
 func TestScanDir_FlagsUnknownIDs(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte(`// asvs: V99.99.99

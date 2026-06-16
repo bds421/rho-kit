@@ -24,3 +24,20 @@ func (a *atomicTime) Load() time.Time {
 func (a *atomicTime) Store(t time.Time) {
 	a.v.Store(&t)
 }
+
+// Add atomically advances the stored time by d and returns the new
+// value. Unlike a Load-then-Store pair, it retries on contention so
+// concurrent callers never lose an increment.
+func (a *atomicTime) Add(d time.Duration) time.Time {
+	for {
+		old := a.v.Load()
+		var base time.Time
+		if old != nil {
+			base = *old
+		}
+		next := base.Add(d)
+		if a.v.CompareAndSwap(old, &next) {
+			return next
+		}
+	}
+}

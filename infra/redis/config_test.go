@@ -273,3 +273,27 @@ func TestRedisFields_ValidateRedis_AllowsRedissWithPasswordOnlyURL(t *testing.T)
 
 	require.NoError(t, fields.ValidateRedis(""))
 }
+
+// TestRedisConfig_Options_RejectsCredentiallessURLWithPasswordField pins
+// FR-077: when URL is set, Options() builds opts solely from ParseURL(URL)
+// and silently ignores Config.Password. The anonymous-Redis guard must not
+// be satisfied by a Password field that never reaches the dialer, otherwise
+// the connection authenticates with no credential.
+func TestRedisConfig_Options_RejectsCredentiallessURLWithPasswordField(t *testing.T) {
+	cfg := Config{URL: "rediss://host:6380/0", Password: "ignored-by-parseurl"}
+
+	opts, err := cfg.Options()
+	require.Error(t, err, "credentialless URL must be rejected even when Password is set")
+	assert.Contains(t, err.Error(), "no credentials")
+	assert.Nil(t, opts)
+}
+
+// TestRedisFields_ValidateRedis_RejectsCredentiallessURLWithPasswordField is
+// the preflight twin of the Options() guard above.
+func TestRedisFields_ValidateRedis_RejectsCredentiallessURLWithPasswordField(t *testing.T) {
+	fields := Fields{Redis: Config{URL: "rediss://localhost:6380/0", Password: "ignored-by-parseurl"}}
+
+	err := fields.ValidateRedis("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no credentials")
+}

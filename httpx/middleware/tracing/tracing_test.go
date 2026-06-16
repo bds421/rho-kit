@@ -167,6 +167,49 @@ func TestHTTPMiddleware_PanicAfterHeaderKeepsWireStatusButMarksError(t *testing.
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/created", nil))
 }
 
+func TestHTTPMiddleware_renamesSpanFromServeMuxRoutePattern(t *testing.T) {
+	recorder := setupTestProvider(t)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := HTTPMiddleware(mux)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/users/42", nil)
+	handler.ServeHTTP(w, r)
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	if got := spans[0].Name(); got != "GET /users/{id}" {
+		t.Fatalf("span name = %q, want %q", got, "GET /users/{id}")
+	}
+}
+
+func TestHTTPMiddleware_recordsHTTPSchemeForServerRequests(t *testing.T) {
+	recorder := setupTestProvider(t)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := HTTPMiddleware(inner)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	handler.ServeHTTP(w, r)
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	if got := stringAttribute(spans[0].Attributes(), "url.scheme"); got != "http" {
+		t.Fatalf("url.scheme attr = %q, want %q", got, "http")
+	}
+}
+
 func TestInjectHTTPHeaders(t *testing.T) {
 	setupTestProvider(t)
 
@@ -201,4 +244,13 @@ func intAttribute(attrs []attribute.KeyValue, key string) int {
 		}
 	}
 	return 0
+}
+
+func stringAttribute(attrs []attribute.KeyValue, key string) string {
+	for _, attr := range attrs {
+		if string(attr.Key) == key {
+			return attr.Value.AsString()
+		}
+	}
+	return ""
 }

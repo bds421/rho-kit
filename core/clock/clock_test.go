@@ -99,3 +99,31 @@ func TestStub_ConcurrentReadsAndWrites(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestStub_ConcurrentAdvanceLosesNoIncrements(t *testing.T) {
+	const (
+		goroutines = 8
+		perG       = 1000
+		step       = time.Microsecond
+	)
+	start := time.Unix(0, 0)
+	s := clock.NewStub(start)
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < perG; j++ {
+				s.Advance(step)
+			}
+		}()
+	}
+	wg.Wait()
+
+	want := start.Add(time.Duration(goroutines*perG) * step)
+	if got := s.Now(); !got.Equal(want) {
+		t.Fatalf("concurrent Advance lost increments: got %v, want %v (delta %v)",
+			got, want, want.Sub(got))
+	}
+}

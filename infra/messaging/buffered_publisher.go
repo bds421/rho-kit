@@ -2,6 +2,7 @@ package messaging
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -28,6 +29,48 @@ type pendingMessage struct {
 	Exchange   string  `json:"exchange"`
 	RoutingKey string  `json:"routing_key"`
 	Msg        Message `json:"msg"`
+}
+
+// pendingMessageJSON is the on-disk representation of a pendingMessage.
+// It exists so transport headers survive the state-file round-trip:
+// [Message.Headers] is tagged json:"-" (carried as transport metadata,
+// not body), so a plain json.Marshal of the embedded Message drops
+// correlation/request/tenant headers entirely. Without this, the
+// documented crash-recovery replay would silently strip those headers
+// from every restored message. Headers are persisted alongside the
+// message body and re-attached on load.
+type pendingMessageJSON struct {
+	Exchange   string            `json:"exchange"`
+	RoutingKey string            `json:"routing_key"`
+	Msg        Message           `json:"msg"`
+	Headers    map[string]string `json:"headers,omitempty"`
+}
+
+// MarshalJSON persists the embedded message together with its transport
+// headers so they survive a save/load cycle (see [pendingMessageJSON]).
+func (p pendingMessage) MarshalJSON() ([]byte, error) {
+	return json.Marshal(pendingMessageJSON{
+		Exchange:   p.Exchange,
+		RoutingKey: p.RoutingKey,
+		Msg:        p.Msg,
+		Headers:    p.Msg.Headers,
+	})
+}
+
+// UnmarshalJSON restores a pendingMessage, re-attaching the separately
+// persisted transport headers to the embedded Message. Legacy state
+// files written before headers were persisted simply restore with nil
+// Headers, matching the previous behaviour.
+func (p *pendingMessage) UnmarshalJSON(data []byte) error {
+	var raw pendingMessageJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	raw.Msg.Headers = raw.Headers
+	p.Exchange = raw.Exchange
+	p.RoutingKey = raw.RoutingKey
+	p.Msg = raw.Msg
+	return nil
 }
 
 // BufferedPublisher is a buffered publisher that provides at-least-once delivery
@@ -137,6 +180,28 @@ type BufferedPublisher struct {
 	// atomic.Pointer so [LastSaveError] reads it without contending with
 	// the publish path.
 	lastSaveErr atomic.Pointer[error]
+
+	// Journal bookkeeping (all mu-guarded). The Publish hot path appends a
+	// single entry to the on-disk journal instead of rewriting the whole
+	// snapshot, turning an O(n) write per buffered Publish into O(1). The
+	// file is compacted back to a single snapshot line on drain, when the
+	// buffer empties, or once the appended tail grows past a threshold.
+	//
+	// journalReady is true once we have written a snapshot we may append to.
+	// It starts false so the first persist after construction/load rewrites
+	// a clean snapshot (also migrating any legacy single-array file into the
+	// journal format before we ever append a line to it).
+	journalReady bool
+	// snapshotBaseLen is the number of entries captured in the last snapshot
+	// line. Appends are compacted once the tail reaches this size so each
+	// snapshot at least doubles the work since the previous one, bounding
+	// total bytes written across a burst to O(n).
+	snapshotBaseLen int
+	// journalEntries counts entries appended since the last snapshot.
+	journalEntries int
+	// journalBytes approximates the bytes appended since the last snapshot,
+	// used to force compaction before the tail bloats the replay file.
+	journalBytes int
 }
 
 // BufferedPublisherMetrics collects operational metrics for the BufferedPublisher.
@@ -329,10 +394,10 @@ func WithoutMaxMessageBytes() BufferedPublisherOption {
 }
 
 // NewBufferedPublisher creates a BufferedPublisher that buffers
-// messages when the broker is unreachable. The name uses Open* (not
-// New*) because the constructor performs file I/O when [WithStateFile]
-// is configured: it reads the previous run's pending messages from
-// disk before returning. Call Run() in a goroutine to drain the buffer.
+// messages when the broker is unreachable. Note that the constructor
+// performs file I/O when [WithStateFile] is configured: it reads the
+// previous run's pending messages from disk before returning. Call
+// Run() in a goroutine to drain the buffer.
 //
 // Panics if inner or conn is nil — both are dereferenced immediately to wire
 // up publishFn / healthyFn closures, so passing nil here is a programming
@@ -472,7 +537,7 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 			RoutingKey: routingKey,
 			Msg:        msg,
 		})
-		saveErr := o.saveLocked()
+		saveErr := o.persistAppendLocked()
 		if saveErr != nil && !o.lossyMode {
 			// Roll back the buffered append so memory state matches what
 			// was successfully persisted. Without this, a later successful
@@ -528,7 +593,7 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 		RoutingKey: routingKey,
 		Msg:        msg,
 	})
-	saveErr := o.saveLocked()
+	saveErr := o.persistAppendLocked()
 	if saveErr != nil && !o.lossyMode {
 		o.pending = o.pending[:len(o.pending)-1]
 		o.mu.Unlock()
@@ -639,15 +704,43 @@ func bufferedDetachedContext(ctx context.Context, timeout time.Duration) (contex
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
+// drain publishes all currently-buffered messages while the broker
+// stays healthy and ctx is alive. It works in bounded batches (each
+// batch holds o.mu only briefly), looping until the buffer is empty or
+// a batch makes no progress (broker turned unhealthy, ctx cancelled, or
+// a publish failed). Looping is required so the buffer can fully recover
+// after a broker blip: capping a drain at a single batch would let
+// sustained inflow above one batch per drain interval keep pending > 0
+// forever, so direct mode would never resume and the buffer would
+// death-spiral to capacity despite a healthy broker.
 func (o *BufferedPublisher) drain(ctx context.Context) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		published, more := o.drainBatch(ctx)
+		// Stop when this batch made no progress (unhealthy / cancelled /
+		// publish failure) or the buffer is now empty.
+		if published == 0 || !more {
+			return
+		}
+	}
+}
+
+// drainBatch publishes at most one bufferedDrainBatchLimit batch from the
+// front of the pending buffer. It returns the number of messages
+// successfully published and whether more messages remain to be drained.
+// o.mu is held only while copying the batch and while committing the
+// result, never across the publish calls.
+func (o *BufferedPublisher) drainBatch(ctx context.Context) (published int, more bool) {
 	if !o.healthyFn() {
-		return
+		return 0, false
 	}
 
 	o.mu.Lock()
 	if len(o.pending) == 0 || o.directInFlight {
 		o.mu.Unlock()
-		return
+		return 0, false
 	}
 
 	// Set directInFlight so concurrent Publish calls buffer instead of
@@ -660,7 +753,6 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 	copy(batch, o.pending[:batchSize])
 	o.mu.Unlock()
 
-	published := 0
 	for _, pm := range batch {
 		if ctx.Err() != nil {
 			break
@@ -703,6 +795,7 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 		pending = len(o.pending)
 		bytes = o.pendingBytesLocked()
 	}
+	remaining := len(o.pending)
 	o.mu.Unlock()
 
 	if pending >= 0 {
@@ -719,6 +812,12 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 		o.logger.Info("buffered publisher drained",
 			"published", published)
 	}
+
+	// A persistence failure must stop the drain loop: the in-memory
+	// buffer no longer matches disk, and continuing would compound the
+	// restart-replay window. Surface "no more progress" so the caller
+	// retries on the next tick after the save error has been observed.
+	return published, saveErr == nil && remaining > 0
 }
 
 // saveLocked persists the current pending slice to disk. Must be called
@@ -747,9 +846,78 @@ func (o *BufferedPublisher) saveLocked() error {
 		o.onStateWrite(false)
 		return err
 	}
+	// The on-disk file is now a single compacted snapshot line: reset the
+	// journal tail so subsequent Publish calls append to (not rewrite) it.
+	o.journalReady = true
+	o.snapshotBaseLen = len(o.pending)
+	o.journalEntries = 0
+	o.journalBytes = 0
 	o.lastSaveErr.Store(nil)
 	o.onStateWrite(true)
 	return nil
+}
+
+// persistAppendLocked durably records the most-recently appended pending
+// entry. It is the Publish-path replacement for the full-snapshot
+// [saveLocked]: instead of rewriting every buffered message on each call
+// (O(n) bytes per Publish, O(n^2) across a broker-outage burst), it appends
+// only the new entry to the on-disk journal (O(1) per Publish). The append is
+// fsync'd before returning, so the strict durability contract is unchanged —
+// a Publish still does not report success until its message is on stable
+// storage (unless [WithLossyMode] is set, matching the prior behaviour).
+//
+// Must be called with o.mu held, immediately after appending exactly one
+// entry to o.pending. It writes a full snapshot instead of an append when (1)
+// no snapshot has been established since construction/load — this also
+// migrates a legacy single-array state file into the journal format before any
+// line is appended — or (2) the journal tail has grown enough that compaction
+// keeps replay bounded.
+func (o *BufferedPublisher) persistAppendLocked() error {
+	if o.stateFile == "" {
+		return nil
+	}
+	if !o.journalReady || o.compactionDueLocked() {
+		return o.saveLocked()
+	}
+
+	line, err := marshalPendingEntry(o.pending[len(o.pending)-1])
+	if err != nil {
+		o.logger.Error("failed to marshal buffered publisher journal entry", redact.Error(err))
+		o.lastSaveErr.Store(&err)
+		o.onStateWrite(false)
+		return err
+	}
+	if err := appendPendingEntry(o.stateFile, line); err != nil {
+		o.logger.Error("failed to append buffered publisher journal entry", redact.Error(err), redact.String("file", o.stateFile))
+		// A failed append may have left a torn trailing line in the file
+		// (e.g. disk filled mid-write). Force the NEXT persist to rewrite a
+		// full atomic snapshot so the live file is restored to a consistent
+		// state; until then, replay tolerates the torn trailing line (it
+		// corresponds to this message, which the caller is about to roll back
+		// because we are returning an error). See [parseJournalFile].
+		o.journalReady = false
+		o.lastSaveErr.Store(&err)
+		o.onStateWrite(false)
+		return err
+	}
+	o.journalEntries++
+	o.journalBytes += len(line) + 1 // +1 for the newline framing
+	o.lastSaveErr.Store(nil)
+	o.onStateWrite(true)
+	return nil
+}
+
+// compactionDueLocked reports whether the journal tail has grown enough to
+// warrant rewriting a fresh snapshot. The entry-count rule (tail >= base,
+// floored at a minimum) makes each snapshot at least double the work since the
+// previous one, so total bytes written across a burst of n appends stay O(n)
+// rather than O(n^2). The byte rule force-compacts a payload-heavy tail before
+// it bloats the replay file toward [atomicfile.MaxLoadBytes].
+func (o *BufferedPublisher) compactionDueLocked() bool {
+	if o.journalBytes >= bufferedJournalCompactBytes {
+		return true
+	}
+	return o.journalEntries >= bufferedJournalCompactMinEntries && o.journalEntries >= o.snapshotBaseLen
 }
 
 // LastSaveError returns the most recent state-file save error, or nil if
@@ -910,16 +1078,18 @@ func (o *BufferedPublisher) callMetric(name string, fn func()) {
 }
 
 // load reads pending messages from the state file on startup.
-// Invalid entries (missing exchange) are skipped and logged rather than
-// rejecting the entire file — this preserves valid messages when a single
-// entry is corrupted. An empty routing key is valid for fanout/exchange-only
-// publishes and must be replayed.
+// By default an invalid entry (e.g. missing exchange) is fatal: load
+// rejects the entire file and returns an error so corruption surfaces
+// loudly instead of silently dropping messages. Pass
+// [WithLossyStateValidation] to instead skip-and-log individual invalid
+// entries while replaying the valid ones. An empty routing key is valid
+// for fanout/exchange-only publishes and must be replayed.
 func (o *BufferedPublisher) load() error {
 	if o.stateFile == "" {
 		return nil
 	}
 
-	pending, err := atomicfile.LoadOrZero[[]pendingMessage](o.stateFile)
+	pending, err := loadJournal(o.stateFile)
 	if err != nil {
 		return err
 	}

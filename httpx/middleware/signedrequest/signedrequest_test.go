@@ -984,3 +984,79 @@ func TestMemoryNonceStore_PanicsOnNilOption(t *testing.T) {
 		NewMemoryNonceStore(time.Minute, nil)
 	})
 }
+
+// TestVerify_SpooledBodyClosedWhenHandlerIgnoresIt guards the
+// resource-leak invariant: net/http closes only the ORIGINAL r.Body it
+// captured before the handler ran, not the spooled body the middleware
+// swaps in. A downstream handler that never reads or closes r.Body (a
+// common case: routes that don't need the payload) would otherwise
+// leave the spooled *os.File open until the GC finalizer runs —
+// fd-exhaustion under load on Unix, orphaned temp files on Windows. The
+// middleware must close the installed body itself once the handler
+// returns.
+func TestVerify_SpooledBodyClosedWhenHandlerIgnoresIt(t *testing.T) {
+	store := NewMemoryNonceStore(10 * time.Minute)
+	body := strings.Repeat("q", 4096) // well above inMemoryBodyMax -> spools to disk
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+
+	var installed io.ReadCloser
+	mw := Middleware(
+		newResolver(t),
+		store,
+		WithClock(func() time.Time { return now }),
+		WithInMemoryBodyMax(64),
+		WithBodyMaxSize(1<<20),
+	)
+	// Handler deliberately ignores the body: it does not read or close
+	// r.Body. It only records the installed reader so the test can prove
+	// the middleware closed it.
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		installed = r.Body
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := signRequest(t, "POST", "/ignore-body", body, now, makeNonce("leak-spill"), nil, nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.NotNil(t, installed)
+	sr, ok := installed.(*spooledReader)
+	require.True(t, ok, "expected a spooledReader to be installed for an over-threshold body")
+	assert.True(t, sr.closed, "middleware must close the spooled body the handler ignored")
+	assert.Nil(t, sr.file, "spooled temp file must be released on close")
+}
+
+// TestVerify_HandlerClosingBodyIsNotDoubleClosedHarmfully proves the
+// middleware's after-handler Close is idempotent: a well-behaved
+// handler that closes r.Body itself must not be harmed by the
+// middleware's own deferred Close.
+func TestVerify_HandlerClosingBodyIsNotDoubleClosedHarmfully(t *testing.T) {
+	store := NewMemoryNonceStore(10 * time.Minute)
+	body := strings.Repeat("w", 4096)
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+
+	mw := Middleware(
+		newResolver(t),
+		store,
+		WithClock(func() time.Time { return now }),
+		WithInMemoryBodyMax(64),
+		WithBodyMaxSize(1<<20),
+	)
+	var readErr, closeErr error
+	var observed []byte
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed, readErr = io.ReadAll(r.Body)
+		closeErr = r.Body.Close()
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := signRequest(t, "POST", "/read-body", body, now, makeNonce("double-close"), nil, nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.NoError(t, readErr)
+	require.NoError(t, closeErr)
+	require.Equal(t, body, string(observed), "handler must still observe the full body")
+}

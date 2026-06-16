@@ -215,13 +215,17 @@ func WithKeepaliveParams(p keepalive.ClientParameters) Option {
 
 // NewClient dials target with kit defaults: TLS-only by default (or
 // loopback insecure via [WithInsecure]), default per-RPC deadline,
-// keepalive, recovery + logging + metrics interceptors, optional retry
-// on UNAVAILABLE / RESOURCE_EXHAUSTED / ABORTED, plus the caller's
-// interceptor chain.
+// keepalive, recovery + correlation/request-ID propagation + logging +
+// metrics interceptors, optional retry on UNAVAILABLE /
+// RESOURCE_EXHAUSTED / ABORTED, plus the caller's interceptor chain.
+//
+// ID propagation is always on (independent of [WithoutLogging]) so
+// disabling logging never severs end-to-end correlation/request-ID
+// joins across services.
 //
 // Final interceptor chain (outermost first):
 //
-//	recovery -> logging -> metrics -> retry (optional) -> deadline -> caller -> RPC
+//	recovery -> propagation -> logging -> metrics -> retry (optional) -> deadline -> caller -> RPC
 //
 // Panics on misconfiguration (no credentials, insecure-on-non-loopback,
 // invalid target). Returns the connection without blocking; the first
@@ -281,6 +285,10 @@ func NewClient(target string, opts ...Option) (*grpc.ClientConn, error) {
 		unary = append([]grpc.UnaryClientInterceptor{cliint.LoggingUnary(l)}, unary...)
 		stream = append([]grpc.StreamClientInterceptor{cliint.LoggingStream(l)}, stream...)
 	}
+	// Correlation/request-ID propagation is always on and runs ahead of
+	// logging so disabling logging never severs end-to-end trace joins.
+	unary = append([]grpc.UnaryClientInterceptor{cliint.PropagationUnaryClientInterceptor()}, unary...)
+	stream = append([]grpc.StreamClientInterceptor{cliint.PropagationStreamClientInterceptor()}, stream...)
 	if !cfg.disableRecovery {
 		l := cfg.recoveryLogger
 		if l == nil {

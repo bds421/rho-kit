@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,7 +29,27 @@ import (
 // supplied tx the wrong unit of atomicity for those operations.
 type Store struct {
 	pool *pgxpool.Pool
+
+	// claimTokens fences outcome updates by claim ownership. FetchPending
+	// stamps a fresh per-row token on each claim (DB column claim_token)
+	// and remembers id->token here; MarkPublished / MarkFailed /
+	// IncrementAttempts / ResetPending add `AND claim_token = $token` so a
+	// late update from a relay whose claim was stale-reset (and re-claimed
+	// by another process) cannot resurrect or duplicate the row — the ABA
+	// race. The map is process-local, so each process only ever fences with
+	// tokens it minted; cross-process fencing falls out of that naturally.
+	// Entries are removed on terminal outcomes to keep the map bounded.
+	claimMu     sync.Mutex
+	claimTokens map[string]string
 }
+
+// Compile-time guarantees that Store satisfies the full persistence
+// contract and the optional shutdown-reset capability the relay probes
+// for via a type assertion.
+var (
+	_ outbox.Store           = (*Store)(nil)
+	_ outbox.PendingResetter = (*Store)(nil)
+)
 
 // New returns a Store wrapping pool. Panics on a nil pool — fail fast
 // at construction beats a deferred nil-deref on the first Insert.
@@ -36,7 +57,38 @@ func New(pool *pgxpool.Pool) *Store {
 	if pool == nil {
 		panic("outbox/postgres: New pool must not be nil")
 	}
-	return &Store{pool: pool}
+	return &Store{
+		pool:        pool,
+		claimTokens: make(map[string]string),
+	}
+}
+
+// rememberClaim records the token minted for a claimed row. Overwrites any
+// prior token for the id (a re-claim after this process reset the row).
+func (s *Store) rememberClaim(id, token string) {
+	s.claimMu.Lock()
+	defer s.claimMu.Unlock()
+	if s.claimTokens == nil {
+		s.claimTokens = make(map[string]string)
+	}
+	s.claimTokens[id] = token
+}
+
+// claimToken returns the remembered token for id and whether one exists.
+func (s *Store) claimToken(id string) (string, bool) {
+	s.claimMu.Lock()
+	defer s.claimMu.Unlock()
+	tok, ok := s.claimTokens[id]
+	return tok, ok
+}
+
+// forgetClaim drops the remembered token for id once the row reaches a
+// terminal outcome (published / failed / re-queued / reset), keeping the
+// id->token map bounded.
+func (s *Store) forgetClaim(id string) {
+	s.claimMu.Lock()
+	defer s.claimMu.Unlock()
+	delete(s.claimTokens, id)
 }
 
 // Insert persists entry. Uses the ctx-stashed pgx.Tx when present so
@@ -127,6 +179,9 @@ func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, er
 	if limit <= 0 {
 		return nil, nil
 	}
+	// claim_token = gen_random_uuid() mints a fresh per-row token on every
+	// claim; it is RETURNed (last column) so the store can remember
+	// id->token and later fence the outcome UPDATEs on claim ownership.
 	const q = `
 WITH locked AS (
     SELECT id, created_at
@@ -145,15 +200,18 @@ ordered AS (
 updated AS (
     UPDATE outbox_entries AS o
     SET status = 'processing',
-        updated_at = NOW()
+        updated_at = NOW(),
+        claim_token = gen_random_uuid()
     FROM ordered
     WHERE o.id = ordered.id
     RETURNING o.id, o.topic, o.routing_key, o.message_id, o.message_type,
               o.payload, o.headers, o.status, o.attempts, o.created_at,
-              o.published_at, o.next_retry_at, o.last_error, ordered.ord
+              o.published_at, o.next_retry_at, o.last_error, o.claim_token,
+              ordered.ord
 )
 SELECT id, topic, routing_key, message_id, message_type, payload, headers,
-       status, attempts, created_at, published_at, next_retry_at, last_error
+       status, attempts, created_at, published_at, next_retry_at, last_error,
+       claim_token
 FROM updated
 ORDER BY ord`
 	rows, err := s.pool.Query(ctx, q, limit)
@@ -162,15 +220,23 @@ ORDER BY ord`
 	}
 	defer rows.Close()
 	out := make([]outbox.Entry, 0, limit)
+	type claim struct{ id, token string }
+	claims := make([]claim, 0, limit)
 	for rows.Next() {
-		e, scanErr := scanEntry(rows)
+		e, token, scanErr := scanClaimedEntry(rows)
 		if scanErr != nil {
 			return nil, redact.WrapError("outbox/postgres: fetch pending scan", scanErr)
 		}
 		out = append(out, e)
+		claims = append(claims, claim{id: e.ID.String(), token: token})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, redact.WrapError("outbox/postgres: fetch pending iterate", err)
+	}
+	// Remember tokens only after a clean iteration so a mid-scan failure
+	// does not leave half a batch fenced under this process.
+	for _, c := range claims {
+		s.rememberClaim(c.id, c.token)
 	}
 	return out, nil
 }
@@ -199,11 +265,12 @@ WHERE status = 'processing'
 }
 
 // MarkPublished transitions a claimed entry to the terminal published
-// state. The status='processing' guard turns into [outbox.ErrStaleState]
-// when a concurrent ResetStaleProcessing has already pulled the row
-// back to pending — the caller (relay) must not record a successful
-// publish in that case because the same row may be claimed by another
-// worker.
+// state. The (status='processing' AND claim_token=$tok) guard turns into
+// [outbox.ErrStaleState] when a concurrent ResetStaleProcessing has
+// already pulled the row back to pending (or another relay re-claimed it,
+// minting a new token) — the caller (relay) must not record a successful
+// publish in that case because the same row may be owned by another
+// worker. The claim_token positional ($3) is appended by transition.
 func (s *Store) MarkPublished(ctx context.Context, id string, publishedAt time.Time) error {
 	return s.transition(ctx, id, transitionParams{
 		sql: `
@@ -212,14 +279,14 @@ SET status = 'published',
     updated_at = NOW(),
     published_at = $2,
     last_error = NULL
-WHERE id = $1 AND status = 'processing'`,
+WHERE id = $1 AND status = 'processing' AND claim_token = $3`,
 		args: []any{publishedAt.UTC()},
 	})
 }
 
 // MarkFailed transitions a claimed entry to the terminal failed state
-// (max-attempts exhausted). status='processing' guard mirrors
-// MarkPublished's stale-state semantics.
+// (max-attempts exhausted). The (status='processing' AND claim_token)
+// guard mirrors MarkPublished's stale-state semantics. claim_token is $3.
 func (s *Store) MarkFailed(ctx context.Context, id string, lastError string) error {
 	return s.transition(ctx, id, transitionParams{
 		sql: `
@@ -227,7 +294,7 @@ UPDATE outbox_entries
 SET status = 'failed',
     updated_at = NOW(),
     last_error = $2
-WHERE id = $1 AND status = 'processing'`,
+WHERE id = $1 AND status = 'processing' AND claim_token = $3`,
 		args: []any{lastError},
 	})
 }
@@ -235,7 +302,9 @@ WHERE id = $1 AND status = 'processing'`,
 // IncrementAttempts records a transient publish failure: bump
 // attempts, store last_error, schedule the next retry, and return the
 // row to pending so FetchPending will pick it up again after
-// nextRetryAt. status='processing' guard mirrors MarkPublished/MarkFailed.
+// nextRetryAt. The (status='processing' AND claim_token) guard mirrors
+// MarkPublished/MarkFailed; claim_token is $4. The row is cleared back to
+// claim_token=NULL so a later claim mints a fresh token.
 func (s *Store) IncrementAttempts(ctx context.Context, id string, lastError string, nextRetryAt time.Time) error {
 	return s.transition(ctx, id, transitionParams{
 		sql: `
@@ -244,10 +313,52 @@ SET status = 'pending',
     attempts = attempts + 1,
     updated_at = NOW(),
     next_retry_at = $2,
-    last_error = $3
-WHERE id = $1 AND status = 'processing'`,
+    last_error = $3,
+    claim_token = NULL
+WHERE id = $1 AND status = 'processing' AND claim_token = $4`,
 		args: []any{nextRetryAt.UTC(), lastError},
 	})
+}
+
+// ResetPending returns the listed claimed rows to "pending" so a freshly
+// started replica can re-claim them immediately rather than waiting out
+// the stale window. It is the [outbox.PendingResetter] capability the
+// relay calls on shutdown for rows it claimed but never finished
+// publishing.
+//
+// Each id is fenced on (status='processing' AND claim_token=$tok) using
+// the token this process remembered when it claimed the row, so a row
+// that has since been re-claimed by another process (different token), or
+// already published/failed, is skipped silently — never resurrected.
+// claim_token is cleared to NULL on reset so the next claim mints a fresh
+// token. The forgotten ids drop out of the in-process token map.
+func (s *Store) ResetPending(ctx context.Context, ids []string) error {
+	if s == nil || s.pool == nil {
+		return errors.New("outbox/postgres: store not initialized")
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	const q = `
+UPDATE outbox_entries
+SET status = 'pending',
+    updated_at = NOW(),
+    claim_token = NULL
+WHERE id = $1 AND status = 'processing' AND claim_token = $2`
+	for _, id := range ids {
+		token, ok := s.claimToken(id)
+		if !ok {
+			// Not claimed by this process — nothing to reset, skip silently.
+			continue
+		}
+		if _, err := s.pool.Exec(ctx, q, id, token); err != nil {
+			return redact.WrapError("outbox/postgres: reset pending", err)
+		}
+		// Whether or not the row matched (it may have been re-claimed or
+		// completed concurrently), this process no longer owns the claim.
+		s.forgetClaim(id)
+	}
+	return nil
 }
 
 type transitionParams struct {
@@ -255,23 +366,39 @@ type transitionParams struct {
 	args []any
 }
 
-// transition runs an UPDATE with the (id, status='processing') guard
-// and translates RowsAffected==0 into [outbox.ErrNotFound] (no row
-// with that id) or [outbox.ErrStaleState] (row exists but is not in
-// processing) by issuing a tiny lookup query. The two-query shape is
-// the simplest portable way to distinguish those cases — Postgres'
-// xmax / pgx CommandTag does not surface which clause filtered the
-// row out.
+// transition runs an outcome UPDATE fenced on (id, status='processing',
+// claim_token) and translates RowsAffected==0 into [outbox.ErrNotFound]
+// (no row with that id) or [outbox.ErrStaleState] (row exists but is no
+// longer in processing under this claim's token — reset, re-claimed, or
+// already completed) by issuing a tiny lookup query. The two-query shape
+// is the simplest portable way to distinguish those cases — Postgres'
+// xmax / pgx CommandTag does not surface which clause filtered the row
+// out.
+//
+// The claim_token to fence with is the token this process remembered when
+// it claimed the row via FetchPending. When no token is remembered (the
+// row was never claimed by this process), uuid.Nil is used — it cannot
+// match any gen_random_uuid() token, so the update affects no row and the
+// disambiguation reports NotFound/StaleState correctly rather than
+// silently mutating a row this process does not own. A successful (owned)
+// terminal transition forgets the claim to keep the token map bounded.
 func (s *Store) transition(ctx context.Context, id string, p transitionParams) error {
 	if s == nil || s.pool == nil {
 		return errors.New("outbox/postgres: store not initialized")
 	}
+	token, ok := s.claimToken(id)
+	if !ok {
+		token = uuid.Nil.String()
+	}
 	args := append([]any{id}, p.args...)
+	args = append(args, token)
 	ct, err := s.pool.Exec(ctx, p.sql, args...)
 	if err != nil {
 		return redact.WrapError("outbox/postgres: transition", err)
 	}
 	if ct.RowsAffected() == 1 {
+		// Terminal outcome under our claim — drop the remembered token.
+		s.forgetClaim(id)
 		return nil
 	}
 	// Disambiguate not-found vs stale-state for the relay's logging
@@ -280,10 +407,15 @@ func (s *Store) transition(ctx context.Context, id string, p transitionParams) e
 	err = s.pool.QueryRow(ctx, `SELECT status FROM outbox_entries WHERE id = $1`, id).Scan(&status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Row gone entirely — our claim is meaningless now.
+			s.forgetClaim(id)
 			return outbox.ErrNotFound
 		}
 		return redact.WrapError("outbox/postgres: transition disambiguate", err)
 	}
+	// Row exists but our fenced UPDATE matched nothing: it was reset,
+	// re-claimed (new token), or already completed. We no longer own it.
+	s.forgetClaim(id)
 	return fmt.Errorf("%w: row in status %q", outbox.ErrStaleState, status)
 }
 
@@ -360,6 +492,50 @@ func (s *Store) CountPending(ctx context.Context) (int64, error) {
 
 type scannable interface {
 	Scan(dest ...any) error
+}
+
+// scanClaimedEntry scans a FetchPending row that carries the freshly
+// minted claim_token as its final column, returning the entry plus the
+// token string the store remembers to fence later outcome updates. The
+// token column is non-NULL on every claimed row because FetchPending sets
+// it in the same UPDATE that transitions the row to 'processing'.
+func scanClaimedEntry(s scannable) (outbox.Entry, string, error) {
+	var (
+		e            outbox.Entry
+		payload      []byte
+		headers      []byte
+		status       string
+		publishedAt  *time.Time
+		nextRetryAt  *time.Time
+		lastErrorStr *string
+		token        uuid.UUID
+	)
+	if err := s.Scan(
+		&e.ID, &e.Topic, &e.RoutingKey, &e.MessageID, &e.MessageType,
+		&payload, &headers, &status, &e.Attempts, &e.CreatedAt,
+		&publishedAt, &nextRetryAt, &lastErrorStr, &token,
+	); err != nil {
+		return outbox.Entry{}, "", err
+	}
+	e.Payload = json.RawMessage(payload)
+	if len(headers) > 0 {
+		e.Headers = json.RawMessage(headers)
+	}
+	e.Status = outbox.Status(status)
+	e.CreatedAt = e.CreatedAt.UTC()
+	if publishedAt != nil {
+		t := publishedAt.UTC()
+		e.PublishedAt = &t
+	}
+	if nextRetryAt != nil {
+		t := nextRetryAt.UTC()
+		e.NextRetryAt = &t
+	}
+	if lastErrorStr != nil {
+		v := *lastErrorStr
+		e.LastError = &v
+	}
+	return e, token.String(), nil
 }
 
 func scanEntry(s scannable) (outbox.Entry, error) {

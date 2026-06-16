@@ -400,7 +400,7 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 			}
 			return nil
 		case <-renewTicker.C:
-			ok, err := handle.Extend(ctx)
+			ok, err := e.extendOnce(ctx, handle)
 			if err != nil {
 				cancel()
 				return joinDrainResult(redact.WrapError("extend", err), awaitCallback())
@@ -411,6 +411,24 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 			}
 		}
 	}
+}
+
+// extendOnce performs a single lock renewal bounded by a per-call
+// deadline of one renewInterval. Without this bound a hung Extend (a
+// Redis client configured without a read timeout) would block the
+// renew loop indefinitely: the lock TTLs out, a competing replica
+// becomes leader, yet OnAcquired's ctx stays un-cancelled because the
+// loop is parked inside Extend rather than reaching cancel(). A
+// deadline-exceeded Extend surfaces as a renewal error, which the
+// caller treats as a lost lock — keeping the overlap window bounded to
+// roughly one renewal interval as the package doc promises.
+//
+// The deadline derives from ctx, so leader-ctx cancellation still
+// unblocks the call promptly.
+func (e *Elector) extendOnce(ctx context.Context, handle lock.Lock) (bool, error) {
+	extendCtx, cancel := context.WithTimeout(ctx, e.renewInterval)
+	defer cancel()
+	return handle.Extend(extendCtx)
 }
 
 // awaitCallbackDrain blocks until the OnAcquired goroutine has

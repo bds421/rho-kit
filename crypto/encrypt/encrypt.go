@@ -25,9 +25,12 @@ const encryptedV3Prefix = "enc:v3:"
 // TEXT/VARCHAR inserts (NUL bytes rejected as "invalid byte sequence
 // for encoding UTF8"), which is why v3 dropped it.
 //
-// Encrypt never writes this prefix. Operators completing the v3
-// migration may drop legacy reads in a future release once their
-// stored data is fully re-encrypted.
+// Encrypt never writes this prefix.
+// [FieldEncryptor.EncryptIfPlainWithContext] upgrades a row carrying
+// this prefix to v3 on re-save (decrypt-then-encrypt), so idempotent
+// re-save flows actually complete the migration. Operators may drop
+// legacy reads in a future release once their stored data is fully
+// re-encrypted.
 const legacyEncryptedV2Prefix = "\x00enc:v2:"
 
 // legacyEncryptedV1Prefix is the original kit-v1 wire format. Decrypt
@@ -47,8 +50,11 @@ const legacyEncryptedV2Prefix = "\x00enc:v2:"
 // v1 prefix WITHOUT the unsafe Encrypt shortcut, so old rows decrypt
 // while new writes stay v3.
 //
-// Operators completing the v3 migration may drop legacy reads in a
-// future release once their stored data is fully re-encrypted.
+// [FieldEncryptor.EncryptIfPlainWithContext] upgrades a row carrying
+// this prefix to v3 on re-save (decrypt-then-encrypt), so idempotent
+// re-save flows actually complete the migration. Operators may drop
+// legacy reads in a future release once their stored data is fully
+// re-encrypted.
 const legacyEncryptedV1Prefix = "enc:v1:"
 
 // FieldEncryptor provides transparent AES-256-GCM encryption for
@@ -255,14 +261,23 @@ func (e *FieldEncryptor) EncryptIfPlain(value string) (string, error) {
 }
 
 // EncryptIfPlainWithContext encrypts plaintext UNLESS it appears to
-// already be valid ciphertext under the current key and the supplied
-// AAD. Use this for idempotent "re-save the row" code paths when
-// fields are encrypted with [FieldEncryptor.EncryptWithContext].
+// already be valid current-format (v3) ciphertext under the current
+// key and the supplied AAD. Use this for idempotent "re-save the row"
+// code paths when fields are encrypted with
+// [FieldEncryptor.EncryptWithContext].
 //
 // Passing the same AAD used for EncryptWithContext preserves
-// already-encrypted values unchanged. A ciphertext bound to different
+// already-v3-encrypted values unchanged. A ciphertext bound to different
 // AAD is treated as plaintext and encrypted again, which prevents a
 // copied value from bypassing the row/tenant binding.
+//
+// Legacy-prefixed ciphertext (v1/v2) that authenticates cleanly is
+// re-encrypted to the current v3 format rather than passed through
+// unchanged. This is what lets idempotent re-save flows actually
+// complete the v3 migration documented on [legacyEncryptedV1Prefix] /
+// [legacyEncryptedV2Prefix] — without it, legacy rows would silently
+// stay legacy and an operator who later drops legacy reads would lose
+// access to data they believed was upgraded.
 func (e *FieldEncryptor) EncryptIfPlainWithContext(value string, aad []byte) (string, error) {
 	if err := e.validate(); err != nil {
 		return "", err
@@ -270,8 +285,20 @@ func (e *FieldEncryptor) EncryptIfPlainWithContext(value string, aad []byte) (st
 	if value == "" {
 		return "", nil
 	}
-	if e.isAuthenticatedCiphertext(value, aad) {
+	// Already current-format (v3) ciphertext that authenticates under
+	// this key and AAD: pass through unchanged (no needless IV churn).
+	if strings.HasPrefix(value, encryptedV3Prefix) && e.isAuthenticatedCiphertext(value, aad) {
 		return value, nil
+	}
+	// Legacy (v1/v2) ciphertext that authenticates under this key and
+	// AAD: decrypt-then-re-encrypt so the value advances to v3. Wrapping
+	// the legacy string as plaintext would NOT upgrade the row — the
+	// recovered bytes would still be legacy framing — so we recover the
+	// underlying plaintext first.
+	if hasLegacyPrefix(value) {
+		if plaintext, err := e.DecryptWithContext(value, aad); err == nil {
+			return e.EncryptWithContext(plaintext, aad)
+		}
 	}
 	return e.EncryptWithContext(value, aad)
 }
@@ -383,4 +410,13 @@ func stripEncryptedPrefix(s string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// hasLegacyPrefix reports whether s carries a read-only legacy framing
+// ("\x00enc:v2:" or "enc:v1:") rather than the current "enc:v3:" prefix.
+// [FieldEncryptor.EncryptIfPlainWithContext] uses it to decide that an
+// authenticated value still needs upgrading to v3.
+func hasLegacyPrefix(s string) bool {
+	return strings.HasPrefix(s, legacyEncryptedV2Prefix) ||
+		strings.HasPrefix(s, legacyEncryptedV1Prefix)
 }

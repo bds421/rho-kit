@@ -66,12 +66,21 @@ func NewNode(opts ...Option) (*Node, error) {
 		return nil, redact.WrapError("realtime/centrifuge: node construction", err)
 	}
 
+	// Metrics are opt-in: building the kit-side metric set only when a
+	// caller supplied a registerer via WithMetricsRegisterer mirrors
+	// infra/redis.WithMetricsRegisterer. When metrics stays nil, the
+	// observe* calls early-return so emission is a no-op.
+	metrics := c.metrics
+	if metrics == nil && c.registerer != nil {
+		metrics = NewMetrics(WithRegisterer(c.registerer))
+	}
+
 	n := &Node{
 		node:       cnode,
 		logger:     logger,
 		verifier:   c.verifier,
 		classifier: c.classifier,
-		metrics:    c.metrics,
+		metrics:    metrics,
 	}
 
 	// Install kit-side callback wiring. Callers may override or

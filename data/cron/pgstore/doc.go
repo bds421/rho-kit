@@ -27,13 +27,17 @@
 //
 // # Quick start
 //
-//	jobs := map[string]cron.JobFunc{
+//	jobs := map[string]pgstore.JobFunc{
 //	    "nightly-cleanup": cleanup,
 //	    "hourly-report":   reportFn,
 //	}
 //
 //	store := pgstore.New(db)
-//	if err := store.ApplyTo(scheduler, jobs); err != nil { return err }
+//	unknown, err := store.ApplyTo(ctx, scheduler, jobs)
+//	if err != nil {
+//	    return err
+//	}
+//	// unknown lists stored schedules whose name is absent from jobs.
 //
 //	// Operator adds a third schedule via SQL or admin handler:
 //	//   INSERT INTO cron_schedules (name, spec, enabled)

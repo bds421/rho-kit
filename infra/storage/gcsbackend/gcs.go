@@ -245,7 +245,15 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 	// the Attrs and NewReader calls.
 	rc, err := obj.Generation(attrs.Generation).NewReader(ctx)
 	if err != nil {
-		b.metrics.observeOp(b.instance, "get", start, err)
+		// The object (or its pinned generation) can vanish in the
+		// Attrs->NewReader window. Treat that as not-found: route the
+		// metric through gcsMetricErr so it does not inflate
+		// operation_errors_total, and return ErrObjectNotFound so callers
+		// matching errors.Is keep working — same contract as the Attrs path.
+		b.metrics.observeOp(b.instance, "get", start, gcsMetricErr(err))
+		if errors.Is(err, gcsstorage.ErrObjectNotExist) {
+			return nil, storage.ObjectMeta{}, fmt.Errorf("gcsbackend: get: %w", storage.ErrObjectNotFound)
+		}
 		opErr := storage.WrapSafe("gcsbackend: get failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return nil, storage.ObjectMeta{}, opErr

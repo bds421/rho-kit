@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	xoauth2 "golang.org/x/oauth2"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
@@ -146,6 +150,13 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 	if c.state == nil {
 		return nil, errors.New("oauth2: WithStateStore is required")
 	}
+	// Fail closed: a public client (no client secret) with PKCE disabled
+	// has neither authorization-code-interception protection — exactly
+	// the configuration RFC 7636 forbids. WithoutPKCE is only valid for
+	// confidential clients that present a secret at the token endpoint.
+	if !c.usePKCE && (cfg.ClientSecret == nil || cfg.ClientSecret.IsEmpty()) {
+		return nil, errors.New("oauth2: WithoutPKCE requires a confidential client (Config.ClientSecret); a public client without PKCE has no code-interception protection")
+	}
 	if c.logger == nil {
 		c.logger = slog.Default()
 	}
@@ -192,6 +203,59 @@ func containsScope(scopes []string, want string) bool {
 	return false
 }
 
+// safeRelativeRedirect reports whether rawTarget is a safe origin-relative
+// redirect target (e.g. "/dashboard", "/dashboard?tab=billing", "#done")
+// and returns its canonical form. It rejects absolute URLs, scheme-relative
+// "//host" and "\\host" prefixes, userinfo, backslashes, control bytes, and
+// surrounding whitespace — any of which would let an attacker-controlled
+// redirect_to escape the current origin (open redirect). The kit's
+// httpx.SafeRedirect lives in a sibling module; this is the dependency-free
+// equivalent for the relative-only case this package needs.
+func safeRelativeRedirect(rawTarget string) (string, bool) {
+	if rawTarget == "" {
+		return "", false
+	}
+	if strings.TrimSpace(rawTarget) != rawTarget {
+		return "", false
+	}
+	for _, r := range rawTarget {
+		if r == '\\' || unicode.IsControl(r) || unicode.IsSpace(r) {
+			return "", false
+		}
+	}
+	u, err := url.Parse(rawTarget)
+	if err != nil {
+		return "", false
+	}
+	// Must be purely relative: no scheme, no host, no userinfo.
+	if u.Scheme != "" || u.Host != "" || u.User != nil {
+		return "", false
+	}
+	// Reject scheme-relative paths ("//evil", "/\evil", encoded forms)
+	// which browsers resolve as absolute to another origin.
+	if hasSchemeRelativePath(u) {
+		return "", false
+	}
+	return u.String(), true
+}
+
+func hasSchemeRelativePath(u *url.URL) bool {
+	path := u.EscapedPath()
+	if path == "" {
+		path = u.Path
+	}
+	if isDoubleSlashPrefix(path) {
+		return true
+	}
+	unescaped, err := url.PathUnescape(path)
+	return err != nil || isDoubleSlashPrefix(unescaped)
+}
+
+func isDoubleSlashPrefix(path string) bool {
+	isSlash := func(b byte) bool { return b == '/' || b == '\\' }
+	return len(path) >= 2 && isSlash(path[0]) && isSlash(path[1])
+}
+
 // Handlers returns the http.Handler that serves /login, /callback,
 // /logout under a path prefix. Mount with mux.Handle("/oauth/", ...).
 func (c *Client) Handlers() http.Handler {
@@ -218,8 +282,17 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry := StateEntry{Nonce: nonce, CreatedAt: time.Now()}
+	// Only persist a post-login deep link when it is an origin-relative
+	// path. Absolute or scheme-relative targets are dropped to prevent
+	// an attacker-controlled redirect_to turning the callback into an
+	// open redirect (phishing / token-relay vector).
 	if redirectTo := r.URL.Query().Get("redirect_to"); redirectTo != "" {
-		entry.RedirectTo = redirectTo
+		if safe, ok := safeRelativeRedirect(redirectTo); ok {
+			entry.RedirectTo = safe
+		} else {
+			c.logger.WarnContext(r.Context(), "oauth2: dropped unsafe redirect_to",
+				slog.String("redirect_to", redact.StringValue(redirectTo)))
+		}
 	}
 
 	authOpts := []xoauth2.AuthCodeOption{
@@ -275,7 +348,7 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := c.oauth.Exchange(exchangeCtx, code, exchangeOpts...)
 	if err != nil {
-		c.logger.WarnContext(r.Context(), "oauth2: code exchange failed", slog.String("error", err.Error()))
+		c.logger.WarnContext(r.Context(), "oauth2: code exchange failed", redact.Error(err))
 		http.Error(w, ErrCodeExchange.Error(), http.StatusBadGateway)
 		return
 	}
@@ -286,8 +359,11 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	idToken, err := c.verifier.Verify(exchangeCtx, rawIDToken)
 	if err != nil {
-		c.logger.WarnContext(r.Context(), "oauth2: id_token verify failed", slog.String("error", err.Error()))
-		http.Error(w, fmt.Sprintf("%s: %v", ErrCodeExchange, err), http.StatusBadRequest)
+		// The verifier error can embed token claims, signature details,
+		// or the issuer's raw endpoint body. Log it redacted and return
+		// only the opaque sentinel across the trust boundary.
+		c.logger.WarnContext(r.Context(), "oauth2: id_token verify failed", redact.Error(err))
+		http.Error(w, ErrCodeExchange.Error(), http.StatusBadRequest)
 		return
 	}
 	if idToken.Nonce != entry.Nonce {
@@ -318,9 +394,16 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, c.sessionCookie(sessionID))
+	// Defence in depth: re-validate the persisted deep link before
+	// emitting it in a Location header. handleLogin already screens
+	// redirect_to, but a hostile StateStore implementation could return
+	// an unsafe value, so never redirect to anything that isn't an
+	// origin-relative path.
 	if entry.RedirectTo != "" {
-		http.Redirect(w, r, entry.RedirectTo, http.StatusFound)
-		return
+		if safe, ok := safeRelativeRedirect(entry.RedirectTo); ok {
+			http.Redirect(w, r, safe, http.StatusFound)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -232,6 +232,50 @@ func TestAppendPaths_reencodesEncodedDotSegments(t *testing.T) {
 	}
 }
 
+func TestAppendPaths_escapesBackslashDelimitedDotSegments(t *testing.T) {
+	base := mustParse(t, "https://example.com/api/base")
+	cases := []struct {
+		name string
+		part string
+		want string
+	}{
+		{
+			name: "double dot between backslashes",
+			part: `a\..\b`,
+			want: "https://example.com/api/base/a%5C%2E%2E%5Cb",
+		},
+		{
+			name: "single dot between backslashes",
+			part: `a\.\b`,
+			want: "https://example.com/api/base/a%5C%2E%5Cb",
+		},
+		{
+			name: "double dot at start before backslash",
+			part: `..\b`,
+			want: "https://example.com/api/base/%2E%2E%5Cb",
+		},
+		{
+			name: "double dot at end after backslash",
+			part: `a\..`,
+			want: "https://example.com/api/base/a%5C%2E%2E",
+		},
+		{
+			name: "double dot wrapped in backslashes",
+			part: `\..\`,
+			want: "https://example.com/api/base/%5C%2E%2E%5C",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := AppendPaths(base, tc.part)
+			if got.String() != tc.want {
+				t.Errorf("got %q, want %q", got.String(), tc.want)
+			}
+		})
+	}
+}
+
 func TestAppendPaths_preservesQueryAndFragment(t *testing.T) {
 	base := mustParse(t, "https://example.com/api?token=abc&x=1#frag")
 	got := AppendPaths(base, "v1", "users")

@@ -40,6 +40,66 @@ func TestConsumer_InvalidReceiverReturnsError(t *testing.T) {
 	}
 }
 
+func TestConsumer_SecondInvocationReturnsErrorNotPanic(t *testing.T) {
+	cases := []struct {
+		name  string
+		first func(*Consumer, context.Context, messaging.Binding, messaging.Handler) error
+		again func(*Consumer, context.Context, messaging.Binding, messaging.Handler) error
+	}{
+		{
+			name:  "Consume then Consume",
+			first: (*Consumer).Consume,
+			again: (*Consumer).Consume,
+		},
+		{
+			name:  "ConsumeOnce then ConsumeOnce",
+			first: (*Consumer).ConsumeOnce,
+			again: (*Consumer).ConsumeOnce,
+		},
+		{
+			name:  "Consume then ConsumeOnce",
+			first: (*Consumer).Consume,
+			again: (*Consumer).ConsumeOnce,
+		},
+		{
+			name:  "ConsumeOnce then Consume",
+			first: (*Consumer).ConsumeOnce,
+			again: (*Consumer).Consume,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:0"})
+			t.Cleanup(func() { _ = client.Close() })
+
+			streamConsumer, err := stream.NewConsumer(client, "group")
+			require.NoError(t, err)
+			consumer := NewConsumer(streamConsumer, slog.Default())
+
+			binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Exchange: "test.stream"}}
+			handler := func(context.Context, messaging.Delivery) error { return nil }
+
+			// A cancelled context lets the first invocation return immediately
+			// (after the underlying single-shot consumer is consumed) without
+			// touching the network. It returns ctx.Err() as a normal shutdown.
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			require.NotPanics(t, func() {
+				err = tc.first(consumer, ctx, binding, handler)
+			})
+			require.ErrorIs(t, err, context.Canceled)
+
+			// The second invocation must surface a clear error rather than
+			// panicking from deep inside redisstream's single-shot guard.
+			require.NotPanics(t, func() {
+				err = tc.again(consumer, ctx, binding, handler)
+			})
+			assert.ErrorIs(t, err, messaging.ErrInvalidConsumer)
+		})
+	}
+}
+
 func TestConsumer_BindingGroupMismatchDoesNotReflectNames(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:0"})
 	t.Cleanup(func() { _ = client.Close() })
@@ -50,8 +110,8 @@ func TestConsumer_BindingGroupMismatchDoesNotReflectNames(t *testing.T) {
 
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			Exchange: "test.stream",
-			ConsumerGroup:    "binding-secret-token-group",
+			Exchange:      "test.stream",
+			ConsumerGroup: "binding-secret-token-group",
 		},
 	}
 	err = consumer.Consume(context.Background(), binding, func(context.Context, messaging.Delivery) error { return nil })

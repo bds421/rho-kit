@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -80,4 +81,40 @@ func TestPostgresModule_RegistersPoolStatsCollector(t *testing.T) {
 func TestPool_NilWhenAdapterNotRegistered(t *testing.T) {
 	infra := app.TestInfrastructure()
 	assert.Nil(t, Pool(infra), "Pool() should return nil when no postgres adapter was registered")
+}
+
+// TestHealthCheck_NoRaceWithStop verifies the health-check closure does not read
+// the mutable m.pool field while Stop concurrently nils it during shutdown. A
+// lingering/timed-out check goroutine can outlive Stop, so the closure must bind
+// the pool captured at HealthChecks() time rather than re-reading m.pool. Run
+// with -race to detect the memory-model violation.
+func TestHealthCheck_NoRaceWithStop(t *testing.T) {
+	m := Module(pgxbackend.Config{
+		DSN:                            "postgres://u:p@127.0.0.1:1/db?sslmode=disable",
+		AllowPlaintextLoopbackForTests: true,
+	}).(*pgxModule)
+
+	mc := app.ModuleContext{
+		Logger: slog.Default(),
+		Runner: lifecycle.NewRunner(slog.Default()),
+	}
+	require.NoError(t, m.Init(context.Background(), mc))
+
+	checks := m.HealthChecks()
+	require.Len(t, checks, 1)
+	check := checks[0].Check
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		// Simulates an abandoned/lingering health-check goroutine running
+		// concurrently with shutdown.
+		_ = check(context.Background())
+	}()
+	go func() {
+		defer wg.Done()
+		_ = m.Stop(context.Background())
+	}()
+	wg.Wait()
 }

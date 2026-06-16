@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -206,10 +207,11 @@ func WithSigningExpectedAudience(s string) SigningOption {
 }
 
 // WithSigningAllowAnyIssuer opts out of the issuer-pinning
-// requirement. Tokens issued by such a provider omit the "iss" claim
-// unless [Claims.Issuer] is populated by the caller. Use only when
-// the deployment topology makes issuer pinning meaningless — every
-// other case should call [WithSigningExpectedIssuer] instead.
+// requirement. Tokens issued by such a provider always omit the "iss"
+// claim; [Claims.Issuer] is ignored at Sign time (see [SigningProvider.Sign]),
+// so there is no per-call override. Use only when the deployment
+// topology makes issuer pinning meaningless — every other case should
+// call [WithSigningExpectedIssuer] instead.
 func WithSigningAllowAnyIssuer() SigningOption {
 	return func(p *SigningProvider) {
 		p.allowAnyIssuer = true
@@ -427,6 +429,30 @@ func validateSigningAlg(alg jwa.SignatureAlgorithm) error {
 		return fmt.Errorf("jwtutil: symmetric signing algorithm %q is not permitted; use an asymmetric algorithm (ES*, RS*, PS*, EdDSA)", name)
 	}
 	return nil
+}
+
+// keyTypeForSigningAlg maps an asymmetric JWS signature algorithm to the
+// JWK key type (kty) its private key must carry: ES*/ES256K → EC,
+// RS*/PS* → RSA, EdDSA* → OKP. It returns [jwa.InvalidKeyType] for any
+// algorithm whose required key type the kit cannot derive (a future
+// custom algorithm registered via [jwa.RegisterSignatureAlgorithm]); the
+// caller treats that as "no shape constraint" so the guard never blocks a
+// key it cannot reason about. Symmetric algorithms are rejected earlier
+// by [validateSigningAlg], so oct is intentionally not mapped here.
+func keyTypeForSigningAlg(alg jwa.SignatureAlgorithm) jwa.KeyType {
+	switch name := alg.String(); {
+	case strings.HasPrefix(name, "ES"):
+		// ES256/ES384/ES512/ES256K all use EC private keys.
+		return jwa.EC()
+	case strings.HasPrefix(name, "RS"), strings.HasPrefix(name, "PS"):
+		// RS256/384/512 and PS256/384/512 all use RSA private keys.
+		return jwa.RSA()
+	case strings.HasPrefix(name, "EdDSA"):
+		// EdDSA / EdDSAEd25519 / EdDSAEd448 all use OKP private keys.
+		return jwa.OKP()
+	default:
+		return jwa.InvalidKeyType()
+	}
 }
 
 // Sign issues a JWT using the currently-loaded key. Returns
@@ -665,6 +691,19 @@ func (p *SigningProvider) refresh(ctx context.Context) error {
 	// matching alg-confusion vector on the key side.
 	if _, isSymmetric := key.(jwk.SymmetricKey); isSymmetric {
 		return errors.New("jwtutil: KeyRotator returned a symmetric key; SigningProvider requires an asymmetric private key")
+	}
+	// Reject a wrong-shape key (e.g. an RSA key handed to an ES256
+	// provider after a KMS misconfiguration). jwk.Import happily wraps
+	// any private key regardless of p.alg, and Set(AlgorithmKey, p.alg)
+	// merely tags the JWK with a mismatched "alg" header — both succeed,
+	// so without this guard refresh would return nil, fire no
+	// OnSigningRefreshError callback, update lastSuccessfulRefresh, and
+	// overwrite the previously-good key. Every later Sign would then fail
+	// forever (jwt.Sign rejects the kty/alg mismatch) while maxStale
+	// never triggers because the refresh "succeeded". Fail closed here so
+	// the callback fires and the prior key is retained.
+	if want := keyTypeForSigningAlg(p.alg); want != jwa.InvalidKeyType() && key.KeyType() != want {
+		return fmt.Errorf("jwtutil: KeyRotator returned a %s key, which is incompatible with signing algorithm %q (expected a %s key)", key.KeyType(), p.alg, want)
 	}
 	if err := key.Set(jwk.AlgorithmKey, p.alg); err != nil {
 		return fmt.Errorf("jwtutil: tag signing key algorithm: %w", err)

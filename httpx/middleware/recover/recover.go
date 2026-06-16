@@ -299,9 +299,36 @@ func (rw *recordingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, fmt.Errorf("recover: underlying ResponseWriter does not implement http.Hijacker")
 }
 
-// Flush delegates if supported.
+// markStarted records that the response has been committed. net/http's Flush
+// implicitly sends WriteHeader(200) when no header has been written yet, so a
+// flush starts the response just like a Write does. Without recording this, a
+// flush-then-panic handler would make handlePanic believe the response had not
+// started and corrupt the live stream with the 500 JSON body.
+func (rw *recordingWriter) markStarted() {
+	if !rw.wroteHeader {
+		rw.wroteHeader = true
+		rw.statusCode = http.StatusOK
+	}
+}
+
+// Flush delegates if supported, recording that the response has started.
 func (rw *recordingWriter) Flush() {
+	_ = rw.FlushError()
+}
+
+// FlushError delegates to the underlying writer's flush, recording that the
+// response has started. Implementing it lets http.ResponseController flush
+// (which prefers FlushError) record the started response too, and preserves
+// the inner writer's flush error semantics.
+//
+//nolint:wrapcheck // direct delegation by design
+func (rw *recordingWriter) FlushError() error {
+	rw.markStarted()
+	if f, ok := rw.ResponseWriter.(interface{ FlushError() error }); ok {
+		return f.FlushError()
+	}
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+	return nil
 }

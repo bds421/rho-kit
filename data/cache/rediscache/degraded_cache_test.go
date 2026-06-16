@@ -294,3 +294,145 @@ func TestDegradedCache_Unhealthy_ReportsFalse(t *testing.T) {
 func TestDegradedCache_ImplementsCacheInterface(t *testing.T) {
 	var _ sharedcache.Cache = (*DegradedCache)(nil)
 }
+
+func TestDegradedCache_ImplementsBulkCacheInterface(t *testing.T) {
+	var _ sharedcache.BulkCache = (*DegradedCache)(nil)
+}
+
+// TestDegradedCache_SetNX_NativeAtomicWhenHealthy pins that the
+// cache.SetNX free function reaches the native (atomic, cross-process)
+// SetNX rather than the racy Exists+Set fallback. Without DegradedCache
+// implementing BulkCache, the free function would silently downgrade to
+// the racy path, losing compute-once guarantees.
+func TestDegradedCache_SetNX_NativeAtomicWhenHealthy(t *testing.T) {
+	env := newTestEnv(t)
+	dc := NewDegradedCache(env.primary, env.fallback, env.conn)
+	ctx := context.Background()
+
+	// Routes through the BulkCache fast path of cache.SetNX.
+	ok, err := sharedcache.SetNX(ctx, dc, "lock", []byte("a"), time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok, "first SetNX must win")
+
+	ok, err = sharedcache.SetNX(ctx, dc, "lock", []byte("b"), time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "second SetNX must lose; value must be unchanged")
+
+	val, err := dc.Get(ctx, "lock")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("a"), val)
+}
+
+// TestDegradedCache_BulkHealthy exercises MGet/MSet against the primary
+// while Redis is healthy.
+func TestDegradedCache_BulkHealthy(t *testing.T) {
+	env := newTestEnv(t)
+	dc := NewDegradedCache(env.primary, env.fallback, env.conn)
+	ctx := context.Background()
+
+	require.NoError(t, dc.MSet(ctx, map[string][]byte{
+		"k1": []byte("v1"),
+		"k2": []byte("v2"),
+	}, time.Minute))
+
+	out, err := dc.MGet(ctx, []string{"k1", "k2", "missing"})
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v1"), out["k1"])
+	assert.Equal(t, []byte("v2"), out["k2"])
+	_, hasMissing := out["missing"]
+	assert.False(t, hasMissing)
+}
+
+// TestDegradedCache_BulkDegraded_Passthrough_WithFallback verifies the
+// bulk methods route to the fallback when Redis is unhealthy under the
+// passthrough policy.
+func TestDegradedCache_BulkDegraded_Passthrough_WithFallback(t *testing.T) {
+	env := newTestEnv(t)
+	dc := NewDegradedCache(env.primary, env.fallback, env.conn)
+	ctx := context.Background()
+
+	env.mr.Close()
+	require.Eventually(t, func() bool { return !env.conn.Healthy() }, 10*time.Second, 50*time.Millisecond)
+
+	require.NoError(t, dc.MSet(ctx, map[string][]byte{"fk": []byte("fv")}, time.Minute))
+	env.fallback.Sync()
+
+	out, err := dc.MGet(ctx, []string{"fk"})
+	require.NoError(t, err)
+	assert.Equal(t, []byte("fv"), out["fk"])
+
+	ok, err := dc.SetNX(ctx, "nx", []byte("nv"), time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok, "first SetNX against fallback must win")
+	env.fallback.Sync()
+	ok, err = dc.SetNX(ctx, "nx", []byte("other"), time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "second SetNX against fallback must lose")
+}
+
+// TestDegradedCache_BulkDegraded_Passthrough_NilFallback verifies the
+// bulk methods degrade gracefully (no-op writes, empty reads) under the
+// passthrough policy with no fallback, mirroring the single-key methods.
+func TestDegradedCache_BulkDegraded_Passthrough_NilFallback(t *testing.T) {
+	env := newTestEnv(t)
+	dc := NewDegradedCache(env.primary, nil, env.conn)
+	ctx := context.Background()
+
+	env.mr.Close()
+	require.Eventually(t, func() bool { return !env.conn.Healthy() }, 10*time.Second, 50*time.Millisecond)
+
+	out, err := dc.MGet(ctx, []string{"a", "b"})
+	require.NoError(t, err)
+	assert.Empty(t, out)
+
+	require.NoError(t, dc.MSet(ctx, map[string][]byte{"a": []byte("v")}, time.Minute))
+
+	// Mirrors single-key Set, which is a no-op claim of success when
+	// passthrough has no fallback.
+	ok, err := dc.SetNX(ctx, "a", []byte("v"), time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok)
+}
+
+// TestDegradedCache_BulkDegraded_FailFast verifies the bulk methods
+// surface the policy error when Redis is unhealthy under fail-fast.
+func TestDegradedCache_BulkDegraded_FailFast(t *testing.T) {
+	env := newTestEnv(t)
+	dc := NewDegradedCache(env.primary, env.fallback, env.conn,
+		WithDegradationPolicy(redis.FailFastPolicy{}),
+	)
+	ctx := context.Background()
+
+	env.mr.Close()
+	require.Eventually(t, func() bool { return !env.conn.Healthy() }, 10*time.Second, 50*time.Millisecond)
+
+	_, err := dc.MGet(ctx, []string{"k"})
+	assert.ErrorIs(t, err, redis.ErrUnavailable)
+
+	err = dc.MSet(ctx, map[string][]byte{"k": []byte("v")}, time.Minute)
+	assert.ErrorIs(t, err, redis.ErrUnavailable)
+
+	_, err = dc.SetNX(ctx, "k", []byte("v"), time.Minute)
+	assert.ErrorIs(t, err, redis.ErrUnavailable)
+}
+
+// TestDegradedCache_Bulk_InvalidReceiver pins that the bulk methods on a
+// nil/zero receiver return ErrInvalidCache rather than panicking.
+func TestDegradedCache_Bulk_InvalidReceiver(t *testing.T) {
+	ctx := context.Background()
+	for name, dc := range map[string]*DegradedCache{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := dc.MGet(ctx, []string{"k"})
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+
+			err = dc.MSet(ctx, map[string][]byte{"k": []byte("v")}, time.Minute)
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+
+			_, err = dc.SetNX(ctx, "k", []byte("v"), time.Minute)
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+		})
+	}
+}

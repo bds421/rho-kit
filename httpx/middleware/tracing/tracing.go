@@ -7,6 +7,7 @@ package tracing
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
@@ -42,7 +43,7 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 			trace.WithAttributes(
 				semconv.HTTPRequestMethodKey.String(r.Method),
 				semconv.URLPath(httpx.RequestPath(r)),
-				semconv.URLScheme(r.URL.Scheme),
+				semconv.URLScheme(requestScheme(r)),
 				semconv.ServerAddress(r.Host),
 				semconv.UserAgentOriginal(r.UserAgent()),
 			),
@@ -52,22 +53,31 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 		// Inject trace context into response headers for downstream consumers.
 		prop.Inject(ctx, propagation.HeaderCarrier(w.Header()))
 
+		// Pass the context-bearing request to next; a ServeMux router sets
+		// r.Pattern on the pointer it receives, so finishHTTPSpan must read
+		// the same instance (r2) to observe the matched route. Reading the
+		// original r would always see an empty Pattern.
+		r2 := r.WithContext(ctx)
+
 		rec := mw.NewResponseRecorder(w)
 		defer func() {
 			recovered := recover()
-			finishHTTPSpan(span, r, rec, recovered != nil)
+			finishHTTPSpan(span, r2, rec, recovered != nil)
 			if recovered != nil {
 				panic(recovered)
 			}
 		}()
-		next.ServeHTTP(rec, r.WithContext(ctx))
+		next.ServeHTTP(rec, r2)
 	})
 }
 
 func finishHTTPSpan(span trace.Span, r *http.Request, rec *mw.ResponseRecorder, panicked bool) {
 	// Update span name with route pattern if available (more stable than URL path).
+	// A ServeMux stores the registered pattern in method-qualified form
+	// ("GET /users/{id}"), so reuse it verbatim to avoid double-prefixing the
+	// method; only synthesize the "{method} {route}" form for bare patterns.
 	if pattern := r.Pattern; pattern != "" {
-		span.SetName(r.Method + " " + pattern)
+		span.SetName(spanNameForPattern(r.Method, pattern))
 	}
 
 	// Hijacked connections (WebSocket, h2 stream takeover) never went
@@ -93,6 +103,28 @@ func finishHTTPSpan(span trace.Span, r *http.Request, rec *mw.ResponseRecorder, 
 	if status >= 500 {
 		span.SetStatus(codes.Error, http.StatusText(status))
 	}
+}
+
+// spanNameForPattern builds the OTel server span name "{method} {route}" from
+// the matched route pattern. ServeMux patterns are method-qualified
+// ("GET /users/{id}"); such patterns are used verbatim so the method is not
+// duplicated. Bare path patterns ("/users/{id}") are prefixed with the method.
+func spanNameForPattern(method, pattern string) string {
+	if verb, rest, ok := strings.Cut(pattern, " "); ok && verb == method && rest != "" {
+		return pattern
+	}
+	return method + " " + pattern
+}
+
+// requestScheme returns the URL scheme for a server-side request. Go's HTTP
+// server leaves r.URL.Scheme empty for origin-form requests (the common case),
+// only populating it for absolute-form/proxy URIs, so deriving it from the
+// connection's TLS state yields the correct url.scheme semantic attribute.
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 // InjectHTTPHeaders injects the current trace context into outgoing HTTP

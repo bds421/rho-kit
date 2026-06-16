@@ -52,6 +52,14 @@ func StartConsumers(
 		if b.Stream == "" {
 			return &redis.BindingError{Index: i, Reason: "stream name must not be empty"}
 		}
+		// Mirror Consume's stricter check so a malformed name (whitespace,
+		// control characters, over the length limit) fails startup with a
+		// BindingError instead of passing validation here and then panicking
+		// inside the spawned goroutine — where the panic is merely recovered
+		// and turned into a graceful self-shutdown.
+		if err := redis.ValidateName(b.Stream, "stream"); err != nil {
+			return &redis.BindingError{Index: i, Reason: err.Error()}
+		}
 		if b.Handler == nil {
 			return &redis.BindingError{Index: i, Reason: "handler must not be nil"}
 		}

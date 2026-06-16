@@ -291,6 +291,7 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 
 	bo := newBackOff(p)
 	attempt := 0
+	loopStart := time.Now()
 	for {
 		// Check ctx before invoking fn to avoid one extra execution
 		// after the timer fires but ctx is already cancelled.
@@ -324,6 +325,15 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 
 		if p.RetryIf != nil && !callRetryIf(logger, component, p.RetryIf, err) {
 			logger.Error(component+" stopped with non-retryable error", "error", err)
+			return
+		}
+
+		// Bound by total wall-clock so restarts don't outlast the caller's
+		// SLO budget even when MaxRetries is unlimited — consistent with
+		// the Do/DoWith path.
+		if p.MaxElapsedTime > 0 && time.Since(loopStart) >= p.MaxElapsedTime {
+			logger.Error(component+" max elapsed time exceeded, stopping",
+				"error", err, "elapsed", time.Since(loopStart), "max", p.MaxElapsedTime)
 			return
 		}
 
@@ -415,9 +425,12 @@ func callOnRetry(logger *slog.Logger, component string, fn func(error, int, time
 }
 
 // Delay computes the backoff delay for a given attempt using the policy.
-// Attempt 0 returns BaseDelay, attempt 1 returns BaseDelay*Factor, etc.
-// For attempts beyond the backoff sequence, MaxDelay is returned.
-// Negative attempts are clamped to 0.
+// When Jitter is 0 the sequence is deterministic: attempt 0 returns
+// BaseDelay, attempt 1 returns BaseDelay*Factor, etc., capping at MaxDelay
+// for attempts beyond the backoff sequence. When Jitter > 0 (e.g. the 0.25
+// used by DefaultPolicy and WorkerPolicy) each returned delay is randomized
+// within ±Jitter of that interval, so Delay is not deterministic and should
+// not be relied on for fixed scheduling. Negative attempts are clamped to 0.
 func (p Policy) Delay(attempt int) time.Duration {
 	mustValidatePolicy("retry: Policy.Delay", p)
 	if attempt < 0 {

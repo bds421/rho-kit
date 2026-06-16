@@ -381,6 +381,130 @@ func TestRun_DrainTimeout_ReturnsSentinel(t *testing.T) {
 	close(hang)
 }
 
+// TestRun_DrainTimeout_StillRunsOnLost locks in the documented
+// contract that on the drain-timeout path OnLost is still invoked
+// (matching k8slease / pgadvisory / redislock), even though the
+// orphaned OnAcquired has not returned. The doc on
+// WithCallbackDrainTimeout / ErrCallbackDrainTimeout warns callers that
+// OnLost therefore may run concurrently with the stalled callback; this
+// test guards against silently dropping OnLost on that path.
+func TestRun_DrainTimeout_StillRunsOnLost(t *testing.T) {
+	sess := newFakeSession()
+	elect := &fakeElection{}
+	rf := &recordingFactory{sessions: []*fakeSession{sess}, elections: []*fakeElection{elect}}
+
+	e := newElectorForTest(rf.factory())
+	e.drainTimeout = 100 * time.Millisecond
+	e.drainWarnTick = 50 * time.Millisecond
+
+	hang := make(chan struct{})
+	lost := make(chan struct{})
+	cb := leaderelection.Callbacks{
+		OnAcquired: func(_ context.Context) {
+			<-hang // never closes until the test releases the orphan
+		},
+		OnLost: func() { close(lost) },
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx, cb) }()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-lost:
+	case <-time.After(2 * time.Second):
+		close(hang)
+		t.Fatal("OnLost must still run on the drain-timeout path")
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrCallbackDrainTimeout) {
+			t.Fatalf("expected ErrCallbackDrainTimeout in chain, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		close(hang)
+		t.Fatal("Run did not return within drain-timeout budget")
+	}
+	close(hang)
+}
+
+// TestRun_HealthyTermDoesNotDrainTimeout verifies that the drain
+// watchdog (warn ticker + drain timeout) starts only after leadership
+// ends, not at term start. A healthy term whose OnAcquired correctly
+// waits on its leader ctx must be able to run longer than the
+// configured drain timeout without being forcibly resigned or
+// surfacing ErrCallbackDrainTimeout — the drain budget governs the
+// post-leadership cleanup window, not the steady-state term itself.
+func TestRun_HealthyTermDoesNotDrainTimeout(t *testing.T) {
+	sess := newFakeSession()
+	elect := &fakeElection{}
+	rf := &recordingFactory{sessions: []*fakeSession{sess}, elections: []*fakeElection{elect}}
+
+	e := newElectorForTest(rf.factory())
+	// A drain timeout shorter than the term length. With the bug, the
+	// timer starts at term start and fires mid-term; with the fix it
+	// only arms after leadership ends.
+	e.drainTimeout = 80 * time.Millisecond
+	e.drainWarnTick = 40 * time.Millisecond
+
+	acquired := make(chan struct{})
+	cb := leaderelection.Callbacks{
+		OnAcquired: func(ctx context.Context) {
+			close(acquired)
+			<-ctx.Done() // well-behaved: drains promptly once leadership ends
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx, cb) }()
+
+	select {
+	case <-acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnAcquired never invoked")
+	}
+
+	// Hold the healthy term for well over the drain timeout WITHOUT
+	// cancelling. A correct elector must still be leader and must not
+	// have resigned or returned a drain-timeout error.
+	time.Sleep(250 * time.Millisecond)
+
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned during a healthy term (drain watchdog fired mid-term): %v", err)
+	default:
+	}
+
+	if !e.IsLeader() {
+		t.Fatal("IsLeader must remain true during a healthy term that outlasts the drain timeout")
+	}
+	if elect.resigned.Load() {
+		t.Fatal("Resign must not be called during a healthy term")
+	}
+
+	// Now end the term cleanly; the well-behaved callback drains within
+	// the budget so Run returns the plain context error, never
+	// ErrCallbackDrainTimeout.
+	cancel()
+	select {
+	case err := <-done:
+		if errors.Is(err, ErrCallbackDrainTimeout) {
+			t.Fatalf("healthy term must not surface ErrCallbackDrainTimeout, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after ctx cancel")
+	}
+}
+
 // TestRun_ContextCancelDuringCampaign exits cleanly when the caller
 // ctx is cancelled while Campaign is still blocking.
 func TestRun_ContextCancelDuringCampaign(t *testing.T) {

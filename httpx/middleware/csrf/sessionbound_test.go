@@ -185,3 +185,98 @@ func TestSessionBound_InvalidSessionRejectedBeforeIssuingCookie(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 	assert.Empty(t, rec.Header().Values("Set-Cookie"))
 }
+
+func TestSessionBound_AnonymousSafeMethodPasses(t *testing.T) {
+	// WithSessionExtractor docs scope the session requirement to
+	// "every authenticated state-changing request". An anonymous user
+	// (extractor returns "") doing a plain page load must not be 403'd
+	// — that would block every anonymous GET when the middleware is
+	// mounted globally. No cookie can be issued without a session to
+	// bind it to, so none is set.
+	mw := New(
+		WithSecret(testSecret()),
+		WithSessionExtractor(sessionFromHeader("X-Session")),
+	)
+	handler := mw(okHandler())
+
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/", nil)
+			// No X-Session header: anonymous request.
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusOK, rec.Code)
+			assert.Empty(t, rec.Header().Values("Set-Cookie"),
+				"no session means no token to bind, so no cookie is set")
+		})
+	}
+}
+
+func TestSessionBound_AnonymousStateChangingStillRejected(t *testing.T) {
+	// The state-changing half of the contract is preserved: an empty
+	// session on a mutating request still 403s rather than falling back
+	// to per-process pinning. No cookie is issued.
+	mw := New(
+		WithSecret(testSecret()),
+		WithSessionExtractor(sessionFromHeader("X-Session")),
+	)
+	handler := mw(okHandler())
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/", nil)
+			// No X-Session header: anonymous request.
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusForbidden, rec.Code)
+			assert.Empty(t, rec.Header().Values("Set-Cookie"))
+		})
+	}
+}
+
+func TestSessionBound_SkipCheckBypassesSessionGate(t *testing.T) {
+	// WithSkipCheck documents bearer/API-key clients as the use case:
+	// "If skip returns true for a request, CSRF token validation is
+	// skipped." A header-authenticated client typically has no browser
+	// session, so the session-required gate must not silently 403 it
+	// before the skip predicate is consulted.
+	mw := New(
+		WithSecret(testSecret()),
+		WithSessionExtractor(sessionFromHeader("X-Session")),
+		WithSkipCheck(HasBearerToken),
+	)
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	// No X-Session header (header-auth client, no browser session).
+	req.Header.Set("Authorization", "Bearer some-jwt-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code,
+		"bearer-authenticated request must bypass the session-required gate via WithSkipCheck")
+}
+
+func TestSessionBound_SkipCheckStillSubjectToOriginAllowlist(t *testing.T) {
+	// Defense-in-depth: even when the skip predicate would bypass the
+	// session gate, an Origin outside the allowlist must still be
+	// rejected — matching the double-submit flow's M-9 ordering.
+	mw := New(
+		WithSecret(testSecret()),
+		WithSessionExtractor(sessionFromHeader("X-Session")),
+		WithSkipCheck(HasBearerToken),
+		WithAllowedOrigins("https://app.example.com"),
+	)
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer phished-token")
+	req.Header.Set("Origin", "https://attacker.example") // NOT in allowlist
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code,
+		"untrusted origin must reject before the skip predicate even with an empty session")
+}

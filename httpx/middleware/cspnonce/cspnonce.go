@@ -129,8 +129,9 @@ func HTMLAttr(ctx context.Context) template.HTMLAttr {
 	if n == "" {
 		return ""
 	}
-	// Nonce is base64 (URL-safe alphabet + '=' padding); no HTML
-	// escape required, but be explicit about the trust boundary.
+	// Nonce is base64 RawStdEncoding (standard alphabet '+'/'/', no
+	// padding); none of those characters need HTML escaping, but be
+	// explicit about the trust boundary.
 	return template.HTMLAttr(`nonce="` + n + `"`)
 }
 

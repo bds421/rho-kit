@@ -42,9 +42,9 @@ func NewHealthServer(checker *health.Checker) *HealthServer {
 }
 
 // Check evaluates the health checker and returns the gRPC health status.
-// An empty or unrecognized service name checks overall health (same as
-// the HTTP /ready endpoint). Named service checks are not supported and
-// return NOT_FOUND.
+// An empty service name checks overall health (same as the HTTP /ready
+// endpoint). Any non-empty (named) service is unsupported and returns
+// NOT_FOUND, per the gRPC health checking spec.
 func (h *HealthServer) Check(ctx context.Context, req *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
 	if req.GetService() != "" {
 		return nil, status.Error(codes.NotFound, "unknown service")

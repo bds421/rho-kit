@@ -76,9 +76,12 @@ func WithShouldRetry(fn ShouldRetryFunc) Option {
 // RetryStorage wraps a [storage.Storage] with retry logic backed by
 // [kitretry.DoWith] from the kit/retry package.
 //
-// Optional capabilities (Lister, Copier, PresignedStore, PublicURLer) are
-// forwarded through the retry policy when the underlying backend supports
-// them. The [New] factory returns a [storage.Storage] whose dynamic type
+// Optional capabilities (Copier, PresignedStore, PublicURLer) are forwarded
+// through the retry policy when the underlying backend supports them. Lister
+// is forwarded too, but List is NOT retried — restarting iteration after a
+// mid-stream failure would re-yield already-emitted items, so List delegates
+// straight to the backend. The [New] factory returns a [storage.Storage]
+// whose dynamic type
 // implements the same subset of optional interfaces as the underlying
 // backend; callers should detect support via [storage.AsLister] etc. Direct
 // type assertions to *RetryStorage still work for callers that hold the
@@ -101,8 +104,11 @@ func (r *RetryStorage) OpaqueStorageDecorator() {}
 // The returned value's dynamic type forwards the optional interfaces the
 // underlying chain exposes (via [storage.AsLister] etc, which honor opaque
 // decorators). For example, wrapping a backend that implements
-// [storage.Lister] returns a value that also implements Lister — list calls
-// are retried under the same policy as the core methods.
+// [storage.Lister] returns a value that also implements Lister. Note that
+// List itself is forwarded WITHOUT retry — restarting iteration after a
+// mid-stream failure would duplicate already-yielded items — so only the
+// other operations (Put, Get, Delete, Exists, Copy, presign, URL) run under
+// the retry policy.
 //
 // Panics if backend is nil. A nil backend would otherwise only surface as a
 // confusing nil-pointer panic on the first storage operation.
@@ -162,7 +168,9 @@ func (r *RetryStorage) policy() kitretry.Policy {
 
 // Put retries on transient errors only if the reader implements [io.Seeker]
 // (e.g. *bytes.Reader, *os.File). After a failed attempt, the reader is
-// rewound to the start before retrying. If the reader is not seekable,
+// rewound to the position it had when Put was called before retrying, so a
+// reader handed to Put mid-stream (e.g. an *os.File after a header was read)
+// uploads the same content on every attempt. If the reader is not seekable,
 // Put does NOT retry — the first error is returned immediately because
 // the reader has been consumed and retrying would upload empty content.
 func (r *RetryStorage) Put(ctx context.Context, key string, reader io.Reader, meta storage.ObjectMeta) error {
@@ -175,10 +183,20 @@ func (r *RetryStorage) Put(ctx context.Context, key string, reader io.Reader, me
 		return r.backend.Put(ctx, key, reader, storage.CloneObjectMeta(meta))
 	}
 
+	// Capture the reader's initial offset so retries rewind to where the
+	// caller left it, not to byte 0.
+	start, err := seeker.Seek(0, io.SeekCurrent)
+	if err != nil {
+		// A reader that cannot report its position cannot be safely rewound,
+		// so make a single non-retried attempt rather than risk re-uploading
+		// from an unknown offset.
+		return r.backend.Put(ctx, key, reader, storage.CloneObjectMeta(meta))
+	}
+
 	first := true
 	return kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error {
 		if !first {
-			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+			if _, err := seeker.Seek(start, io.SeekStart); err != nil {
 				// Seek errors are not storage-transient, so RetryIf stops retrying.
 				return err
 			}

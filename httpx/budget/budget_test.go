@@ -616,3 +616,83 @@ type observingTransport struct {
 func (o observingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return o.fn(req)
 }
+
+// trackingBody records whether Close was called so the
+// RoundTripper-contract assertions ("RoundTrip must always close the
+// body, including on errors") can be made.
+type trackingBody struct {
+	closed atomic.Bool
+}
+
+func (b *trackingBody) Read(_ []byte) (int, error) { return 0, io.EOF }
+func (b *trackingBody) Close() error {
+	b.closed.Store(true)
+	return nil
+}
+
+// TestRoundTrip_ClosesBodyOnPreChargeReject pins the RoundTripper
+// contract for the budget-exceeded early return: a request whose
+// pre-charge is denied never reaches base.RoundTrip, so the wrapper
+// itself must close req.Body or file/pipe-backed bodies leak.
+func TestRoundTrip_ClosesBodyOnPreChargeReject(t *testing.T) {
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: false, remaining: 0, retry: time.Hour}}}
+	rt := budget.Wrap(http.DefaultTransport, b, "alice")
+
+	body := &trackingBody{}
+	req, err := http.NewRequest(http.MethodPost, "http://example.invalid/", body)
+	require.NoError(t, err)
+
+	resp, rerr := rt.RoundTrip(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.ErrorIs(t, rerr, budget.ErrBudgetExceeded)
+	assert.True(t, body.closed.Load(),
+		"RoundTrip must close req.Body even when the pre-charge is rejected")
+}
+
+// TestRoundTrip_ClosesBodyOnPreChargeBackendError pins the same
+// contract for the backend-error early return.
+func TestRoundTrip_ClosesBodyOnPreChargeBackendError(t *testing.T) {
+	b := &scriptedBudget{consumeResp: []consumeResult{{err: errors.New("backend dead")}}}
+	rt := budget.Wrap(http.DefaultTransport, b, "alice")
+
+	body := &trackingBody{}
+	req, err := http.NewRequest(http.MethodPost, "http://example.invalid/", body)
+	require.NoError(t, err)
+
+	resp, rerr := rt.RoundTrip(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(t, rerr)
+	assert.False(t, errors.Is(rerr, budget.ErrBudgetExceeded))
+	assert.True(t, body.closed.Load(),
+		"RoundTrip must close req.Body even when the pre-charge backend errors")
+}
+
+// TestRoundTrip_EstimateHeaderZeroFallsBackToDefault pins that an
+// untrusted estimate header of "0" does not bypass the budget gate.
+// A zero charge is a no-op probe that the backend admits even when the
+// budget is exhausted, so a caller-supplied X-Estimated-Tokens: 0
+// must fall back to the configured default just like negative/garbage
+// values do.
+func TestRoundTrip_EstimateHeaderZeroFallsBackToDefault(t *testing.T) {
+	srv := upstream(t, nil)
+	t.Cleanup(srv.Close)
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: true, remaining: 50}}}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "alice",
+		budget.WithEstimateHeader("X-Estimated-Tokens"),
+		budget.WithDefaultAmount(7),
+	))
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, nil)
+	req.Header.Set("X-Estimated-Tokens", "0")
+	resp, err := c.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	require.Len(t, b.consumed, 1)
+	assert.Equal(t, int64(7), b.consumed[0].amount,
+		"zero estimate header must fall back to the default so it cannot bypass the gate")
+}

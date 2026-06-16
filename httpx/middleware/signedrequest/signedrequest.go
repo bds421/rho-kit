@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -85,6 +86,18 @@ func safeWrap(msg string, cause error) error {
 	return safeCauseError{msg: msg, cause: cause}
 }
 
+// newNonceStoreError wraps a [NonceStore] backend failure so it matches
+// both errors.Is(_, ErrNonceStore) (for classification and the 500
+// mapping) and errors.Is(_, cause) (so server-side logging can surface
+// the underlying outage). The dual %w verbs produce a joined error
+// whose Unwrap() []error reaches both targets.
+func newNonceStoreError(cause error) error {
+	if cause == nil {
+		return ErrNonceStore
+	}
+	return fmt.Errorf("%w: %w", ErrNonceStore, cause)
+}
+
 // Sentinel errors. Verify is internal; the middleware translates these
 // into 400/401/413 responses.
 var (
@@ -96,6 +109,13 @@ var (
 	ErrBodyTooLarge     = errors.New("signedrequest: body exceeds maximum")
 	ErrSecretTooShort   = errors.New("signedrequest: resolved secret is shorter than the 32-byte HMAC-SHA256 minimum")
 	ErrInvalidRequest   = errors.New("signedrequest: invalid request")
+	// ErrNonceStore marks a failure of the [NonceStore] backend itself
+	// (e.g. a Redis outage) rather than any client-attributable problem.
+	// The middleware maps it to 500 and counts it under the store_error
+	// metric reason so an infrastructure outage is not misreported as a
+	// forged-signature attack spike. The underlying cause is wrapped and
+	// reachable via errors.Unwrap / errors.Is.
+	ErrNonceStore = errors.New("signedrequest: nonce store backend error")
 )
 
 // nonceMaxLen caps the wire-level nonce header. The kit's signing
@@ -169,6 +189,7 @@ type config struct {
 	inMemoryBodyMax int64
 	now             clock.Func
 	metrics         *Metrics
+	logger          *slog.Logger
 }
 
 // WithMaxClockSkew sets the tolerance window. Tokens with timestamps
@@ -255,6 +276,26 @@ func WithMetrics(m *Metrics) Option {
 	return func(c *config) { c.metrics = m }
 }
 
+// WithLogger sets the fallback *slog.Logger used to record server-side
+// verification faults — nonce-store backend failures and operator
+// misconfiguration — at error level. Client-attributable failures (bad
+// signature, missing headers, replay, etc.) are intentionally NOT
+// logged so an attacker cannot flood the operator's logs.
+//
+// When a request-scoped logger is present in the request context (e.g.
+// installed by the httpx request-logging middleware), that logger takes
+// precedence over the one set here. When neither is set the package
+// falls back to [slog.Default].
+//
+// Panics if l is nil — a silent no-op would defeat the purpose of the
+// option. Omit it entirely to rely on the context logger / slog.Default.
+func WithLogger(l *slog.Logger) Option {
+	if l == nil {
+		panic("signedrequest: WithLogger requires a non-nil logger (omit the option to use the context logger or slog.Default)")
+	}
+	return func(c *config) { c.logger = l }
+}
+
 // Middleware constructs the verification middleware.
 //
 // resolver is called once per request to obtain the secret keyed by
@@ -287,8 +328,22 @@ func Middleware(resolver KeyResolver, nonceStore NonceStore, opts ...Option) fun
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if err := verify(r, &cfg); err != nil {
 				cfg.metrics.observeVerifyFailure(classifyVerifyFailure(err))
+				cfg.logVerifyError(r.Context(), err)
 				writeError(w, err)
 				return
+			}
+			// verify() may swap r.Body for a spooled reader backed by a
+			// temp file. net/http closes only the ORIGINAL body it
+			// captured before the handler ran (server.response.reqBody),
+			// not the one we install here — so a downstream handler that
+			// never reads or closes r.Body would leak the spooled
+			// *os.File until the GC finalizer runs (fd exhaustion on
+			// Unix, orphaned temp files on Windows). Close the installed
+			// body ourselves once the handler returns; spooledReader.Close
+			// is idempotent, so a handler that already closed it is unharmed.
+			installed := r.Body
+			if installed != nil {
+				defer func() { _ = installed.Close() }()
 			}
 			next.ServeHTTP(w, r)
 		})
@@ -405,7 +460,7 @@ func verify(r *http.Request, cfg *config) error {
 	first, err := cfg.nonceStore.SeenOrStore(r.Context(), nonce)
 	if err != nil {
 		spooled.cleanup()
-		return fmt.Errorf("signedrequest: nonce store: %w", err)
+		return newNonceStoreError(err)
 	}
 	if !first {
 		spooled.cleanup()
@@ -414,7 +469,9 @@ func verify(r *http.Request, cfg *config) error {
 
 	// Only after MAC verifies AND nonce checks do we expose the body
 	// to the downstream handler. The returned ReadCloser removes any
-	// underlying temp file on Close (net/http closes r.Body for us).
+	// underlying temp file on Close. net/http does NOT close this body
+	// (it only closes the original it captured before the handler ran),
+	// so the Middleware wrapper closes it after the handler returns.
 	r.Body = spooled.Body()
 	return nil
 }
@@ -465,8 +522,58 @@ func writeError(w http.ResponseWriter, err error) {
 		// 500 keeps the failure mode visible without leaking which key ID
 		// was tried.
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+	case errors.Is(err, ErrNonceStore):
+		// Server-side dependency outage (e.g. Redis down). 500 keeps the
+		// failure attributed to the server, not the client; the cause is
+		// logged via logVerifyError without leaking it to the response.
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 	default:
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+// logVerifyError records server-side verification faults at error level
+// so an operator has a diagnostic for the 500 the client receives.
+// Only server-attributable failures are logged: a nonce-store backend
+// outage ([ErrNonceStore]), operator misconfiguration ([ErrSecretTooShort]),
+// or an otherwise-unclassified internal error. Client-attributable
+// failures (bad signature, missing/invalid headers, replay, oversized
+// body) are deliberately skipped so an attacker cannot flood the logs.
+//
+// The request-scoped logger (if any) takes precedence over cfg.logger;
+// [httpx.Logger] falls back to [slog.Default] when neither is set, so
+// these faults are never silently dropped.
+func (cfg *config) logVerifyError(ctx context.Context, err error) {
+	if !isServerSideVerifyError(err) {
+		return
+	}
+	httpx.Logger(ctx, cfg.logger).Error(
+		"signedrequest: verification failed server-side",
+		slog.String("error", err.Error()),
+	)
+}
+
+// isServerSideVerifyError reports whether err represents a server-side
+// fault that warrants an error-level log entry, as opposed to an
+// expected client-attributable rejection.
+func isServerSideVerifyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case errors.Is(err, ErrNonceStore), errors.Is(err, ErrSecretTooShort):
+		return true
+	case errors.Is(err, ErrMissingHeaders),
+		errors.Is(err, ErrTimestampInvalid),
+		errors.Is(err, ErrSignatureInvalid),
+		errors.Is(err, ErrNonceReplayed),
+		errors.Is(err, ErrNonceInvalid),
+		errors.Is(err, ErrBodyTooLarge),
+		errors.Is(err, ErrInvalidRequest):
+		return false
+	default:
+		// Unclassified errors map to 500 in writeError; surface them.
+		return true
 	}
 }
 
@@ -661,7 +768,8 @@ type SignRequest struct {
 	Request *http.Request
 	// Timestamp is the [HeaderTimestamp] value (unix seconds, decimal).
 	Timestamp string
-	// Nonce is the [HeaderNonce] value (>= nonceMinLen base64 chars).
+	// Nonce is the [HeaderNonce] value: the base64 encoding (Std,
+	// RawStd, URL, or RawURL alphabet) of exactly 16 random bytes.
 	Nonce string
 	// Body is the request body bytes that will be sent on the wire.
 	// Pass nil for bodyless requests; pass the same bytes that the

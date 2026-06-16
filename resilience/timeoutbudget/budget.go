@@ -16,10 +16,11 @@ var ErrBudgetExhausted = errors.New("timeoutbudget: exhausted")
 // Budget tracks a request-scoped time allocation that multiple
 // downstream calls share. Safe for concurrent use.
 type Budget struct {
-	deadline     time.Time
-	reservation  time.Duration
-	mu           sync.Mutex
-	now          func() time.Time
+	deadline    time.Time
+	total       time.Duration
+	reservation time.Duration
+	mu          sync.Mutex
+	now         func() time.Time
 }
 
 // Option configures [New].
@@ -56,6 +57,7 @@ func New(parent context.Context, total time.Duration, opts ...Option) (context.C
 		}
 		opt(b)
 	}
+	b.total = total
 	b.deadline = b.now().Add(total)
 
 	// Compose with parent's deadline (whichever is tighter wins).
@@ -78,16 +80,23 @@ func (b *Budget) Remaining() time.Duration {
 	return rem
 }
 
-// Used returns the budget's raw remaining time without the
-// reservation deduction. Returns 0 once past deadline.
+// Used returns how much of the total budget has elapsed since
+// [New] — the complement of the raw (reservation-ignoring)
+// remaining time. Clamped to [0, total]: never negative, and
+// caps at the total once past the deadline. Pairs with
+// [Budget.Remaining] for "where did the request's time go"
+// observability.
 func (b *Budget) Used() time.Duration {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	now := b.now()
-	if now.After(b.deadline) {
+	used := b.total - b.deadline.Sub(b.now())
+	if used < 0 {
 		return 0
 	}
-	return b.deadline.Sub(now)
+	if used > b.total {
+		return b.total
+	}
+	return used
 }
 
 // Reservation returns the time currently reserved for post-call
@@ -111,17 +120,33 @@ func (b *Budget) Reservation() time.Duration {
 //	defer restore()
 func (b *Budget) WithReservation(d time.Duration) (restore func()) {
 	b.mu.Lock()
-	prev := b.reservation
 	if d > 0 {
 		b.reservation += d
 	} else {
 		b.reservation = 0
 	}
 	b.mu.Unlock()
+
+	// Restore subtracts exactly this call's own contribution rather
+	// than restoring an absolute snapshot, so it is safe for
+	// concurrent / overlapping (non-LIFO) reservations: undoing one
+	// reservation never wipes a sibling's still-active reservation.
+	// Guarded with sync.Once so a double-deferred restore does not
+	// over-release. A clear (d <= 0) carries no per-call delta and
+	// so has a no-op restore.
+	var once sync.Once
 	return func() {
-		b.mu.Lock()
-		b.reservation = prev
-		b.mu.Unlock()
+		once.Do(func() {
+			if d <= 0 {
+				return
+			}
+			b.mu.Lock()
+			b.reservation -= d
+			if b.reservation < 0 {
+				b.reservation = 0
+			}
+			b.mu.Unlock()
+		})
 	}
 }
 

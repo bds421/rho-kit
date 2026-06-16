@@ -206,6 +206,12 @@ type CircuitBreaker struct {
 	cb      *gobreaker.CircuitBreaker[any]
 	metrics *Metrics
 	name    string
+	// isSuccessful mirrors the predicate the embedded gobreaker uses to
+	// decide whether a call counts as a success or a failure. Captured
+	// here so per-call metric outcome labels match the breaker's own
+	// accounting under custom predicates (WithIsSuccessful /
+	// WithPermanentSuccess), not just the package default.
+	isSuccessful func(err error) bool
 }
 
 // NewCircuitBreaker creates a circuit breaker that opens after threshold
@@ -251,9 +257,10 @@ func NewCircuitBreaker(threshold int, cooldownPeriod time.Duration, opts ...Opti
 	}
 
 	return &CircuitBreaker{
-		cb:      gobreaker.NewCircuitBreaker[any](settings),
-		metrics: cfg.metrics,
-		name:    settings.Name,
+		cb:           gobreaker.NewCircuitBreaker[any](settings),
+		metrics:      cfg.metrics,
+		name:         settings.Name,
+		isSuccessful: settings.IsSuccessful,
 	}
 }
 
@@ -277,7 +284,7 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 		err = ErrCircuitOpen
 	}
 	recordResult(span, err)
-	cb.metrics.recordCall(cb.name, callOutcome(err))
+	cb.metrics.recordCall(cb.name, callOutcome(err, cb.isSuccessful))
 	return err
 }
 
@@ -288,14 +295,22 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 //
 // fn receives ctx so it can stop work on cancellation. The breaker's
 // failure-counting predicate (see [WithIsSuccessful]) decides whether
-// ctx.Err() returned by fn counts as a failure — by default ctx.Canceled
-// and ctx.DeadlineExceeded count as failures. Use [WithIsSuccessful] to
-// exclude them when callers may cancel for reasons unrelated to the
+// ctx.Err() returned by fn counts as a failure — by default
+// context.Canceled is treated as success (a caller aborting an in-flight
+// request is not evidence the downstream is unhealthy) while
+// context.DeadlineExceeded counts as a failure. Use [WithIsSuccessful]
+// to change this when callers may cancel for reasons unrelated to the
 // downstream's health (e.g. shedding load on a slow client).
+//
+// A nil ctx is rejected with an error rather than panicking, matching
+// the sibling [bulkhead.Bulkhead.ExecuteCtx] contract.
 //
 // A nil receiver is treated as a no-op: fn is invoked directly with no
 // breaker semantics, after the ctx pre-check.
 func (cb *CircuitBreaker) ExecuteCtx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if ctx == nil {
+		return errors.New("circuitbreaker: ExecuteCtx requires a non-nil context")
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -311,7 +326,7 @@ func (cb *CircuitBreaker) ExecuteCtx(ctx context.Context, fn func(ctx context.Co
 		err = ErrCircuitOpen
 	}
 	recordResult(span, err)
-	cb.metrics.recordCall(cb.name, callOutcome(err))
+	cb.metrics.recordCall(cb.name, callOutcome(err, cb.isSuccessful))
 	return err
 }
 

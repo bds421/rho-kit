@@ -9,13 +9,15 @@
 // gRPC Health Checking Protocol (grpc.health.v1), allowing Kubernetes gRPC
 // probes and load balancers to query service readiness.
 //
-// Recommended interceptor chain order (outermost to innermost):
+// Recommended interceptor chain order (outermost to innermost), matching
+// NewServer's auto-applied chain:
 //
-//	recovery → metrics → logging → auth → handler
+//	recovery → logging → metrics → deadline → handler
 //
 // This ensures recovery catches panics from all subsequent interceptors,
-// metrics record every call (including auth failures), and auth runs after
-// logging so denied requests are still logged.
+// logging brackets every call, and metrics (innermost of the defaults)
+// still observe every call. When you add auth, place it after the
+// defaults so denied requests are still logged and counted.
 //
 // For tracing, use WithTracingStatsHandler (stats handler API) rather than
 // interceptors — it captures both unary and streaming RPCs automatically.

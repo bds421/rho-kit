@@ -240,3 +240,83 @@ func TestClientIP_IPv6(t *testing.T) {
 		t.Errorf("ClientIP = %q, want %q", got, "2001:db8::1")
 	}
 }
+
+// TestClientIP_XForwardedFor_PortAppended covers proxies (Azure Application
+// Gateway, IIS/ARR) that append "ip:port" forms to X-Forwarded-For. The
+// host portion must be parsed and the right-most-untrusted entry returned,
+// rather than skipping the entry as garbage and walking left into an
+// attacker-prepended value.
+func TestClientIP_XForwardedFor_PortAppended(t *testing.T) {
+	tests := []struct {
+		name string
+		xff  string
+		want string
+	}{
+		{
+			name: "ipv4 with port is parsed not skipped",
+			xff:  "203.0.113.5:35123",
+			want: "203.0.113.5",
+		},
+		{
+			name: "attacker-prepended IP does not win over port-appended real client",
+			// Client supplies "6.6.6.6"; proxy appends the real peer with a port.
+			// The right-most entry is the real client and must win.
+			xff:  "6.6.6.6, 203.0.113.5:35123",
+			want: "203.0.113.5",
+		},
+		{
+			name: "ipv6 with port is parsed not skipped",
+			xff:  "[2001:db8::1]:443",
+			want: "2001:db8::1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			req.RemoteAddr = "127.0.0.1:8080"
+			req.Header.Set("X-Forwarded-For", tt.xff)
+
+			got := ClientIP(req)
+			if got != tt.want {
+				t.Errorf("ClientIP = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClientIP_XForwardedFor_UnparseableFailsClosed covers entries that are
+// neither a bare IP nor a valid host:port. Walking left past such an entry
+// can return an earlier, fully attacker-supplied value. The handler must
+// fail closed to RemoteAddr instead.
+func TestClientIP_XForwardedFor_UnparseableFailsClosed(t *testing.T) {
+	tests := []struct {
+		name string
+		xff  string
+		want string
+	}{
+		{
+			name: "hostname garbage right of attacker IP fails closed to RemoteAddr",
+			// "garbage" is unparseable; failing closed must NOT return the
+			// attacker-prepended 6.6.6.6.
+			xff:  "6.6.6.6, garbage",
+			want: "127.0.0.1",
+		},
+		{
+			name: "single unparseable entry fails closed to RemoteAddr",
+			xff:  "not-an-ip",
+			want: "127.0.0.1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			req.RemoteAddr = "127.0.0.1:8080"
+			req.Header.Set("X-Forwarded-For", tt.xff)
+
+			got := ClientIP(req)
+			if got != tt.want {
+				t.Errorf("ClientIP = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

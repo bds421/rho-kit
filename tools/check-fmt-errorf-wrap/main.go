@@ -13,11 +13,14 @@
 //
 // # Detection
 //
-// Reports any call to fmt.Errorf whose final argument is an
-// identifier (typically named "err", "perr", or similar) AND whose
-// format string contains a `: %w` segment. The identifier check is
-// the simplest reliable signal — passing `err` to fmt.Errorf with
-// `%w` is exactly the pattern wave 136 swept.
+// Reports any call to fmt.Errorf whose final argument is a bare
+// identifier AND whose format string contains a `: %w` segment.
+// Any local error name is flagged (err, perr, marshalErr, loadErr,
+// ...), not a fixed list — wrapping a local with `%w` is exactly the
+// pattern wave 136 swept. Two identifier shapes are deliberately not
+// flagged: the blank/nil placeholders, and exported package-level
+// sentinels (names with an `Err` prefix such as ErrValidation), which
+// are kit-owned values safe to render verbatim.
 //
 // # Allowlist
 //
@@ -27,8 +30,10 @@
 //
 //	return fmt.Errorf("redis cache get: %w", sharedcache.ErrValueTooLarge) // kit:ok-fmt-errorf-wrap
 //
-// Package-level sentinels are NOT auto-detected — the heuristic for
-// "is this a kit sentinel?" is too brittle. The opt-out keeps each
+// Package-qualified sentinels (pkg.ErrFoo) are never flagged because
+// they are selector expressions, not bare identifiers. Bare exported
+// sentinels (ErrFoo) are skipped by the naming convention above; any
+// other bare local still requires the opt-out marker, which keeps each
 // kept-as-is wrap visible at code-review time.
 //
 // Exit codes:
@@ -199,10 +204,51 @@ func isFmtErrorf(expr ast.Expr) bool {
 	return pkg.Name == "fmt" && sel.Sel.Name == "Errorf"
 }
 
+// isErrorIdent reports whether a bare identifier passed as the final
+// argument to fmt.Errorf("...: %w", x) is a local error value that the
+// wave-136 gate should flag. The original implementation matched a
+// closed list of nine names (err, perr, ...) and silently missed every
+// other local — e.g. marshalErr, loadErr, storeErr — which are exactly
+// the backend-derived errors that leak across the trust boundary.
+//
+// Instead of enumerating local names, exclude the two categories that
+// are NOT local backend errors:
+//
+//   - the blank identifier and the predeclared nil placeholder, which
+//     never carry a renderable backend message; and
+//   - package-level sentinels, which by Go convention are exported and
+//     prefixed with "Err" (e.g. ErrValidation, ErrBatchTooLarge). These
+//     are kit-owned values that are safe to render verbatim.
+//
+// Package-qualified sentinels (sharedcache.ErrValueTooLarge) are
+// *ast.SelectorExpr, not *ast.Ident, so the caller already excludes
+// them before reaching this function. Any remaining bare identifier is
+// treated as a local error and flagged; deliberate exceptions use the
+// // kit:ok-fmt-errorf-wrap line marker.
 func isErrorIdent(name string) bool {
 	switch name {
-	case "err", "perr", "rerr", "gErr", "slErr", "saveErr", "closeErr", "relErr", "ctxErr":
+	case "", "_", "nil":
+		return false
+	}
+	if isExportedSentinel(name) {
+		return false
+	}
+	return true
+}
+
+// isExportedSentinel reports whether name follows the package-level
+// sentinel convention: an exported identifier whose name begins with the
+// "Err" prefix (Err, ErrFoo, ...). "Errors" or "Erratic" do not qualify
+// because the rune after the prefix, if any, must not be lowercase —
+// sentinels are always "Err" followed by an upper-case word or nothing.
+func isExportedSentinel(name string) bool {
+	const prefix = "Err"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	rest := name[len(prefix):]
+	if rest == "" {
 		return true
 	}
-	return false
+	return !(rest[0] >= 'a' && rest[0] <= 'z')
 }

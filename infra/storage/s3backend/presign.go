@@ -47,6 +47,10 @@ func (b *Backend) PresignGetURL(ctx context.Context, key string, ttl time.Durati
 // key-id where applicable) header on PUT — without that, S3 rejects the
 // upload. This stops clients from bypassing the bucket's encryption
 // policy via direct uploads.
+//
+// When meta.Size > 0 it is signed as Content-Length, so the URL holder
+// cannot upload a body larger than the caller authorized. A meta.Size of 0
+// means unknown and leaves the upload unbounded up to S3's single-PUT limit.
 func (b *Backend) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
 	if err := storage.ValidateKey(key); err != nil {
 		return "", err
@@ -71,6 +75,14 @@ func (b *Backend) PresignPutURL(ctx context.Context, key string, ttl time.Durati
 		Key:         aws.String(key),
 		ContentType: aws.String(contentType),
 		Metadata:    storage.CloneCustomMeta(meta.Custom),
+	}
+	// When the caller declares a Size, sign it as Content-Length so the URL
+	// holder cannot upload a body larger than authorized (SigV4 signs the
+	// Content-Length header once it is set on the input). This mirrors the
+	// Put path. Size == 0 means unknown and leaves the upload unbounded up
+	// to S3's single-PUT limit.
+	if meta.Size > 0 {
+		input.ContentLength = aws.Int64(meta.Size)
 	}
 	if err := applySSE(input, b.cfg); err != nil {
 		return "", err

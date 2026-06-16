@@ -328,3 +328,102 @@ func TestCursorSigner_Close_NilReceiver(t *testing.T) {
 		t.Fatalf("nil Close: %v", err)
 	}
 }
+
+// TestCursorSigner_DomainSeparation verifies that two signers sharing the
+// same secret but built with different context labels do NOT accept each
+// other's cursors. The docs tell operators to share one secret across all
+// replicas, so without domain separation a cursor legitimately signed for
+// endpoint A (/users) would verify on endpoint B (/orders), feeding a
+// foreign table's PK into B's ListFn. NewCursorSignerWithContext mixes an
+// endpoint label into the HMAC input to close that cross-endpoint replay.
+func TestCursorSigner_DomainSeparation(t *testing.T) {
+	secret := []byte("test-secret-32-bytes-aaaaaaaaaaaa")
+
+	users, err := NewCursorSignerWithContext(secret, "users")
+	if err != nil {
+		t.Fatalf("NewCursorSignerWithContext(users): %v", err)
+	}
+	orders, err := NewCursorSignerWithContext(secret, "orders")
+	if err != nil {
+		t.Fatalf("NewCursorSignerWithContext(orders): %v", err)
+	}
+
+	cursor := users.Encode("id-from-users")
+	if cursor == "" {
+		t.Fatal("expected non-empty cursor from users signer")
+	}
+
+	// The same signer round-trips its own cursor.
+	got, err := users.Decode(cursor)
+	if err != nil {
+		t.Fatalf("users.Decode own cursor: %v", err)
+	}
+	if got != "id-from-users" {
+		t.Fatalf("users.Decode = %q, want %q", got, "id-from-users")
+	}
+
+	// A signer with a different context label MUST reject the foreign cursor
+	// even though the underlying secret is identical.
+	if _, err := orders.Decode(cursor); !errors.Is(err, ErrCursorInvalid) {
+		t.Fatalf("orders.Decode cross-endpoint cursor err = %v, want ErrCursorInvalid", err)
+	}
+}
+
+// TestCursorSigner_EmptyContextIsWireCompatible verifies the additive change
+// did not alter the existing wire format: a context-less signer and a signer
+// built with an empty context produce identical cursors and interoperate, so
+// already-issued cursors keep verifying.
+func TestCursorSigner_EmptyContextIsWireCompatible(t *testing.T) {
+	secret := []byte("test-secret-32-bytes-aaaaaaaaaaaa")
+
+	plain := MustNewCursorSigner(secret)
+	empty, err := NewCursorSignerWithContext(secret, "")
+	if err != nil {
+		t.Fatalf("NewCursorSignerWithContext(\"\"): %v", err)
+	}
+
+	cursor := plain.Encode("id-1")
+	if cursor == "" {
+		t.Fatal("expected non-empty cursor")
+	}
+	if got := empty.Encode("id-1"); got != cursor {
+		t.Fatalf("empty-context Encode = %q, want %q (wire-compatible)", got, cursor)
+	}
+
+	got, err := empty.Decode(cursor)
+	if err != nil {
+		t.Fatalf("empty.Decode context-less cursor: %v", err)
+	}
+	if got != "id-1" {
+		t.Fatalf("empty.Decode = %q, want %q", got, "id-1")
+	}
+}
+
+// TestCursorSigner_DomainSeparationNoLengthExtension guards against a label/
+// payload boundary ambiguity: context "ab"+payload "c" must not collide with
+// context "a"+payload "bc". A naive concat of label and payload would make
+// these two distinct (context, payload) pairs hash identically.
+func TestCursorSigner_DomainSeparationNoLengthExtension(t *testing.T) {
+	secret := []byte("test-secret-32-bytes-aaaaaaaaaaaa")
+
+	ab, err := NewCursorSignerWithContext(secret, "ab")
+	if err != nil {
+		t.Fatalf("NewCursorSignerWithContext(ab): %v", err)
+	}
+	a, err := NewCursorSignerWithContext(secret, "a")
+	if err != nil {
+		t.Fatalf("NewCursorSignerWithContext(a): %v", err)
+	}
+
+	cursorAB := ab.Encode("c")
+	if _, err := a.Decode(cursorAB); !errors.Is(err, ErrCursorInvalid) {
+		t.Fatalf("a.Decode(ab-cursor) err = %v, want ErrCursorInvalid", err)
+	}
+}
+
+func TestNewCursorSignerWithContext_RejectsShortSecret(t *testing.T) {
+	_, err := NewCursorSignerWithContext([]byte("short"), "users")
+	if err == nil {
+		t.Fatal("expected error for <32-byte secret")
+	}
+}

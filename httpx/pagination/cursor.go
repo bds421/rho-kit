@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/http"
@@ -188,16 +189,31 @@ var ErrCursorInvalid = errors.New("pagination: invalid or tampered cursor")
 type CursorSigner struct {
 	secret    *secret.String
 	secretLen int
+	context   string
 	closed    atomic.Bool
 }
 
 // NewCursorSigner creates a CursorSigner. The secret must be at least 32
 // bytes; shorter inputs are rejected.
 func NewCursorSigner(s []byte) (*CursorSigner, error) {
+	return NewCursorSignerWithContext(s, "")
+}
+
+// NewCursorSignerWithContext creates a CursorSigner bound to a domain
+// separation context (an endpoint label such as "users" or "orders"). The
+// context is mixed into the HMAC input so a cursor signed for one endpoint
+// does not verify on another, even when both signers share the same secret —
+// closing the cross-endpoint replay path that arises because operators are
+// told to share one secret across all replicas.
+//
+// An empty context is wire-compatible with [NewCursorSigner]: the signed
+// bytes are identical, so already-issued unscoped cursors keep verifying.
+// The secret must be at least 32 bytes; shorter inputs are rejected.
+func NewCursorSignerWithContext(s []byte, context string) (*CursorSigner, error) {
 	if len(s) < minCursorSignerSecretLen {
 		return nil, fmt.Errorf("pagination: cursor signer secret must be at least 32 bytes")
 	}
-	return &CursorSigner{secret: secret.New(s), secretLen: len(s)}, nil
+	return &CursorSigner{secret: secret.New(s), secretLen: len(s), context: context}, nil
 }
 
 // MustNewCursorSigner panics on construction error. Use in startup paths.
@@ -205,6 +221,16 @@ func MustNewCursorSigner(secret []byte) *CursorSigner {
 	s, err := NewCursorSigner(secret)
 	if err != nil {
 		panic("pagination: MustNewCursorSigner cursor signer secret is invalid")
+	}
+	return s
+}
+
+// MustNewCursorSignerWithContext panics on construction error. Use in startup
+// paths. See [NewCursorSignerWithContext] for context semantics.
+func MustNewCursorSignerWithContext(secret []byte, context string) *CursorSigner {
+	s, err := NewCursorSignerWithContext(secret, context)
+	if err != nil {
+		panic("pagination: MustNewCursorSignerWithContext cursor signer secret is invalid")
 	}
 	return s
 }
@@ -228,6 +254,22 @@ func (s *CursorSigner) Close() error {
 	return nil
 }
 
+// writeMACInput feeds the HMAC the bytes to authenticate. When the signer has
+// no context it writes the bare payload, preserving the original wire format.
+// When a context is set it prepends a length-prefixed, domain-separated header
+// so distinct (context, payload) pairs can never alias each other (e.g.
+// context "ab"+payload "c" must not collide with context "a"+payload "bc").
+func (s *CursorSigner) writeMACInput(mac interface{ Write([]byte) (int, error) }, payload []byte) {
+	if s.context != "" {
+		var lenPrefix [8]byte
+		ctx := []byte(s.context)
+		binary.BigEndian.PutUint64(lenPrefix[:], uint64(len(ctx)))
+		mac.Write(lenPrefix[:])
+		mac.Write(ctx)
+	}
+	mac.Write(payload)
+}
+
 // Encode signs the raw cursor payload (typically a UUID or other PK string).
 // Returns "" when payload is empty (first page), or when the signer was not
 // constructed with [NewCursorSigner].
@@ -238,7 +280,7 @@ func (s *CursorSigner) Encode(payload string) string {
 	var sum []byte
 	s.secret.Use(func(k []byte) {
 		mac := hmac.New(sha256.New, k)
-		mac.Write([]byte(payload))
+		s.writeMACInput(mac, []byte(payload))
 		sum = mac.Sum(nil)
 	})
 	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." +
@@ -281,7 +323,7 @@ func (s *CursorSigner) Decode(cursor string) (string, error) {
 	var match bool
 	s.secret.Use(func(k []byte) {
 		expected := hmac.New(sha256.New, k)
-		expected.Write(payload)
+		s.writeMACInput(expected, payload)
 		match = subtle.ConstantTimeCompare(sig, expected.Sum(nil)) == 1
 	})
 	if !match {

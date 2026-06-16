@@ -974,3 +974,97 @@ func TestRegister_ResponseContent_BadInput(t *testing.T) {
 		})
 	}
 }
+
+// TestHandle_NormalisesMuxMethod verifies that the Handle helpers mount
+// the route on the mux using the same normalised verb that Spec.Register
+// records. A caller passing a non-uppercase method (which Register
+// accepts case-insensitively) must still produce a route that real
+// requests can match — otherwise the spec documents a live operation
+// while the mux silently returns 405/404.
+func TestHandle_NormalisesMuxMethod(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+	}{
+		{"lowercase", "post"},
+		{"mixedcase", "Post"},
+		{"padded", " POST "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			spec := openapigen.NewSpec("api", "v1")
+
+			err := openapigen.Handle[createWidgetReq, widgetResp](mux, spec,
+				tc.method, "/widgets", newLogger(),
+				func(_ context.Context, _ *http.Request, in createWidgetReq) (widgetResp, error) {
+					return widgetResp{ID: "w-1", Name: in.Name, Price: in.Price}, nil
+				},
+			)
+			require.NoError(t, err)
+
+			// Spec recorded the (normalised) POST operation.
+			require.NotNil(t, spec.Document().Paths["/widgets"].Post)
+
+			// A real POST request must reach the handler.
+			rec := httptest.NewRecorder()
+			body := strings.NewReader(`{"name":"axe","price":42}`)
+			req := httptest.NewRequest(http.MethodPost, "/widgets", body)
+			req.Header.Set("Content-Type", "application/json")
+			mux.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code,
+				"POST must match the route the spec advertises")
+
+			var got widgetResp
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+			assert.Equal(t, "axe", got.Name)
+		})
+	}
+}
+
+// TestHandle_ResponseContentOnlySuppressesDefault200 verifies that a
+// caller who documents the success body solely via the additive
+// content options (WithResponseContent / WithResponseContentT) does not
+// also get a spurious default 200 response injected by Handle.
+func TestHandle_ResponseContentOnlySuppressesDefault200(t *testing.T) {
+	t.Run("WithResponseContent", func(t *testing.T) {
+		mux := http.NewServeMux()
+		spec := openapigen.NewSpec("api", "v1")
+		wantSchema := &jsonschema.Schema{Type: "object"}
+
+		require.NoError(t, openapigen.Handle[createWidgetReq, widgetResp](mux, spec,
+			http.MethodPost, "/widgets", newLogger(),
+			func(_ context.Context, _ *http.Request, _ createWidgetReq) (widgetResp, error) {
+				return widgetResp{}, nil
+			},
+			openapigen.WithResponseContent(http.StatusCreated, "application/problem+json", wantSchema),
+		))
+
+		resp := spec.Document().Paths["/widgets"].Post.Responses
+		_, has201 := resp["201"]
+		_, has200 := resp["200"]
+		assert.True(t, has201, "caller-supplied 201 content must be recorded")
+		assert.False(t, has200,
+			"default 200 must not be injected when caller supplied a response body via WithResponseContent")
+	})
+
+	t.Run("WithResponseContentT", func(t *testing.T) {
+		mux := http.NewServeMux()
+		spec := openapigen.NewSpec("api", "v1")
+
+		require.NoError(t, openapigen.HandleStatus[createWidgetReq, widgetResp](mux, spec,
+			http.MethodPost, "/widgets", newLogger(),
+			func(_ context.Context, _ *http.Request, _ createWidgetReq) (int, widgetResp, error) {
+				return http.StatusCreated, widgetResp{}, nil
+			},
+			openapigen.WithResponseContentT[widgetResp](http.StatusCreated, "application/json"),
+		))
+
+		resp := spec.Document().Paths["/widgets"].Post.Responses
+		_, has201 := resp["201"]
+		_, has200 := resp["200"]
+		assert.True(t, has201, "caller-supplied 201 content must be recorded")
+		assert.False(t, has200,
+			"default 200 must not be injected when caller supplied a response body via WithResponseContentT")
+	})
+}

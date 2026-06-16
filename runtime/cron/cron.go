@@ -208,6 +208,14 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	s.cron.Start()
 	s.logger.Info("cron scheduler started")
 	<-startedCtx.Done()
+	// Drain the underlying robfig/cron run() goroutine and its timers.
+	// startedCtx fires both when the caller cancels the parent ctx
+	// directly (a documented Start termination) and when Stop cancels
+	// it. In the direct-cancel path Stop is never called, so without
+	// this the run() goroutine loops forever. Cron.Stop is guarded by
+	// its own running flag, so a concurrent Scheduler.Stop calling it
+	// too is a safe no-op.
+	s.cron.Stop()
 	return nil
 }
 

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -179,6 +181,47 @@ func TestConnect_Close(t *testing.T) {
 	// Idempotent close.
 	err = conn.Close()
 	require.NoError(t, err)
+}
+
+// TestCheckHealth_DoesNotResurrectClosedConnection reproduces the race
+// where a ping started before Close() succeeds and lands its health write
+// after Close() marked the connection unhealthy. Since healthLoop exits via
+// the closed channel, nothing ever corrects a checkHealth that flips
+// healthy back to true — leaving a closed connection reporting Healthy()==true
+// and the connection_healthy gauge stuck at 1 forever.
+func TestCheckHealth_DoesNotResurrectClosedConnection(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+
+	c := &Connection{
+		client:             client,
+		closed:             make(chan struct{}),
+		dead:               make(chan struct{}),
+		connected:          make(chan struct{}),
+		logger:             slog.Default(),
+		instance:           "default",
+		healthInterval:     time.Second,
+		onReconnectTimeout: defaultOnReconnectTimeout,
+		metrics:            NewMetrics(WithRegisterer(prometheus.NewRegistry())),
+	}
+
+	// Simulate Close() having already run: the closed channel is closed and
+	// health was flipped to false. The underlying miniredis client is still
+	// open, so checkHealth's ping below succeeds — exactly the in-flight ping
+	// that races with Close.
+	close(c.closed)
+	c.mu.Lock()
+	c.healthy = false
+	c.mu.Unlock()
+	c.metrics.connectionHealthy.WithLabelValues(c.instance).Set(0)
+
+	// A successful ping must NOT resurrect a closed connection.
+	c.checkHealth()
+
+	assert.False(t, c.Healthy(), "closed connection must stay unhealthy after a successful ping")
+	assert.Equal(t, float64(0),
+		testutil.ToFloat64(c.metrics.connectionHealthy.WithLabelValues(c.instance)),
+		"connection_healthy gauge must stay 0 for a closed connection")
 }
 
 func TestConnect_OnReconnect(t *testing.T) {

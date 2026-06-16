@@ -264,15 +264,16 @@ type RateLimitDeclarer interface {
 // is already a foundation-level type the Builder imports.
 //
 // Defaults when no app/http module is registered:
-//   AllowPlaintext            = false
-//   OptionalClientCerts       = false
-//   AllowInternalNonLoopback  = false
-//   ReloadingTLS              = nil (use static cfg.TLS snapshot)
-//   TLSReloadSignals          = empty
-//   DisableDefaultStack       = false
-//   ServerOptions             = empty
-//   StackOptions              = empty
-//   CustomReadiness           = nil (use auto-built handler)
+//
+//	AllowPlaintext            = false
+//	OptionalClientCerts       = false
+//	AllowInternalNonLoopback  = false
+//	ReloadingTLS              = nil (use static cfg.TLS snapshot)
+//	TLSReloadSignals          = empty
+//	DisableDefaultStack       = false
+//	ServerOptions             = empty
+//	StackOptions              = empty
+//	CustomReadiness           = nil (use auto-built handler)
 type HTTPConfigProvider interface {
 	AllowPlaintext() bool
 	OptionalClientCerts() bool
@@ -497,13 +498,31 @@ func initModules(
 // initOneModule calls Init on a single module with panic recovery.
 // A panic during Init is converted to an error so that the caller can
 // still clean up already-initialized modules.
-func initOneModule(ctx context.Context, m Module, mc ModuleContext) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic during init: %s", redact.PanicValue(r))
-		}
+//
+// FR-013: Init runs in a watchdog goroutine so that a module which ignores
+// ctx and blocks in non-context-aware code (DNS lookup, vendor SDK connect)
+// cannot block startup forever. When ctx is cancelled or its deadline
+// elapses before Init returns, initOneModule returns ctx.Err() immediately
+// and the still-running Init goroutine is orphaned (it completes or leaks in
+// the background — the process is already failing startup, so this is an
+// accepted trade-off over an indefinite hang).
+func initOneModule(ctx context.Context, m Module, mc ModuleContext) error {
+	done := make(chan error, 1) // buffered so the goroutine never blocks on send
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("panic during init: %s", redact.PanicValue(r))
+			}
+		}()
+		done <- m.Init(ctx, mc)
 	}()
-	return m.Init(ctx, mc)
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // closeModules closes modules in reverse order, logging any errors.

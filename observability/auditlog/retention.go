@@ -19,6 +19,15 @@ type RetentionStore interface {
 // RetentionJob returns a function suitable for cron scheduling that deletes
 // audit events older than the retention period. The function logs the number
 // of deleted events.
+//
+// Interaction with chain verification: deleting the oldest events leaves the
+// new head with a non-empty PrevHMAC (it still links to a now-deleted
+// record). The genesis-anchored [VerifyChain] / [Logger.VerifyChain] reject
+// such a chain with [ErrChainBroken]. Operators who run retention AND rely on
+// tamper-evidence must verify with the retention-aware [VerifyChainFrom] /
+// [Logger.VerifyChainFrom], passing the HMAC of the last-deleted event as the
+// watermark. Persist that watermark alongside the surviving records when the
+// retention sweep runs.
 func RetentionJob(store RetentionStore, retention time.Duration, logger *slog.Logger) func(ctx context.Context) error {
 	if store == nil {
 		panic("auditlog: RetentionJob requires a non-nil store")

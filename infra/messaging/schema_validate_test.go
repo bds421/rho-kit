@@ -248,6 +248,102 @@ func TestValidatingHandler_PassesUnregisteredVersion(t *testing.T) {
 	assert.True(t, nextCalled)
 }
 
+// TestValidatingHandler_StrictRejectsUnknownVersionForKnownType verifies
+// the additive strict mode: when a message type HAS registered schemas
+// but the delivered (transport-header-controlled) version is not among
+// them, strict mode rejects rather than passing the unvalidated payload
+// through. This closes the "X-Schema-Version: 999 skips validation"
+// bypass for types that opted into schemas.
+func TestValidatingHandler_StrictRejectsUnknownVersionForKnownType(t *testing.T) {
+	reg := messaging.NewInMemorySchemaRegistry()
+	schema := json.RawMessage(`{
+		"type": "object",
+		"properties": {"name": {"type": "string"}},
+		"required": ["name"]
+	}`)
+	require.NoError(t, reg.Register("user.created", 1, schema))
+
+	var nextCalled bool
+	next := func(_ context.Context, _ messaging.Delivery) error {
+		nextCalled = true
+		return nil
+	}
+
+	h := messaging.NewValidatingHandler(reg, next, messaging.WithStrictUnknownVersion())
+
+	// Type user.created has schemas (v1) but the delivery claims v999.
+	d := messaging.Delivery{
+		SchemaVersion: 999,
+		Message: messaging.Message{
+			ID:      "msg-strict",
+			Type:    "user.created",
+			Payload: json.RawMessage(`{"name":123}`),
+		},
+	}
+
+	err := h(context.Background(), d)
+	require.Error(t, err)
+	assert.False(t, nextCalled, "strict mode must not dispatch unvalidated payload")
+}
+
+// TestValidatingHandler_StrictAllowsUnversionedAndUnknownType verifies
+// strict mode keeps the legacy pass-throughs that are intentional:
+// version 0 (unversioned/legacy) and types with NO registered schemas.
+func TestValidatingHandler_StrictAllowsUnversionedAndUnknownType(t *testing.T) {
+	reg := messaging.NewInMemorySchemaRegistry()
+	schema := json.RawMessage(`{"type": "object", "required": ["name"]}`)
+	require.NoError(t, reg.Register("user.created", 1, schema))
+
+	cases := []messaging.Delivery{
+		{ // version 0 = unversioned legacy, passes
+			SchemaVersion: 0,
+			Message:       messaging.Message{ID: "m0", Type: "user.created", Payload: json.RawMessage(`{}`)},
+		},
+		{ // type with no registered schemas at all, passes
+			SchemaVersion: 5,
+			Message:       messaging.Message{ID: "m1", Type: "unknown.type", Payload: json.RawMessage(`{"x":1}`)},
+		},
+	}
+
+	for i, d := range cases {
+		var nextCalled bool
+		next := func(_ context.Context, _ messaging.Delivery) error {
+			nextCalled = true
+			return nil
+		}
+		h := messaging.NewValidatingHandler(reg, next, messaging.WithStrictUnknownVersion())
+		if err := h(context.Background(), d); err != nil {
+			t.Fatalf("case %d: strict mode rejected an intentional pass-through: %v", i, err)
+		}
+		if !nextCalled {
+			t.Fatalf("case %d: strict mode dropped a message that should pass through", i)
+		}
+	}
+}
+
+// TestValidatingHandler_DefaultStillPassesUnknownVersion guards that the
+// default (non-strict) behaviour is unchanged: an unknown version for a
+// type with registered schemas still passes through.
+func TestValidatingHandler_DefaultStillPassesUnknownVersion(t *testing.T) {
+	reg := messaging.NewInMemorySchemaRegistry()
+	schema := json.RawMessage(`{"type": "object", "required": ["name"]}`)
+	require.NoError(t, reg.Register("user.created", 1, schema))
+
+	var nextCalled bool
+	next := func(_ context.Context, _ messaging.Delivery) error {
+		nextCalled = true
+		return nil
+	}
+	h := messaging.NewValidatingHandler(reg, next) // default mode
+
+	d := messaging.Delivery{
+		SchemaVersion: 999,
+		Message:       messaging.Message{ID: "m", Type: "user.created", Payload: json.RawMessage(`{}`)},
+	}
+	require.NoError(t, h(context.Background(), d))
+	assert.True(t, nextCalled)
+}
+
 func TestValidatingHandler_PanicOnNilRegistry(t *testing.T) {
 	assert.Panics(t, func() {
 		messaging.NewValidatingHandler(nil, func(_ context.Context, _ messaging.Delivery) error {

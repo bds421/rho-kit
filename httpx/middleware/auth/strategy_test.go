@@ -259,6 +259,56 @@ func TestAPIKeyAuthenticator_VerifierErrorIsInvalidCredentials(t *testing.T) {
 	require.True(t, errors.Is(err, auth.ErrInvalidCredentials))
 }
 
+func TestAPIKeyAuthenticator_VerifierErrorWrapsCause(t *testing.T) {
+	// A verifier-internal failure (DB outage, context cancelled, timeout)
+	// must still surface as ErrInvalidCredentials for callers and the
+	// opaque wire response, but the underlying cause must be preserved so
+	// operators can tell an infra outage apart from a forged key in logs.
+	cause := errors.New("dial tcp: connection refused")
+	v := auth.APIKeyVerifierFunc(func(context.Context, string) (auth.Identity, error) {
+		return auth.Identity{}, cause
+	})
+	a := auth.NewAPIKeyAuthenticator("X-API-Key", v)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-API-Key", "anything")
+	_, err := a.Authenticate(req)
+
+	require.Error(t, err)
+	require.True(t, errors.Is(err, auth.ErrInvalidCredentials),
+		"verifier failure must remain ErrInvalidCredentials for callers")
+	require.Contains(t, err.Error(), cause.Error(),
+		"verifier error cause must be preserved for logging")
+}
+
+func TestAPIKeyAuthenticator_VerifierErrorStillStopsChain(t *testing.T) {
+	// Defence-in-depth: preserving the cause must NOT let a verifier
+	// failure fall through to a weaker strategy in a Chain, even if the
+	// cause itself happens to wrap ErrUnauthenticated.
+	calls := []string{}
+	first := auth.NewAPIKeyAuthenticator("X-API-Key",
+		auth.APIKeyVerifierFunc(func(context.Context, string) (auth.Identity, error) {
+			calls = append(calls, "first")
+			return auth.Identity{}, auth.ErrUnauthenticated
+		}))
+	second := auth.AuthenticatorFunc(func(*http.Request) (auth.Identity, error) {
+		calls = append(calls, "second")
+		return auth.Identity{UserID: testUserID}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-API-Key", "present-but-rejected")
+	_, err := auth.Chain(first, second).Authenticate(req)
+
+	require.Error(t, err)
+	require.True(t, errors.Is(err, auth.ErrInvalidCredentials),
+		"present-but-invalid key must surface as ErrInvalidCredentials")
+	require.False(t, errors.Is(err, auth.ErrUnauthenticated),
+		"a present key's verifier failure must not masquerade as Unauthenticated")
+	require.Equal(t, []string{"first"}, calls,
+		"chain must stop after the API-key verifier failed for a present key")
+}
+
 func TestAPIKeyAuthenticator_NilPanics(t *testing.T) {
 	require.PanicsWithValue(t,
 		"middleware/auth: NewAPIKeyAuthenticator requires a non-nil verifier",

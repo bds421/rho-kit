@@ -235,9 +235,13 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	allowed, _, _, err := t.b.Consume(req.Context(), t.key, estimate)
 	if err != nil {
+		// The RoundTripper contract requires the body be closed on every
+		// path that does not delegate to base.RoundTrip, including errors.
+		closeRequestBody(req)
 		return nil, fmt.Errorf("httpx/budget: pre-charge: %w", err)
 	}
 	if !allowed {
+		closeRequestBody(req)
 		return nil, ErrBudgetExceeded
 	}
 
@@ -259,9 +263,11 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // estimate reads the per-request estimate header if set, falling
-// back to the configured default. Negative or unparseable values
+// back to the configured default. Non-positive or unparseable values
 // fall back to the default; we don't propagate user-supplied junk
-// into the backend.
+// into the backend. A zero charge is a no-op probe the budget admits
+// even when exhausted, so an untrusted header value of "0" must not be
+// allowed to slip past the gate — it falls back to the default.
 func (t *transport) estimate(req *http.Request) int64 {
 	if t.cfg.estimateHeader == "" {
 		return t.cfg.defaultAmount
@@ -271,10 +277,20 @@ func (t *transport) estimate(req *http.Request) int64 {
 		return t.cfg.defaultAmount
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil || n < 0 {
+	if err != nil || n <= 0 {
 		return t.cfg.defaultAmount
 	}
 	return n
+}
+
+// closeRequestBody closes req.Body if present. The net/http
+// RoundTripper contract requires RoundTrip to always close the body,
+// including on errors; the early-return paths that never reach
+// base.RoundTrip must honour it so file/pipe-backed bodies do not leak.
+func closeRequestBody(req *http.Request) {
+	if req != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
 }
 
 // reconcile computes the delta between estimate and actual reported

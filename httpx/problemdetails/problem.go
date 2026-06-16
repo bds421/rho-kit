@@ -41,7 +41,9 @@ type Problem struct {
 	// inline at the top level of the JSON object via the custom
 	// MarshalJSON below. Keys must not collide with the RFC 7807
 	// reserved members ("type", "title", "status", "detail",
-	// "instance") — Write panics if they do.
+	// "instance"): MarshalJSON returns an error on collision, and Write
+	// (which ignores that error) silently degrades to a generic 500
+	// problem+json body instead of emitting the colliding extension.
 	Extensions map[string]any `json:"-"`
 }
 
@@ -77,10 +79,11 @@ func (p Problem) MarshalJSON() ([]byte, error) {
 // Write serialises p to w with the application/problem+json media type
 // and the status code from p.Status (defaulting to 500 if unset).
 //
-// If err is non-nil, Write surfaces it via the response writer's body
-// only when w supports a flusher and the headers are not yet written —
-// in normal use Write returns no error. This signature mirrors
-// http.Error: callers shouldn't have to handle a write failure.
+// Write returns nothing, mirroring http.Error: callers shouldn't have to
+// handle a write failure. If p fails to marshal (for example, an
+// Extensions key collides with a reserved RFC 7807 member), Write
+// discards the original status and emits a generic 500 problem+json body
+// instead.
 func Write(w http.ResponseWriter, p Problem) {
 	status := p.Status
 	if status == 0 {
@@ -228,6 +231,12 @@ func SafeDetail(err error) string {
 	if apperror.IsUnavailable(err) {
 		return "service unavailable"
 	}
+	if apperror.IsTimeout(err) {
+		return "request timeout"
+	}
+	if apperror.IsPayloadTooLarge(err) {
+		return "payload too large"
+	}
 	if apperror.IsOperationFailed(err) {
 		return "internal error"
 	}
@@ -329,6 +338,14 @@ func mapStatus(err error) int {
 		// hostile-review finding that FromError defaulted to 500
 		// for CodeStorageFull while httpx.HTTPStatus returns 507.
 		return http.StatusInsufficientStorage
+	case apperror.CodeTimeout:
+		// Mirrors httpx.HTTPStatus, which maps CodeTimeout to 408.
+		// Without this case the client-class timeout collapsed to 500.
+		return http.StatusRequestTimeout
+	case apperror.CodePayloadTooLarge:
+		// Mirrors httpx.HTTPStatus, which maps CodePayloadTooLarge to 413.
+		// Without this case the client-class error collapsed to 500.
+		return http.StatusRequestEntityTooLarge
 	default:
 		return http.StatusInternalServerError
 	}

@@ -41,7 +41,7 @@ import (
 	"github.com/bds421/rho-kit/data/v2/ratelimit"
 )
 
-// gcraScript is the atomic GCRA evaluation.
+// gcraScriptSrc is the atomic GCRA evaluation source.
 //
 //	KEYS[1] = per-key state ("<prefix>:<key>")
 //	ARGV[1] = now in microseconds (caller's clock)
@@ -50,7 +50,13 @@ import (
 //	ARGV[4] = key TTL in seconds (>=1)
 //
 // Returns: {allowed (0|1), retryAfter microseconds when denied}.
-var gcraScript = goredis.NewScript(`
+//
+// The TAT is written with string.format("%.0f", ...) rather than as a raw Lua
+// number. Redis serialises a Lua number argument with %.14g; current
+// Unix-microsecond timestamps have 16 significant digits, so a raw number would
+// be rounded to roughly a 100µs grid and sub-100µs rate increments would be
+// lost. Formatting to a decimal string in Lua passes the exact integer to SET.
+const gcraScriptSrc = `
 local now    = tonumber(ARGV[1])
 local rate   = tonumber(ARGV[2])
 local burst  = tonumber(ARGV[3])
@@ -65,9 +71,12 @@ if now < allowAt then
   return {0, allowAt - now + 1}
 end
 local newTat = tat + rate
-redis.call("SET", KEYS[1], newTat, "EX", ttl)
+redis.call("SET", KEYS[1], string.format("%.0f", newTat), "EX", ttl)
 return {1, 0}
-`)
+`
+
+// gcraScript is the atomic GCRA evaluation.
+var gcraScript = goredis.NewScript(gcraScriptSrc)
 
 // Limiter is a per-key Redis-backed GCRA [ratelimit.Limiter].
 // Safe for concurrent use — all per-call state lives in Redis; the

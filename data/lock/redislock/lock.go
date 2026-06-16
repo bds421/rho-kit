@@ -35,8 +35,11 @@ func WithTTL(d time.Duration) Option {
 }
 
 // WithRetry configures polling when the lock is held by another process.
-// Acquire will retry at the given interval for up to maxAttempts times
-// before returning (nil, false, nil).
+// maxAttempts is the TOTAL number of acquisition attempts, not the retry
+// count: maxAttempts == 1 makes a single attempt with no retry, and
+// maxAttempts == N retries N-1 times at the given interval before
+// returning (nil, false, nil). maxAttempts <= 0 also means a single
+// attempt.
 //
 // Wave 126 backed the retry loop with redsync's
 // [redsync.WithTries] and [redsync.WithRetryDelayFunc]. The interval
@@ -201,6 +204,15 @@ func (lc *Locker) doAcquire(ctx context.Context, key string) (lock.Lock, bool, e
 		return nil, false, ctxErr
 	}
 	if isContentionError(err) {
+		return nil, false, nil
+	}
+	// The internal maxWait timeout (lockCtx) can fire *during* a redsync
+	// command on the final try, in which case redsync returns the raw node
+	// error (a RedisError wrapping context.DeadlineExceeded) rather than a
+	// contention sentinel. The caller's ctx is still alive here, so this is
+	// an internal maxWait expiry: honour the documented (nil, false, nil)
+	// "contention exhausted" contract instead of leaking it as a backend error.
+	if lockCtx.Err() != nil {
 		return nil, false, nil
 	}
 	return nil, false, redact.WrapError("lock: acquire failed", err)

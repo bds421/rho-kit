@@ -10,7 +10,7 @@ import (
 )
 
 func TestNew_PanicsOnInvalidArgs(t *testing.T) {
-	assert.Panics(t, func() { New(nil, time.Second) })                  //nolint:staticcheck // intentional nil-ctx contract test
+	assert.Panics(t, func() { New(nil, time.Second) }) //nolint:staticcheck // intentional nil-ctx contract test
 	assert.Panics(t, func() { New(context.Background(), 0) })
 	assert.Panics(t, func() { New(context.Background(), -time.Second) })
 }
@@ -67,6 +67,72 @@ func TestWithReservation_NestedReservations(t *testing.T) {
 		"inner restore drops back to outer reservation")
 	outer()
 	assert.Equal(t, time.Duration(0), b.Reservation())
+}
+
+func TestWithReservation_ConcurrentRestoreDoesNotClobberSiblings(t *testing.T) {
+	_, b, cancel := New(context.Background(), time.Second)
+	defer cancel()
+
+	// Two overlapping (non-LIFO) reservations, as happens with a
+	// concurrent fan-out where each goroutine reserves and restores
+	// independently. Restoring the first must NOT wipe the second's
+	// still-active reservation.
+	first := b.WithReservation(100 * time.Millisecond)
+	second := b.WithReservation(50 * time.Millisecond)
+
+	require.Equal(t, 150*time.Millisecond, b.Reservation())
+
+	// Restore the FIRST while the second is still active.
+	first()
+	assert.Equal(t, 50*time.Millisecond, b.Reservation(),
+		"restoring the first reservation must only release its own 100ms, leaving the second's 50ms")
+
+	second()
+	assert.Equal(t, time.Duration(0), b.Reservation(),
+		"restoring the second releases the rest")
+}
+
+func TestWithReservation_RestoreIsIdempotent(t *testing.T) {
+	_, b, cancel := New(context.Background(), time.Second)
+	defer cancel()
+
+	outer := b.WithReservation(100 * time.Millisecond)
+	restore := b.WithReservation(40 * time.Millisecond)
+
+	restore()
+	restore() // double-call must not over-release
+	assert.Equal(t, 100*time.Millisecond, b.Reservation(),
+		"calling restore twice must not subtract twice")
+
+	outer()
+	assert.Equal(t, time.Duration(0), b.Reservation())
+}
+
+func TestUsed_ReportsElapsedNotRemaining(t *testing.T) {
+	clock := newFakeClock(time.Unix(1_700_000_000, 0))
+	_, b, cancel := New(context.Background(), time.Second, WithClock(clock.now))
+	defer cancel()
+
+	assert.InDelta(t, time.Duration(0), b.Used(), float64(2*time.Millisecond),
+		"nothing elapsed yet")
+
+	clock.advance(600 * time.Millisecond)
+	assert.InDelta(t, 600*time.Millisecond, b.Used(), float64(2*time.Millisecond),
+		"Used reports time consumed since New, not time remaining")
+
+	// Used and Remaining are complementary observability accessors.
+	assert.InDelta(t, float64(time.Second), float64(b.Used()+b.Remaining()), float64(2*time.Millisecond),
+		"Used + Remaining ~= total budget")
+}
+
+func TestUsed_CapsAtTotalAfterDeadline(t *testing.T) {
+	clock := newFakeClock(time.Unix(1_700_000_000, 0))
+	_, b, cancel := New(context.Background(), 100*time.Millisecond, WithClock(clock.now))
+	defer cancel()
+
+	clock.advance(150 * time.Millisecond)
+	assert.Equal(t, 100*time.Millisecond, b.Used(),
+		"past deadline, Used caps at the total budget, never exceeds it")
 }
 
 func TestWithRemaining_GivesChildCtxDeadline(t *testing.T) {

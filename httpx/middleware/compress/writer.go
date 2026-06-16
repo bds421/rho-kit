@@ -33,11 +33,12 @@ type compressWriter struct {
 	status      int
 	wroteHeader bool
 
-	buf      *bytes.Buffer // nil after streaming begins
-	cw       WriterReleaser
-	mode     writerMode
-	closed   bool
-	hijacked bool // Hijack() was called; finalize must not touch the writer
+	buf       *bytes.Buffer // nil after streaming begins
+	cw        WriterReleaser
+	mode      writerMode
+	closed    bool
+	hijacked  bool // Hijack() was called; finalize must not touch the writer
+	completed bool // next.ServeHTTP returned normally (not via panic)
 }
 
 type writerMode int
@@ -78,7 +79,23 @@ func (cw *compressWriter) Write(p []byte) (int, error) {
 	if cw.mode == modeCompressed {
 		return cw.cw.Write(p)
 	}
-	// modeUndecided: buffer until we cross MinSize or MaxBuffer.
+	// modeUndecided: decide between compressed and passthrough.
+	//
+	// If the buffered prefix plus this write already clears MinSize we
+	// commit to compression immediately. The total size is known to
+	// exceed the threshold, so there is no reason to keep buffering — even
+	// if it would also exceed MaxBuffer (the MaxBuffer ceiling exists to
+	// bound memory while *waiting* to learn the size, not to disqualify a
+	// response we already know is large enough to compress).
+	if cw.buf.Len()+len(p) >= cw.cfg.minSize {
+		cw.buf.Write(p)
+		if err := cw.commitCompressed(); err != nil {
+			return 0, err
+		}
+		return len(p), nil
+	}
+	// Still below MinSize. Bail to passthrough only if buffering this
+	// write would breach MaxBuffer (reachable when MinSize > MaxBuffer).
 	if cw.buf.Len()+len(p) > cw.cfg.maxBuffer {
 		// Bail out: flush buffered bytes + this write uncompressed.
 		cw.commitPassthrough()
@@ -88,9 +105,6 @@ func (cw *compressWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	cw.buf.Write(p)
-	if cw.buf.Len() >= cw.cfg.minSize {
-		return cw.commitCompressed()
-	}
 	return len(p), nil
 }
 
@@ -106,7 +120,7 @@ func (cw *compressWriter) Flush() {
 		if cw.buf.Len() < cw.cfg.minSize {
 			cw.commitPassthrough()
 		} else {
-			_, _ = cw.commitCompressed()
+			_ = cw.commitCompressed()
 		}
 	case modeCompressed:
 		// Force the encoder to push any buffered bytes to the wire.
@@ -162,7 +176,13 @@ func (cw *compressWriter) commitPassthrough() {
 	}
 }
 
-func (cw *compressWriter) commitCompressed() (int, error) {
+// commitCompressed transitions to compressed streaming, writes the
+// response prelude, and flushes any buffered prefix through the encoder.
+// It returns only the flush error: the byte count of the buffered prefix
+// is bookkeeping internal to the writer and must NOT be reported back to
+// a Write caller (the count would exceed that caller's input length,
+// violating io.Writer and breaking io.Copy / bufio.Writer accounting).
+func (cw *compressWriter) commitCompressed() error {
 	cw.mode = modeCompressed
 	h := cw.Header()
 	h.Set("Content-Encoding", cw.encoder.ContentEncoding())
@@ -179,11 +199,11 @@ func (cw *compressWriter) commitCompressed() (int, error) {
 	cw.ResponseWriter.WriteHeader(cw.status)
 	cw.cw = cw.encoder.Acquire(cw.ResponseWriter)
 	if cw.buf != nil && cw.buf.Len() > 0 {
-		n, err := cw.cw.Write(cw.buf.Bytes())
+		_, err := cw.cw.Write(cw.buf.Bytes())
 		cw.buf = nil
-		return n, err
+		return err
 	}
-	return 0, nil
+	return nil
 }
 
 // finalize is deferred by Middleware so every response path runs it,
@@ -191,11 +211,38 @@ func (cw *compressWriter) commitCompressed() (int, error) {
 // returned without crossing MinSize) and releases compressor resources.
 // No-op after Hijack: the raw connection has been handed off and we
 // must not write to the underlying ResponseWriter.
+//
+// completed reports whether next.ServeHTTP returned normally. When it is
+// false the handler is panicking: the deferred finalize runs during stack
+// unwinding, BEFORE an outer recover middleware catches the panic. If we
+// committed a 200 here, recover would observe an already-started response
+// and could only log instead of emitting a clean 500 — every panic under
+// the middleware would surface to the client as a 200. On the panic path
+// we therefore release the encoder without writing a new response prelude
+// and discard any sub-threshold buffered bytes, leaving the underlying
+// writer untouched so recover can take over.
 func (cw *compressWriter) finalize() {
 	if cw.closed || cw.hijacked {
 		return
 	}
 	cw.closed = true
+
+	if !cw.completed {
+		// Handler panicked. Do not start or commit a response.
+		if cw.cw != nil {
+			// Headers already went out (mode became compressed before the
+			// panic). Close to flush the encoder's trailer for the partial
+			// body and release the pooled writer.
+			_ = cw.cw.Close()
+			cw.cw.Release()
+			cw.cw = nil
+		}
+		// Drop any buffered prefix; it was never sent and the response is
+		// incomplete. Leaving wroteHeader false lets recover send a 500.
+		cw.buf = nil
+		return
+	}
+
 	if !cw.wroteHeader {
 		cw.WriteHeader(http.StatusOK)
 	}

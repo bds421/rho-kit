@@ -1,6 +1,7 @@
 package redisstore
 
 import (
+	"context"
 	"errors"
 	"net"
 	"strings"
@@ -81,6 +82,16 @@ func isConnectionUnavailable(err error) bool {
 	}
 	if errors.Is(err, goredis.ErrPoolExhausted) {
 		return true
+	}
+	// Caller-driven cancellation is not a dependency outage and must not be
+	// reclassified as unavailable. context.DeadlineExceeded satisfies the
+	// net.Error interface (Timeout/Temporary both report true), so without
+	// this guard an expired request deadline would be misreported as a store
+	// outage (502/Retry-After) while context.Canceled — which does not
+	// implement net.Error — passes through untranslated. Excluding both keeps
+	// the two cancellation modes classified consistently.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
 	}
 	var netErr net.Error
 	return errors.As(err, &netErr)

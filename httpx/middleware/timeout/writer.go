@@ -33,6 +33,7 @@ type timeoutWriter struct {
 	h           http.Header
 	code        int
 	buf         []byte
+	wroteHeader bool
 	written     bool
 	flushWarned bool
 
@@ -59,6 +60,13 @@ func (tw *timeoutWriter) Header() http.Header {
 }
 
 // WriteHeader buffers the status code for later flushing. No-op after timeout.
+//
+// This mirrors the http.ResponseWriter contract enforced by the stdlib: the
+// first WriteHeader latches the final status and later calls are superfluous
+// no-ops. 1xx informational codes do not latch a final status — the buffered
+// writer cannot send them early, so they are dropped, leaving a subsequent
+// Write/WriteHeader to set the real status (defaulting to 200). This keeps
+// handler behaviour identical inside and outside the middleware.
 func (tw *timeoutWriter) WriteHeader(code int) {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
@@ -68,6 +76,15 @@ func (tw *timeoutWriter) WriteHeader(code int) {
 	if code < 100 || code > 999 {
 		panic("middleware/timeout: WriteHeader writer WriteHeader received invalid status code")
 	}
+	// 1xx informational responses are not the final status; ignore them so a
+	// later WriteHeader/Write can still set the real status code.
+	if code < 200 {
+		return
+	}
+	if tw.wroteHeader {
+		return
+	}
+	tw.wroteHeader = true
 	tw.code = code
 }
 
@@ -77,6 +94,14 @@ func (tw *timeoutWriter) Write(b []byte) (int, error) {
 	defer tw.mu.Unlock()
 	if tw.written {
 		return 0, http.ErrHandlerTimeout
+	}
+	// Mirror the stdlib: the first Write implies WriteHeader(StatusOK) and
+	// latches the final status, so any later WriteHeader call is a no-op.
+	if !tw.wroteHeader {
+		tw.wroteHeader = true
+		if tw.code == 0 {
+			tw.code = http.StatusOK
+		}
 	}
 	remaining := tw.bufferCap() - len(tw.buf)
 	if remaining <= 0 {

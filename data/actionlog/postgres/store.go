@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -294,7 +295,16 @@ func scanEntry(s scannable) (actionlog.Entry, error) {
 	e.OccurredAt = e.OccurredAt.UTC()
 	if len(metaRaw) > 0 {
 		var meta map[string]any
-		if err := json.Unmarshal(metaRaw, &meta); err != nil {
+		// UseNumber so JSON numbers decode as json.Number (their exact
+		// decimal text) instead of float64. validMetadata accepts int64/
+		// uint64 of any magnitude and the signature is computed over their
+		// exact decimal form, so a plain Unmarshal — which rounds every
+		// integer above 2^53 through float64 (Snowflake IDs, unix-nano
+		// timestamps) — would change the recomputed canonical bytes and
+		// fail signature verification permanently for that row.
+		dec := json.NewDecoder(bytes.NewReader(metaRaw))
+		dec.UseNumber()
+		if err := dec.Decode(&meta); err != nil {
 			return actionlog.Entry{}, redact.WrapError("actionlog/postgres: unmarshal metadata", err)
 		}
 		e.Metadata = meta

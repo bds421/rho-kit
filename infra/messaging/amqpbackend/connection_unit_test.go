@@ -371,6 +371,79 @@ func TestDial_LazyConnect_ReturnsImmediately(t *testing.T) {
 	_ = conn.Stop(context.Background())
 }
 
+// --- drainPendingReconnect (lost reconnect signal window) ---
+
+func TestDrainPendingReconnect_NoSignal_ReleasesFlagAndStops(t *testing.T) {
+	c := &Connection{reconnectSignal: make(chan struct{}, 1)}
+	c.reconnecting.Store(true)
+
+	again := c.drainPendingReconnect()
+
+	assert.False(t, again, "no queued signal — loop must stop")
+	assert.False(t, c.reconnecting.Load(), "flag must be released when stopping")
+}
+
+func TestDrainPendingReconnect_PendingSignal_ReacquiresFlagAndContinues(t *testing.T) {
+	c := &Connection{reconnectSignal: make(chan struct{}, 1)}
+	c.reconnecting.Store(true)
+	// A watcher queued a signal in the window between reconnect()'s final
+	// drain and the flag being cleared.
+	c.reconnectSignal <- struct{}{}
+
+	again := c.drainPendingReconnect()
+
+	assert.True(t, again, "queued signal must re-arm the reconnect loop")
+	assert.True(t, c.reconnecting.Load(), "flag must be re-acquired so no overlapping loop starts")
+	assert.Len(t, c.reconnectSignal, 0, "the queued signal must be consumed")
+}
+
+// TestStartReconnect_DoesNotDropSignalRacingFinalDrain exercises the
+// lost-signal window end to end: with the loop already finishing (flag set,
+// no goroutine), a watcher's startReconnect must not silently drop the
+// reconnect request. Before the fix the deferred Store(false) cleared the
+// flag with the signal still buffered and no loop to pick it up.
+func TestStartReconnect_DoesNotDropSignalRacingFinalDrain(t *testing.T) {
+	c := &Connection{
+		logger:          discardLogger(),
+		closed:          make(chan struct{}),
+		dead:            make(chan struct{}),
+		connected:       make(chan struct{}),
+		reconnectSignal: make(chan struct{}, 1),
+	}
+	// Simulate a reconnect loop that has finished its work and is about to
+	// release ownership: flag still true, goroutine not running.
+	c.reconnecting.Store(true)
+
+	// Watcher observes a drop and tries to trigger reconnect; CAS fails
+	// because the flag is still set, so it queues a signal.
+	c.startReconnect()
+	assert.Len(t, c.reconnectSignal, 1, "queued signal must be buffered when CAS fails")
+
+	// The finishing loop now releases ownership via drainPendingReconnect.
+	// It must observe the buffered signal and re-acquire rather than drop it.
+	again := c.drainPendingReconnect()
+	assert.True(t, again, "the finishing loop must re-run reconnect for the queued signal")
+	assert.True(t, c.reconnecting.Load())
+}
+
+// --- closing (zombie connection guard after Stop) ---
+
+func TestClosing_OpenConnection_ReturnsFalse(t *testing.T) {
+	c := &Connection{closed: make(chan struct{})}
+	assert.False(t, c.closing())
+}
+
+func TestClosing_AfterStop_ReturnsTrue(t *testing.T) {
+	c := &Connection{closed: make(chan struct{})}
+	close(c.closed)
+	assert.True(t, c.closing(), "after Stop closes c.closed, the reconnect loop must abandon a freshly dialed conn")
+}
+
+func TestClosing_NilChannel_ReturnsFalse(t *testing.T) {
+	c := &Connection{}
+	assert.False(t, c.closing())
+}
+
 func TestDial_WithAllOptions(t *testing.T) {
 	var reconnectCalled bool
 	conn, err := Connect("amqp://invalid-host:99999", discardLogger(),

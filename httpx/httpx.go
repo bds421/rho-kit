@@ -361,6 +361,7 @@ func WriteJSON(w http.ResponseWriter, r *http.Request, status int, v any) error 
 	}
 	buf, err := json.Marshal(v)
 	if err != nil {
+		logger.Warn("httpx: response marshal failed", redact.Error(err))
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"internal error","code":"INTERNAL"}` + "\n"))

@@ -399,7 +399,7 @@ func TestTimeout_WriteAfterTimeout(t *testing.T) {
 }
 
 func TestTimeout_BufferOverflow(t *testing.T) {
-	const overLimit = defaultMaxBufferSize + 1<<20 // 11 MiB — 1 MiB over the cap
+	const overLimit = defaultMaxBufferSize + 1<<20 // 2 MiB — 1 MiB over the 1 MiB cap
 
 	handler := Timeout(5 * time.Second)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bigPayload := bytes.Repeat([]byte("x"), overLimit)

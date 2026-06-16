@@ -78,9 +78,19 @@ var futureWaveRE = regexp.MustCompile(`(?i)(future wave|follow[- ]up wave|tracke
 // allowOptOutRE matches the line-level opt-out marker.
 var allowOptOutRE = regexp.MustCompile(`<!--\s*kit:ok-doc-rot\s*-->`)
 
-// commitWaveRE extracts a wave number from a commit subject. Used
-// to build the set of wave numbers that genuinely shipped.
-var commitWaveRE = regexp.MustCompile(`(?i)wave\s+(\d+)\b`)
+// commitPrefixRE anchors a commit subject to the documented
+// conventional-commit shape `^(feat|fix|refactor|chore|docs|test|
+// perf)\(v2\)` before any "wave N" reference is trusted as shipped.
+// Without this anchor any subject casually mentioning "wave N"
+// (e.g. `fix(kit-doctor): … wave 5`, `style(v2): … wave 5`, a merge
+// or revert) would falsely mark wave N as shipped, defeating the
+// anti-rot guarantee a stale doc claim is supposed to trip on.
+var commitPrefixRE = regexp.MustCompile(`(?i)^(?:feat|fix|refactor|chore|docs|test|perf)\(v2\)`)
+
+// commitWaveRE extracts wave numbers from a commit subject that has
+// already passed commitPrefixRE. Multiple numbers in a single
+// subject are supported (e.g. `docs(v2): record wave 4+5`).
+var commitWaveRE = regexp.MustCompile(`(?i)\bwave\s+(\d+(?:\s*\+\s*\d+)*)\b`)
 
 type finding struct {
 	file string
@@ -181,18 +191,35 @@ func loadShippedWaves(repoRoot string) (map[int]bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("git log: %w", err)
 	}
+	return parseShippedWaves(string(out)), nil
+}
+
+// parseShippedWaves parses raw `git log --format=%s` output into the
+// set of wave numbers that genuinely shipped. Only subjects matching
+// the documented conventional-commit shape
+// `^(feat|fix|refactor|chore|docs|test|perf)\(v2\).*wave N` are
+// trusted; any other "wave N" mention is ignored so a stale doc
+// claim cannot be validated by an incidental commit subject.
+func parseShippedWaves(gitLog string) map[int]bool {
 	waves := map[int]bool{}
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(gitLog, "\n") {
+		if !commitPrefixRE.MatchString(line) {
+			continue
+		}
 		matches := commitWaveRE.FindAllStringSubmatch(line, -1)
 		for _, m := range matches {
-			n, perr := strconv.Atoi(m[1])
-			if perr != nil {
-				continue
+			// m[1] may be a single number ("140") or a "+"-joined
+			// group ("4+5"); split and record every number.
+			for _, part := range strings.Split(m[1], "+") {
+				n, perr := strconv.Atoi(strings.TrimSpace(part))
+				if perr != nil {
+					continue
+				}
+				waves[n] = true
 			}
-			waves[n] = true
 		}
 	}
-	return waves, nil
+	return waves
 }
 
 // scanFile walks a Markdown file looking for "wave N" references

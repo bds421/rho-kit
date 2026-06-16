@@ -282,7 +282,13 @@ func translateAzureCapacity(err error) error {
 		return nil
 	}
 	switch respErr.ErrorCode {
-	case "InsufficientStorage", "InsufficientAccountPermissions":
+	// "InsufficientAccountPermissions" is deliberately NOT mapped here: it is
+	// an authorization / account-disabled condition (HTTP 403), not a
+	// capacity failure. Classifying it as ErrInsufficientCapacity would make
+	// a misconfigured SAS/RBAC Put satisfy apperror.IsStorageFull and trip
+	// capacity alerts instead of surfacing an auth failure. Let it fall
+	// through to the caller's generic WrapSafe mapping.
+	case "InsufficientStorage":
 		return fmt.Errorf("azurebackend: account out of capacity: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
 	case "RequestBodyTooLarge":
 		return fmt.Errorf("azurebackend: blob exceeds size limit: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
@@ -369,7 +375,12 @@ func (b *Backend) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// Exists checks whether a blob exists using DownloadStream with range 0-0.
+// Exists checks whether a blob exists using a single-byte ranged
+// DownloadStream. A zero-byte blob (markers, .keep, placeholders) cannot
+// satisfy any byte range, so Azure answers with HTTP 416 / error code
+// InvalidRange even though the blob is present; that case is treated as
+// exists=true to match the metadata-probe semantics of s3backend
+// (HeadObject) and gcsbackend (Attrs).
 func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "azure.Exists")
 	defer span.End()
@@ -386,10 +397,15 @@ func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
 	resp, err := b.client.DownloadStream(ctx, key, &azblob.DownloadStreamOptions{
 		Range: blob.HTTPRange{Offset: 0, Count: 1},
 	})
-	b.metrics.observeOp(b.instance, "exists", start, azureMetricErr(err))
+	b.metrics.observeOp(b.instance, "exists", start, azureExistsMetricErr(err))
 	if err != nil {
 		if bloberror.HasCode(err, bloberror.BlobNotFound) {
 			return false, nil
+		}
+		// An empty blob exists but has no byte to range over; Azure
+		// reports InvalidRange (416) rather than returning a body.
+		if bloberror.HasCode(err, bloberror.InvalidRange) {
+			return true, nil
 		}
 		opErr := storage.WrapSafe("azurebackend: exists failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
@@ -404,6 +420,18 @@ func azureMetricErr(err error) error {
 		return nil
 	}
 	return err
+}
+
+// azureExistsMetricErr classifies a DownloadStream error from the Exists
+// probe for metrics. Not-found is an expected probe outcome, and an empty
+// blob answers a ranged read with InvalidRange while still existing; neither
+// is an operation error, so both are suppressed to keep
+// operation_errors_total comparable with the other backends.
+func azureExistsMetricErr(err error) error {
+	if bloberror.HasCode(err, bloberror.InvalidRange) {
+		return nil
+	}
+	return azureMetricErr(err)
 }
 
 // azureBlobClient wraps the real Azure SDK client to implement BlobClient.

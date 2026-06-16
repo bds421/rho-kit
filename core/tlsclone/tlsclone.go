@@ -37,8 +37,10 @@
 //     [tls.Config.GetCertificate] on the kit-owned config.
 //   - InsecureSkipVerify=true on the caller config is refused with
 //     [ErrInsecureSkipVerifyNotPermitted] unless the caller passes
-//     [AllowInsecureSkipVerify]. kit-verify is the only legitimate
-//     caller and supplies the opt-in explicitly.
+//     [WithAllowInsecureSkipVerify]. The opt-in is rare and must be
+//     justified in code review; current callers are kit-verify (dev
+//     probing) and the messaging backends (kafkabackend, amqpbackend,
+//     natsbackend) that honour caller-supplied insecure dev configs.
 package tlsclone
 
 import (
@@ -52,7 +54,7 @@ var ErrMaxVersionBelowFloor = errors.New("tlsclone: TLS MaxVersion is below mini
 
 // ErrInsecureSkipVerifyNotPermitted reports a caller-supplied TLS configuration
 // that sets `InsecureSkipVerify=true` without explicit opt-in via
-// [AllowInsecureSkipVerify]. Silent inheritance would let every certificate
+// [WithAllowInsecureSkipVerify]. Silent inheritance would let every certificate
 // (including attacker-presented ones) pass verification, defeating the kit's
 // TLS floor.
 var ErrInsecureSkipVerifyNotPermitted = errors.New("tlsclone: InsecureSkipVerify=true requires an explicit WithAllowInsecureSkipVerify opt-in")
@@ -69,9 +71,10 @@ type options struct {
 // opt-in, the clone helpers refuse such configs to make the dangerous
 // inheritance explicit at every call site.
 //
-// kit-verify is the only legitimate user — it probes services with
-// dev-issued certificates and accepts the trust trade-off. New callers
-// must justify the opt-in in code review.
+// kit-verify uses it to probe services with dev-issued certificates, and
+// the messaging backends (kafkabackend, amqpbackend, natsbackend) honour
+// caller-supplied insecure dev configs through it. New callers must
+// justify the opt-in in code review.
 func WithAllowInsecureSkipVerify() Option {
 	return func(o *options) { o.allowInsecureSkipVerify = true }
 }
@@ -82,7 +85,7 @@ func WithAllowInsecureSkipVerify() Option {
 // The clone additionally has Renegotiation forced to
 // [tls.RenegotiateNever] and the deprecated NameToCertificate map
 // reset to nil. If cfg.InsecureSkipVerify is true the call returns
-// [ErrInsecureSkipVerifyNotPermitted] unless [AllowInsecureSkipVerify]
+// [ErrInsecureSkipVerifyNotPermitted] unless [WithAllowInsecureSkipVerify]
 // is passed.
 func ConfigWithFloor(cfg *tls.Config, minVersion uint16, opts ...Option) (*tls.Config, error) {
 	if cfg == nil {

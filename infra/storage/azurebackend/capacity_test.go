@@ -25,6 +25,7 @@ func TestTranslateAzureCapacity(t *testing.T) {
 		{"only status 507", &azcore.ResponseError{ErrorCode: "Other", StatusCode: 507}, true},
 		{"only status 413", &azcore.ResponseError{ErrorCode: "Other", StatusCode: 413}, true},
 		{"unrelated 500", &azcore.ResponseError{ErrorCode: "InternalError", StatusCode: 500}, false},
+		{"InsufficientAccountPermissions is auth not capacity", &azcore.ResponseError{ErrorCode: "InsufficientAccountPermissions", StatusCode: 403}, false},
 		{"wrapped", fmt.Errorf("upload: %w", &azcore.ResponseError{ErrorCode: "RequestBodyTooLarge", StatusCode: 413}), true},
 	}
 	for _, tc := range cases {

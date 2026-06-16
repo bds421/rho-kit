@@ -485,3 +485,33 @@ func TestAuditlog_LongPathUsesSafeFallbackResource(t *testing.T) {
 		t.Fatalf("Resource = %q, want hashed fallback", got)
 	}
 }
+
+func TestSafeAuditIPAddress(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: ""},
+		{name: "ipv4", in: "203.0.113.10", want: "203.0.113.10"},
+		{name: "ipv6", in: "fe80::1", want: "fe80::1"},
+		{name: "ipv6 with zone", in: "fe80::1%eth0", want: "fe80::1%eth0"},
+		{name: "ipv4 trailing newline", in: "203.0.113.10\n", want: ""},
+		{name: "not an address", in: "not-an-ip", want: ""},
+		// netip.ParseAddr does not validate the IPv6 zone, so control
+		// characters and spaces smuggled after '%' must be rejected here to
+		// prevent audit-log injection via WithClientIPFunc resolvers.
+		{name: "zone newline", in: "fe80::1%a\nb", want: ""},
+		{name: "zone tab", in: "fe80::1%a\tb", want: ""},
+		{name: "zone null", in: "fe80::1%a\x00b", want: ""},
+		{name: "zone space", in: "fe80::1%a b", want: ""},
+		{name: "zone carriage return", in: "fe80::1%a\rb", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := safeAuditIPAddress(tt.in); got != tt.want {
+				t.Fatalf("safeAuditIPAddress(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}

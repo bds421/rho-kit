@@ -576,7 +576,15 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 	if e.OccurredAt.IsZero() {
 		e.OccurredAt = l.clock()
 	}
-	e.OccurredAt = e.OccurredAt.UTC()
+	// Truncate to microsecond precision before signing: TIMESTAMPTZ-
+	// backed stores (Postgres via pgx) persist OccurredAt at µs
+	// granularity, but canonicalForm signs it as RFC3339Nano. Without
+	// this, a ns-precision clock (time.Now on Linux) would sign a value
+	// the durable store reads back differently, so Get / List /
+	// VerifyChain would reject ~every entry with ErrSignatureInvalid.
+	// Applies uniformly across all stores so the in-memory and Postgres
+	// stores agree on the signed canonical form.
+	e.OccurredAt = e.OccurredAt.UTC().Truncate(time.Microsecond)
 
 	keyID, err := l.secrets.CurrentKeyID(ctx)
 	if err != nil {
@@ -710,13 +718,16 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	})
 }
 
-// SignEntry computes and returns the canonical signature for an entry
-// without persisting it. Useful for off-band tools that need to sign
-// without constructing a Logger / Store pair.
+// SignEntry computes and returns both the canonical signature and the
+// resolved key id for an entry without persisting it. Useful for off-band
+// tools that need to sign without constructing a Logger / Store pair.
 //
-// Mutates e.SignatureKeyID to the resolved key id; callers that want
-// the returned signature applied should set e.Signature themselves
-// (the contract mirrors [Logger.Append] which fills both fields).
+// e is taken by value and is NOT mutated. The returned signature is
+// computed against the resolved keyID, so callers must apply BOTH return
+// values to their entry — set e.Signature = signature and
+// e.SignatureKeyID = keyID — before persisting or verifying. Applying only
+// the signature leaves SignatureKeyID empty and [VerifyEntry] will reject
+// it. This mirrors [Logger.Append], which fills both fields.
 //
 // Returns [ErrUnknownKeyID] when [SecretSource.CurrentKeyID] is empty
 // or the resolved secret is shorter than [minSignatureSecretLen]. The

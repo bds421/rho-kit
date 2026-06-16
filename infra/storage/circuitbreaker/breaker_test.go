@@ -364,6 +364,168 @@ func TestAsLister_CircuitBreakerBlocksOpenCircuit(t *testing.T) {
 	assert.ErrorIs(t, seenErr, ErrCircuitOpen, "list must be blocked by open circuit")
 }
 
+func TestCircuitBreaker_ListIterationFailuresTripBreaker(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// The backend yields an error during iteration of List (the common case
+	// for a streaming List against a dead backend). These iteration errors
+	// must be counted by the breaker, otherwise a dead backend never trips.
+	tripping := &alwaysFailListerBackend{err: errors.New("down")}
+	cb := New(tripping, WithThreshold(3), WithResetTimeout(time.Hour))
+	lister, ok := storage.AsLister(cb)
+	require.True(t, ok)
+
+	drain := func() error {
+		var seen error
+		for _, err := range lister.List(ctx, "", storage.ListOptions{}) {
+			if err != nil {
+				seen = err
+				break
+			}
+		}
+		return seen
+	}
+
+	// First 3 List drains fail with the backend error.
+	for range 3 {
+		err := drain()
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, ErrCircuitOpen)
+	}
+
+	// The breaker must now be open: iteration failures counted toward the
+	// consecutive-failure threshold.
+	assert.Equal(t, StateOpen, cb.State())
+
+	// A subsequent drain fails fast with ErrCircuitOpen.
+	err := drain()
+	assert.ErrorIs(t, err, ErrCircuitOpen)
+}
+
+func TestCircuitBreaker_ListProbeDoesNotPhantomCloseHalfOpen(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tripping := &alwaysFailListerBackend{err: errors.New("down")}
+	cb := New(tripping, WithThreshold(1), WithResetTimeout(time.Millisecond))
+
+	// Trip the breaker via a Get failure.
+	_, _, _ = cb.Get(ctx, "key")
+	require.Equal(t, StateOpen, cb.State())
+
+	// Wait for the reset timeout so the breaker enters half-open.
+	time.Sleep(5 * time.Millisecond)
+	require.Equal(t, StateHalfOpen, cb.State())
+
+	lister, ok := storage.AsLister(cb)
+	require.True(t, ok)
+
+	// A List probe whose stream errors during iteration must NOT close the
+	// circuit. A bare lazy dispatch would otherwise be recorded as a phantom
+	// success and re-close the breaker against a still-dead backend.
+	var seen error
+	for _, err := range lister.List(ctx, "", storage.ListOptions{}) {
+		if err != nil {
+			seen = err
+			break
+		}
+	}
+	require.Error(t, seen)
+	assert.NotEqual(t, StateClosed, cb.State(), "failed List probe must not close the circuit")
+}
+
+func TestCircuitBreaker_ListSuccessfulIterationClosesHalfOpen(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Seed a healthy backend so a Lister probe iterates successfully and
+	// closes the circuit in half-open.
+	healthy := membackend.New()
+	require.NoError(t, healthy.Put(ctx, "file.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{}))
+
+	switchable := &switchableListerBackend{
+		failFirstGet: true,
+		err:          errors.New("down"),
+		backend:      healthy,
+	}
+	cb := New(switchable, WithThreshold(1), WithResetTimeout(time.Millisecond))
+
+	// Trip the breaker.
+	_, _, _ = cb.Get(ctx, "file.txt")
+	require.Equal(t, StateOpen, cb.State())
+
+	time.Sleep(5 * time.Millisecond)
+	require.Equal(t, StateHalfOpen, cb.State())
+
+	lister, ok := storage.AsLister(cb)
+	require.True(t, ok)
+
+	var count int
+	var seenErr error
+	for _, err := range lister.List(ctx, "", storage.ListOptions{}) {
+		if err != nil {
+			seenErr = err
+			break
+		}
+		count++
+	}
+	require.NoError(t, seenErr)
+	assert.Equal(t, 1, count)
+	assert.Equal(t, StateClosed, cb.State(), "successful List probe must close the circuit")
+}
+
+func TestCircuitBreaker_DefaultDoesNotTripOnContextCanceled(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	failing := &alwaysFailBackend{err: context.Canceled}
+	cb := New(failing, WithThreshold(1), WithResetTimeout(time.Hour))
+
+	// Many consecutive client cancellations must not trip the circuit: a
+	// caller aborting is not evidence the backend is unhealthy.
+	for range 5 {
+		_, _, err := cb.Get(ctx, "key")
+		require.ErrorIs(t, err, context.Canceled)
+		assert.NotErrorIs(t, err, ErrCircuitOpen)
+	}
+	assert.Equal(t, StateClosed, cb.State())
+}
+
+// switchableListerBackend fails the first Get, then delegates to a real
+// backend (including List) so half-open probes can succeed.
+type switchableListerBackend struct {
+	failFirstGet bool
+	err          error
+	backend      storage.Storage
+	gotFirst     bool
+}
+
+func (b *switchableListerBackend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+	return b.backend.Put(ctx, key, r, meta)
+}
+
+func (b *switchableListerBackend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	if b.failFirstGet && !b.gotFirst {
+		b.gotFirst = true
+		return nil, storage.ObjectMeta{}, b.err
+	}
+	return b.backend.Get(ctx, key)
+}
+
+func (b *switchableListerBackend) Delete(ctx context.Context, key string) error {
+	return b.backend.Delete(ctx, key)
+}
+
+func (b *switchableListerBackend) Exists(ctx context.Context, key string) (bool, error) {
+	return b.backend.Exists(ctx, key)
+}
+
+func (b *switchableListerBackend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	lister, _ := storage.AsLister(b.backend)
+	return lister.List(ctx, prefix, opts)
+}
+
 // alwaysFailListerBackend is alwaysFailBackend that ALSO implements Lister.
 type alwaysFailListerBackend struct {
 	err error

@@ -408,6 +408,34 @@ func TestLoop_stopsOnNonRetryable(t *testing.T) {
 	}
 }
 
+func TestLoop_stopsOnMaxElapsedTime(t *testing.T) {
+	// Generous ctx timeout acts only as a safety net so the test can't hang;
+	// the loop must stop because MaxElapsedTime is reached, well before it.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		Loop(ctx, slog.Default(), "test", func(_ context.Context) error {
+			calls.Add(1)
+			return errors.New("fail")
+		}, WithBaseDelay(5*time.Millisecond), WithMaxDelay(10*time.Millisecond),
+			WithJitter(0), WithMaxElapsedTime(40*time.Millisecond))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected loop to stop after MaxElapsedTime, ran until ctx cancel")
+	}
+
+	if calls.Load() == 0 {
+		t.Error("expected at least 1 call")
+	}
+}
+
 func TestLoop_NilLoggerNormalized(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()

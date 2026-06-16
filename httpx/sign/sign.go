@@ -61,6 +61,16 @@ var ErrInvalidRequest = errors.New("sign: invalid request")
 //     the caller; the inbound HTTP request is aborted before the
 //     network roundtrip starts. Static in-memory stores never need
 //     to surface an error.
+//
+// CurrentKeyID MUST return a fresh secret slice on every call and MUST
+// NOT retain or share that slice. The transport takes ownership of the
+// returned secret and zeroes it once the signature is computed, so the
+// store may not hand back a cached or pooled buffer: doing so corrupts
+// the store's own copy after the first request (later requests sign
+// with an all-zero key and fail verification) and races concurrent
+// RoundTrips that share the slice. The built-in static and reloading
+// stores already copy on read; KMS / Vault / Secrets Manager adapters
+// must do the same (e.g. append([]byte(nil), secret...)).
 type KeyStore interface {
 	CurrentKeyID(ctx context.Context) (keyID string, secret []byte, err error)
 }
@@ -335,8 +345,9 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sign: resolve current key: %w", err)
 	}
-	// CurrentKeyID returns a per-call copy (the static and wrapped
-	// key stores both copy on read). Zero it immediately after the
+	// Per the KeyStore contract, CurrentKeyID returns a fresh per-call
+	// secret copy the transport owns (the built-in static and reloading
+	// stores both copy on read). Zero it immediately after the
 	// signature is computed so the secret does not sit on the heap
 	// until the next GC sweep. SignCanonical does not retain a
 	// reference, so wiping after the call is safe.

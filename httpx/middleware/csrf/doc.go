@@ -9,17 +9,22 @@
 //
 // Key entry points:
 //
-//   - [Middleware] — install double-submit CSRF protection. Sets a
-//     hardened cookie (HttpOnly false because JS must read it,
-//     SameSite=Lax by default, Secure outside loopback), then on
-//     mutating methods requires the `X-CSRF-Token` header to match
-//     the cookie under an HMAC binding to the session.
-//   - [RequireJSON] — content-type guard. Reject non-JSON request
-//     bodies before they reach a handler that would otherwise parse
-//     them defensively.
-//   - [Option] / [WithCookieName] / [WithHeaderName] / [WithTTL] —
-//     tune the cookie shape for legacy clients without rebuilding the
-//     middleware.
+//   - [New] — install double-submit CSRF protection. Sets a hardened
+//     cookie (HttpOnly false because JS must read it, SameSite=Lax by
+//     default for the plain double-submit flow, Secure unconditionally
+//     on by default — use [WithoutSecureCookieForLocalHTTP] to opt out
+//     for local plain-HTTP development), then on mutating methods
+//     requires the `X-CSRF-Token` header to match the HMAC-signed
+//     cookie value via constant-time comparison. Tokens are HMAC-signed
+//     but NOT session-bound by default; enable session binding with
+//     [WithSessionExtractor].
+//   - [RequireJSONContentType] — content-type guard. Reject non-JSON
+//     request bodies before they reach a handler that would otherwise
+//     parse them defensively.
+//   - [Option] / [WithCookieName] / [WithHeaderName] / [WithSessionTTL]
+//     — tune the cookie shape and session-token validity window without
+//     rebuilding the middleware ([WithSessionTTL] has no effect unless
+//     [WithSessionExtractor] is set).
 //
 // Token format and rotation rules are governed by the security/csrf
 // package; consult its doc.go before changing defaults.
