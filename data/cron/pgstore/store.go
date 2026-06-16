@@ -73,13 +73,20 @@ func New(db *sql.DB, opts ...Option) *Store {
 
 // Add inserts a new schedule. Returns an error if the name already
 // exists (use [Store.Upsert] for create-or-update).
+//
+// A newly added schedule is ENABLED by default: the enabled column is
+// omitted from the INSERT so its DEFAULT (TRUE) applies. Forwarding the
+// zero-value ScheduleRecord.Enabled would silently create a disabled
+// schedule that never runs — a footgun for the common Add({Name, Spec})
+// call. Use [Store.Upsert] for explicit enabled control, or [Store.Enable]
+// to toggle an existing schedule.
 func (s *Store) Add(ctx context.Context, rec ScheduleRecord) error {
 	if err := s.validate(rec); err != nil {
 		return err
 	}
-	query := fmt.Sprintf(`INSERT INTO %s (name, spec, enabled, description)
-		VALUES ($1, $2, $3, $4)`, s.table)
-	_, err := s.db.ExecContext(ctx, query, rec.Name, rec.Spec, rec.Enabled, nullString(rec.Description))
+	query := fmt.Sprintf(`INSERT INTO %s (name, spec, description)
+		VALUES ($1, $2, $3)`, s.table)
+	_, err := s.db.ExecContext(ctx, query, rec.Name, rec.Spec, nullString(rec.Description))
 	if err != nil {
 		return redact.WrapError("pgstore: Add", err)
 	}

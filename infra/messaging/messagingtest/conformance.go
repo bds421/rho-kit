@@ -121,5 +121,10 @@ func testPublisherMessageRoundTrip(t *testing.T, factory PublisherFactory) {
 	require.Equal(t, "orders.created", msg.Type)
 	require.NotEmpty(t, msg.Payload)
 
-	require.NoError(t, p.Publish(ctx, "orders", "orders.created", msg))
+	// Publish to the suite's standard topology ("test-exchange"/"rk"),
+	// which every backend factory declares. The message Type stays the
+	// realistic "orders.created"; only the AMQP routing target must match
+	// a declared exchange, or confirm-mode backends (amqp) reject the
+	// publish to an unknown exchange.
+	require.NoError(t, p.Publish(ctx, "test-exchange", "rk", msg))
 }

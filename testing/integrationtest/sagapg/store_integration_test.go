@@ -137,7 +137,7 @@ func TestStore_OptimisticUpdateAdvancesOnMatch(t *testing.T) {
 
 	got.State = saga.StateRunning
 	got.CurrentStep = 1
-	require.NoError(t, s.Put(ctx, got), "matching updated_at → UPDATE succeeds")
+	require.NoError(t, s.Put(ctx, got), "in-place UPDATE by id succeeds")
 
 	after, err := s.Get(ctx, "inst-2")
 	require.NoError(t, err)
@@ -146,32 +146,36 @@ func TestStore_OptimisticUpdateAdvancesOnMatch(t *testing.T) {
 	require.True(t, after.UpdatedAt.After(got.UpdatedAt))
 }
 
-func TestStore_OptimisticUpdateRejectsStale(t *testing.T) {
+func TestStore_UpdateIsLastWriteWinsByID(t *testing.T) {
 	db := testDB(t)
 	clearTable(t, db)
 	s := pgstore.New(db)
 	ctx := context.Background()
 
 	require.NoError(t, s.Put(ctx, saga.Instance{
-		ID: "stale", Definition: "t", State: saga.StatePending,
+		ID: "lww", Definition: "t", State: saga.StatePending,
 	}))
-	v1, _ := s.Get(ctx, "stale")
-	v2, _ := s.Get(ctx, "stale")
+	v1, _ := s.Get(ctx, "lww")
+	v2, _ := s.Get(ctx, "lww")
 	require.Equal(t, v1.UpdatedAt, v2.UpdatedAt)
 
-	// Replica A writes first → wins.
+	// The UPDATE path is last-write-wins by id and does NOT gate on
+	// updated_at — matching MemoryStateStore. The DurableExecutor reads an
+	// instance once and then Puts it repeatedly without re-reading, so its
+	// in-memory UpdatedAt is stale after the first write; an updated_at gate
+	// would zero-row the second Put of every multi-step saga. Cross-replica
+	// safety comes from single-owner resumption (leader election +
+	// stale-resume), not store-level OCC. A fresh Instance{} reusing an
+	// existing ID is still refused — see the first-write duplicate test.
 	v1.State = saga.StateRunning
 	require.NoError(t, s.Put(ctx, v1))
 
-	// Replica B tries with the now-stale UpdatedAt → must reject.
+	// A later write carrying the now-stale UpdatedAt still applies.
 	v2.State = saga.StateCompensating
-	err := s.Put(ctx, v2)
-	require.ErrorIs(t, err, pgstore.ErrConcurrentUpdate,
-		"stale UpdatedAt MUST surface ErrConcurrentUpdate (no IS NULL escape)")
+	require.NoError(t, s.Put(ctx, v2), "update path is last-write-wins by id")
 
-	// The state-of-record reflects replica A's write.
-	after, _ := s.Get(ctx, "stale")
-	require.Equal(t, saga.StateRunning, after.State)
+	after, _ := s.Get(ctx, "lww")
+	require.Equal(t, saga.StateCompensating, after.State)
 }
 
 func TestStore_GetUnknownReturnsErrInstanceNotFound(t *testing.T) {
@@ -238,7 +242,11 @@ func TestStore_StepResultsRoundTrip(t *testing.T) {
 	got, err := s.Get(ctx, "results")
 	require.NoError(t, err)
 	require.Len(t, got.StepResults, 2)
-	require.Equal(t, `"a-output"`, string(got.StepResults[0]))
-	require.Equal(t, `{"b":"output"}`, string(got.StepResults[1]))
+	// step_results is JSONB, which canonicalises formatting (whitespace,
+	// key order) — the stored values round-trip but the raw bytes may be
+	// reformatted (e.g. `{"b":"output"}` -> `{"b": "output"}`). Compare
+	// semantically, which is the contract the executor relies on.
+	require.JSONEq(t, `"a-output"`, string(got.StepResults[0]))
+	require.JSONEq(t, `{"b":"output"}`, string(got.StepResults[1]))
 	require.Equal(t, []int{1}, got.Compensated)
 }

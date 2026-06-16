@@ -229,11 +229,16 @@ func (s *Store) scanRow(row scannable) (saga.Instance, error) {
 		inst            saga.Instance
 		stateStr        string
 		compensatedJSON []byte
+		inputBytes      []byte
 		resultsJSON     []byte
 	)
+	// input is a nullable BYTEA: a saga started with no input stores SQL
+	// NULL. database/sql cannot scan NULL into json.RawMessage directly
+	// (it errors "unsupported Scan ... <nil> into *json.RawMessage"), so
+	// scan through a plain []byte, which receives NULL as nil.
 	err := row.Scan(
 		&inst.ID, &inst.Definition, &stateStr, &inst.CurrentStep,
-		&compensatedJSON, &inst.Input, &resultsJSON, &inst.LastError,
+		&compensatedJSON, &inputBytes, &resultsJSON, &inst.LastError,
 		&inst.CreatedAt, &inst.UpdatedAt,
 	)
 	if err != nil {
@@ -241,6 +246,9 @@ func (s *Store) scanRow(row scannable) (saga.Instance, error) {
 			return saga.Instance{}, saga.ErrInstanceNotFound
 		}
 		return saga.Instance{}, redact.WrapError("pgstore: scan", err)
+	}
+	if inputBytes != nil {
+		inst.Input = json.RawMessage(inputBytes)
 	}
 	inst.State = saga.State(stateStr)
 	if len(compensatedJSON) > 0 {
