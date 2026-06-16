@@ -1,6 +1,6 @@
 # Kit — Go Service Toolkit
 
-**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 77 Go modules at `/v2` path suffix)
+**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 107 Go modules; all are at the `/v2` path suffix except the 4 internal `tools/*` helper modules)
 **Go:** 1.26+ | **License:** Apache 2.0
 
 Shared infrastructure library for rho platform microservices. Provides secure-by-default, composable packages so services focus on domain logic.
@@ -20,11 +20,10 @@ make lint          # golangci-lint v2
 make vulncheck     # govulncheck
 make check-dependency-allowlist # direct external Go dependency policy
 make check-dependency-boundaries # keep heavy SDKs behind adapters/test helpers
-make check-operational-readiness # operational-review coverage for every module
 make check-publishable # pre-tag Go module release invariants
 make check-dashboards # Grafana JSON + Prometheus rule validation
 make release-candidate # full local pre-release quality gate
-make fmt           # goimports + gofumpt
+make fmt           # gofmt -s
 make tidy          # go mod tidy
 ```
 
@@ -35,14 +34,18 @@ go test -tags integration ./...
 
 ## Golden Path
 
-Every service follows this pattern. The snippet below is a complete
-`package main` that compiles against the v2 API at HEAD; copy-paste and
-fill in `cfg.JWKSURL` etc. with the env-loaded values from your service.
+Every service follows this pattern. The snippet below is an illustrative
+`package main` shaped against the v2 API at HEAD; the literal values are
+placeholders — replace the hard-coded DSN, Redis address, AMQP URL, and JWKS
+endpoint with the env-loaded values from your service before building. The
+buildable, copy-paste-ready references are the `cmd/kit-new` scaffolds and
+`examples/agentic-service`.
 
 ```go
 package main
 
 import (
+    "crypto/tls"
     "log/slog"
     "net/http"
     "time"
@@ -51,7 +54,9 @@ import (
 
     "github.com/bds421/rho-kit/app/v2"
     "github.com/bds421/rho-kit/app/amqp/v2"
+    "github.com/bds421/rho-kit/app/jwt/v2"
     "github.com/bds421/rho-kit/app/postgres/v2"
+    "github.com/bds421/rho-kit/app/ratelimit/v2"
     "github.com/bds421/rho-kit/app/redis/v2"
     "github.com/bds421/rho-kit/httpx/v2/middleware/stack"
     pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
@@ -68,7 +73,7 @@ func main() {
 
         return app.New("my-service", version, base).
             With(postgres.Module(pgxbackend.Config{DSN: "postgres://localhost/my-service"})).
-            With(redis.Module(&goredis.Options{Addr: "rediss://cache.internal:6379", Password: "***"})).
+            With(redis.Module(&goredis.Options{Addr: "cache.internal:6379", Password: "***", TLSConfig: &tls.Config{}})).
             With(amqp.Module("amqps://broker.internal")).
             With(jwt.Module("https://issuer.example.com/.well-known/jwks.json",
                 jwt.WithIssuer("https://issuer.example.com"),
@@ -96,10 +101,11 @@ Notes:
   gRPC) lives in per-adapter sub-modules under `app/`. Register each via
   `Builder.With(<adapter>.Module(...))`. Importing only `app/v2` no
   longer pulls pgx, go-redis, amqp091, nats.go, otelgrpc, or grpc-go.
-- Non-loopback Redis MUST set `TLSConfig` (or a `rediss://` URL) and a
-  non-empty `Password` — `redis.Module` rejects plaintext URIs (FR-077)
-  unless you opt out with `redis.Module(..., redis.WithoutTLS())`
-  on a reviewed boundary.
+- Non-loopback Redis MUST set `goredis.Options.TLSConfig` and a non-empty
+  `Password` (or a credentials provider) — `redis.Module` panics on a
+  non-loopback `Addr` that lacks either (FR-077) unless you opt out with
+  `redis.Module(..., redis.WithoutTLS())` on a reviewed boundary. `Addr`
+  is a `host:port`, not a `rediss://` URL.
 - Non-loopback AMQP MUST use `amqps://` — `amqp.Module` rejects
   plaintext `amqp://` URLs (mirrors FR-077) unless you opt out with
   `amqp.WithoutTLS()` on a reviewed boundary.

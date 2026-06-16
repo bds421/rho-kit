@@ -48,18 +48,20 @@ or UserInfo without re-discovering endpoints.
   via `WithInsecureCookie()` only for local-dev over HTTP.
 - **Issuer match.** Discovery rejects when the well-known doc's
   `issuer` field doesn't equal the configured Issuer (RFC 8414 §3.3).
-- **Stdlib only.** Implemented on `net/http` + `net/url` +
-  `encoding/json`; no `golang.org/x/oauth2` dep. Tiny closure.
+- **Audited libraries.** Built on `golang.org/x/oauth2` (OAuth2 dance +
+  PKCE helpers) and `github.com/coreos/go-oidc/v3` (OIDC discovery +
+  ID-token verification). Security-critical primitives are not
+  hand-rolled.
 
 ## ID-token verification
 
-The kit does **minimum** ID-token verification: split-on-dot, decode
-payload, check nonce + sub. We do NOT verify signature, audience, or
-issuer claim of the ID token by default — the token arrived over TLS
-from the discovered token endpoint, so transport security covers
-tamper-resistance. Defence-in-depth callers should pair this client
-with `security/jwtutil.Provider` against the issuer's JWKS to verify
-signature + alg-pinning before trusting claims.
+The kit performs **full** ID-token verification via go-oidc. At
+construction it builds a verifier — `provider.Verifier(&oidc.Config{
+ClientID: cfg.ClientID})` — and the callback handler calls
+`verifier.Verify()` on the returned `id_token`, which validates the
+signature, signing alg, `exp`, audience (`aud` == ClientID), and
+issuer (`iss`). The kit then double-checks the OIDC `nonce` against the
+value persisted at login. No transport-only trust shortcut is taken.
 
 ## Tests
 

@@ -12,7 +12,7 @@
 
 ## Key APIs
 
-- `New(opts...)` — returns `*CircuitBreaker`. Wraps `github.com/sony/gobreaker/v2` internally.
+- `NewCircuitBreaker(threshold, cooldownPeriod, opts...)` — returns `*CircuitBreaker`. The two required positional args set when the breaker trips (`threshold` consecutive failures) and how long it stays open before probing (`cooldownPeriod time.Duration`). Wraps `github.com/sony/gobreaker/v2` internally.
 - `Execute(fn func() error)` — synchronous call. Returns `ErrCircuitOpen` if the breaker is tripped (fast-fail, no call to fn).
 - `ExecuteCtx(ctx, fn func(ctx) error)` — same with context propagation; cancelled ctx short-circuits.
 - `State()` — string label for observability.

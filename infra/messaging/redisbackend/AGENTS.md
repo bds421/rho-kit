@@ -14,7 +14,7 @@
 
 ## Key APIs
 
-- `NewPublisher(client, opts...)` / `NewConsumer(client, opts...)` — backend implementations of `messaging.Publisher` / `messaging.Consumer`.
+- `NewPublisher(producer *stream.Producer, opts...)` / `NewConsumer(consumer *stream.Consumer, logger)` — backend implementations of `messaging.Publisher` / `messaging.Consumer`. They wrap an already-constructed `redisstream` producer/consumer (not a raw redis client); `NewConsumer` takes no options.
 - Internally uses Redis Streams (XADD + XREADGROUP).
 
 ## Common mistakes

@@ -13,8 +13,10 @@
 
 ## Key APIs
 
-- `envelope.Encrypt(ctx, kek, plaintext, aad)` — generates a fresh DEK, encrypts plaintext, wraps DEK with KEK. Returns a length-prefixed v3 AAD blob.
-- `envelope.Decrypt(ctx, kek, blob, aad)` — verifies AAD, unwraps DEK, decrypts.
+- `envelope.NewEncryptor(kek)` — binds a `KEK` for the lifetime of the returned `*Encryptor`. The KEK is fixed at construction, not passed per call.
+- `(*Encryptor).Encrypt(ctx, plaintext, aad)` — generates a fresh DEK, encrypts plaintext, wraps the DEK with the bound KEK. Returns a length-prefixed v3 blob.
+- `(*Encryptor).Decrypt(ctx, blob, aad)` — parses the blob, unwraps the DEK, verifies AAD, and decrypts.
+- `(*Encryptor).Rewrap(ctx, blob)` — re-wraps the embedded DEK under the current KEK version for online rotation without touching the plaintext (no AAD needed).
 - `KEK` interface — implemented by the KMS-specific sub-packages.
 
 ## KMS adapters
@@ -31,7 +33,7 @@ Each adapter is a separate go.mod so the heavy SDK only lands in services that u
 - **Reusing AAD across blobs** — AAD is bound to the ciphertext; mixing AADs is a confused-deputy class of bug. Use a stable, blob-specific AAD (e.g. `"users/v1/" + userID`).
 - **Storing the AAD inside the blob** — the v3 length-prefixed format stores ciphertext + wrapped DEK; AAD is supplied at decrypt time. If you can't reconstruct the AAD without the blob, you've defeated the binding.
 - **Downgrading a reader to pre-v3 envelope format** — v3 blobs are NOT readable by older code. The migration path is forward-only.
-- **No `WithAllowedKeyVersions(...)` (where the adapter supports it)** — without an allowlist, the KMS will happily unwrap blobs encrypted with retired keys. Enumerate the versions you trust.
+- **Not pinning the wrapping key version (where the adapter supports it)** — by default an adapter wraps with the key's current primary version. To pin wrapping to a specific version, set the adapter's `Config.KeyVersion` (e.g. `azurekeyvault.Config.KeyVersion`, `vaulttransit.Config.KeyVersion`); for `gcpkms` the version is encoded in the key resource path. Unwrapping always uses the keyID embedded in the blob.
 
 ## Observability
 

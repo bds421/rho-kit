@@ -13,9 +13,10 @@ import (
 	svcapp "{{.ModulePath}}/internal/app"
 )
 
-// version is overwritten at build time via -ldflags. Empty falls back to
-// the embedded build info (vcs.revision + vcs.modified) so go run still
-// emits a meaningful version field on every log line.
+// version is overwritten at build time via -ldflags. When empty,
+// health.ResolveVersion falls back to the APP_VERSION environment
+// variable (injected by the release pipeline); with neither set (e.g.
+// plain `go run`) the version field is reported empty.
 var version = ""
 
 func main() {

@@ -1,6 +1,6 @@
 # Storage — File Storage & Serving
 
-Packages: `infra/storage`, `storage/s3backend`, `storage/azurebackend`, `storage/gcsbackend`, `storage/sftpbackend`, `storage/localbackend`, `storage/membackend`, `storage/encryption`, `storage/retry`, `storage/circuitbreaker`, `storage/storagehttp`, `storage/storagehttp/uploadsec`, `storage/storagehttp/uploadsec/clamav`
+Packages: `infra/storage`, `infra/storage/s3backend`, `infra/storage/azurebackend`, `infra/storage/gcsbackend`, `infra/storage/sftpbackend`, `infra/storage/localbackend`, `infra/storage/membackend`, `infra/storage/encryption`, `infra/storage/retry`, `infra/storage/circuitbreaker`, `infra/storage/storagehttp`, `infra/storage/storagehttp/uploadsec`, `infra/storage/storagehttp/uploadsec/clamav`
 
 Snippet status: Go blocks in this recipe are illustrative fragments unless
 explicitly introduced as generated or executable code. Buildable golden-path
@@ -45,7 +45,7 @@ Credential rotation:
 ## Quick Start (S3)
 
 ```go
-cfg, err := s3backend.LoadS3Config("MYAPP", cfg.Environment)
+cfg, err := s3backend.LoadConfig("MYAPP", cfg.Environment)
 if err != nil { return err }
 
 backend, err := s3backend.New(cfg)

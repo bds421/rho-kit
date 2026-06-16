@@ -59,15 +59,14 @@
 
 ## Observability
 
-- Metrics: `cron_jobs_started_total`, `cron_jobs_completed_total`,
-  `cron_jobs_failed_total`, `cron_job_duration_seconds`,
-  `cron_jobs_skipped_total` (labeled by `reason="not_leader"` or
-  `reason="panic"`). All labeled with `job` (the operator-supplied
-  name from `Add`).
+- Metrics: `cron_job_runs_total{name, status}` (status is
+  `success`, `error`, or `panic`), `cron_job_duration_seconds{name}`,
+  and `cron_job_skipped_not_leader_total{name}`. The `name` label is
+  the operator-supplied job name from `Add`.
 - OTel spans: not currently emitted per-tick to avoid trace
   exporter inflation on high-frequency schedules. The kit's
-  wave-169 `lifecycle.Component` start/stop span wraps the
-  whole Scheduler instead.
+  `lifecycle.Component` start/stop span wraps the whole Scheduler
+  instead.
 - Panic recovery: per-job panics are recovered, logged with a
-  redacted error, and counted as `cron_jobs_failed_total`. The
-  Scheduler keeps running.
+  redacted error, and counted as `cron_job_runs_total{status="panic"}`.
+  The Scheduler keeps running.

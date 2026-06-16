@@ -22,8 +22,8 @@ evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
 ## Connection
 
 ```go
-// Option A: Use LoadRedisFields (recommended — reads env vars automatically)
-fields, err := redis.LoadRedisFields()
+// Option A: Use LoadFields (recommended — reads env vars automatically)
+fields, err := redis.LoadFields()
 opts, err := fields.Redis.Options() // converts to *goredis.Options
 
 // Option B: Manual Options
@@ -34,12 +34,12 @@ opts := &goredis.Options{
 }
 
 conn, err := redis.Connect(opts,
-    redis.Logger(logger),
+    redis.WithLogger(logger),
     redis.WithInstance("cache"),               // Prometheus label
     redis.WithLazyConnect(),                   // non-blocking startup
     redis.WithHealthInterval(5*time.Second),
     redis.WithMaxReconnectAttempts(0),         // 0 = unlimited
-    redis.WithOnReconnect(func(c *redis.Connection) error {
+    redis.WithOnReconnect(func(ctx context.Context, c *redis.Connection) error {
         return resubscribe(c.Client())
     }),
 )
@@ -75,7 +75,7 @@ Configure via URL (takes precedence) or individual fields:
 
 *Either `REDIS_URL` or `REDIS_HOST` must be set.
 
-Loaded via `redis.LoadRedisFields()`. Use `fields.Redis.Options()` to get `*goredis.Options` for `Connect()`. Use `fields.Redis.RedisURL()` to get the resolved URL string. Credentials are redacted in logs (`slog.LogValuer`).
+Loaded via `redis.LoadFields()`. Use `fields.Redis.Options()` to get `*goredis.Options` for `Connect()`. Use `fields.Redis.RedisURL()` to get the resolved URL string. Credentials are redacted in logs (`slog.LogValuer`).
 
 ## Cache
 
@@ -117,13 +117,13 @@ Redis Streams with consumer groups, pending entry recovery, stale message claimi
 
 ### Producer
 ```go
-producer := stream.NewStreamProducer(conn.Client(),
+producer := stream.NewProducer(conn.Client(),
     stream.WithMaxStreamLen(100_000),          // MAXLEN ~
     stream.WithRetention(7*24*time.Hour),      // MINID ~ (mutually exclusive with MaxLen)
     stream.WithProducerMaxPayloadSize(1<<20),  // 1 MiB
 )
 
-msg, _ := stream.NewStreamMessage("orders.created", orderPayload)
+msg, _ := stream.NewMessage("orders.created", orderPayload)
 redisID, err := producer.Publish(ctx, "orders", msg)
 ids, err := producer.PublishBatch(ctx, "orders", msgs) // pipeline
 ```
@@ -141,7 +141,7 @@ the Redis pipeline, and `WithBatchSize` uses the same cap for consumer
 
 ### Consumer
 ```go
-consumer, err := stream.NewStreamConsumer(conn.Client(), "orders-group",
+consumer, err := stream.NewConsumer(conn.Client(), "orders-group",
     stream.WithConsumerName("worker-1"),
     stream.WithBatchSize(10),
     stream.WithMaxRetries(5),
@@ -150,7 +150,7 @@ consumer, err := stream.NewStreamConsumer(conn.Client(), "orders-group",
     stream.WithClaimInterval(30*time.Second),
 )
 
-consumer.Consume(ctx, "orders", func(ctx context.Context, msg stream.StreamMessage) error {
+consumer.Consume(ctx, "orders", func(ctx context.Context, msg stream.Message) error {
     // nil → XACK
     // apperror.PermanentError → dead-letter immediately
     // other error → retry (up to MaxRetries) then dead-letter
@@ -158,8 +158,8 @@ consumer.Consume(ctx, "orders", func(ctx context.Context, msg stream.StreamMessa
 })
 
 // Multiple streams:
-stream.StartStreamConsumers(ctx, consumer,
-    []stream.StreamBinding{
+stream.StartConsumers(ctx, consumer,
+    []stream.Binding{
         {Stream: "orders",   Handler: handleOrder},
         {Stream: "payments", Handler: handlePayment},
     },
@@ -312,8 +312,8 @@ opaque labels prevent cleartext leaks, not unbounded series creation.
 
 func TestRedisCache(t *testing.T) {
     url := redistest.Start(t) // import infra/redis/redistest/v2
-    opts, _ := redis.ParseURL(url)
-    conn, _ := redis.Connect(opts, redis.Logger(slog.Default()))
+    opts, _ := goredis.ParseURL(url)
+    conn, _ := redis.Connect(opts, redis.WithLogger(slog.Default()))
     defer conn.Close()
 
     c, _ := rediscache.NewCache(conn.Client(), "test-"+t.Name())

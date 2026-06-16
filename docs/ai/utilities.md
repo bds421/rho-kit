@@ -20,7 +20,7 @@ apperror.NewFieldValidation(                            // CodeValidation → 40
 apperror.NewConflict("email already taken")             // CodeConflict → 409
 apperror.NewAuthRequired("session expired")             // CodeAuthRequired → 401
 apperror.NewForbidden("access denied")                  // CodeForbidden → 403
-apperror.NewRateLimit("quota exceeded", 30*time.Second) // CodeRateLimit → 429 + Retry-After header
+apperror.NewRateLimitWithRetryAfter("quota exceeded", 30*time.Second) // CodeRateLimit → 429 + Retry-After header
 apperror.NewOperationFailed("payment declined")         // CodeOperationFailed → 500 (generic body)
 apperror.NewOperationFailedWithCause("failed", err)     // CodeOperationFailed → 500 (wraps cause)
 apperror.NewPermanent("feature disabled")               // CodePermanent → 422 (skips retries)
@@ -106,11 +106,17 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-Custom validators (register during init only):
+Custom formats (register during init only — referenced via `jsonschema:"format=slug"`):
 ```go
 func init() {
-    validate.RegisterValidation("slug", func(fl validator.FieldLevel) bool {
-        return regexp.MustCompile(`^[a-z0-9-]+$`).MatchString(fl.Field().String())
+    // FormatFunc receives the decoded field value (strings arrive as string;
+    // numbers as float64/json.Number) and returns a non-nil error to reject it.
+    _ = validate.RegisterFormat("slug", func(v any) error {
+        s, ok := v.(string)
+        if !ok || !regexp.MustCompile(`^[a-z0-9-]+$`).MatchString(s) {
+            return fmt.Errorf("not a valid slug")
+        }
+        return nil
     })
 }
 ```
@@ -289,20 +295,26 @@ cfg := config.MustLoad[Config]()     // panics on error (for main())
 
 Supports: string, int, int64, uint, uint16, bool, float64, time.Duration, []string, *url.URL. Nested structs are recursed automatically.
 
-## atomicfile — Safe File Writes
+## atomicfile — Safe State Persistence
 
-Write-then-rename to prevent partial writes:
+Generic JSON state persistence with write-then-rename to prevent partial writes:
 
 ```go
-err := atomicfile.WriteFile(path, data, 0644)
-// Writes to temp file in same dir, then os.Rename (atomic on same filesystem)
+// Save marshals v to JSON and writes atomically (temp file + fsync + rename).
+err := atomicfile.Save(path, state)
+
+// Load returns the zero value of T (and exists=false) when the file is missing.
+state, exists, err := atomicfile.Load[State](path)
+
+// LoadOrZero drops the exists flag when "missing" and "zero-value" are equivalent.
+state, err := atomicfile.LoadOrZero[State](path)
 ```
 
 ## ioutil — Reader Wrappers
 
 ```go
 // Progress tracking:
-pr := progress.NewProgressReader(reader, totalSize, func(bytesRead, total int64) {
+pr := progress.NewReader(reader, totalSize, func(bytesRead, total int64) {
     fmt.Printf("%.1f%%\n", float64(bytesRead)/float64(total)*100)
 })
 
@@ -383,4 +395,4 @@ eventbus.Subscribe(bus, func(ctx context.Context, e OrderPlaced) error {
 - **Never** skip `ValidateCursorUUID` — unvalidated cursors can cause SQL injection.
 - **Never** forget `limit+1` when fetching for cursor pagination — `BuildResult` needs it for `has_more`.
 - **Never** use `cache.MemoryCache` for data that must be shared across instances — use `data/cache/rediscache`.
-- **Never** register custom validators after init — `validate.RegisterValidation` is not concurrent-safe.
+- **Never** register custom formats after init — `validate.RegisterFormat` fails once the first `validate.Struct` call freezes the format registry.

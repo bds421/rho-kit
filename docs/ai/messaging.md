@@ -29,7 +29,7 @@ app.New(...).
     With(amqp.Module(cfg.AMQPURL)).
     Router(func(infra app.Infrastructure) http.Handler {
         // Declare topology (AMQP-specific)
-        bindings, err := amqpbackend.DeclareAll(infra.Broker.(*amqpbackend.Connection),
+        bindings, err := amqpbackend.DeclareAll(amqp.Connection(infra),
             messaging.BindingSpec{
                 Exchange: "orders", ExchangeType: messaging.ExchangeDirect,
                 Queue: "orders.created", RoutingKey: "order.created",
@@ -37,12 +37,12 @@ app.New(...).
             },
         )
 
-        // Start consumers in background — infra.Consumer is pre-wired.
+        // Start consumers in background — amqp.Consumer(infra) is pre-wired.
         // wg/shutdown are illustrative: wg coordinates the consumer goroutines
         // and shutdown signals the runner ctx to cancel.
         var wg sync.WaitGroup
         shutdown := func() { /* cancel runner ctx */ }
-        messaging.StartConsumers(ctx, infra.Consumer, bindings,
+        messaging.StartConsumers(ctx, amqp.Consumer(infra), bindings,
             map[string]messaging.Handler{
                 "order.created": handleOrderCreated,
             },
@@ -52,17 +52,17 @@ app.New(...).
         // Publish from HTTP handlers
         mux.HandleFunc("POST /orders", func(w http.ResponseWriter, r *http.Request) {
             msg, _ := messaging.NewMessage("order.created", order)
-            infra.Publisher.Publish(r.Context(), "orders", "order.created", msg)
+            amqp.Publisher(infra).Publish(r.Context(), "orders", "order.created", msg)
         })
     })
 ```
 
-**Key point:** `infra.Publisher` and `infra.Consumer` are pre-wired by the Builder as `messaging.Publisher` and `messaging.Consumer` — no need to call `amqpbackend.NewPublisher` or `amqpbackend.NewConsumer` manually.
+**Key point:** `amqp.Publisher(infra)` and `amqp.Consumer(infra)` are pre-wired by the Builder as `messaging.Publisher` and `messaging.Consumer` — no need to call `amqpbackend.NewPublisher` or `amqpbackend.NewConsumer` manually.
 
 ## Connection (AMQP)
 
 ```go
-conn, err := amqpbackend.Dial(url, logger,
+conn, err := amqpbackend.Connect(url, logger,
     amqpbackend.WithLazyConnect(),           // non-blocking startup (default in Builder)
     amqpbackend.WithMaxReconnectAttempts(0), // 0 = unlimited
     amqpbackend.WithTLS(tlsConfig),          // mTLS; amqp:// is upgraded to amqps://
@@ -74,8 +74,8 @@ conn, err := amqpbackend.Dial(url, logger,
 )
 ```
 
-`Dial` rejects plaintext `amqp://` unless `WithTLS` is supplied or
-`WithAllowPlaintext()` is set explicitly for local tests. Prefer
+`Connect` rejects plaintext `amqp://` unless `WithTLS` is supplied or
+`WithoutTLS()` is set explicitly for local tests. Prefer
 `amqps://` URLs in deployed configuration. Custom TLS configs are
 cloned and raised to a TLS 1.2 minimum; stricter caller settings are
 preserved.
@@ -149,9 +149,9 @@ headers cannot bypass the body cap.
 Use the adapter Modules' `WithMessageSizeLimiter` option for the golden path:
 
 ```go
-sizeLimiter := messaging.NewExactSizeLimiter(
+sizeLimiter := messaging.NewMessageSizeLimiter(
     512<<10, // default
-    messaging.RouteLimit{Exchange: "orders", RoutingKey: "order.bulk", MaxBytes: 8 << 20}, // exact override
+    messaging.MessageSizeRouteLimit{Exchange: "orders", RoutingKey: "order.bulk", MaxBytes: 8 << 20}, // exact override
 )
 app.New("orders", version, cfg.BaseConfig).
     With(amqp.Module(cfg.AMQPURL, amqp.WithMessageSizeLimiter(sizeLimiter))).
@@ -270,7 +270,7 @@ automatically. Manual AMQP publishers and consumers expose the same stable
 Prometheus collectors:
 
 ```go
-metrics := amqpbackend.NewMetrics(prometheus.DefaultRegisterer)
+metrics := amqpbackend.NewMetrics(amqpbackend.WithRegisterer(prometheus.DefaultRegisterer))
 
 pub := amqpbackend.NewPublisher(conn, logger,
     amqpbackend.WithPublisherMetrics(metrics),
@@ -300,7 +300,7 @@ Builder-created NATS publishers are wired with these metrics automatically.
 Manual publishers and consumers expose the same stable Prometheus collectors:
 
 ```go
-metrics := natsbackend.NewMetrics(prometheus.DefaultRegisterer)
+metrics := natsbackend.NewMetrics(natsbackend.WithRegisterer(prometheus.DefaultRegisterer))
 
 pub := natsbackend.NewPublisher(conn,
     natsbackend.WithPublisherMetrics(metrics),
@@ -463,7 +463,7 @@ mux.Handle("GET /debug/consume/types", debughttp.Guard(
 mux.Handle("POST /debug/publish", debughttp.Guard(
     cfg.Environment,
     debugAuth,
-    debughttp.PublishHandler(infra.Publisher, []string{"orders"}, logger),
+    debughttp.PublishHandler(amqp.Publisher(infra), []string{"orders"}, logger),
 ))
 ```
 
@@ -487,25 +487,27 @@ Loaded via `amqpbackend.LoadFields()`. Use `cfg.RabbitMQ.AMQPURL()` to get the r
 ## Anti-Patterns
 
 - **Never** ACK messages on transient errors — return the error so retry/DLX handles it.
-- **Never** use plaintext AMQP in production — use `amqps://` or Builder TLS; `WithAllowPlaintext()` is only for explicit local/test opt-in.
+- **Never** use plaintext AMQP in production — use `amqps://` or Builder TLS; `WithoutTLS()` is only for explicit local/test opt-in.
 - **Never** lower broker TLS below TLS 1.2 — AMQP and NATS custom TLS configs are cloned and validated.
 - **Never** put NATS credentials in the URL — use typed auth fields so logs stay redacted.
 - **Never** use `apperror.Permanent` for transient failures — it skips all retries.
 - **Never** create Publisher/Consumer outside the Router closure — the connection may not be ready.
 - **Never** share AMQP channels across goroutines — Publisher serializes internally.
 - **Never** forget to `Stop(ctx)` the broker `Connector` on shutdown — leaks channels and connections.
-- **Never** call `amqpbackend.NewPublisher`/`NewConsumer` when using the Builder — use `infra.Publisher`/`infra.Consumer` instead.
+- **Never** call `amqpbackend.NewPublisher`/`NewConsumer` when using the Builder — use `amqp.Publisher(infra)`/`amqp.Consumer(infra)` instead.
 
 ## Testing
 
 ```go
 //go:build integration
 
+import kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
+
 func TestMessaging(t *testing.T) {
-    url := rabbitmqtest.Start(t) // shared container per process
+    url := kittestamqp.Start(t) // shared container per process
     exchange := "test-" + strings.ReplaceAll(t.Name(), "/", "-")
     // Use unique exchange/queue names per test — broker state leaks between tests.
 }
 ```
 
-Import path: `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest`.
+Import path: `testing/kittest/v2/amqp` (package `amqp`, func `Start(t)`).

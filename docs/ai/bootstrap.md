@@ -191,7 +191,7 @@ during the synchronous `RouterFunc` call.
 
 ## Lifecycle Order
 
-`Run()` validates config, initializes enabled modules, builds `Infrastructure`, calls `RouterFunc`, starts the internal and public servers, waits for SIGINT/SIGTERM, runs shutdown hooks, drains managed goroutines, then closes initialized resources. The internal listener serves HTTP `/ready` and the gRPC Health Checking Protocol over h2c on the same address. Public gRPC health is disabled unless `WithPublicGRPCHealth()` is called.
+`Run()` validates config, initializes enabled modules, builds `Infrastructure`, calls `RouterFunc`, starts the internal and public servers, waits for SIGINT/SIGTERM, runs shutdown hooks, drains managed goroutines, then closes initialized resources. The internal listener serves HTTP `/ready` and the gRPC Health Checking Protocol over h2c on the same address. Public gRPC health is disabled unless `grpc.WithPublicHealth()` is called.
 
 Use `RunContext(ctx)` instead of `Run()` when the service is embedded in a test, CLI, worker supervisor, or parent process that already owns cancellation. Cancelling `ctx` triggers the same graceful drain as SIGINT/SIGTERM without relying on process-global signals.
 
@@ -231,7 +231,7 @@ func main() {
         if err != nil { return err }
         defer db.Close()
 
-        redisConn, err := redis.Connect(cfg.RedisOpts, redis.Logger(logger))
+        redisConn, err := redis.Connect(cfg.RedisOpts, redis.WithLogger(logger))
         if err != nil { return err }
         defer redisConn.Close()
 

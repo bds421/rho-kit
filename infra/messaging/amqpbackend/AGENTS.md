@@ -16,8 +16,8 @@
 
 ## Key APIs
 
-- `NewPublisher(conn, opts...)` / `NewConsumer(conn, opts...)` — backend implementations of `messaging.Publisher` / `messaging.Consumer`.
-- `DeclareAll(conn, binding)` — idempotent topology declaration. Run once at startup; safe to re-run on restart.
+- `NewPublisher(conn Connector, logger *slog.Logger, opts...)` / `NewConsumer(conn Connector, publisher DeadLetterPublisher, logger *slog.Logger, opts...)` — backend implementations of `messaging.Publisher` / `messaging.Consumer`. The consumer takes a `DeadLetterPublisher` used to route exhausted-retry messages.
+- `DeclareAll(conn Connector, bindings ...messaging.BindingSpec)` — idempotent topology declaration. Run once at startup; safe to re-run on restart.
 - `BindingSpec.WithoutRetry: true` — opt out of broker-side retry/DLX. Without this AND without `Retry`, the kit applies a default policy and warns (per wave 141).
 
 ## Common mistakes
@@ -29,5 +29,5 @@
 
 ## Observability
 
-- Metrics: `amqp_published_total`, `amqp_publish_duration_seconds`, `amqp_consumed_total`, `amqp_handler_duration_seconds`. Labels: `exchange`, `routing_key`, `outcome` (publish-side) / `exchange`, `queue`, `outcome` (consume-side). Route labels default to opaque since wave 36.
+- Metrics: `amqp_published_total`, `amqp_publish_duration_seconds`, `amqp_consumed_total`, `amqp_handler_duration_seconds`. Labels: `exchange`, `routing_key`, `outcome` (publish-side) / `queue`, `outcome` (consume-side). Route labels default to opaque since wave 36.
 - OTel: `amqpbackend/amqptracing` is the helper for trace context propagation. Call `amqptracing.StartConsumerSpan` inside handlers and `amqptracing.StartPublisherSpan` around `publisher.Publish`.
