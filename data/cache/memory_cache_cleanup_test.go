@@ -43,8 +43,11 @@ func TestMemoryCache_ForgottenClose_WatchdogClosesRistretto(t *testing.T) {
 	closed := false
 	for time.Now().Before(deadline) {
 		runtime.GC()
-		// A closed ristretto store rejects writes (isClosed guard).
-		if !closer.cache.SetWithTTL("probe2", []byte("v"), 1, time.Minute) {
+		// Observe closure via the closer's race-free atomic flag rather than
+		// probing closer.cache directly: the watchdog runs ristretto's Close in
+		// a GC-cleanup goroutine, so a concurrent SetWithTTL here would race
+		// ristretto's internal Set/Close (flagged by -race).
+		if closer.closed.Load() {
 			closed = true
 			break
 		}
@@ -64,8 +67,8 @@ func TestMemoryCache_ExplicitCloseThenWatchdog(t *testing.T) {
 	closer := mc.closer
 
 	require.NoError(t, mc.Close())
-	// Store is closed after explicit Close.
-	assert.False(t, closer.cache.SetWithTTL("k", []byte("v"), 1, time.Minute))
+	// Store is closed after explicit Close (observed via the race-free flag).
+	assert.True(t, closer.closed.Load(), "explicit Close must close the store")
 
 	// Closing again (idempotent) and a subsequent watchdog firing must not
 	// panic. close() is guarded by sync.Once.

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 	"weak"
 
@@ -76,6 +77,10 @@ type nxClaim struct {
 type ristrettoCloser struct {
 	cache *ristretto.Cache[string, []byte]
 	once  sync.Once
+	// closed is set once the store has been torn down. It gives callers a
+	// race-free way to observe closure without poking the ristretto store
+	// itself (whose Set/Close are not safe to call concurrently).
+	closed atomic.Bool
 }
 
 // close stops the ristretto store exactly once. Safe to call from both the
@@ -90,6 +95,7 @@ func (rc *ristrettoCloser) close() {
 		if rc.cache != nil {
 			rc.cache.Close()
 		}
+		rc.closed.Store(true)
 	})
 }
 
