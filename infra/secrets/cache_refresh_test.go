@@ -122,10 +122,15 @@ func TestCachedLoader_RefreshDueHitServesCachedAndUpdates(t *testing.T) {
 	require.Equal(t, "old", served.Value.RevealString(),
 		"refresh-due hit must serve the cached value immediately, not block")
 
-	// The background refresh runs asynchronously; wait for it to land.
+	// The background refresh runs asynchronously; wait for the new VALUE to
+	// land (the observable contract). Gating on inner.calls / MetricRefreshes
+	// alone is racy: those can become visible a hair before the refreshed entry
+	// is stored, so a Get immediately after could still read "old". Once
+	// refreshed the entry is fresh again, so these extra Gets are pure hits.
 	require.Eventually(t, func() bool {
-		return inner.calls.Load() >= 2 && c.MetricRefreshes() >= 1
-	}, 2*time.Second, 5*time.Millisecond, "background refresh should have fetched")
+		got, err := c.Get(context.Background(), "k")
+		return err == nil && got.Value.RevealString() == "new" && c.MetricRefreshes() >= 1
+	}, 2*time.Second, 5*time.Millisecond, "background refresh should fetch and land the new value")
 
 	require.Equal(t, float64(0), c.MetricRefreshErrors(),
 		"successful refresh must not record a refresh error")
