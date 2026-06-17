@@ -877,11 +877,16 @@ func TestRelay_QueuedBatchEntriesAreHeartbeated(t *testing.T) {
 
 	pub := &gatedPublisher{gate: make(chan struct{})}
 
+	// staleDuration must sit comfortably above minHeartbeatInterval (100ms):
+	// the relay heartbeats every staleDuration/3, so 900ms -> ~300ms beats,
+	// giving a 3x margin that stays reliable under -race on a loaded CI runner
+	// (a 60ms window was structurally unbeatable against the 100ms floor and
+	// flaked). The test still proves the heartbeat keeps a queued claimed entry
+	// fresh across more than a full stale window while the first publish is gated.
+	const staleWindow = 900 * time.Millisecond
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
-		// Tiny stale window so a single heartbeat tick must cover the queued
-		// entry while the first publish is gated.
-		outbox.WithStaleDuration(60*time.Millisecond),
+		outbox.WithStaleDuration(staleWindow),
 	)
 
 	relayCtx, cancel := context.WithCancel(context.Background())
@@ -894,12 +899,12 @@ func TestRelay_QueuedBatchEntriesAreHeartbeated(t *testing.T) {
 		return pub.entered() >= 1
 	}, 2*time.Second, 5*time.Millisecond)
 
-	// Let several stale windows elapse so the batch heartbeat has to keep the
-	// queued entry alive, then simulate a competing replica reclaiming stale
-	// rows. With the bug the queued entry's updated_at is still T0 and gets
-	// reset to pending; with the fix the heartbeat keeps it fresh.
-	time.Sleep(200 * time.Millisecond)
-	reset, err := store.ResetStaleProcessing(ctx, 60*time.Millisecond)
+	// Let more than a full stale window elapse so the batch heartbeat has to
+	// keep the queued entry alive across it, then simulate a competing replica
+	// reclaiming stale rows. With the bug the queued entry's updated_at is still
+	// T0 and gets reset to pending; with the fix the heartbeat keeps it fresh.
+	time.Sleep(staleWindow + 300*time.Millisecond)
+	reset, err := store.ResetStaleProcessing(ctx, staleWindow)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), reset,
 		"queued claimed entry must be heartbeated so a competing stale-recovery does not reclaim it")
@@ -912,7 +917,7 @@ func TestRelay_QueuedBatchEntriesAreHeartbeated(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 
 	// Give the relay one extra stale window to surface any duplicate publish.
-	time.Sleep(120 * time.Millisecond)
+	time.Sleep(staleWindow + 100*time.Millisecond)
 
 	cancel()
 	require.NoError(t, <-done)
