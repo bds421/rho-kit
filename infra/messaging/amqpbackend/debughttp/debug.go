@@ -81,15 +81,8 @@ func ConsumeHandler(handlers map[string]messaging.Handler, logger *slog.Logger) 
 			return
 		}
 
-		// Mirror real consumption as closely as the request allows so handlers
-		// that branch on transport metadata behave the same under this debug
-		// endpoint as in production. The dispatch key (req.Type) doubles as the
-		// routing key the AMQP backend would carry, and the message's schema
-		// version is surfaced on the delivery just as the consumer does.
 		d := messaging.Delivery{
-			Message:       msg,
-			RoutingKey:    req.Type,
-			SchemaVersion: msg.SchemaVersion,
+			Message: msg,
 		}
 
 		logger.Info("debug consume", redact.String("type", req.Type), redact.String("message_id", msg.ID))

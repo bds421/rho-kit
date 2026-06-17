@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -27,14 +26,13 @@ type DeadLetterPublisher interface {
 
 const (
 	defaultPrefetch = 10
-	// defaultHandlerTimeout caps every handler invocation, both during
-	// normal operation and during graceful shutdown. The same bound is
-	// used in both paths because a stuck handler is the root failure mode
-	// the timeout exists to defend against — there is no useful reason to
+	// handlerTimeout caps every handler invocation, both during normal
+	// operation and during graceful shutdown. The same bound is used in
+	// both paths because a stuck handler is the root failure mode the
+	// timeout exists to defend against — there is no useful reason to
 	// be lenient about it during steady-state. Handlers that must
 	// distinguish steady-state from shutdown can call IsShutdown(ctx).
-	// Override per-consumer with [WithHandlerTimeout].
-	defaultHandlerTimeout    = 30 * time.Second
+	handlerTimeout           = 30 * time.Second
 	deadLetterPublishTimeout = 10 * time.Second // max time for dead-letter exchange publish
 )
 
@@ -48,7 +46,7 @@ type shutdownSignalKey struct{}
 // IsShutdown reports whether ctx carries the consumer's shutdown signal.
 // True means "the consumer is in graceful shutdown; finish or fail quickly
 // rather than starting any long-lived work". The handler's ctx is still
-// scoped to a deadline (the consumer's handler timeout); IsShutdown is the
+// scoped to a deadline (handlerTimeout); IsShutdown is the
 // finer-grained signal that the consumer itself is winding down.
 func IsShutdown(ctx context.Context) bool {
 	_, ok := ctx.Value(shutdownSignalKey{}).(struct{})
@@ -71,22 +69,6 @@ func WithPrefetch(n int) ConsumerOption {
 		panic("amqpbackend: WithPrefetch requires n > 0; RabbitMQ treats 0 as unlimited prefetch")
 	}
 	return func(c *Consumer) { c.prefetch = n }
-}
-
-// WithHandlerTimeout overrides the per-invocation handler deadline
-// (default [defaultHandlerTimeout], 30s). Handlers with legitimately long
-// work — large batches, slow downstreams — would otherwise be ctx-cancelled
-// at 30s and bounce into the retry/DLQ cycle. The same bound applies during
-// graceful shutdown (the grace deadline), so raising it also lengthens the
-// worst-case drain on stop.
-//
-// Panics on d <= 0: a zero or negative deadline would cancel every handler
-// immediately, which is always a wiring bug.
-func WithHandlerTimeout(d time.Duration) ConsumerOption {
-	if d <= 0 {
-		panic("amqpbackend: WithHandlerTimeout requires d > 0")
-	}
-	return func(c *Consumer) { c.handlerTimeout = d }
 }
 
 // ConsumerHooks provides optional callbacks for observability.
@@ -122,20 +104,10 @@ type Consumer struct {
 	publisher             DeadLetterPublisher
 	logger                *slog.Logger
 	prefetch              int
-	handlerTimeout        time.Duration
 	hooks                 ConsumerHooks
 	metrics               *Metrics
 	maxDLQConsecutiveFail int
-	// dlqConsecutiveFail tracks the consecutive dead-letter publish failure
-	// streak PER dead exchange (keyed by DeadExchange), not per Consumer. A
-	// single Consumer commonly serves multiple bindings; a shared counter
-	// let one queue's permanently-broken dead exchange push the streak past
-	// the cap so an unrelated queue's first transient DLE failure was
-	// force-discarded (message loss), and a success on one queue reset
-	// another's streak. The map value is *atomic.Uint64. Keys are bounded by
-	// the number of distinct dead exchanges, so the map cannot grow
-	// unboundedly.
-	dlqConsecutiveFail sync.Map // map[string]*atomic.Uint64
+	dlqConsecutiveFail    atomic.Uint64
 }
 
 // defaultMaxDLQConsecutiveFailures bounds how many consecutive dead-letter
@@ -179,7 +151,6 @@ func NewConsumer(conn Connector, publisher DeadLetterPublisher, logger *slog.Log
 		publisher:             publisher,
 		logger:                logger,
 		prefetch:              defaultPrefetch,
-		handlerTimeout:        defaultHandlerTimeout,
 		maxDLQConsecutiveFail: defaultMaxDLQConsecutiveFailures,
 	}
 	for _, opt := range opts {
@@ -322,23 +293,11 @@ func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler
 			if isShutdown {
 				base = context.WithValue(base, shutdownSignalKey{}, struct{}{})
 			}
-			handlerCtx, handlerCancel := context.WithTimeout(base, c.effectiveHandlerTimeout())
+			handlerCtx, handlerCancel := context.WithTimeout(base, handlerTimeout)
 			c.handleDelivery(handlerCtx, delivery, handler, b)
 			handlerCancel()
 		}
 	}
-}
-
-// effectiveHandlerTimeout returns the configured per-invocation handler
-// deadline, falling back to [defaultHandlerTimeout] for Consumers built
-// directly (bypassing NewConsumer) without setting the field. This keeps a
-// stuck handler from stalling the consumer goroutine even on a zero-value
-// Consumer.
-func (c *Consumer) effectiveHandlerTimeout() time.Duration {
-	if c.handlerTimeout > 0 {
-		return c.handlerTimeout
-	}
-	return defaultHandlerTimeout
 }
 
 func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery, handler messaging.Handler, b messaging.Binding) {
@@ -527,19 +486,6 @@ func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, ms
 	}
 }
 
-// dlqFailCounter returns the consecutive-failure counter for a specific dead
-// exchange, creating it on first use. Keying by dead exchange keeps one
-// binding's broken DLE from force-discarding an unrelated binding's first
-// transient failure (and stops a success on one binding from resetting
-// another's streak).
-func (c *Consumer) dlqFailCounter(deadExchange string) *atomic.Uint64 {
-	if existing, ok := c.dlqConsecutiveFail.Load(deadExchange); ok {
-		return existing.(*atomic.Uint64)
-	}
-	actual, _ := c.dlqConsecutiveFail.LoadOrStore(deadExchange, new(atomic.Uint64))
-	return actual.(*atomic.Uint64)
-}
-
 // routeToDeadExchange publishes the original delivery bytes to the
 // configured dead exchange and acks on success, with safeguards
 // against a misconfigured DLE bouncing messages forever.
@@ -568,7 +514,7 @@ func (c *Consumer) routeToDeadExchange(ctx context.Context, delivery amqp.Delive
 	pubErr := c.publishRawDeadLetter(deadCtx, b.DeadExchange, b.ConsumerGroup, delivery.Body, msg.ID)
 	deadCancel()
 	if pubErr != nil {
-		fails := c.dlqFailCounter(b.DeadExchange).Add(1)
+		fails := c.dlqConsecutiveFail.Add(1)
 		capped := c.maxDLQConsecutiveFail > 0 && int(fails) > c.maxDLQConsecutiveFail
 		if capped {
 			c.logger.Error("dead-letter publish has failed repeatedly, force-discarding to break the loop — fix the dead exchange",
@@ -593,7 +539,7 @@ func (c *Consumer) routeToDeadExchange(ctx context.Context, delivery amqp.Delive
 		}
 		return amqpConsumeOutcomeDLQPublishFailed
 	}
-	c.dlqFailCounter(b.DeadExchange).Store(0)
+	c.dlqConsecutiveFail.Store(0)
 	if ackErr := delivery.Ack(false); ackErr != nil {
 		c.logger.Error("ack failed after dead-letter publish", redact.Error(ackErr), redact.String("id", msg.ID))
 	}

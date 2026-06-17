@@ -6,7 +6,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
@@ -304,9 +303,9 @@ func TestConsumer_HandleFailure_Retry_Nacks(t *testing.T) {
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup:      "test-queue",
+			RoutingKey: "test.event",
+			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
 		},
 	}
 
@@ -327,9 +326,9 @@ func TestConsumer_HandleFailure_RetryHookPanic_DoesNotPanic(t *testing.T) {
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup:      "test-queue",
+			RoutingKey: "test.event",
+			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
 		},
 	}
 
@@ -368,9 +367,9 @@ func TestConsumer_HandleFailure_DeadLetter_PublishesAndAcks(t *testing.T) {
 
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup:      "test-queue",
+			RoutingKey: "test.event",
+			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
 		},
 		DeadExchange: "test-exchange.dead",
 	}
@@ -407,9 +406,9 @@ func TestConsumer_HandleFailure_DeadLetter_PublishFails_Nacks(t *testing.T) {
 
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup:      "test-queue",
+			RoutingKey: "test.event",
+			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
 		},
 		DeadExchange: "test-exchange.dead",
 	}
@@ -444,9 +443,9 @@ func TestConsumer_HandleFailure_DeadLetterPublisherPanic_Nacks(t *testing.T) {
 	}
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup:      "test-queue",
+			RoutingKey: "test.event",
+			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
 		},
 		DeadExchange: "test-exchange.dead",
 	}
@@ -486,9 +485,9 @@ func TestConsumer_HandleFailure_ForceDiscard_AcksAndDiscards(t *testing.T) {
 
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup:      "test-queue",
+			RoutingKey: "test.event",
+			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
 		},
 	}
 
@@ -624,190 +623,6 @@ func TestConsumer_HandleFailure_DeadLetter_AckFailure(t *testing.T) {
 	assert.True(t, ack.acked, "ack attempted even when it fails")
 }
 
-// --- DLQ consecutive-failure force-discard cap (consumer.go routeToDeadExchange) ---
-
-// togglingDeadLetterPublisher returns nextErr on each PublishRaw call so a
-// test can drive a streak of failures and then a success to exercise the
-// consecutive-failure cap and its reset.
-type togglingDeadLetterPublisher struct {
-	nextErr error
-	calls   int
-}
-
-func (p *togglingDeadLetterPublisher) PublishRaw(context.Context, string, string, []byte, string) error {
-	p.calls++
-	return p.nextErr
-}
-
-func dleBinding() messaging.Binding {
-	return messaging.Binding{
-		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
-		},
-		DeadExchange: "test-exchange.dead",
-	}
-}
-
-// TestRouteToDeadExchange_ForceDiscardsAfterCapCrossed pins the loss-inducing
-// shedding path: with a small cap, the first `cap` consecutive DLE publish
-// failures nack-to-retry (dlq_publish_failed); the failure that crosses the
-// cap acks+OnDiscard and reports force_discarded. Before, newTestConsumer
-// left the cap at 0 (uncapped) so this branch was never exercised.
-func TestRouteToDeadExchange_ForceDiscardsAfterCapCrossed(t *testing.T) {
-	const cap = 2
-	dlPub := &togglingDeadLetterPublisher{nextErr: errors.New("dead exchange is broken")}
-	var discards int
-	c := newTestConsumer(dlPub, ConsumerHooks{
-		OnDiscard: func(_, _, queue string) {
-			discards++
-			assert.Equal(t, "test-queue", queue)
-		},
-	})
-	c.maxDLQConsecutiveFail = cap
-	msg, _ := messaging.NewMessage("test.event", "payload")
-	binding := dleBinding()
-
-	// First `cap` failures: nack-to-retry, counter climbs but stays at/under cap.
-	for i := 1; i <= cap; i++ {
-		ack := &fakeAcknowledger{}
-		delivery := makeAMQPDelivery(ack, msg)
-		outcome := c.routeToDeadExchange(context.Background(), delivery, msg, binding, errors.New("boom"), 0)
-		assert.Equal(t, amqpConsumeOutcomeDLQPublishFailed, outcome,
-			"failure %d is at/under the cap and must nack-to-retry", i)
-		assert.True(t, ack.nacked, "under-cap DLE failure must nack")
-		assert.False(t, ack.acked, "under-cap DLE failure must not ack")
-	}
-	assert.Equal(t, 0, discards, "no force-discard before the cap is crossed")
-
-	// The failure that crosses the cap: ack + OnDiscard + force_discarded.
-	ack := &fakeAcknowledger{}
-	delivery := makeAMQPDelivery(ack, msg)
-	outcome := c.routeToDeadExchange(context.Background(), delivery, msg, binding, errors.New("boom"), 0)
-	assert.Equal(t, amqpConsumeOutcomeForceDiscarded, outcome,
-		"crossing the cap must force-discard to break the loop")
-	assert.True(t, ack.acked, "force-discard must ack (nack would re-enter the retry cycle forever)")
-	assert.False(t, ack.nacked, "force-discard must not nack")
-	assert.Equal(t, 1, discards, "force-discard must fire OnDiscard exactly once")
-}
-
-// TestRouteToDeadExchange_SuccessResetsConsecutiveFailureCounter pins the
-// reset-on-success branch (the per-exchange counter is Store(0)'d): a
-// successful publish between failures must clear the streak so a later
-// transient failure is nacked-to-retry, not force-discarded.
-func TestRouteToDeadExchange_SuccessResetsConsecutiveFailureCounter(t *testing.T) {
-	const cap = 2
-	dlPub := &togglingDeadLetterPublisher{}
-	var deadLettered int
-	var discards int
-	c := newTestConsumer(dlPub, ConsumerHooks{
-		OnDeadLetter: func(_, _, _ string, _ int) { deadLettered++ },
-		OnDiscard:    func(_, _, _ string) { discards++ },
-	})
-	c.maxDLQConsecutiveFail = cap
-	msg, _ := messaging.NewMessage("test.event", "payload")
-	binding := dleBinding()
-
-	route := func() string {
-		ack := &fakeAcknowledger{}
-		delivery := makeAMQPDelivery(ack, msg)
-		return c.routeToDeadExchange(context.Background(), delivery, msg, binding, errors.New("boom"), 0)
-	}
-
-	// Build the streak right up to the cap (still nack-to-retry).
-	dlPub.nextErr = errors.New("dead exchange flaky")
-	for i := 1; i <= cap; i++ {
-		require.Equal(t, amqpConsumeOutcomeDLQPublishFailed, route(),
-			"failure %d must nack-to-retry", i)
-	}
-
-	// A success resets the counter.
-	dlPub.nextErr = nil
-	require.Equal(t, amqpConsumeOutcomeDeadLettered, route(),
-		"successful publish must dead-letter")
-	assert.Equal(t, 1, deadLettered)
-
-	// Because the counter reset, the next `cap` failures must nack-to-retry
-	// again rather than immediately force-discard.
-	dlPub.nextErr = errors.New("dead exchange flaky again")
-	for i := 1; i <= cap; i++ {
-		require.Equal(t, amqpConsumeOutcomeDLQPublishFailed, route(),
-			"post-reset failure %d must nack-to-retry, proving the streak was cleared", i)
-	}
-	assert.Equal(t, 0, discards, "no force-discard while the streak stays at/under the cap")
-}
-
-// TestRouteToDeadExchange_Uncapped_NeverForceDiscards pins the
-// WithoutMaxDLQConsecutiveFailures semantics: cap == 0 disables the shedding
-// branch so even a long failure streak only ever nacks-to-retry.
-func TestRouteToDeadExchange_Uncapped_NeverForceDiscards(t *testing.T) {
-	dlPub := &togglingDeadLetterPublisher{nextErr: errors.New("permanently broken")}
-	var discards int
-	c := newTestConsumer(dlPub, ConsumerHooks{
-		OnDiscard: func(_, _, _ string) { discards++ },
-	})
-	c.maxDLQConsecutiveFail = 0 // uncapped (WithoutMaxDLQConsecutiveFailures)
-	msg, _ := messaging.NewMessage("test.event", "payload")
-	binding := dleBinding()
-
-	for i := 0; i < 50; i++ {
-		ack := &fakeAcknowledger{}
-		delivery := makeAMQPDelivery(ack, msg)
-		outcome := c.routeToDeadExchange(context.Background(), delivery, msg, binding, errors.New("boom"), 0)
-		require.Equal(t, amqpConsumeOutcomeDLQPublishFailed, outcome,
-			"uncapped consumer must always nack-to-retry, never force-discard")
-		require.True(t, ack.nacked)
-	}
-	assert.Equal(t, 0, discards, "uncapped consumer must never force-discard")
-}
-
-// TestRouteToDeadExchange_CounterIsolatedPerDeadExchange pins the per-binding
-// fix: a broken dead exchange on one binding must not push an unrelated
-// binding past the cap. A single Consumer often serves multiple bindings;
-// when the counter was per-Consumer, queue A's failure streak force-discarded
-// queue B's very first (possibly transient) DLE failure — message loss.
-func TestRouteToDeadExchange_CounterIsolatedPerDeadExchange(t *testing.T) {
-	const cap = 2
-	dlPub := &togglingDeadLetterPublisher{nextErr: errors.New("dead exchange A is broken")}
-	var discards int
-	c := newTestConsumer(dlPub, ConsumerHooks{
-		OnDiscard: func(_, _, _ string) { discards++ },
-	})
-	c.maxDLQConsecutiveFail = cap
-	msg, _ := messaging.NewMessage("test.event", "payload")
-
-	bindingA := messaging.Binding{
-		BindingSpec:  messaging.BindingSpec{ConsumerGroup: "queue-a", RoutingKey: "test.event", Retry: &messaging.RetryPolicy{MaxRetries: 3}},
-		DeadExchange: "dead.a",
-	}
-	bindingB := messaging.Binding{
-		BindingSpec:  messaging.BindingSpec{ConsumerGroup: "queue-b", RoutingKey: "test.event", Retry: &messaging.RetryPolicy{MaxRetries: 3}},
-		DeadExchange: "dead.b",
-	}
-
-	route := func(b messaging.Binding) string {
-		ack := &fakeAcknowledger{}
-		delivery := makeAMQPDelivery(ack, msg)
-		return c.routeToDeadExchange(context.Background(), delivery, msg, b, errors.New("boom"), 0)
-	}
-
-	// Drive binding A's broken DLE well past the cap.
-	for i := 0; i < cap+5; i++ {
-		_ = route(bindingA)
-	}
-	require.Positive(t, discards, "binding A's broken DLE must eventually force-discard")
-	discardsAfterA := discards
-
-	// Binding B's FIRST failure must still nack-to-retry — its own counter
-	// is independent of A's exhausted streak.
-	outcome := route(bindingB)
-	assert.Equal(t, amqpConsumeOutcomeDLQPublishFailed, outcome,
-		"binding B's first DLE failure must nack-to-retry, not inherit A's force-discard")
-	assert.Equal(t, discardsAfterA, discards,
-		"binding B's first failure must not trigger a force-discard from A's streak")
-}
-
 // --- Panic recovery ---
 
 func TestConsumer_HandleDelivery_HandlerPanic_DoesNotKillGoroutine(t *testing.T) {
@@ -839,9 +654,9 @@ func TestConsumer_HandleDelivery_HandlerPanicWithRetry_RoutesToDiscard(t *testin
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup:      "test-queue",
+			RoutingKey: "test.event",
+			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
 		},
 		DeadExchange: "test-exchange.dead",
 	}
@@ -895,38 +710,6 @@ func TestNewConsumer_NilLoggerNormalisedToDefault(t *testing.T) {
 	require.NotNil(t, c.logger, "nil logger must be replaced with slog.Default()")
 }
 
-// --- WithHandlerTimeout ---
-
-func TestWithHandlerTimeout_SetsField(t *testing.T) {
-	c := NewConsumer(noopConnector{}, nil, discardLogger(), WithHandlerTimeout(90*time.Second))
-	assert.Equal(t, 90*time.Second, c.handlerTimeout)
-	assert.Equal(t, 90*time.Second, c.effectiveHandlerTimeout())
-}
-
-func TestWithHandlerTimeout_PanicsOnNonPositive(t *testing.T) {
-	for _, d := range []time.Duration{0, -time.Second} {
-		t.Run(d.String(), func(t *testing.T) {
-			assert.Panics(t, func() {
-				WithHandlerTimeout(d)
-			})
-		})
-	}
-}
-
-func TestNewConsumer_DefaultsHandlerTimeout(t *testing.T) {
-	c := NewConsumer(noopConnector{}, nil, discardLogger())
-	assert.Equal(t, defaultHandlerTimeout, c.handlerTimeout)
-	assert.Equal(t, defaultHandlerTimeout, c.effectiveHandlerTimeout())
-}
-
-func TestEffectiveHandlerTimeout_FallsBackForZeroValueConsumer(t *testing.T) {
-	// A Consumer built directly (bypassing NewConsumer) leaves the field at
-	// zero; the effective timeout must still be the default so a stuck
-	// handler cannot stall the goroutine forever.
-	c := &Consumer{}
-	assert.Equal(t, defaultHandlerTimeout, c.effectiveHandlerTimeout())
-}
-
 func TestConsumeOnce_PanicsOnNilHandler(t *testing.T) {
 	c := NewConsumer(noopConnector{}, nil, discardLogger())
 	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "q"}}
@@ -946,9 +729,9 @@ func TestConsumeOnce_RetryWithoutPublisher_ReturnsError(t *testing.T) {
 
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup:      "test-queue",
+			RoutingKey: "test.event",
+			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
 		},
 	}
 

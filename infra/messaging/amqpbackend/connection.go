@@ -105,14 +105,6 @@ func OnReconnect(fn func(Connector) error) DialOption {
 // uses amqp.DialTLS instead of amqp.Dial, presenting a client certificate
 // and verifying the server against the provided CA. The config is cloned and
 // raised to a TLS 1.2 minimum; caller-set stricter floors are preserved.
-//
-// Unlike kafkabackend/redis (which return an error for the same condition),
-// WithTLS panics at option-application time on a disallowed config —
-// InsecureSkipVerify=true (use [WithReloadingTLS] for the verified-rotation
-// path) or a MaxVersion below TLS 1.2. This is a deliberate cross-backend
-// difference: a DialOption has no error return, and an insecure or
-// downgraded TLS floor is a startup wiring bug that must fail loudly rather
-// than be silently swallowed.
 func WithTLS(cfg *tls.Config) DialOption {
 	cfg = cloneTLSConfigWithFloor(cfg, "amqpbackend: WithTLS")
 	return func(c *Connection) {
@@ -647,29 +639,13 @@ func (c *Connection) reconnect() {
 			return
 		}
 
-		// Attempt the first dial immediately; apply the exponential
-		// backoff only between failed attempts. WorkerPolicy's BaseDelay
-		// (~3s) sleeping before attempt 1 added ~3s of avoidable downtime
-		// to every connection drop and to WithLazyConnect startup even
-		// when the broker is up and reachable. attempts == 0 covers both
-		// the very first dial and the immediate redial after a successful
-		// session dropped (attempts resets to 0 on success).
-		if attempts > 0 {
-			delay := bo.Next()
-			timer := time.NewTimer(delay)
-			select {
-			case <-c.closed:
-				timer.Stop()
-				return
-			case <-timer.C:
-			}
-		} else {
-			// Still honor a shutdown that raced in before the first dial.
-			select {
-			case <-c.closed:
-				return
-			default:
-			}
+		delay := bo.Next()
+		timer := time.NewTimer(delay)
+		select {
+		case <-c.closed:
+			timer.Stop()
+			return
+		case <-timer.C:
 		}
 
 		logAttrs := []any{"attempt", attempts + 1}
@@ -741,16 +717,6 @@ func (c *Connection) reconnect() {
 					_ = c.conn.Close()
 				}
 				c.mu.Unlock()
-				// Drain the reconnect signal our own intentional close just
-				// triggered. The generation-current watcher (started above)
-				// observes this close and queues a reconnectSignal whose CAS
-				// fails because this loop still owns the reconnecting flag.
-				// Left buffered, the finalization drain after the *next*
-				// successful dial would consume that stale signal and loop
-				// again — redundantly closing a perfectly healthy connection
-				// and restarting consumers. Draining here keeps the retry to
-				// the single cycle this failure actually warrants.
-				c.drainReconnectSignal()
 				attempts++
 				continue
 			}
@@ -784,20 +750,6 @@ func (c *Connection) reconnect() {
 	}
 }
 
-// drainReconnectSignal consumes a single buffered reconnect signal if one is
-// queued, returning true when it drained one. It is non-blocking: with the
-// buffered(1) reconnectSignal channel a single drain clears any pending
-// queued signal. Used to discard a self-inflicted signal produced by the
-// reconnect loop intentionally closing its own connection.
-func (c *Connection) drainReconnectSignal() bool {
-	select {
-	case <-c.reconnectSignal:
-		return true
-	default:
-		return false
-	}
-}
-
 func (c *Connection) callOnReconnect() (err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -825,4 +777,17 @@ func (c *Connection) dial() (*amqp.Connection, error) {
 		return amqp.DialTLS(dialURL, c.tlsConfig)
 	}
 	return amqp.Dial(dialURL)
+}
+
+// sanitizeURL strips credentials from an AMQP URL for safe logging.
+// Returns the URL with userinfo, query, and fragment components removed.
+func sanitizeURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "***"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }

@@ -82,13 +82,7 @@ func extractStringHeaders(h amqp.Table) map[string]string {
 		}
 		cost := len(k) + len(s)
 		if cost > byteBudget {
-			// Skip just this oversized header rather than breaking the
-			// loop. Go map iteration order is random, so a single fat
-			// header (e.g. a large baggage value) would otherwise drop an
-			// unpredictable subset of the remaining small, legitimate
-			// headers (trace/correlation IDs) — different subset per
-			// delivery. continue keeps every header that still fits.
-			continue
+			break
 		}
 		byteBudget -= cost
 		result[k] = s

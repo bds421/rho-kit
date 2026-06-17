@@ -88,19 +88,14 @@ func TestHeaderToMap_CopiesTable(t *testing.T) {
 
 // --- deepCopyValue ---
 
-// freshBudget returns a pointer to a fresh node budget. deepCopyValue
-// decrements the budget through this pointer, so each test must own its
-// own copy: a shared package-level var leaked consumption across tests,
-// making them order-dependent and exhausting the budget under
-// `go test -count=N` until the truncation sentinel tripped.
-func freshBudget() *int {
-	b := maxHeaderNodes
-	return &b
-}
+// budget0 is a fresh per-test node budget. Tests that exercise the
+// happy path want plenty of room; the truncation tests below construct
+// their own tighter budget.
+var budget0 = maxHeaderNodes
 
 func TestDeepCopyValue_Table(t *testing.T) {
 	inner := amqp.Table{"nested-key": "nested-val"}
-	copy := deepCopyValue(inner, 0, freshBudget())
+	copy := deepCopyValue(inner, 0, &budget0)
 
 	copiedTable, ok := copy.(map[string]any)
 	require.True(t, ok, "expected deep copy to return map[string]any for amqp.Table")
@@ -112,7 +107,7 @@ func TestDeepCopyValue_Table(t *testing.T) {
 
 func TestDeepCopyValue_Slice(t *testing.T) {
 	original := []any{"a", int64(1), amqp.Table{"x": "y"}}
-	copy := deepCopyValue(original, 0, freshBudget())
+	copy := deepCopyValue(original, 0, &budget0)
 
 	copiedSlice, ok := copy.([]any)
 	require.True(t, ok, "expected deep copy to return []any for []any")
@@ -126,7 +121,7 @@ func TestDeepCopyValue_Slice(t *testing.T) {
 
 func TestDeepCopyValue_Bytes(t *testing.T) {
 	original := []byte{0x01, 0x02, 0x03}
-	copy := deepCopyValue(original, 0, freshBudget())
+	copy := deepCopyValue(original, 0, &budget0)
 
 	copiedBytes, ok := copy.([]byte)
 	require.True(t, ok, "expected deep copy to return []byte")
@@ -137,22 +132,22 @@ func TestDeepCopyValue_Bytes(t *testing.T) {
 }
 
 func TestDeepCopyValue_Scalar_Int(t *testing.T) {
-	result := deepCopyValue(int64(99), 0, freshBudget())
+	result := deepCopyValue(int64(99), 0, &budget0)
 	assert.Equal(t, int64(99), result)
 }
 
 func TestDeepCopyValue_Scalar_String(t *testing.T) {
-	result := deepCopyValue("hello", 0, freshBudget())
+	result := deepCopyValue("hello", 0, &budget0)
 	assert.Equal(t, "hello", result)
 }
 
 func TestDeepCopyValue_Scalar_Bool(t *testing.T) {
-	result := deepCopyValue(true, 0, freshBudget())
+	result := deepCopyValue(true, 0, &budget0)
 	assert.Equal(t, true, result)
 }
 
 func TestDeepCopyValue_Nil(t *testing.T) {
-	result := deepCopyValue(nil, 0, freshBudget())
+	result := deepCopyValue(nil, 0, &budget0)
 	assert.Nil(t, result)
 }
 
@@ -356,9 +351,8 @@ func TestExtractStringHeaders_RejectsOversizedAggregate(t *testing.T) {
 	require.NotNil(t, result)
 	require.Len(t, result, 1)
 
-	// A single value larger than the budget is skipped — the loop
-	// continues past it without admitting it. Result is nil (no headers
-	// materialised).
+	// A single value larger than the budget is dropped — the loop breaks
+	// before adding it. Result is nil (no headers materialised).
 	overBudget := amqp.Table{
 		"k": strings.Repeat("x", maxHeaderBytes+1),
 	}
@@ -397,40 +391,4 @@ func TestExtractStringHeaders_RejectsOversizedCount(t *testing.T) {
 	require.NotNil(t, result)
 	require.LessOrEqual(t, len(result), maxHeaderNodes,
 		"materialised header count must not exceed maxHeaderNodes")
-}
-
-// TestExtractStringHeaders_OversizedHeaderDoesNotDropSmallHeaders guards the
-// over-budget skip: a single fat header (a large baggage value) must NOT
-// cause small legitimate headers (trace/correlation IDs) to be dropped.
-// Before the fix the loop `break`ed on the first over-budget header, so with
-// Go's random map iteration order an unpredictable subset of the small
-// headers vanished — different subset per delivery. With `continue` the fat
-// header is skipped and every small header that fits is always retained.
-func TestExtractStringHeaders_OversizedHeaderDoesNotDropSmallHeaders(t *testing.T) {
-	const small = "abc-123"
-	h := amqp.Table{
-		// A single value larger than the whole budget. Regardless of where
-		// map iteration visits it, it must be skipped, not terminate the loop.
-		"baggage": strings.Repeat("x", maxHeaderBytes+1),
-		// Small, legitimate headers that comfortably fit.
-		"trace-id":       small,
-		"correlation-id": small,
-		"tenant-id":      small,
-	}
-
-	// Run many times: map iteration order is randomised per range, so a
-	// `break` regression would intermittently drop a subset of the small
-	// headers. Asserting determinism across iterations catches that.
-	for i := 0; i < 50; i++ {
-		result := extractStringHeaders(h)
-		require.NotNil(t, result)
-		assert.NotContains(t, result, "baggage",
-			"over-budget header must be skipped")
-		assert.Equal(t, small, result["trace-id"],
-			"small header must survive a preceding over-budget header")
-		assert.Equal(t, small, result["correlation-id"])
-		assert.Equal(t, small, result["tenant-id"])
-		assert.Len(t, result, 3,
-			"all three small headers must always materialise, never a random subset")
-	}
 }

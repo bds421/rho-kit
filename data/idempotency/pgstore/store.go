@@ -154,9 +154,13 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 	// Content, 200 with empty payload) where response_body is NULL, and
 	// rows with NULL headers — octet_length(NULL) returns NULL and would
 	// otherwise fail the int64 scan.
+	// headers is JSONB: octet_length has no jsonb overload (it errors
+	// "function octet_length(jsonb) does not exist"), so cast to text to
+	// measure the serialized size. response_body is BYTEA where
+	// octet_length applies directly.
 	sizeQuery := fmt.Sprintf(
 		`SELECT COALESCE(octet_length(response_body), 0),
-		        COALESCE(octet_length(headers), 0) FROM %s
+		        COALESCE(octet_length(headers::text), 0) FROM %s
 		 WHERE key = $1 AND status_code IS NOT NULL AND expires_at > now()`,
 		s.table,
 	)
