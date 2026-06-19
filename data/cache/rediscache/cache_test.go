@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -312,6 +314,41 @@ func TestMGet_OversizeValueDroppedSilently(t *testing.T) {
 	assert.False(t, hasMissing)
 }
 
+// TestMGet_WrongTypeKeyDoesNotFailBatch pins that a single wrong-typed
+// key (e.g. a co-tenant planting a list under a key the capped path
+// then STRLENs/GETs) must NOT abort the whole batch. The uncapped MGET
+// path already treats WRONGTYPE keys as misses (Redis MGET returns nil
+// for them); the capped STRLEN+GET path must match that contract so one
+// hostile entry cannot deny the entire request.
+func TestMGet_WrongTypeKeyDoesNotFailBatch(t *testing.T) {
+	for name, maxSize := range map[string]int{
+		"capped":   64,
+		"uncapped": 0,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := newTestClient(t)
+			t.Cleanup(func() { _ = client.Close() })
+
+			rc, err := NewCache(client, "test", WithCacheMaxValueSize(maxSize))
+			require.NoError(t, err)
+
+			ctx := context.Background()
+			require.NoError(t, client.Set(ctx, "ok", []byte("payload"), time.Minute).Err())
+			// Co-tenant plants a list under "poisoned": STRLEN/GET both
+			// return WRONGTYPE for it.
+			require.NoError(t, client.RPush(ctx, "poisoned", "a", "b").Err())
+
+			out, err := rc.MGet(ctx, []string{"ok", "poisoned", "missing"})
+			require.NoError(t, err, "a single wrong-typed key must not fail the whole batch")
+			assert.Equal(t, []byte("payload"), out["ok"])
+			_, hasPoisoned := out["poisoned"]
+			assert.False(t, hasPoisoned, "wrong-typed entry must be treated as a miss")
+			_, hasMissing := out["missing"]
+			assert.False(t, hasMissing)
+		})
+	}
+}
+
 func TestWithCacheMaxValueSize_PanicsOnNegative(t *testing.T) {
 	assert.Panics(t, func() {
 		WithCacheMaxValueSize(-1)
@@ -322,4 +359,128 @@ func TestWithCacheMaxValueSize_ZeroDisablesLimit(t *testing.T) {
 	rc := &Cache{maxValueSize: defaultMaxValueSize}
 	WithCacheMaxValueSize(0)(rc)
 	assert.Equal(t, 0, rc.maxValueSize)
+}
+
+// newTestCacheWithRegistry builds a cache wired to a fresh, isolated
+// Prometheus registry so individual hit/miss counters can be asserted
+// without interference from the package-global default registry.
+func newTestCacheWithRegistry(t *testing.T, opts ...CacheOption) (*Cache, *prometheus.Registry) {
+	t.Helper()
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	reg := prometheus.NewRegistry()
+	opts = append(opts, WithMetricsRegisterer(reg))
+	rc, err := NewCache(client, "test", opts...)
+	require.NoError(t, err)
+	return rc, reg
+}
+
+// TestNewCache_CustomRegistererDoesNotUseDefaultMetrics verifies that
+// passing WithMetricsRegisterer wires the cache to that registry rather
+// than the global default-registry singleton. The constructor must defer
+// the defaultMetrics() fallback until after options run; counting a hit
+// must therefore land on the custom registry's collector.
+func TestNewCache_CustomRegistererDoesNotUseDefaultMetrics(t *testing.T) {
+	rc, reg := newTestCacheWithRegistry(t)
+	ctx := context.Background()
+
+	// The custom registry's metrics are NOT the default singleton.
+	assert.NotSame(t, defaultMetrics(), rc.metrics,
+		"custom-registerer cache must not reuse the default-registry metrics")
+
+	require.NoError(t, rc.Set(ctx, "k", []byte("v"), time.Minute))
+	_, err := rc.Get(ctx, "k")
+	require.NoError(t, err)
+
+	assert.Equal(t, float64(1), testutil.ToFloat64(rc.metrics.hits.WithLabelValues("test")))
+	// The hit landed on the custom registry: gathering it yields the family.
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	var found bool
+	for _, mf := range mfs {
+		if mf.GetName() == "redis_cache_hits_total" {
+			found = true
+		}
+	}
+	assert.True(t, found, "hits_total must be registered on the custom registry")
+}
+
+// TestGet_PreStrlenOversizeCountsMiss pins miss accounting on the pre-GET
+// oversize path: a value whose STRLEN exceeds the cap is rejected with
+// ErrValueTooLarge and counted as a miss (never a hit).
+func TestGet_PreStrlenOversizeCountsMiss(t *testing.T) {
+	rc, _ := newTestCacheWithRegistry(t, WithCacheMaxValueSize(64))
+	ctx := context.Background()
+
+	require.NoError(t, rc.client.Set(ctx, "poisoned", make([]byte, 128), time.Minute).Err())
+	_, err := rc.Get(ctx, "poisoned")
+	require.ErrorIs(t, err, sharedcache.ErrValueTooLarge)
+
+	assert.Equal(t, float64(1), testutil.ToFloat64(rc.metrics.misses.WithLabelValues("test")),
+		"oversize get must be counted as a miss")
+	assert.Equal(t, float64(0), testutil.ToFloat64(rc.metrics.hits.WithLabelValues("test")))
+}
+
+// understatedStrLenClient wraps a real client but reports a STRLEN below
+// the cap regardless of the stored value, deterministically driving the
+// post-GET TOCTOU branch (the value passed the length pre-check but the
+// GET reply exceeds the cap).
+type understatedStrLenClient struct {
+	goredis.UniversalClient
+}
+
+func (c understatedStrLenClient) StrLen(ctx context.Context, key string) *goredis.IntCmd {
+	return goredis.NewIntResult(0, nil)
+}
+
+// TestGet_TOCTOUOversizeCountsMiss pins the consistency fix: when a value
+// passes the pre-GET STRLEN check but the GET reply exceeds the cap (the
+// TOCTOU window), the read must be rejected with ErrValueTooLarge AND
+// counted as a miss for hit-ratio accounting — matching the pre-GET path
+// and the capped-MGet TOCTOU branch.
+func TestGet_TOCTOUOversizeCountsMiss(t *testing.T) {
+	mr := miniredis.RunT(t)
+	real := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = real.Close() })
+
+	reg := prometheus.NewRegistry()
+	rc, err := NewCache(understatedStrLenClient{real}, "test",
+		WithCacheMaxValueSize(64), WithMetricsRegisterer(reg))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	// STRLEN (faked to 0) passes the cap, but GET returns 128 real bytes,
+	// tripping the post-GET TOCTOU guard.
+	require.NoError(t, real.Set(ctx, "poisoned", make([]byte, 128), time.Minute).Err())
+
+	_, err = rc.Get(ctx, "poisoned")
+	require.ErrorIs(t, err, sharedcache.ErrValueTooLarge,
+		"post-GET oversize must surface ErrValueTooLarge")
+
+	assert.Equal(t, float64(1), testutil.ToFloat64(rc.metrics.misses.WithLabelValues("test")),
+		"TOCTOU oversize get must be counted as a miss")
+	assert.Equal(t, float64(0), testutil.ToFloat64(rc.metrics.hits.WithLabelValues("test")))
+}
+
+// TestMGetUncapped_NonStringReplyCountsMiss pins the consistency fix for
+// the uncapped MGET path: a non-string reply (e.g. a wrong-typed key
+// returned by MGET) must be counted as a miss rather than silently
+// skipped, matching the nil-reply case and the capped path.
+func TestMGetUncapped_NonStringReplyCountsMiss(t *testing.T) {
+	rc, _ := newTestCacheWithRegistry(t, WithCacheMaxValueSize(0))
+	ctx := context.Background()
+
+	require.NoError(t, rc.client.Set(ctx, "ok", []byte("payload"), time.Minute).Err())
+	// A list under "wrong" makes MGET return a non-string reply for it.
+	require.NoError(t, rc.client.RPush(ctx, "wrong", "a", "b").Err())
+
+	out, err := rc.MGet(ctx, []string{"ok", "wrong", "missing"})
+	require.NoError(t, err)
+	assert.Equal(t, []byte("payload"), out["ok"])
+
+	assert.Equal(t, float64(1), testutil.ToFloat64(rc.metrics.hits.WithLabelValues("test")))
+	// "wrong" (non-string) and "missing" (nil) each count as a miss.
+	assert.Equal(t, float64(2), testutil.ToFloat64(rc.metrics.misses.WithLabelValues("test")),
+		"non-string reply and missing key must both count as misses")
 }

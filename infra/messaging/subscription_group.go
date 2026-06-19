@@ -34,9 +34,12 @@ type SubscriptionGroup struct {
 	subs    []*Subscription
 	started atomic.Bool
 
-	stopOnce sync.Once
-	cancel   atomic.Pointer[context.CancelFunc]
-	wg       sync.WaitGroup
+	cancel atomic.Pointer[context.CancelFunc]
+	wg     sync.WaitGroup
+	// done is closed when Start returns. Stop waits on it rather than
+	// running its own wg.Wait(), which would otherwise race Start's
+	// wg.Add and violate sync.WaitGroup reuse rules.
+	done chan struct{}
 }
 
 // NewSubscriptionGroup constructs an empty group. Use [Add] to
@@ -49,7 +52,7 @@ func NewSubscriptionGroup(logger *slog.Logger) *SubscriptionGroup {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &SubscriptionGroup{logger: logger}
+	return &SubscriptionGroup{logger: logger, done: make(chan struct{})}
 }
 
 // Add registers a subscription. Panics if sub is nil so a
@@ -89,6 +92,18 @@ func (g *SubscriptionGroup) Start(ctx context.Context) error {
 	if !g.started.CompareAndSwap(false, true) {
 		return errors.New("messaging/subscription-group: Start already invoked")
 	}
+	// Signal Stop that Start has returned. Stop waits on this instead of
+	// running its own wg.Wait(), avoiding a WaitGroup-reuse race against
+	// the wg.Add below.
+	defer close(g.done)
+
+	// Publish the cancel func before the empty-group early return so a
+	// Stop that races Start can always cancel the group — even when the
+	// group is empty and Start is parked on the parent context.
+	runCtx, cancel := context.WithCancel(ctx)
+	g.cancel.Store(&cancel)
+	defer cancel()
+
 	g.mu.Lock()
 	subs := append([]*Subscription(nil), g.subs...)
 	g.mu.Unlock()
@@ -97,13 +112,9 @@ func (g *SubscriptionGroup) Start(ctx context.Context) error {
 		// group conditionally (only some subscriptions present in
 		// some deployments) is idiomatic and should not require
 		// callers to special-case the empty case.
-		<-ctx.Done()
+		<-runCtx.Done()
 		return ctx.Err()
 	}
-
-	runCtx, cancel := context.WithCancel(ctx)
-	g.cancel.Store(&cancel)
-	defer cancel()
 
 	errCh := make(chan error, len(subs))
 	g.wg.Add(len(subs))
@@ -138,25 +149,52 @@ func (g *SubscriptionGroup) Start(ctx context.Context) error {
 }
 
 // Stop cancels the group's internal context and waits for every
-// subscription to drain. Idempotent.
+// subscription to drain. Idempotent and safe for concurrent use.
+//
+// Safe to call before Start — returns immediately because no work has
+// been started. A Stop that races Start waits for Start to publish the
+// group's cancel func (the window between the started CAS and the cancel
+// store) and then invokes it, rather than cancelling nothing and parking
+// until ctx expires while the consumers keep running.
 func (g *SubscriptionGroup) Stop(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("messaging/subscription-group: Stop requires a non-nil context")
 	}
-	g.stopOnce.Do(func() {
-		if cancelPtr := g.cancel.Swap(nil); cancelPtr != nil {
-			(*cancelPtr)()
-		}
-	})
-	done := make(chan struct{})
-	go func() {
-		g.wg.Wait()
-		close(done)
-	}()
+	if !g.started.Load() {
+		return nil
+	}
+	if cancel := g.awaitCancel(ctx); cancel != nil {
+		(*cancel)()
+	}
+	// Wait on the Start goroutine instead of running our own wg.Wait():
+	// a concurrent wg.Wait racing Start's wg.Add violates WaitGroup reuse
+	// rules. done closes when Start returns (after its own wg.Wait).
 	select {
-	case <-done:
+	case <-g.done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// awaitCancel atomically takes the published cancel func, waiting for
+// Start to publish it if Stop raced into the window between the started
+// CAS and the cancel store. Returns nil when ctx is cancelled or Start
+// has already returned (g.done closed) without a cancel left to take.
+// Cancelling is idempotent, so replacing the previous sync.Once with
+// this take-and-call pattern keeps Stop one-shot in effect without a
+// once that an early (pre-Start) call could burn.
+func (g *SubscriptionGroup) awaitCancel(ctx context.Context) *context.CancelFunc {
+	for {
+		if cancel := g.cancel.Swap(nil); cancel != nil {
+			return cancel
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-g.done:
+			return g.cancel.Swap(nil)
+		default:
+		}
 	}
 }

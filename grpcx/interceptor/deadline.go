@@ -42,6 +42,15 @@ func DeadlineUnary(d time.Duration) grpc.UnaryServerInterceptor {
 
 // DeadlineStream returns a stream server interceptor that enforces a
 // default per-RPC deadline. d must be positive.
+//
+// The deadline is cooperative: it only tightens the context returned
+// by the wrapped stream's Context(). A handler that does not propagate
+// or check that context — e.g. one blocked in ServerStream.RecvMsg on
+// the underlying transport — never observes the derived deadline,
+// because context expiry does not abort an in-flight transport read.
+// For non-cooperative handlers, pair this with gRPC keepalive
+// enforcement (see [grpcx.WithKeepalivePolicy]) so a stalled or crashed
+// client connection is torn down at the transport level.
 func DeadlineStream(d time.Duration) grpc.StreamServerInterceptor {
 	if d <= 0 {
 		panic("grpcx/interceptor: DeadlineStream requires a positive deadline")

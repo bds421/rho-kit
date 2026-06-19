@@ -2,6 +2,7 @@ package cachetest
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -190,11 +191,18 @@ func testConcurrentReadWrite(t *testing.T, factory Factory) {
 		go func(idx int) {
 			defer wg.Done()
 			if idx%2 == 0 {
-				if _, err := c.Get(ctx, key); err != nil && err != cache.ErrCacheMiss {
+				// A miss is a legitimate outcome under concurrency.
+				// Use errors.Is so backends that wrap the sentinel
+				// (fmt.Errorf("...: %w", ErrCacheMiss)) are not
+				// flagged as backend failures.
+				if _, err := c.Get(ctx, key); err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 					errs.Add(1)
 				}
 			} else {
-				if err := c.Set(ctx, key, []byte("v"), time.Minute); err != nil {
+				// A small bounded backend may legitimately reject a
+				// write via its admission policy; that is not a
+				// backend error for the purposes of this test.
+				if err := c.Set(ctx, key, []byte("v"), time.Minute); err != nil && !errors.Is(err, cache.ErrAdmissionRejected) {
 					errs.Add(1)
 				}
 			}

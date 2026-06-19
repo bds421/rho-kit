@@ -73,6 +73,11 @@ cloud.google.com/go/secretmanager
 github.com/coreos/go-oidc/v3
 golang.org/x/oauth2
 google.golang.org/api
+# gax-go is the GCP client call-option type; the gcpsm secrets adapter's
+# client interface must use gax.CallOption so the real *secretmanager.Client
+# satisfies it (a v2 correctness fix — the package was unusable with the
+# real client when the interface used option.ClientOption).
+github.com/googleapis/gax-go/v2
 
 # Observability.
 github.com/grafana/pyroscope-go

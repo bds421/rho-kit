@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCORS_AllowAll(t *testing.T) {
@@ -293,9 +295,22 @@ func TestCORS_AllowCredentials(t *testing.T) {
 func TestCORS_WildcardWithCredentials_Panics(t *testing.T) {
 	t.Parallel()
 
-	assert.PanicsWithValue(t, "middleware/cors: New invalid configuration", func() {
-		New(WithAllowedOrigins("*"), WithCredentials())
-	})
+	// The panic must surface the underlying jub0bs/cors diagnostic (not an
+	// opaque fixed string) so operators can tell which config entry is
+	// invalid. The "middleware/cors:" prefix identifies this package.
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "expected New to panic on wildcard+credentials")
+		msg, ok := r.(string)
+		require.True(t, ok, "panic value should be a string, got %T", r)
+		assert.True(t, strings.HasPrefix(msg, "middleware/cors: "),
+			"panic should carry the middleware/cors: prefix, got %q", msg)
+		assert.Contains(t, msg, "credential",
+			"panic should surface the credentials/origins conflict diagnostic, got %q", msg)
+		assert.NotContains(t, msg, "New invalid configuration",
+			"panic must not be the opaque fixed string, got %q", msg)
+	}()
+	New(WithAllowedOrigins("*"), WithCredentials())
 }
 
 func TestCORS_MixedWildcardWithCredentials_Panics(t *testing.T) {

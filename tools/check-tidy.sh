@@ -18,6 +18,19 @@ cd "$REPO_ROOT"
 # Enumerate workspace modules from go.work (single source of truth).
 modules=$(awk '/^use \(/,/^\)/' go.work | grep -E '^[[:space:]]+\./' | sed 's|^[[:space:]]*\./||; s|/$||' | sort -u)
 
+# Also tidy-check tracked go.mod files that live OUTSIDE go.work — e.g.
+# the stdlib-only tools/check-* helper modules. They are excluded from
+# go.work on purpose (so they don't pull into the workspace graph), but
+# any future dep added to one of them would otherwise never be
+# tidy-verified, reintroducing the missing-require pseudo-version bug
+# class this gate exists to prevent. Walk git-tracked go.mod paths with
+# GOWORK=off and append the ones not already enumerated above.
+tracked_modules=$(git ls-files '*go.mod' | sed 's|/go.mod$||; s|^\./||' | grep -v '^go.mod$' | sort -u)
+extra_modules=$(comm -23 <(printf '%s\n' "$tracked_modules") <(printf '%s\n' "$modules"))
+if [ -n "$extra_modules" ]; then
+  modules=$(printf '%s\n%s\n' "$modules" "$extra_modules" | sort -u)
+fi
+
 fail=0
 stale=()
 while IFS= read -r dir; do

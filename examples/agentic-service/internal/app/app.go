@@ -49,6 +49,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -153,16 +154,70 @@ func run(ctx context.Context, addr string) error {
 	// stays dependency-light without forking those defaults by hand.
 	// kit-doctor:allow http-server-error-log reason="default slog ErrorLog is sufficient for the example"
 	srv := httpx.NewServer(addr, mux)
+	return serve(ctx, srv)
+}
+
+// serve runs srv until ctx is cancelled, then drains in-flight requests
+// before returning.
+//
+// The synchronization here is the part that is easy to get wrong: when
+// Shutdown begins, ListenAndServe returns http.ErrServerClosed
+// IMMEDIATELY — it does NOT wait for in-flight requests to drain. If we
+// returned as soon as ListenAndServe yields, main() would exit while
+// Shutdown is still draining, truncating those responses (so the
+// "graceful" shutdown would not be graceful). We therefore wait on a
+// done channel that the shutdown goroutine closes only after Shutdown
+// returns, and propagate its error. The buffered shutdownErr channel
+// also keeps the goroutine from leaking if ListenAndServe fails at bind
+// time before ctx is ever cancelled.
+func serve(ctx context.Context, srv *http.Server) error {
+	return serveListener(ctx, srv, nil)
+}
+
+// serveListener is serve with an optional pre-bound listener. When ln is
+// nil it behaves like ListenAndServe; tests pass a listener so they can
+// bind an ephemeral port and know the server is accepting connections
+// before issuing requests.
+func serveListener(ctx context.Context, srv *http.Server, ln net.Listener) error {
+	// serveCtx lets us cancel the shutdown goroutine when ListenAndServe
+	// fails at bind time before the parent ctx is ever cancelled, so the
+	// goroutine never leaks.
+	serveCtx, cancelServe := context.WithCancel(ctx)
+	defer cancelServe()
+
+	shutdownErr := make(chan error, 1)
 	go func() {
-		<-ctx.Done()
+		<-serveCtx.Done()
+		if ctx.Err() == nil {
+			// serveCtx was cancelled by us (bind failure), not by the
+			// caller — there is nothing to drain.
+			shutdownErr <- nil
+			return
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		shutdownErr <- srv.Shutdown(shutdownCtx)
 	}()
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+
+	var serveErr error
+	if ln != nil {
+		serveErr = srv.Serve(ln)
+	} else {
+		serveErr = srv.ListenAndServe()
 	}
-	return nil
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		// Bind/accept failure: unblock the shutdown goroutine and surface
+		// the original error.
+		cancelServe()
+		<-shutdownErr
+		return serveErr
+	}
+
+	// ListenAndServe returned because Shutdown began (ErrServerClosed) or
+	// because ctx was already cancelled before we started serving. Wait
+	// for the drain to finish and propagate its outcome — returning early
+	// would let the caller exit while requests are still draining.
+	return <-shutdownErr
 }
 
 func demoBearerTokenFromEnv() ([]byte, error) {

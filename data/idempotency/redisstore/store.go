@@ -155,8 +155,13 @@ func ttlRoundUp(d time.Duration) time.Duration {
 // cached. The leading lock value (token:fingerprint) is overwritten with
 // this envelope by setIfLockedScript.
 type envelope struct {
-	Marker      string                     `json:"_m"` // "resp" — distinguishes from a lock value
-	Fingerprint []byte                     `json:"fp,omitempty"`
+	Marker string `json:"_m"` // "resp" — distinguishes from a lock value
+	// Fingerprint is NOT omitempty: an empty-but-present fingerprint ([]byte{})
+	// must round-trip distinctly from an absent one (nil) so mismatch detection
+	// matches the SQL bytea (non-NULL empty) semantics. omitempty would collapse
+	// both to absent, letting a different request body replay a key claimed with
+	// an empty fingerprint.
+	Fingerprint []byte                     `json:"fp"`
 	Response    idempotency.CachedResponse `json:"resp"`
 }
 
@@ -164,8 +169,9 @@ const lockMarker = "lock:"
 const respMarker = "resp"
 
 // maxStoredEntryBytes caps the size of a stored idempotency entry the
-// Store will accept on read. Set-side bounds via [Store.PutResponse]
-// reject oversized writes; this is the read-side defence so a foreign
+// Store will accept on read. Set-side bounds via [Store.Set]
+// (which calls [idempotency.ValidateCachedResponse]) reject oversized
+// writes; this is the read-side defence so a foreign
 // writer (a legacy app sharing the Redis instance, a misuse, or an
 // attacker with key-write but not key-read access elsewhere) cannot
 // OOM the host by ballooning an existing entry. 8 MiB is comfortably
@@ -173,13 +179,21 @@ const respMarker = "resp"
 const maxStoredEntryBytes = 8 * 1024 * 1024
 
 // encodeLockValue produces the value stored under the key while a lock is
-// held. Format: "lock:" + token + ":" + base64(fingerprint).
+// held. Format: "lock:" + token + ":" + fp, where fp is "" for an ABSENT
+// (nil) fingerprint and "=" + base64(fingerprint) for a PRESENT one (the
+// leading "=" — not a RawStdEncoding alphabet char — marks presence so an
+// empty-but-present fingerprint stays distinct from a nil one, matching the
+// SQL store's NULL-vs-empty semantics).
 func encodeLockValue(token string, fingerprint []byte) string {
-	return lockMarker + token + ":" + base64.RawStdEncoding.EncodeToString(fingerprint)
+	if fingerprint == nil {
+		return lockMarker + token + ":"
+	}
+	return lockMarker + token + ":=" + base64.RawStdEncoding.EncodeToString(fingerprint)
 }
 
 // decodeLockValue parses a lock value. Returns ok=false if the value isn't a
-// lock (e.g. it's the response envelope JSON).
+// lock (e.g. it's the response envelope JSON). A nil fingerprint means none
+// was set; a non-nil (possibly empty) fingerprint means one was.
 func decodeLockValue(v string) (token string, fingerprint []byte, ok bool) {
 	if !strings.HasPrefix(v, lockMarker) {
 		return "", nil, false
@@ -190,9 +204,19 @@ func decodeLockValue(v string) (token string, fingerprint []byte, ok bool) {
 		return "", nil, false
 	}
 	token = rest[:idx]
-	fp, err := base64.RawStdEncoding.DecodeString(rest[idx+1:])
+	enc := rest[idx+1:]
+	if enc == "" {
+		return token, nil, true // absent fingerprint
+	}
+	if enc[0] == '=' {
+		enc = enc[1:] // present marker; "" -> empty-but-present
+	}
+	fp, err := base64.RawStdEncoding.DecodeString(enc)
 	if err != nil {
 		return "", nil, false
+	}
+	if fp == nil {
+		fp = []byte{} // present but empty; keep distinct from absent
 	}
 	return token, fp, true
 }
@@ -252,7 +276,7 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 		// Lock present; fingerprint check still applies so a Get-only caller
 		// can detect mismatched-body reuse in the contended state.
 		_, fp, ok := decodeLockValue(string(data))
-		if ok && fingerprint != nil && len(fp) > 0 && !bytes.Equal(fp, fingerprint) {
+		if ok && fingerprint != nil && fp != nil && !bytes.Equal(fp, fingerprint) {
 			return nil, true, nil
 		}
 		return nil, false, nil
@@ -283,9 +307,9 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
 	ctx, span := s.startSpan(ctx, "idempotency.TryLock")
 	defer span.End()
-	token, ok, fingerprintMatch, err := s.doTryLock(ctx, key, fingerprint, ttl)
+	token, fingerprintMismatch, ok, err := s.doTryLock(ctx, key, fingerprint, ttl)
 	recordResult(span, err)
-	return token, ok, fingerprintMatch, err
+	return token, fingerprintMismatch, ok, err
 }
 
 func (s *Store) doTryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
@@ -351,7 +375,7 @@ func (s *Store) doTryLock(ctx context.Context, key string, fingerprint []byte, t
 		if !ok {
 			return "", false, false, nil
 		}
-		if fingerprint != nil && len(fp) > 0 && !bytes.Equal(fp, fingerprint) {
+		if fingerprint != nil && fp != nil && !bytes.Equal(fp, fingerprint) {
 			return "", true, false, nil
 		}
 		return "", false, false, nil

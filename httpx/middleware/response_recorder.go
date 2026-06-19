@@ -34,7 +34,7 @@ func NewResponseRecorder(w http.ResponseWriter) *ResponseRecorder {
 }
 
 // WriteHeader records the status code and delegates to the underlying writer.
-// Only the first call takes effect; subsequent calls are no-ops.
+// Only the first non-interim call takes effect; subsequent calls are no-ops.
 //
 // Invalid status codes (outside 100..999) are mapped to 500 BEFORE
 // delegating so the recorder cannot trigger the stdlib panic that
@@ -42,12 +42,24 @@ func NewResponseRecorder(w http.ResponseWriter) *ResponseRecorder {
 // finding for this surface: a buggy handler returning a stale int
 // would otherwise crash the request after the recorder had already
 // updated its internal state.
+//
+// 1xx interim responses (100..199, e.g. 103 Early Hints) are forwarded
+// to the underlying writer but do NOT latch the recorder: net/http
+// permits any number of interim responses followed by the single final
+// status. Latching on a 1xx code would swallow the final WriteHeader and
+// cause Status() to report the interim code, corrupting metrics and logs.
 func (r *ResponseRecorder) WriteHeader(code int) {
 	if r.wroteHeader {
 		return
 	}
 	if code < 100 || code > 999 {
 		code = http.StatusInternalServerError
+	}
+	// Interim 1xx responses do not commit the final status. Forward them
+	// to the underlying writer and keep waiting for the final code.
+	if code >= 100 && code < 200 {
+		r.ResponseWriter.WriteHeader(code)
+		return
 	}
 	r.statusCode = code
 	r.wroteHeader = true
@@ -66,10 +78,22 @@ func (r *ResponseRecorder) Write(b []byte) (int, error) {
 }
 
 // Flush delegates to the underlying writer if it implements http.Flusher.
+//
+// net/http's Flush implicitly commits a 200 header when none has been written,
+// so the recorder latches wroteHeader=true (statusCode keeps its 200 default)
+// before delegating. Without this, panic-recovery consumers see
+// WroteHeader()==false and report 500 even though the wire already carried 200
+// from the flush, desyncing the recorder from the committed response. Only the
+// final status latches; statusCode is left untouched when WriteHeader already
+// ran, and the flag is left clear when the writer is not an http.Flusher (no
+// implicit commit happens in that case).
 func (r *ResponseRecorder) Flush() {
-	if f, ok := r.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
+	f, ok := r.ResponseWriter.(http.Flusher)
+	if !ok {
+		return
 	}
+	r.wroteHeader = true
+	f.Flush()
 }
 
 // Hijack implements http.Hijacker by delegating to the underlying ResponseWriter.

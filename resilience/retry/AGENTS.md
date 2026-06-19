@@ -14,7 +14,7 @@
 
 ## Key APIs
 
-- `Do(ctx, fn, opts...)` — uses `DefaultPolicy()` (3 retries, 500ms base, 30s cap, exponential).
+- `Do(ctx, fn, opts...)` — uses `DefaultPolicy()` (3 retries, 1s base, 30s cap, exponential).
 - `DoWith(ctx, base, fn, opts...)` — start from an explicit policy.
 - `Loop(ctx, logger, component, fn, opts...)` — restart-on-error worker, uses `WorkerPolicy()` defaults (unlimited retries, longer backoff, stable-cycle reset).
 - `WithMaxRetries(n)` — 0 means "no retries (run once)", negative means "unlimited".

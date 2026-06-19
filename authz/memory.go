@@ -5,12 +5,12 @@ import (
 	"sync"
 )
 
-// Memory is an in-memory [Decider] for tests and local development.
+// MemoryStore is an in-memory [Decider] for tests and local development.
 // It stores explicit (subject, action, resource) → allow tuples and
 // returns [ErrDenied] for anything not registered.
 //
 // Thread-safe for concurrent reads and writes. Tests construct via
-// [NewMemory], populate with Grant, and pass to handlers.
+// [NewMemoryStore], populate with Grant, and pass to handlers.
 type MemoryStore struct {
 	mu     sync.RWMutex
 	allows map[memoryKey]struct{}

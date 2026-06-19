@@ -91,6 +91,20 @@ func WithoutSigningMaxStaleLimit() SigningProviderOption {
 	return func(p *SigningProvider) { p.maxStale = 0 }
 }
 
+// WithSigningFetchTimeout overrides the per-refresh deadline. Useful
+// when the upstream key source (a KMS or HSM-fronted secret manager)
+// is genuinely slow. Mirrors [WithFetchTimeout] on the verifying side.
+//
+// The duration must be positive. Default: 10 seconds.
+func WithSigningFetchTimeout(d time.Duration) SigningProviderOption {
+	if d <= 0 {
+		panic("paseto: WithSigningFetchTimeout requires a positive duration")
+	}
+	return func(p *SigningProvider) {
+		p.fetchTimeout = d
+	}
+}
+
 // WithSigningOptions passes signer construction options through to
 // every rebuilt [V4PublicSigner]. Typical use: pin issuer/audience or
 // configure footer/implicit-assertion handling.
@@ -104,6 +118,12 @@ func WithSigningOptions(opts ...Option) SigningProviderOption {
 // return, not this callback. The SigningProvider keeps signing with
 // the previous key when refreshes fail, so the callback is the only
 // signal that rotation has stalled — wire it to a metric or alert.
+//
+// The callback runs on the SigningProvider's refresh goroutine. It
+// must not call [SigningProvider.Close]: Close blocks until that
+// goroutine returns, so closing from within the callback
+// self-deadlocks. To shut down in response to repeated failures,
+// signal a separate goroutine instead.
 //
 // Panics if fn is nil: silently swallowing the callback would hide
 // the only operator-visible signal of stalled rotation.
@@ -244,7 +264,12 @@ func (p *SigningProvider) loop() {
 			ctx, cancel := context.WithTimeout(p.rootCtx, p.fetchTimeout)
 			err := p.refresh(ctx)
 			cancel()
-			if err != nil {
+			// Suppress the callback during shutdown: Close cancels
+			// rootCtx, so an in-flight refresh fails with
+			// context.Canceled. Reporting that as a refresh error would
+			// fire a false "rotation stalled" alert on every shutdown
+			// that races a tick.
+			if err != nil && !p.closed.Load() {
 				p.callOnRefreshError(err)
 			}
 		}

@@ -26,7 +26,7 @@ import (
 // without leaking the underlying message.
 func Main(name, version string, runFn func(logger *slog.Logger) error) {
 	if len(os.Args) > 1 && os.Args[1] == "--health" {
-		health.RunHealthCheck(9090)
+		health.RunHealthCheck(resolveHealthCheckPort())
 	}
 
 	logger := logging.New(logging.Config{
@@ -45,4 +45,27 @@ func Main(name, version string, runFn func(logger *slog.Logger) error) {
 		)
 		os.Exit(1)
 	}
+}
+
+// defaultInternalPort is the fallback port for the internal ops server
+// (health, ready, metrics). It mirrors the INTERNAL_PORT default used by
+// [LoadBaseConfig], so the --health probe and the running server agree on
+// the port when INTERNAL_PORT is left unset.
+const defaultInternalPort = 9090
+
+// resolveHealthCheckPort reads the internal ops port from INTERNAL_PORT,
+// falling back to [defaultInternalPort]. The --health flag short-circuits
+// before LoadBaseConfig runs, so it must read the same env var directly;
+// otherwise a service that overrides INTERNAL_PORT (and wires the documented
+// Docker HEALTHCHECK --health flag) would probe the wrong port and be
+// reported permanently unhealthy. A malformed INTERNAL_PORT falls back to the
+// default rather than failing the probe — the probe target then matches the
+// default the server would also fall back to, and the real config error is
+// surfaced by the normal startup path.
+func resolveHealthCheckPort() int {
+	port, err := config.GetInt("INTERNAL_PORT", defaultInternalPort)
+	if err != nil {
+		return defaultInternalPort
+	}
+	return port
 }

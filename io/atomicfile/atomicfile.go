@@ -14,8 +14,8 @@ import (
 // one without bound; this cap stops a slow OOM cascade if that
 // happens. 16 MiB is comfortably above any realistic state file
 // (BufferedPublisher state, snapshots, persisted counters) while
-// orders-of-magnitude short of a host's swap budget. Override via
-// [LoadBounded] when the caller knows a different bound.
+// orders-of-magnitude short of a host's swap budget. The cap is a
+// fixed package constant; [Load] enforces it for every call.
 const MaxLoadBytes = 16 * 1024 * 1024
 
 // Load reads a JSON-encoded value from path. Returns the zero value of T

@@ -143,6 +143,27 @@ func TestAzureBackend_ErrorsDoNotReflectKeys(t *testing.T) {
 	})
 }
 
+func TestAzureBackend_ExistsZeroLengthBlob(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Azure returns HTTP 416 / error code InvalidRange when a ranged
+	// DownloadStream targets a zero-byte blob. That blob still exists, so
+	// Exists must report true (matching s3backend HeadObject / gcsbackend
+	// Attrs semantics) rather than surfacing the range error.
+	invalidRange := &azcore.ResponseError{ErrorCode: "InvalidRange", StatusCode: 416}
+	b := NewWithClient(failingBlobClient{downloadErr: invalidRange}, "container")
+
+	ok, err := b.Exists(ctx, "empty-marker.txt")
+
+	if err != nil {
+		t.Fatalf("unexpected error for zero-length blob: %v", err)
+	}
+	if !ok {
+		t.Fatal("zero-length blob must report exists=true")
+	}
+}
+
 func assertPanics(t *testing.T, fn func()) {
 	t.Helper()
 	defer func() {

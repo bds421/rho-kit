@@ -69,10 +69,10 @@ subsequent releases just bump version numbers and tag.
 ## Adoption
 
 New downstream services should start with
-[docs/ai/adoption.md](docs/ai/adoption.md): minimum `go.mod` (including
-the `replace` block needed until v2.0.0 is on the module proxy), the
-smallest compilable `main.go`, where each capability lives in the
-decision tree, and the common first-mistake checklist. The package
+[docs/ai/adoption.md](docs/ai/adoption.md): minimum `go.mod` (the v2.x tags
+are published, so `require` the versioned modules directly — no `replace`
+block needed), the smallest compilable `main.go`, where each capability lives
+in the decision tree, and the common first-mistake checklist. The package
 decision tree in [AGENTS.md](AGENTS.md#package-decision-tree) is the
 canonical "I need to X, what do I import?" reference.
 

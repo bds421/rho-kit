@@ -152,8 +152,11 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 	return resp.GetName(), ciphertext, nil
 }
 
-// Unwrap implements [envelope.KEK]. Calls GCP KMS Decrypt with the
-// version-qualified Name pinned at Wrap time. Sends and verifies
+// Unwrap implements [envelope.KEK]. The keyID pinned at Wrap time is
+// the version-qualified resource; it is validated against this KEK
+// (see allowsKeyID) but Decrypt is called with the parent CryptoKey
+// resource — GCP KMS symmetric Decrypt selects the version from the
+// ciphertext and rejects a version-qualified Name. Sends and verifies
 // CRC32C checksums on both the request (ciphertext + AAD) and
 // response (plaintext).
 func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte, error) {
@@ -166,13 +169,7 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 	if !allowsKeyID(k.key, keyID) {
 		return nil, errors.New("gcpkms: keyID does not match this KEK")
 	}
-	req := &kmspb.DecryptRequest{
-		Name:                              keyID,
-		Ciphertext:                        wrapped,
-		CiphertextCrc32C:                  crc32c(wrapped),
-		AdditionalAuthenticatedData:       k.aad,
-		AdditionalAuthenticatedDataCrc32C: crc32c(k.aad),
-	}
+	req := k.decryptRequest(keyID, wrapped)
 	resp, err := k.c.Decrypt(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("gcpkms: decrypt: %w", classifyGCPError("decrypt", err))
@@ -182,6 +179,28 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 		return nil, responseChecksumMismatchError("plaintext")
 	}
 	return plaintext, nil
+}
+
+// decryptRequest builds the KMS DecryptRequest for a previously
+// wrapped DEK. The keyID is the version-qualified resource Wrap pinned
+// in the envelope header; it is validated against this KEK by
+// allowsKeyID before reaching here, but Decrypt's Name field must be
+// the parent CryptoKey resource, not the version. GCP KMS symmetric
+// Decrypt rejects a version-qualified name with INVALID_ARGUMENT and
+// selects the version from the ciphertext metadata itself — so we send
+// k.key and keep keyID purely as the per-blob authorization gate.
+func (k *KEK) decryptRequest(keyID string, wrapped []byte) *kmspb.DecryptRequest {
+	// keyID is validated by allowsKeyID upstream; it is intentionally not
+	// used as the Decrypt target because Name must be the parent
+	// CryptoKey resource (see doc above).
+	_ = keyID
+	return &kmspb.DecryptRequest{
+		Name:                              k.key,
+		Ciphertext:                        wrapped,
+		CiphertextCrc32C:                  crc32c(wrapped),
+		AdditionalAuthenticatedData:       k.aad,
+		AdditionalAuthenticatedDataCrc32C: crc32c(k.aad),
+	}
 }
 
 func responseChecksumMismatchError(kind string) error {

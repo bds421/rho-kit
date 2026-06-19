@@ -80,7 +80,10 @@ type Page struct {
 // ListPage wraps a Lister with explicit-truncation paging. It fetches
 // opts.MaxKeys+1 items so the helper can distinguish "page was exactly full
 // but no more remain" from "page was full and more remain", a signal the
-// raw [Lister.List] iterator does not expose.
+// raw [Lister.List] iterator does not expose. At the maximum page size
+// (opts.MaxKeys == [MaxListPageSize]) the +1 probe would exceed the backend
+// limit, so ListPage instead fills the page to MaxKeys and issues a one-item
+// follow-up peek to settle truncation.
 //
 // When opts.MaxKeys is zero (unlimited), ListPage forwards every yielded
 // object and returns Truncated=false; the caller is responsible for memory
@@ -110,7 +113,15 @@ func ListPage(ctx context.Context, l Lister, prefix string, opts ListOptions) (P
 	}
 
 	probe := opts
-	probe.MaxKeys = opts.MaxKeys + 1
+	// Probe one extra item to detect truncation, but never exceed
+	// MaxListPageSize: backends run opts through ValidateListOptions and
+	// reject MaxKeys > MaxListPageSize, so a MaxKeys+1 probe at the maximum
+	// page size would turn every such ListPage call into a validation error.
+	// At the boundary we keep the probe at MaxListPageSize and fall back to a
+	// follow-up peek below to decide truncation.
+	if opts.MaxKeys < MaxListPageSize {
+		probe.MaxKeys = opts.MaxKeys + 1
+	}
 	page := Page{Objects: make([]ObjectInfo, 0, opts.MaxKeys)}
 	for info, err := range l.List(ctx, prefix, probe) {
 		if err != nil {
@@ -118,13 +129,47 @@ func ListPage(ctx context.Context, l Lister, prefix string, opts ListOptions) (P
 		}
 		if len(page.Objects) == opts.MaxKeys {
 			// The (MaxKeys+1)-th object proves at least one more exists.
+			// Only reachable when the probe carried the extra item, i.e.
+			// opts.MaxKeys < MaxListPageSize.
 			page.Truncated = true
 			page.NextStartAfter = page.Objects[opts.MaxKeys-1].Key
 			break
 		}
 		page.Objects = append(page.Objects, info)
 	}
+
+	// Boundary case (opts.MaxKeys == MaxListPageSize): the probe could not
+	// carry the extra item, so a page that filled exactly to MaxKeys is
+	// ambiguous. Peek one object past the last key to settle truncation.
+	// For smaller pages the MaxKeys+1 probe already decided truncation, so
+	// the extra peek is skipped.
+	if opts.MaxKeys == MaxListPageSize && !page.Truncated && len(page.Objects) == opts.MaxKeys {
+		more, err := hasMoreAfter(ctx, l, prefix, opts, page.Objects[len(page.Objects)-1].Key)
+		if err != nil {
+			return Page{}, err
+		}
+		if more {
+			page.Truncated = true
+			page.NextStartAfter = page.Objects[len(page.Objects)-1].Key
+		}
+	}
 	return page, nil
+}
+
+// hasMoreAfter reports whether at least one object exists past lastKey, used by
+// [ListPage] to settle truncation when a page filled exactly to MaxListPageSize
+// and the MaxKeys+1 probe was unavailable.
+func hasMoreAfter(ctx context.Context, l Lister, prefix string, opts ListOptions, lastKey string) (bool, error) {
+	peek := opts
+	peek.MaxKeys = 1
+	peek.StartAfter = lastKey
+	for _, err := range l.List(ctx, prefix, peek) {
+		if err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // MaxListPageSize bounds [ListPage] MaxKeys so a single request cannot

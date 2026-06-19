@@ -14,6 +14,7 @@ import (
 
 	"github.com/bds421/rho-kit/data/lock/redislock/v2/redlock"
 	"github.com/bds421/rho-kit/data/v2/lock"
+	"github.com/bds421/rho-kit/data/v2/lock/locktest"
 )
 
 // setupQuorum stands up n in-process miniredis instances and returns
@@ -215,21 +216,27 @@ func TestQuorumLocker_WithLock_ReleasesOnPanic(t *testing.T) {
 	}
 }
 
-func TestQuorumLocker_Release_IsIdempotent(t *testing.T) {
+func TestQuorumLocker_Release_DoubleReleaseReportsLost(t *testing.T) {
 	clients := setupQuorum(t, 3)
 	q := redlock.NewQuorumLocker(clients)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	l, ok, err := q.Acquire(ctx, "kit/redlock/test/idempotent-release")
+	l, ok, err := q.Acquire(ctx, "kit/redlock/test/double-release")
 	require.NoError(t, err)
 	require.True(t, ok)
 
 	require.NoError(t, l.Release(ctx), "first release succeeds")
-	// Second release on the same handle is a no-op rather than an
-	// error so callers can defer Release unconditionally.
-	assert.NoError(t, l.Release(ctx))
+	// A second Release on an already-released handle must report
+	// lock.ErrLockLost — the same contract as redislock and
+	// pgadvisory, so callers swapping backends through the
+	// lock.Locker interface (and the locktest conformance suite)
+	// see identical behaviour. Callers that want idempotent cleanup
+	// detect it via errors.Is(err, lock.ErrLockLost).
+	err = l.Release(ctx)
+	require.Error(t, err, "Release on an already-released handle must return an error")
+	assert.ErrorIs(t, err, lock.ErrLockLost, "the error MUST be lock.ErrLockLost so callers can errors.Is detect it")
 }
 
 func TestQuorumLocker_Extend(t *testing.T) {
@@ -298,6 +305,23 @@ func TestQuorumLocker_SatisfiesLockerInterface(t *testing.T) {
 	clients := setupQuorum(t, 3)
 	var locker lock.Locker = redlock.NewQuorumLocker(clients)
 	_ = locker
+}
+
+// TestQuorumLocker_Conformance runs the kit's lock.Locker conformance
+// battery against the quorum locker so its behaviour is provably
+// identical to redislock and pgadvisory (as locktest's package doc
+// claims). Each subtest gets a fresh in-process quorum.
+func TestQuorumLocker_Conformance(t *testing.T) {
+	locktest.Run(t, func(t *testing.T) lock.Locker {
+		// Configure retries so the quorum algorithm resolves the
+		// suite's 16-way concurrent contention to a winner instead
+		// of every contender giving up after a single try. This
+		// mirrors how the redislock conformance runs against a real
+		// broker that retries under contention.
+		return redlock.NewQuorumLocker(setupQuorum(t, 3),
+			redlock.WithRetry(5*time.Millisecond, 32),
+		)
+	})
 }
 
 // TestQuorumLocker_WithLock_PropagatesFnError ensures the body's

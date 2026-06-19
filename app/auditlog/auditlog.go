@@ -16,7 +16,7 @@
 //
 // # Sibling packages — pick the right one
 //
-//   - [github.com/bds421/rho-kit/app/v2/auditlog]            — THIS package.
+//   - [github.com/bds421/rho-kit/app/auditlog/v2]            — THIS package.
 //     The Builder bridge. ~90 lines of glue that turns a Store into a
 //     registered Module and exposes [Logger] for router code.
 //   - [github.com/bds421/rho-kit/observability/v2/auditlog]  — the
@@ -99,7 +99,7 @@ func (m *auditlogModule) Populate(infra *app.Infrastructure) {
 	}
 }
 
-func (m *auditlogModule) Stop(_ context.Context) error            { return nil }
+func (m *auditlogModule) Stop(_ context.Context) error           { return nil }
 func (m *auditlogModule) HealthChecks() []health.DependencyCheck { return nil }
 
 // Logger returns the audit logger registered via [Module], or nil

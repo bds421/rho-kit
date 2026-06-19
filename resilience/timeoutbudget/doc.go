@@ -37,7 +37,7 @@
 // # Tracking
 //
 // The Budget exposes `Used()`, `Remaining()`, and
-// `Reservations()` so an observability layer can record how
+// `Reservation()` so an observability layer can record how
 // the budget was spent — useful when multiple downstreams
 // share one budget and an operator wants to know which one
 // burned it.

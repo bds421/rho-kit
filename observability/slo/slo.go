@@ -354,7 +354,32 @@ func evaluateErrorRate(s SLO, families map[string]*dto.MetricFamily) float64 {
 		return math.NaN()
 	}
 
+	// Distinguish "no series carries the error label at all" (a
+	// misconfiguration / no-data condition) from a genuine zero error
+	// count. If the label is entirely absent, matched is always 0 and the
+	// ratio would otherwise report a false-green 0% error rate. Surface
+	// NaN instead so operators see the absence of data rather than a
+	// misleading 100% success — the same silent-failure class the default
+	// "status" label fixed for the old "code" label.
+	if !labelPresent(mf, errorFilter.Name) {
+		return math.NaN()
+	}
+
 	return errors / total
+}
+
+// labelPresent reports whether any series in the counter family carries a
+// label named name. Used to tell an absent error label (no-data) apart from a
+// present label with zero matching values (genuine 0% error rate).
+func labelPresent(mf *dto.MetricFamily, name string) bool {
+	for _, m := range mf.GetMetric() {
+		for _, lp := range m.GetLabel() {
+			if lp.GetName() == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // evaluateSuccessRate computes the success ratio (1 - error rate).

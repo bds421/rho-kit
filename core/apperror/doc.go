@@ -13,8 +13,8 @@
 //
 // # Codes
 //
-// The nine [Code] values cover the recurring failure shapes seen in
-// service code:
+// The twelve [Code] values cover the recurring failure shapes seen in
+// service code (see [AllCodes] for the canonical enumeration):
 //
 //   - [CodeNotFound]:        requested entity does not exist.
 //   - [CodeValidation]:      input failed structural or semantic checks.
@@ -25,6 +25,9 @@
 //   - [CodeRateLimit]:       quota or rate cap exceeded.
 //   - [CodeOperationFailed]: server-side failure not expressible by the others.
 //   - [CodeUnavailable]:     dependency unreachable or service not ready.
+//   - [CodeStorageFull]:     backing store out of capacity (retryable).
+//   - [CodeTimeout]:         operation missed the caller's deadline (retryable).
+//   - [CodePayloadTooLarge]: request body/message exceeded the size limit.
 //
 // # Constructors
 //
@@ -37,6 +40,9 @@
 //   - [NewAuthRequired], [NewForbidden]
 //   - [NewRateLimit], [NewRateLimitWithRetryAfter]
 //   - [NewOperationFailed], [NewOperationFailedWithCause]
+//   - [NewStorageFull], [NewStorageFullWithCause]
+//   - [NewTimeout], [NewTimeoutWithCause]
+//   - [NewPayloadTooLarge], [NewPayloadTooLargeWithCause]
 //   - [NewUnavailable], [NewUnavailableWithCause], [NewUnavailableWithRetryAfter]
 //   - [NewDependencyUnavailable]
 //

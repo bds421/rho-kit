@@ -44,6 +44,14 @@ func (f *fakeLimiter) Allow(_ context.Context, key string) (bool, time.Duration,
 	return true, 0, nil
 }
 
+// panicLimiter always panics from Allow, modelling a buggy or degraded
+// caller-supplied limiter implementation.
+type panicLimiter struct{}
+
+func (panicLimiter) Allow(context.Context, string) (bool, time.Duration, error) {
+	panic("limiter boom")
+}
+
 func okHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -158,6 +166,22 @@ func TestNew_NoRetryAfterWhenLimiterDoesntKnow(t *testing.T) {
 	// fabricate a Retry-After header.
 	assert.Empty(t, rec.Header().Get("Retry-After"))
 	assertJSONError(t, rec, "tenant rate limit exceeded")
+}
+
+func TestNew_PanickingLimiterReturns500(t *testing.T) {
+	mw := New(panicLimiter{})
+	h := mw(okHandler())
+
+	rec := httptest.NewRecorder()
+	// A panicking caller-supplied limiter must be contained to a 500,
+	// mirroring KeyedMiddleware's safeRateLimitKey guard, rather than
+	// propagating out and relying on an outer recover middleware.
+	require.NotPanics(t, func() {
+		h.ServeHTTP(rec, reqWithTenant(t, "acme"))
+	}, "panicking limiter must not propagate out of the middleware")
+	assert.Equal(t, http.StatusInternalServerError, rec.Code,
+		"panicking limiter must surface as 500, not fail-open or propagate")
+	assertJSONError(t, rec, "rate limit check failed")
 }
 
 func assertJSONError(t *testing.T, rec *httptest.ResponseRecorder, want string) {

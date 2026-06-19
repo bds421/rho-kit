@@ -81,6 +81,13 @@ type Config struct {
 	// Algorithm is the Key Vault wrapping algorithm. Empty defaults to
 	// RSA-OAEP-256. RSA1_5 and RSA-OAEP are rejected; use RSA-OAEP-256,
 	// AES-KW, or CKM AES key-wrap algorithms.
+	//
+	// The algorithm is NOT recorded in the envelope key ID: Unwrap always
+	// uses the configured Algorithm. Changing Algorithm therefore breaks
+	// Unwrap of DEKs that were wrapped under the previous algorithm. To
+	// migrate, keep the old Algorithm until every existing blob has been
+	// rewrapped under the new one (decrypt-then-reencrypt), then switch
+	// the config.
 	Algorithm azkeys.EncryptionAlgorithm
 }
 
@@ -157,7 +164,9 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 }
 
 // Unwrap implements [envelope.KEK]. It rejects key IDs for a different key
-// name so a blob cannot silently decrypt under the wrong Azure key.
+// name so a blob cannot silently decrypt under the wrong Azure key. Unwrap
+// uses the configured [Config.Algorithm]; it is not recorded in the key ID,
+// so changing the algorithm requires rewrapping existing blobs first.
 func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte, error) {
 	if err := k.validate(ctx); err != nil {
 		return nil, err

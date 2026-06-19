@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -229,6 +230,203 @@ func TestPublishRejectsSymlinkTargetDir(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("outside dir received published files: %v", entries)
+	}
+}
+
+// TestPublishRejectsDuplicateGooseVersion guards FR-601: when a
+// publish flattens migrations from multiple kit components into one
+// directory, two components may ship the same numeric goose version
+// prefix (e.g. auditlog 20260514000001_create_audit_log_events and
+// outbox 20260514000001_create_outbox_entries). goose refuses to
+// "up" a directory with a duplicate version ("found duplicate
+// migration version"), so kit-migrate must detect the collision and
+// refuse to publish a directory that goose would reject — rather than
+// silently produce one.
+func TestPublishRejectsDuplicateGooseVersion(t *testing.T) {
+	dir := t.TempDir()
+
+	code, stdout, stderr := runCommand("publish", "--to="+dir)
+	if code == 0 {
+		t.Fatalf("publish-all succeeded but the kit registry ships duplicate goose versions; goose would reject the result. stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "duplicate") {
+		t.Fatalf("stderr = %q, want a duplicate-version refusal", stderr)
+	}
+}
+
+// TestCheckRejectsMissingTargetDir guards FR-601 (check side): a CI
+// drift gate aimed at a typo'd directory must not silently pass. When
+// --to points at a directory that does not exist, check must exit
+// non-zero rather than print "OK: 0 migration(s) in sync".
+func TestCheckRejectsMissingTargetDir(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist")
+
+	code, stdout, stderr := runCommand("check", "--to="+missing)
+	if code == 0 {
+		t.Fatalf("check against a missing directory exited 0; a drift gate must fail loudly. stdout=%q stderr=%q", stdout, stderr)
+	}
+	if strings.Contains(stdout, "OK:") {
+		t.Fatalf("check printed an OK summary for a missing directory: stdout=%q", stdout)
+	}
+	if strings.Contains(stderr, missing) {
+		t.Fatalf("stderr reflected filesystem path: %q", stderr)
+	}
+}
+
+// TestCheckReportsInSyncWhenPublished guards the cmdCheck happy path
+// (exit 0): after a clean publish, every on-disk migration matches the
+// embedded version, so the drift gate must succeed and report the count
+// it actually compared. A regression that, say, miscounts or always
+// reports drift would break the CI gate's green path.
+func TestCheckReportsInSyncWhenPublished(t *testing.T) {
+	dir := t.TempDir()
+
+	code, _, stderr := runCommand("publish", "--to="+dir, "idempotency")
+	if code != 0 {
+		t.Fatalf("publish code = %d, stderr = %q", code, stderr)
+	}
+
+	files, err := listMigrations(registry["idempotency"])
+	if err != nil {
+		t.Fatalf("list idempotency migrations: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("test needs at least one idempotency migration")
+	}
+
+	code, stdout, stderr := runCommand("check", "--to="+dir, "idempotency")
+	if code != 0 {
+		t.Fatalf("check in-sync code = %d, want 0; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "OK:") {
+		t.Fatalf("stdout = %q, want OK summary", stdout)
+	}
+	// The summary must report the number of migrations actually compared,
+	// not zero — a zero count would mean check never read anything.
+	wantCount := fmt.Sprintf("%d migration(s) in sync", len(files))
+	if !strings.Contains(stdout, wantCount) {
+		t.Fatalf("stdout = %q, want %q", stdout, wantCount)
+	}
+}
+
+// TestCheckDetectsDrift guards the cmdCheck drift path (exit 2): when an
+// on-disk kit migration has been hand-edited, check must exit 2, name the
+// drifted file on stdout, and report the count on stderr — the core
+// behaviour the pre-merge CI gate exists for.
+func TestCheckDetectsDrift(t *testing.T) {
+	dir := t.TempDir()
+
+	code, _, stderr := runCommand("publish", "--to="+dir, "idempotency")
+	if code != 0 {
+		t.Fatalf("publish code = %d, stderr = %q", code, stderr)
+	}
+
+	files, err := listMigrations(registry["idempotency"])
+	if err != nil {
+		t.Fatalf("list idempotency migrations: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("test needs at least one idempotency migration")
+	}
+
+	driftedPath := filepath.Join(dir, files[0])
+	if err := os.WriteFile(driftedPath, []byte("local edit\n"), 0o644); err != nil {
+		t.Fatalf("write drifted migration: %v", err)
+	}
+
+	code, stdout, stderr := runCommand("check", "--to="+dir, "idempotency")
+	if code != 2 {
+		t.Fatalf("check with drift code = %d, want 2; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "drift: "+files[0]) {
+		t.Fatalf("stdout = %q, want drift line naming %q", stdout, files[0])
+	}
+	if !strings.Contains(stderr, "have drifted from the kit version") {
+		t.Fatalf("stderr = %q, want drift summary", stderr)
+	}
+}
+
+// TestCheckSkipsAbsentMigrations guards cmdCheck's IsNotExist branch
+// (exit 0): a target directory that exists but is missing a kit
+// migration is not drift — check must skip the absent file and still
+// succeed. Without this, a partially-published directory would falsely
+// fail the gate.
+func TestCheckSkipsAbsentMigrations(t *testing.T) {
+	dir := t.TempDir()
+
+	// Directory exists but contains no kit migrations at all; every kit
+	// file is absent and must be skipped, yielding a clean exit.
+	code, stdout, stderr := runCommand("check", "--to="+dir, "idempotency")
+	if code != 0 {
+		t.Fatalf("check empty dir code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "OK:") {
+		t.Fatalf("stdout = %q, want OK summary", stdout)
+	}
+	// No file was present, so nothing was compared.
+	if !strings.Contains(stdout, "OK: 0 migration(s) in sync") {
+		t.Fatalf("stdout = %q, want zero-checked OK summary", stdout)
+	}
+}
+
+// TestCheckRejectsSymlinkTarget guards cmdCheck's symlink rejection
+// (exit 1): a kit migration on disk replaced by a symlink must make the
+// drift gate fail with an error rather than follow the link and read an
+// attacker-controlled file. The error must not leak the filesystem path.
+func TestCheckRejectsSymlinkTarget(t *testing.T) {
+	dir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	files, err := listMigrations(registry["idempotency"])
+	if err != nil {
+		t.Fatalf("list idempotency migrations: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("test needs at least one idempotency migration")
+	}
+
+	outside := filepath.Join(outsideDir, "outside.sql")
+	if err := os.WriteFile(outside, []byte("attacker\n"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	target := filepath.Join(dir, files[0])
+	if err := os.Symlink(outside, target); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	code, _, stderr := runCommand("check", "--to="+dir, "idempotency")
+	if code != 1 {
+		t.Fatalf("check with symlink target code = %d, want 1; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "symlink") {
+		t.Fatalf("stderr = %q, want symlink refusal", stderr)
+	}
+	if strings.Contains(stderr, target) || strings.Contains(stderr, outside) {
+		t.Fatalf("stderr reflected filesystem path: %q", stderr)
+	}
+}
+
+// TestCheckRejectsNonDirectoryTarget guards cmdCheck's !IsDir branch
+// (exit 1): pointing the gate at a regular file (e.g. a typo'd path that
+// resolves to a file) must fail loudly rather than be treated as a
+// directory.
+func TestCheckRejectsNonDirectoryTarget(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	code, stdout, stderr := runCommand("check", "--to="+filePath, "idempotency")
+	if code != 1 {
+		t.Fatalf("check against a file code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "not a directory") {
+		t.Fatalf("stderr = %q, want not-a-directory error", stderr)
+	}
+	if strings.Contains(stdout, "OK:") {
+		t.Fatalf("check printed an OK summary for a non-directory target: stdout=%q", stdout)
 	}
 }
 

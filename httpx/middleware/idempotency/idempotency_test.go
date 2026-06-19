@@ -320,6 +320,36 @@ func TestMiddleware_PreserveHeadersOverridesStripList(t *testing.T) {
 	}
 }
 
+func TestMiddleware_PreserveHeadersHonoursNonCanonicalDirectWrite(t *testing.T) {
+	store := idem.NewMemoryStore()
+
+	// Handler writes an identity header via direct map access using a
+	// lower-case (non-canonical) key, bypassing http.Header's normalization
+	// on Set/Add. The preserve override must still match it: preserveHeaders
+	// keys are canonical, so the strip check has to canonicalize the
+	// iteration key before consulting the override.
+	identityHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header()["set-cookie"] = []string{"session=abc"}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	handler := Middleware(store, WithAllowSharedKeys(), WithPreserveHeaders("Set-Cookie"))(identityHandler)
+
+	req1 := httptest.NewRequest(http.MethodPost, "/x", nil)
+	req1.Header.Set("Idempotency-Key", "k-cookie")
+	handler.ServeHTTP(httptest.NewRecorder(), req1)
+
+	req2 := httptest.NewRequest(http.MethodPost, "/x", nil)
+	req2.Header.Set("Idempotency-Key", "k-cookie")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if got := rec2.Header().Get("Set-Cookie"); got != "session=abc" {
+		t.Errorf("Set-Cookie dropped on replay despite WithPreserveHeaders; got %q", got)
+	}
+}
+
 func TestFirstRequestPassesThroughAndCaches(t *testing.T) {
 	store := idem.NewMemoryStore()
 	handler := Middleware(store, WithAllowSharedKeys())(newTestHandler(`{"ok":true}`, http.StatusCreated))
@@ -629,49 +659,64 @@ func TestConcurrentRequestsSameKey(t *testing.T) {
 	store := idem.NewMemoryStore()
 	var handlerCalls atomic.Int32
 
-	// Handler that takes time to process, simulating a slow operation.
+	// Barriers make the overlap deterministic instead of racing a sleep:
+	// entered fires once the first request is provably inside the handler
+	// (lock held), and release keeps it there until the second request has
+	// observed the in-progress lock. Without this a loaded scheduler could
+	// let the first request finish before the second arrived, turning the
+	// expected 409 into a cache replay (201) and flaking the assertion.
+	entered := make(chan struct{})
+	release := make(chan struct{})
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		handlerCalls.Add(1)
-		time.Sleep(50 * time.Millisecond)
+		if handlerCalls.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
 	handler := Middleware(store, WithAllowSharedKeys())(inner)
 
-	var wg sync.WaitGroup
-	results := make([]int, 2)
-
-	for i := range 2 {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			req := httptest.NewRequest(http.MethodPost, "/orders", nil)
-			req.Header.Set("Idempotency-Key", "race-key")
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-			results[idx] = rec.Code
-		}(i)
+	doRequest := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/orders", nil)
+		req.Header.Set("Idempotency-Key", "race-key")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
 	}
+
+	// First request: acquires the lock and blocks inside the handler.
+	var firstCode atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		firstCode.Store(int32(doRequest()))
+	}()
+
+	// Wait until the first request is provably holding the lock.
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first request never entered the handler")
+	}
+
+	// Second request arrives while the lock is held: must get 409.
+	secondCode := doRequest()
+
+	// Let the first request finish, then collect its result.
+	close(release)
 	wg.Wait()
 
-	// Only one goroutine should have executed the handler.
-	if handlerCalls.Load() != 1 {
-		t.Errorf("handler called %d times, want 1", handlerCalls.Load())
+	if got := handlerCalls.Load(); got != 1 {
+		t.Errorf("handler called %d times, want 1", got)
 	}
-
-	// One should get 201 (processed), the other 409 (conflict).
-	got201, got409 := 0, 0
-	for _, code := range results {
-		switch code {
-		case http.StatusCreated:
-			got201++
-		case http.StatusConflict:
-			got409++
-		}
+	if firstCode.Load() != http.StatusCreated {
+		t.Errorf("first request: got %d, want 201", firstCode.Load())
 	}
-	if got201 != 1 || got409 != 1 {
-		t.Errorf("expected one 201 and one 409, got results: %v", results)
+	if secondCode != http.StatusConflict {
+		t.Errorf("second (concurrent) request: got %d, want 409", secondCode)
 	}
 }
 
@@ -763,6 +808,41 @@ func TestAllResponseHeadersCached(t *testing.T) {
 	}
 	if rec2.Header().Get("X-Custom") != "value" {
 		t.Errorf("replayed X-Custom = %q, want %q", rec2.Header().Get("X-Custom"), "value")
+	}
+}
+
+func TestInformationalWriteHeaderDoesNotLatchFinalStatus(t *testing.T) {
+	store := idem.NewMemoryStore()
+
+	// Handler emits a 1xx informational response (103 Early Hints — valid and
+	// repeatable in net/http) before the real final status. The capture must
+	// not latch the 103: the cached/replayed response has to carry the real
+	// 201 with the body, not the 103.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Link", "</style.css>; rel=preload")
+		w.WriteHeader(http.StatusEarlyHints) // 103
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":7}`))
+	})
+	handler := Middleware(store, WithAllowSharedKeys())(inner)
+
+	// First request populates the cache.
+	req1 := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	req1.Header.Set("Idempotency-Key", "early-hints")
+	handler.ServeHTTP(httptest.NewRecorder(), req1)
+
+	// Replay: a fresh recorder receives only the cached final response.
+	req2 := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	req2.Header.Set("Idempotency-Key", "early-hints")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusCreated {
+		t.Errorf("replayed status = %d, want 201 (103 must not latch as final)", rec2.Code)
+	}
+	if got := rec2.Body.String(); got != `{"id":7}` {
+		t.Errorf("replayed body = %q, want %q", got, `{"id":7}`)
 	}
 }
 

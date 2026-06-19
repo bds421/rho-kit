@@ -41,10 +41,15 @@
 package redact
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 )
+
+// maxErrorFrames bounds how many frames the unwrap walkers descend
+// through. Real error chains are 2–5 deep; the cap exists so a
+// pathological wrap-loop (an error whose Unwrap returns an ancestor)
+// cannot spin the walkers forever or exhaust memory.
+const maxErrorFrames = 16
 
 // StringValue returns a redacted representation of a runtime string.
 //
@@ -75,14 +80,40 @@ func ErrorValue(err error) string {
 		return "<nil>"
 	}
 	unwrapped := err
-	for {
-		next := errors.Unwrap(unwrapped)
+	// Bound the descent at maxErrorFrames so a pathological wrap-loop
+	// (a buggy error whose Unwrap returns an ancestor) cannot spin this
+	// loop forever — the same threat model ErrorChainTypes guards.
+	for i := 0; i < maxErrorFrames; i++ {
+		next := unwrapCause(unwrapped)
 		if next == nil {
 			break
 		}
 		unwrapped = next
 	}
 	return fmt.Sprintf("<redacted error: %T>", unwrapped)
+}
+
+// unwrapCause returns the cause to descend into for ErrorValue. It
+// handles both single-error wrappers (Unwrap() error) and multi-error
+// wrappers (Unwrap() []error, as produced by errors.Join, fmt.Errorf
+// with multiple %w, and this package's own WrapSentinel). For the
+// multi-error form it follows the last branch, which is the conventional
+// "cause" position (fmt.Errorf("%w: %w", sentinel, cause) and
+// sentinelWrappedError both place the deepest cause last), so the
+// surfaced type is the underlying cause rather than the wrapper.
+func unwrapCause(err error) error {
+	switch x := err.(type) {
+	case interface{ Unwrap() error }:
+		return x.Unwrap()
+	case interface{ Unwrap() []error }:
+		causes := x.Unwrap()
+		if len(causes) == 0 {
+			return nil
+		}
+		return causes[len(causes)-1]
+	default:
+		return nil
+	}
 }
 
 // Error returns the standard redacted slog attribute for an error.
@@ -104,12 +135,34 @@ func ErrorChainTypes(err error) []string {
 	if err == nil {
 		return nil
 	}
-	const maxFrames = 16
 	out := make([]string, 0, 4)
-	cur := err
-	for i := 0; i < maxFrames && cur != nil; i++ {
+	// Bounded depth-first walk. Both unwrap forms are handled so
+	// multi-error wrappers (errors.Join, fmt.Errorf with multiple %w,
+	// WrapSentinel) contribute their branch types instead of stopping
+	// the chain at the wrapper. maxErrorFrames caps the total number of
+	// frames emitted so a pathological wrap-loop cannot exhaust memory.
+	stack := []error{err}
+	for len(stack) > 0 && len(out) < maxErrorFrames {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if cur == nil {
+			continue
+		}
 		out = append(out, fmt.Sprintf("%T", cur))
-		cur = errors.Unwrap(cur)
+		switch x := cur.(type) {
+		case interface{ Unwrap() error }:
+			if next := x.Unwrap(); next != nil {
+				stack = append(stack, next)
+			}
+		case interface{ Unwrap() []error }:
+			causes := x.Unwrap()
+			// Push in reverse so the first branch is visited first.
+			for i := len(causes) - 1; i >= 0; i-- {
+				if causes[i] != nil {
+					stack = append(stack, causes[i])
+				}
+			}
+		}
 	}
 	return out
 }

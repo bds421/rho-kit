@@ -60,6 +60,9 @@ func TestValidate(t *testing.T) {
 		{"payload too large", Request{ID: "i", TenantID: "t", Actor: "a", Action: "x", Payload: make([]byte, MaxPayloadSize+1), ExpiresAt: future}, false},
 		{"missing expiry", Request{ID: "i", TenantID: "t", Actor: "a", Action: "x"}, false},
 		{"past expiry", Request{ID: "i", TenantID: "t", Actor: "a", Action: "x", ExpiresAt: past}, false},
+		{"forged decided_by", Request{ID: "i", TenantID: "t", Actor: "a", Action: "x", DecidedBy: "evil", ExpiresAt: future}, false},
+		{"forged decided_at", Request{ID: "i", TenantID: "t", Actor: "a", Action: "x", DecidedAt: now, ExpiresAt: future}, false},
+		{"forged decided_by and decided_at", Request{ID: "i", TenantID: "t", Actor: "a", Action: "x", DecidedBy: "evil", DecidedAt: now, ExpiresAt: future}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

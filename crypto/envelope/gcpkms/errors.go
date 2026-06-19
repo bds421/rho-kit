@@ -39,4 +39,3 @@ func classifyGCPError(operation string, err error) error {
 		return err
 	}
 }
-

@@ -478,6 +478,58 @@ func resolveSignatureSecret(ctx context.Context, source SecretSource, keyID stri
 	return secret, nil
 }
 
+// cachingSecrets is a per-call memoizing decorator around a
+// [SecretSource]. A single [Logger.List] page (up to [MaxPageLimit]
+// rows) or a full [Logger.VerifyChain] sweep verifies many entries that
+// almost always share one keyID; without memoization that is one
+// [SecretSource.Resolve] per row, i.e. one KMS/Vault round-trip per row
+// for remote-backed sources. Wrapping the source for the duration of the
+// call collapses those to one Resolve per distinct keyID.
+//
+// Resolve results (both the secret bytes and any error) are cached by
+// keyID; errors are cached too so a permanently-unknown key does not
+// re-hit the backing provider for every row that references it. Each
+// Resolve still returns a fresh copy of the bytes so callers cannot
+// mutate the cached secret, preserving the [SecretSource] contract.
+//
+// It is NOT safe for concurrent use; it is only ever constructed and
+// consumed within one single-goroutine List/VerifyChain call.
+type cachingSecrets struct {
+	source SecretSource
+	cache  map[string]resolveResult
+}
+
+type resolveResult struct {
+	secret []byte
+	err    error
+}
+
+func newCachingSecrets(source SecretSource) *cachingSecrets {
+	return &cachingSecrets{source: source, cache: map[string]resolveResult{}}
+}
+
+func (c *cachingSecrets) CurrentKeyID(ctx context.Context) (string, error) {
+	return c.source.CurrentKeyID(ctx)
+}
+
+func (c *cachingSecrets) Resolve(ctx context.Context, keyID string) ([]byte, error) {
+	if r, ok := c.cache[keyID]; ok {
+		return copyBytes(r.secret), r.err
+	}
+	secret, err := c.source.Resolve(ctx, keyID)
+	c.cache[keyID] = resolveResult{secret: secret, err: err}
+	return copyBytes(secret), err
+}
+
+func copyBytes(b []byte) []byte {
+	if b == nil {
+		return nil
+	}
+	out := make([]byte, len(b))
+	copy(out, b)
+	return out
+}
+
 // signedLogger is the default [Logger] implementation: a [Store] plus a
 // [SecretSource] plus a clock and id-source for testability.
 type signedLogger struct {
@@ -576,7 +628,15 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 	if e.OccurredAt.IsZero() {
 		e.OccurredAt = l.clock()
 	}
-	e.OccurredAt = e.OccurredAt.UTC()
+	// Truncate to microsecond precision before signing: TIMESTAMPTZ-
+	// backed stores (Postgres via pgx) persist OccurredAt at µs
+	// granularity, but canonicalForm signs it as RFC3339Nano. Without
+	// this, a ns-precision clock (time.Now on Linux) would sign a value
+	// the durable store reads back differently, so Get / List /
+	// VerifyChain would reject ~every entry with ErrSignatureInvalid.
+	// Applies uniformly across all stores so the in-memory and Postgres
+	// stores agree on the signed canonical form.
+	e.OccurredAt = e.OccurredAt.UTC().Truncate(time.Microsecond)
 
 	keyID, err := l.secrets.CurrentKeyID(ctx)
 	if err != nil {
@@ -662,10 +722,15 @@ func (l *signedLogger) List(ctx context.Context, q Query) ([]Entry, string, erro
 	if err != nil {
 		return nil, "", err
 	}
+	// Memoize secret resolution for the page: entries in one page almost
+	// always share a keyID, so this collapses up to MaxPageLimit Resolve
+	// calls (one KMS/Vault round-trip each, for remote sources) into one
+	// per distinct keyID. Semantics are unchanged for static sources.
+	secrets := newCachingSecrets(l.secrets)
 	out := make([]Entry, len(entries))
 	for i, e := range entries {
 		e = cloneEntry(e)
-		if err := VerifyEntry(ctx, e, l.secrets); err != nil {
+		if err := VerifyEntry(ctx, e, secrets); err != nil {
 			return nil, "", redact.WrapError("actionlog: entry verification failed", err)
 		}
 		out[i] = e
@@ -684,8 +749,13 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	}
 	var prev Entry
 	var wantSeq int64 = 1
+	// Memoize secret resolution for the whole chain sweep: a tenant chain
+	// is signed under one keyID (or a handful across rotations), so this
+	// turns one Resolve per row into one per distinct keyID. The callback
+	// runs sequentially, so the (unsynchronized) cache is safe here.
+	secrets := newCachingSecrets(l.secrets)
 	return l.store.RangeByTenantSeq(ctx, tenantID, func(e Entry) error {
-		if err := VerifyEntry(ctx, e, l.secrets); err != nil {
+		if err := VerifyEntry(ctx, e, secrets); err != nil {
 			return redact.WrapError("actionlog: entry verification failed", err)
 		}
 		if e.Seq != wantSeq {
@@ -710,13 +780,16 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	})
 }
 
-// SignEntry computes and returns the canonical signature for an entry
-// without persisting it. Useful for off-band tools that need to sign
-// without constructing a Logger / Store pair.
+// SignEntry computes and returns both the canonical signature and the
+// resolved key id for an entry without persisting it. Useful for off-band
+// tools that need to sign without constructing a Logger / Store pair.
 //
-// Mutates e.SignatureKeyID to the resolved key id; callers that want
-// the returned signature applied should set e.Signature themselves
-// (the contract mirrors [Logger.Append] which fills both fields).
+// e is taken by value and is NOT mutated. The returned signature is
+// computed against the resolved keyID, so callers must apply BOTH return
+// values to their entry — set e.Signature = signature and
+// e.SignatureKeyID = keyID — before persisting or verifying. Applying only
+// the signature leaves SignatureKeyID empty and [VerifyEntry] will reject
+// it. This mirrors [Logger.Append], which fills both fields.
 //
 // Returns [ErrUnknownKeyID] when [SecretSource.CurrentKeyID] is empty
 // or the resolved secret is shorter than [minSignatureSecretLen]. The
@@ -812,8 +885,14 @@ const (
 // VARCHAR(36) declared in the Postgres migration). Pre-fix only
 // emptiness was checked, so a too-long ID would pass the in-memory
 // store and fail at INSERT time in Postgres with a low-value error.
+// The same FR-051 rationale extends to invalid UTF-8 / control bytes:
+// a caller-supplied replay ID with those bytes is signed and folded
+// into signed cursor payloads, then fails late at the Postgres INSERT
+// (invalid byte sequence) — so [validID] rejects them at the boundary
+// like every other caller-supplied text field.
 func validate(e Entry) error {
 	if e.ID == "" ||
+		!validID(e.ID) ||
 		!validTenantID(e.TenantID) ||
 		!validTextField(e.Actor, MaxActorLen, true) ||
 		!validTextField(e.Action, MaxActionLen, true) ||
@@ -832,6 +911,24 @@ func validate(e Entry) error {
 		return ErrInvalidOutcome
 	}
 	return nil
+}
+
+// validID checks the character-level invariants for a caller-supplied
+// [Entry.ID]: valid UTF-8 with no control or whitespace runes, matching
+// the checks applied to every other bounded text field. Length is
+// enforced separately by [validate] so the too-long case keeps its own
+// diagnostic error. Empty is also handled by [validate]; treat it as
+// valid here so emptiness reports through the dedicated branch.
+func validID(s string) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func validTenantID(s string) bool {

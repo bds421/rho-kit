@@ -44,6 +44,14 @@ func RequestID(ctx context.Context) string {
 // empty header does not look "set"); bytes outside printable ASCII
 // (excluding the space/control range) are rejected to keep IDs
 // log/metric-safe.
+//
+// This baseline is intentionally a looser superset of
+// [IsValidCorrelationToken] (which only admits [A-Za-z0-9._-]). The kit's
+// own boundary middleware (httpx, grpcx) gates inbound headers on the
+// stricter token policy before calling the setters; this baseline is the
+// second line of defense for direct in-process callers, rejecting only the
+// bytes that are unsafe in log lines and metric labels (control bytes,
+// non-ASCII) while still permitting application-defined identifier formats.
 func isValidContextID(id string) bool {
 	if id == "" || len(id) > MaxRequestIDLen {
 		return false

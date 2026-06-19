@@ -10,14 +10,30 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 
 	rlock "github.com/bds421/rho-kit/data/lock/redislock/v2"
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 )
+
+// newValidLocker builds a non-nil rlock.Locker backed by miniredis so
+// tests can exercise the NewWithLocker guards that run AFTER the
+// locker-nil check. Passing rlock.NewLocker(nil) instead panics inside
+// the locker constructor before NewWithLocker is ever reached, which
+// makes the empty-key / nil-option guards untested.
+func newValidLocker(t *testing.T) *rlock.Locker {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	t.Cleanup(mr.Close)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	return rlock.NewLocker(client)
+}
 
 type releaseContextKey struct{}
 
@@ -36,6 +52,24 @@ func (f *fakeLockHandle) Extend(_ context.Context) (bool, error) {
 	return f.extendOK.Load(), nil
 }
 
+// hangingLockHandle simulates a Redis client without a read timeout: its
+// Extend blocks until the *passed-in* context is cancelled. The only way
+// the renew call can return is if the elector bounds it with a per-call
+// deadline — an un-bounded leader ctx leaves Extend hung, which pins the
+// elector loop and leaves OnAcquired's ctx un-cancelled while another
+// replica becomes leader (overlap past one renewal interval).
+type hangingLockHandle struct {
+	released atomic.Bool
+	extendCt atomic.Int32
+}
+
+func (h *hangingLockHandle) Release(_ context.Context) error { h.released.Store(true); return nil }
+func (h *hangingLockHandle) Extend(ctx context.Context) (bool, error) {
+	h.extendCt.Add(1)
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
 func TestOptions_PanicOnInvalidDurations(t *testing.T) {
 	for name, fn := range map[string]func(){
 		"WithRetryInterval zero":     func() { WithRetryInterval(0) },
@@ -49,22 +83,20 @@ func TestOptions_PanicOnInvalidDurations(t *testing.T) {
 	}
 }
 
-// stubAcquirer lets us simulate "always leader" or "lose after N
-// renewals" without standing up Redis.
-type stubAcquirer struct {
-	handle *fakeLockHandle
-}
-
-func runWithStub(t *testing.T, e *Elector, stub *stubAcquirer, cb leaderelection.Callbacks) error {
+// runHold drives the elector's holdLeadership state machine directly
+// against a fake lock handle — no Redis required. The parent context is
+// generous (5s) so a loaded CI runner cannot trip a hidden parent
+// deadline and divert the test onto the parent.Done() exit path instead
+// of the renew-failure / cbDone path the caller intends to exercise.
+//
+// Tests that want to observe a return-before-completion (e.g. the
+// callback-drains-first ordering) cancel via the callback's ctx or a
+// false extendOK, not via this deadline.
+func runHold(t *testing.T, e *Elector, handle *fakeLockHandle, cb leaderelection.Callbacks) error {
 	t.Helper()
-	// Reach into the elector and replace the locker call by overriding
-	// the elector's Run via a test-only path. We simulate by driving
-	// holdLeadership directly.
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	leaderCtx, leaderCancel := context.WithCancel(ctx)
-	defer leaderCancel()
-	return e.holdLeadership(leaderCtx, stub.handle, cb)
+	return e.holdLeadership(ctx, handle, cb)
 }
 
 func TestHoldLeadership_CallbackCompletesNormally(t *testing.T) {
@@ -75,7 +107,6 @@ func TestHoldLeadership_CallbackCompletesNormally(t *testing.T) {
 	// nil logger is fine since holdLeadership doesn't log success.
 	handle := &fakeLockHandle{}
 	handle.extendOK.Store(true)
-	stub := &stubAcquirer{handle: handle}
 
 	called := atomic.Bool{}
 	cb := leaderelection.Callbacks{
@@ -84,9 +115,71 @@ func TestHoldLeadership_CallbackCompletesNormally(t *testing.T) {
 			// Return immediately; holdLeadership should observe cbDone.
 		},
 	}
-	err := runWithStub(t, e, stub, cb)
+	err := runHold(t, e, handle, cb)
 	require.NoError(t, err)
 	require.True(t, called.Load())
+}
+
+// drainHistogramCount returns the sample count of the drainDuration
+// histogram series for the given key/state, or 0 if the series has no
+// observations yet.
+func drainHistogramCount(t *testing.T, m *Metrics, key, state string) uint64 {
+	t.Helper()
+	ch := make(chan prometheus.Metric, 16)
+	m.drainDuration.Collect(ch)
+	close(ch)
+	for metric := range ch {
+		out := &dto.Metric{}
+		require.NoError(t, metric.Write(out))
+		var gotKey, gotState string
+		for _, lp := range out.Label {
+			switch lp.GetName() {
+			case "key":
+				gotKey = lp.GetValue()
+			case "state":
+				gotState = lp.GetValue()
+			}
+		}
+		if gotKey == key && gotState == state && out.Histogram != nil {
+			return out.Histogram.GetSampleCount()
+		}
+	}
+	return 0
+}
+
+// TestHoldLeadership_HappyPathRecordsDrainedMetric pins the contract
+// documented on awaitCallbackDrain ("terminal duration is always
+// recorded"): when OnAcquired returns on its own — before any
+// cancellation — holdLeadership exits via the direct cbDone branch, which
+// does NOT route through awaitCallbackDrain. Before the fix that branch
+// recorded no terminal observation, leaving the drained-state histogram
+// empty for the most common (graceful) completion and skewing SLO
+// dashboards. This test fails if the happy-path drained observation is
+// dropped.
+func TestHoldLeadership_HappyPathRecordsDrainedMetric(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics := NewMetrics(WithRegisterer(reg))
+
+	e := &Elector{
+		key:           "tenant-sweeper",
+		renewInterval: time.Hour, // never tick: force the cbDone happy path
+		drainWarnTick: time.Hour,
+		logger:        slog.Default(),
+		metrics:       metrics,
+	}
+	handle := &fakeLockHandle{}
+	handle.extendOK.Store(true)
+
+	err := runHold(t, e, handle, leaderelection.Callbacks{
+		OnAcquired: func(context.Context) {
+			// Return immediately on the happy path.
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, int32(0), handle.extendCt.Load(),
+		"renew must not have ticked — this test must exercise the cbDone happy path")
+	require.Equal(t, uint64(1), drainHistogramCount(t, metrics, "tenant-sweeper", drainStateDrained),
+		"happy-path completion must record exactly one drained terminal observation")
 }
 
 func TestHoldLeadership_RenewalFailureExits(t *testing.T) {
@@ -95,7 +188,6 @@ func TestHoldLeadership_RenewalFailureExits(t *testing.T) {
 	}
 	handle := &fakeLockHandle{}
 	handle.extendOK.Store(false) // simulate lost lock
-	stub := &stubAcquirer{handle: handle}
 
 	cb := leaderelection.Callbacks{
 		OnAcquired: func(ctx context.Context) {
@@ -103,8 +195,62 @@ func TestHoldLeadership_RenewalFailureExits(t *testing.T) {
 			<-ctx.Done()
 		},
 	}
-	err := runWithStub(t, e, stub, cb)
-	require.Error(t, err) // "handle reports lost"
+	err := runHold(t, e, handle, cb)
+	// Assert the specific renew-loss path, not just "any error": a hidden
+	// parent deadline (the old helper imposed 200ms) would surface
+	// context.DeadlineExceeded here and still satisfy require.Error,
+	// masking that the wrong exit path ran.
+	require.ErrorContains(t, err, "handle reports lost")
+	require.Positive(t, handle.extendCt.Load(), "Extend must have been attempted")
+}
+
+// TestHoldLeadership_HungExtendDoesNotPinElector pins the renew-call
+// timeout: a hung Extend (Redis client without a read timeout) must not
+// block the elector loop indefinitely. The renew call must be bounded by
+// a per-call deadline so a stuck Extend is treated as a renewal failure,
+// the leader ctx is cancelled, OnAcquired drains, and holdLeadership
+// returns within roughly one renewal interval — keeping the overlap
+// window bounded as the package doc promises.
+func TestHoldLeadership_HungExtendDoesNotPinElector(t *testing.T) {
+	e := &Elector{
+		renewInterval: 20 * time.Millisecond,
+		drainWarnTick: time.Hour, // suppress drain warnings
+	}
+	handle := &hangingLockHandle{}
+
+	var cancelled atomic.Bool
+	cb := leaderelection.Callbacks{
+		OnAcquired: func(ctx context.Context) {
+			<-ctx.Done()
+			cancelled.Store(true)
+		},
+	}
+
+	// Parent ctx is generous: holdLeadership must return on its own via
+	// the bounded renew call, NOT because the parent deadline fired.
+	parent, parentCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer parentCancel()
+
+	result := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		result <- e.holdLeadership(parent, handle, cb)
+	}()
+
+	select {
+	case err := <-result:
+		require.Error(t, err, "hung Extend must surface a renewal failure")
+		require.ErrorContains(t, err, "extend")
+		require.True(t, cancelled.Load(), "leader ctx must be cancelled when Extend hangs")
+		// Must return well within the parent deadline; a few renew
+		// intervals of slack covers scheduling jitter.
+		require.Less(t, time.Since(start), time.Second,
+			"holdLeadership pinned by hung Extend — renew call is not bounded")
+	case <-time.After(2 * time.Second):
+		t.Fatal("holdLeadership pinned by hung Extend — renew call has no per-call deadline")
+	}
+
+	require.GreaterOrEqual(t, handle.extendCt.Load(), int32(1), "Extend must have been attempted")
 }
 
 func TestHoldLeadership_OnAcquiredPanicReturnsError(t *testing.T) {
@@ -113,9 +259,8 @@ func TestHoldLeadership_OnAcquiredPanicReturnsError(t *testing.T) {
 	}
 	handle := &fakeLockHandle{}
 	handle.extendOK.Store(true)
-	stub := &stubAcquirer{handle: handle}
 
-	err := runWithStub(t, e, stub, leaderelection.Callbacks{
+	err := runHold(t, e, handle, leaderelection.Callbacks{
 		OnAcquired: func(context.Context) {
 			panic("leader work exploded")
 		},
@@ -167,10 +312,9 @@ func TestHoldLeadership_LossCancelsAndWaitsForCallback(t *testing.T) {
 	}
 	handle := &fakeLockHandle{}
 	handle.extendOK.Store(false)
-	stub := &stubAcquirer{handle: handle}
 
 	var callbackExited atomic.Bool
-	err := runWithStub(t, e, stub, leaderelection.Callbacks{
+	err := runHold(t, e, handle, leaderelection.Callbacks{
 		OnAcquired: func(ctx context.Context) {
 			<-ctx.Done()
 			time.Sleep(10 * time.Millisecond)
@@ -187,7 +331,6 @@ func TestHoldLeadership_LossDoesNotReturnUntilCallbackDrains(t *testing.T) {
 	}
 	handle := &fakeLockHandle{}
 	handle.extendOK.Store(false)
-	stub := &stubAcquirer{handle: handle}
 
 	started := make(chan struct{})
 	cancelled := make(chan struct{})
@@ -199,7 +342,7 @@ func TestHoldLeadership_LossDoesNotReturnUntilCallbackDrains(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		result <- runWithStub(t, e, stub, leaderelection.Callbacks{
+		result <- runHold(t, e, handle, leaderelection.Callbacks{
 			OnAcquired: func(ctx context.Context) {
 				close(started)
 				<-ctx.Done()
@@ -256,21 +399,22 @@ func TestNewWithLocker_PanicsOnNil(t *testing.T) {
 }
 
 func TestNewWithLocker_PanicsOnEmptyKey(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic on empty key")
-		}
-	}()
-	NewWithLocker(rlock.NewLocker(nil), "")
+	locker := newValidLocker(t)
+	// require.PanicsWithValue cannot be used because the production guard
+	// passes a plain string to panic; assert the message so a panic from
+	// an unrelated cause (e.g. a nil locker) cannot make this pass.
+	require.PanicsWithValue(t,
+		"leaderelection/redislock: NewWithLocker key must not be empty",
+		func() { NewWithLocker(locker, "") },
+	)
 }
 
 func TestNewWithLocker_PanicsOnNilOption(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic on nil option")
-		}
-	}()
-	NewWithLocker(rlock.NewLocker(nil), "key", nil)
+	locker := newValidLocker(t)
+	require.PanicsWithValue(t,
+		"leaderelection/redislock: NewWithLocker option must not be nil",
+		func() { NewWithLocker(locker, "key", nil) },
+	)
 }
 
 func TestHoldLeadership_LongCallbackEmitsWarnAndMetric(t *testing.T) {

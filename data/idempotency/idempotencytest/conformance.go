@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,11 +30,13 @@ func Run(t *testing.T, factory Factory) {
 	}
 
 	t.Run("RejectsEmptyKey", func(t *testing.T) { testRejectsEmptyKey(t, factory) })
+	t.Run("RejectsOversizedKey", func(t *testing.T) { testRejectsOversizedKey(t, factory) })
 	t.Run("RejectsInvalidTTL", func(t *testing.T) { testRejectsInvalidTTL(t, factory) })
 	t.Run("LockSetGetRoundTrip", func(t *testing.T) { testLockSetGetRoundTrip(t, factory) })
 	t.Run("FingerprintMatchPath", func(t *testing.T) { testFingerprintMatchPath(t, factory) })
 	t.Run("FingerprintMismatchOnGet", func(t *testing.T) { testFingerprintMismatchOnGet(t, factory) })
 	t.Run("FingerprintMismatchOnTryLock", func(t *testing.T) { testFingerprintMismatchOnTryLock(t, factory) })
+	t.Run("EmptyFingerprintKeepsMismatchDetection", func(t *testing.T) { testEmptyFingerprintKeepsMismatchDetection(t, factory) })
 	t.Run("ConcurrentTryLockSerializes", func(t *testing.T) { testConcurrentTryLockSerializes(t, factory) })
 	t.Run("UnlockWithStaleTokenIsNoOp", func(t *testing.T) { testUnlockWithStaleTokenIsNoOp(t, factory) })
 	t.Run("SetWithStaleTokenReturnsErrLockLost", func(t *testing.T) { testSetWithStaleTokenReturnsErrLockLost(t, factory) })
@@ -53,6 +56,31 @@ func testRejectsEmptyKey(t *testing.T, factory Factory) {
 
 	err = s.Set(ctx, "", "tok", idempotency.CachedResponse{StatusCode: 200}, time.Minute)
 	assert.ErrorIs(t, err, idempotency.ErrKeyEmpty, "Set must reject empty key")
+
+	err = s.Unlock(ctx, "", "tok")
+	assert.ErrorIs(t, err, idempotency.ErrKeyEmpty, "Unlock must reject empty key")
+}
+
+func testRejectsOversizedKey(t *testing.T, factory Factory) {
+	s := factory(t)
+	ctx := context.Background()
+
+	// A key one byte over the limit must be rejected by every method
+	// with ErrKeyTooLong — a backend that silently truncates or stores
+	// it would diverge from the kit's MemoryStore.
+	oversized := strings.Repeat("a", idempotency.MaxKeyLen+1)
+
+	_, _, err := s.Get(ctx, oversized, nil)
+	assert.ErrorIs(t, err, idempotency.ErrKeyTooLong, "Get must reject oversized key")
+
+	_, _, _, err = s.TryLock(ctx, oversized, nil, time.Minute)
+	assert.ErrorIs(t, err, idempotency.ErrKeyTooLong, "TryLock must reject oversized key")
+
+	err = s.Set(ctx, oversized, "tok", idempotency.CachedResponse{StatusCode: 200}, time.Minute)
+	assert.ErrorIs(t, err, idempotency.ErrKeyTooLong, "Set must reject oversized key")
+
+	err = s.Unlock(ctx, oversized, "tok")
+	assert.ErrorIs(t, err, idempotency.ErrKeyTooLong, "Unlock must reject oversized key")
 }
 
 func testRejectsInvalidTTL(t *testing.T, factory Factory) {
@@ -64,6 +92,21 @@ func testRejectsInvalidTTL(t *testing.T, factory Factory) {
 
 	_, _, _, err = s.TryLock(ctx, "k", nil, -time.Minute)
 	assert.ErrorIs(t, err, idempotency.ErrInvalidTTL, "TryLock negative TTL must return ErrInvalidTTL")
+
+	// Set must reject TTL <= 0 too. Acquire a real lock first so the
+	// only thing wrong with the Set call is the TTL — a backend that
+	// creates an instantly-expired entry on Set(ttl=0) is the exact
+	// divergence class this harness exists to catch.
+	token, _, ok, err := s.TryLock(ctx, "k", nil, time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok, "TryLock with a valid TTL must acquire")
+
+	resp := idempotency.CachedResponse{StatusCode: 200}
+	err = s.Set(ctx, "k", token, resp, 0)
+	assert.ErrorIs(t, err, idempotency.ErrInvalidTTL, "Set TTL=0 must return ErrInvalidTTL")
+
+	err = s.Set(ctx, "k", token, resp, -time.Minute)
+	assert.ErrorIs(t, err, idempotency.ErrInvalidTTL, "Set negative TTL must return ErrInvalidTTL")
 }
 
 func testLockSetGetRoundTrip(t *testing.T, factory Factory) {
@@ -154,6 +197,43 @@ func testFingerprintMismatchOnTryLock(t *testing.T, factory Factory) {
 	require.NoError(t, err)
 	assert.True(t, mismatch, "fingerprint mismatch on TryLock must signal true (422 path)")
 	assert.False(t, ok, "mismatch implies the lock was not granted")
+}
+
+// testEmptyFingerprintKeepsMismatchDetection pins the cross-backend contract
+// for a *non-nil empty* fingerprint. A caller may legitimately supply
+// []byte{} (e.g. a hash of an empty body). The empty fingerprint must be
+// treated as a real, present fingerprint — not collapsed to nil — so that a
+// later request bearing a *different*, non-empty fingerprint under the same
+// key is still rejected with mismatch=true (the 422 path). Backends that
+// internally clone the fingerprint must preserve its emptiness; turning
+// []byte{} into nil silently disables mismatch detection for that key and
+// diverges from the SQL bytea (non-NULL empty) semantics.
+func testEmptyFingerprintKeepsMismatchDetection(t *testing.T, factory Factory) {
+	s := factory(t)
+	ctx := context.Background()
+	const key = "fp-empty-nonnil"
+
+	empty := []byte{}
+	require.NotNil(t, empty, "test precondition: fingerprint must be empty but non-nil")
+
+	// First caller claims the key with an empty (but present) fingerprint.
+	token, _, ok, err := s.TryLock(ctx, key, empty, time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, s.Set(ctx, key, token, idempotency.CachedResponse{StatusCode: 200}, time.Minute))
+
+	// A retry with the SAME empty fingerprint is a match: Get replays.
+	resp, mismatch, err := s.Get(ctx, key, empty)
+	require.NoError(t, err)
+	assert.False(t, mismatch, "empty fingerprint matching empty fingerprint must NOT signal mismatch")
+	require.NotNil(t, resp, "matching empty fingerprint must replay the cached response")
+
+	// A request with a DIFFERENT, non-empty fingerprint under the same key
+	// must still be caught as a mismatch on Get.
+	resp, mismatch, err = s.Get(ctx, key, []byte("different"))
+	require.NoError(t, err)
+	assert.True(t, mismatch, "different fingerprint vs stored empty fingerprint must signal mismatch on Get")
+	assert.Nil(t, resp, "fingerprint mismatch hides the response")
 }
 
 func testConcurrentTryLockSerializes(t *testing.T, factory Factory) {

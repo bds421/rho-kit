@@ -81,14 +81,40 @@ func TestBuilder_ServerErrorLogOptionUsesConfiguredLogger(t *testing.T) {
 // contract.
 
 func TestBuilder_AddHealthCheckPanicsOnInvalidCheck(t *testing.T) {
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).
-			AddHealthCheck(health.DependencyCheck{Name: "Bad Name", Check: func(_ context.Context) string { return health.StatusHealthy }})
+	// The panic message must name the call site ("AddHealthCheck") and
+	// carry the validator's reason so a diagnostic message can fail when
+	// the call site or detail is dropped — guarding against a regression
+	// to the old fixed "app: health check invalid" string.
+	t.Run("invalid name", func(t *testing.T) {
+		msg := capturePanic(t, func() {
+			New("test-svc", "v0.1.0", BaseConfig{}).
+				AddHealthCheck(health.DependencyCheck{Name: "Bad Name", Check: func(_ context.Context) string { return health.StatusHealthy }})
+		})
+		assert.Contains(t, msg, "AddHealthCheck", "panic must identify the call site")
+		assert.Contains(t, msg, "invalid health check", "panic must describe the failure")
+		assert.NotEqual(t, "app: health check invalid", msg, "panic must not be the old fixed string")
 	})
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).
-			AddHealthCheck(health.DependencyCheck{Name: "bad-check"})
+	t.Run("missing check func", func(t *testing.T) {
+		msg := capturePanic(t, func() {
+			New("test-svc", "v0.1.0", BaseConfig{}).
+				AddHealthCheck(health.DependencyCheck{Name: "bad-check"})
+		})
+		assert.Contains(t, msg, "AddHealthCheck", "panic must identify the call site")
+		assert.Contains(t, msg, "non-nil Check", "panic must surface the validator's reason")
 	})
+}
+
+// capturePanic runs fn, requires that it panics, and returns the recovered
+// value rendered as a string.
+func capturePanic(t *testing.T, fn func()) (msg string) {
+	t.Helper()
+	defer func() {
+		rec := recover()
+		require.NotNil(t, rec, "expected fn to panic")
+		msg = fmt.Sprint(rec)
+	}()
+	fn()
+	return ""
 }
 
 func TestBuilder_WithBackgroundPanicsOnInvalidInput(t *testing.T) {

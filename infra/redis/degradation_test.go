@@ -112,6 +112,38 @@ func TestPerFeatureHealthChecks_Unhealthy_FailFast(t *testing.T) {
 	assert.True(t, checks[0].Critical)
 }
 
+func TestPerFeatureHealthChecks_Unhealthy_FailFastPointer(t *testing.T) {
+	// A caller may pass &FailFastPolicy{}; the pointer satisfies
+	// DegradationPolicy via the value-receiver methods. It must be treated
+	// identically to the value form: unhealthy + critical when Redis is down,
+	// not silently downgraded to degraded/non-critical.
+	conn := newTestConnection(false, true)
+	features := []FeatureCheck{
+		{Feature: "locks", Policy: &FailFastPolicy{}},
+	}
+
+	checks := PerFeatureHealthChecks(conn, features)
+	require.Len(t, checks, 1)
+
+	assert.Equal(t, "unhealthy", checks[0].Check(context.Background()))
+	assert.True(t, checks[0].Critical)
+}
+
+func TestPerFeatureHealthChecks_Healthy_FailFastPointer(t *testing.T) {
+	// The pointer form must also be marked critical while healthy, matching
+	// the value form (critical reflects the policy, independent of state).
+	conn := newTestConnection(true, true)
+	features := []FeatureCheck{
+		{Feature: "locks", Policy: &FailFastPolicy{}},
+	}
+
+	checks := PerFeatureHealthChecks(conn, features)
+	require.Len(t, checks, 1)
+
+	assert.Equal(t, "healthy", checks[0].Check(context.Background()))
+	assert.True(t, checks[0].Critical)
+}
+
 func TestPerFeatureHealthChecks_Connecting(t *testing.T) {
 	conn := newTestConnection(false, false)
 	features := []FeatureCheck{

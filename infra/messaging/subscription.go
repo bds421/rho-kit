@@ -150,6 +150,17 @@ func (s *Subscription) Start(ctx context.Context) (retErr error) {
 //
 // Idempotent: a second Stop is a no-op. Safe to call before Start —
 // returns immediately because no work has been started.
+//
+// Concurrency: Start sets the started flag before it publishes the
+// cancel func. A Stop that races into that window observes
+// started==true but a not-yet-published cancel; rather than cancel
+// nothing and then block on done until ctx expires (leaving the
+// consumer running on the un-cancelled runCtx), Stop waits for the
+// cancel func to appear and then invokes it. The wait is bounded by
+// ctx and by Start completing (s.done closes when Start returns,
+// covering the case where Start exited before storing a cancel — which
+// cannot happen, but keeps Stop from spinning forever on a misbehaving
+// caller).
 func (s *Subscription) Stop(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("messaging/subscription: Stop requires a non-nil context")
@@ -157,13 +168,35 @@ func (s *Subscription) Stop(ctx context.Context) error {
 	if !s.started.Load() {
 		return nil
 	}
-	if cancelPtr := s.cancel.Swap(nil); cancelPtr != nil {
-		(*cancelPtr)()
+	if cancel := s.awaitCancel(ctx); cancel != nil {
+		(*cancel)()
 	}
 	select {
 	case <-s.done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// awaitCancel atomically takes the published cancel func, waiting for
+// Start to publish it if Stop raced into the window between the started
+// CAS and the cancel store. Returns nil when ctx is cancelled or Start
+// has already returned (s.done closed) without a cancel to take — both
+// terminal states where there is nothing left to cancel.
+func (s *Subscription) awaitCancel(ctx context.Context) *context.CancelFunc {
+	for {
+		if cancel := s.cancel.Swap(nil); cancel != nil {
+			return cancel
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-s.done:
+			// Start returned; cancel (if any) is moot. Take it once more
+			// to cover the publish-then-return ordering.
+			return s.cancel.Swap(nil)
+		default:
+		}
 	}
 }

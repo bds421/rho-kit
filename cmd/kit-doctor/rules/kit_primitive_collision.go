@@ -30,6 +30,15 @@ type kitPrimitiveCollisionRule struct{}
 
 func (kitPrimitiveCollisionRule) Name() string { return "kit-primitive-collision" }
 
+// kitModulePrefixTrimmed is the rho-kit module root import path with no
+// trailing slash; kitModulePrefix matches any sub-package beneath it.
+// A file whose resolved package import path is the root or lives under
+// the prefix is the kit's own code and is exempt from this rule.
+const (
+	kitModulePrefixTrimmed = "github.com/bds421/rho-kit"
+	kitModulePrefix        = kitModulePrefixTrimmed + "/"
+)
+
 // kitPrimitives maps a primitive's package basename to its
 // fully-qualified kit import suggestion. Order doesn't matter; the
 // rule does a single lookup per file.
@@ -40,17 +49,17 @@ func (kitPrimitiveCollisionRule) Name() string { return "kit-primitive-collision
 // "package app" that needs redirecting.
 var kitPrimitives = map[string]string{
 	// Foundational primitives.
-	"clock":        "github.com/bds421/rho-kit/core/v2/clock",
-	"contextutil":  "github.com/bds421/rho-kit/core/v2/contextutil",
-	"apperror":     "github.com/bds421/rho-kit/core/v2/apperror",
-	"redact":       "github.com/bds421/rho-kit/core/v2/redact",
-	"secret":       "github.com/bds421/rho-kit/core/v2/secret",
-	"randstr":      "github.com/bds421/rho-kit/core/v2/randstr",
-	"safecast":     "github.com/bds421/rho-kit/core/v2/safecast",
-	"validate":     "github.com/bds421/rho-kit/core/v2/validate",
-	"tenant":       "github.com/bds421/rho-kit/core/v2/tenant",
-	"tlsclone":     "github.com/bds421/rho-kit/core/v2/tlsclone",
-	"config":       "github.com/bds421/rho-kit/core/v2/config",
+	"clock":       "github.com/bds421/rho-kit/core/v2/clock",
+	"contextutil": "github.com/bds421/rho-kit/core/v2/contextutil",
+	"apperror":    "github.com/bds421/rho-kit/core/v2/apperror",
+	"redact":      "github.com/bds421/rho-kit/core/v2/redact",
+	"secret":      "github.com/bds421/rho-kit/core/v2/secret",
+	"randstr":     "github.com/bds421/rho-kit/core/v2/randstr",
+	"safecast":    "github.com/bds421/rho-kit/core/v2/safecast",
+	"validate":    "github.com/bds421/rho-kit/core/v2/validate",
+	"tenant":      "github.com/bds421/rho-kit/core/v2/tenant",
+	"tlsclone":    "github.com/bds421/rho-kit/core/v2/tlsclone",
+	"config":      "github.com/bds421/rho-kit/core/v2/config",
 
 	// Resilience + concurrency.
 	"retry":          "github.com/bds421/rho-kit/resilience/v2/retry",
@@ -88,13 +97,13 @@ var kitPrimitives = map[string]string{
 	"secrets":  "github.com/bds421/rho-kit/infra/secrets/v2",
 
 	// Observability.
-	"logattr":         "github.com/bds421/rho-kit/observability/v2/logattr",
-	"redmetrics":      "github.com/bds421/rho-kit/observability/v2/redmetrics",
-	"runtimemetrics":  "github.com/bds421/rho-kit/observability/v2/runtimemetrics",
-	"slo":             "github.com/bds421/rho-kit/observability/v2/slo",
-	"auditlog":        "github.com/bds421/rho-kit/observability/v2/auditlog",
-	"tracing":         "github.com/bds421/rho-kit/observability/v2/tracing",
-	"health":          "github.com/bds421/rho-kit/observability/v2/health",
+	"logattr":        "github.com/bds421/rho-kit/observability/v2/logattr",
+	"redmetrics":     "github.com/bds421/rho-kit/observability/v2/redmetrics",
+	"runtimemetrics": "github.com/bds421/rho-kit/observability/v2/runtimemetrics",
+	"slo":            "github.com/bds421/rho-kit/observability/v2/slo",
+	"auditlog":       "github.com/bds421/rho-kit/observability/v2/auditlog",
+	"tracing":        "github.com/bds421/rho-kit/observability/v2/tracing",
+	"health":         "github.com/bds421/rho-kit/observability/v2/health",
 
 	// I/O.
 	"atomicfile": "github.com/bds421/rho-kit/io/v2/atomicfile",
@@ -106,9 +115,15 @@ func (r kitPrimitiveCollisionRule) Run(fset *token.FileSet, file *ast.File) []Fi
 		return nil
 	}
 	// Skip the kit's own files — internal packages legitimately use
-	// these names. The rule is meant for downstream consumers.
+	// these names. The rule is meant for downstream consumers. Detect
+	// the kit by the resolved module import path (read from the nearest
+	// go.mod) rather than a filesystem-path substring: the latter both
+	// false-negatives a rho-kit checkout under a different directory
+	// name and false-positives a consumer repo that merely has a
+	// "rho-kit" path segment.
 	filename := fset.Position(file.Pos()).Filename
-	if strings.Contains(filename, "/rho-kit/") || strings.Contains(filename, "\\rho-kit\\") {
+	if pkg := packageAtPath(filename); pkg != "" &&
+		(pkg == kitModulePrefixTrimmed || strings.HasPrefix(pkg, kitModulePrefix)) {
 		return nil
 	}
 	// Skip test files — `package foo_test` is a Go convention, not a
@@ -121,10 +136,13 @@ func (r kitPrimitiveCollisionRule) Run(fset *token.FileSet, file *ast.File) []Fi
 	if !ok {
 		return nil
 	}
-	// Only flag once per package directory — the rule runs per file
-	// but reporting per-file would spam findings. Use the directory
-	// path as the de-dup key; the engine handles per-file dispatch
-	// so we just emit a finding for the first file we see.
+	// The engine dispatches one Run per file, so a package split across
+	// N non-test files whose name collides yields N findings — one per
+	// file. That is acceptable: each finding points at the package
+	// clause of a distinct file the author may consolidate or rename,
+	// and the surrounding text is identical so de-dup is cheap for the
+	// operator. (No per-directory de-dup is performed here because the
+	// rule is stateless across files.)
 	return []Finding{{
 		Rule:     r.Name(),
 		Severity: Info,

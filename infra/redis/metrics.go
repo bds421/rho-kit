@@ -69,7 +69,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Help:      "Duration of Redis commands in seconds.",
 				Buckets:   []float64{0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
 			},
-			[]string{"instance", "command"},
+			[]string{"redis_instance", "command"},
 		),
 		commandErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -77,7 +77,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "command_errors_total",
 				Help:      "Total number of Redis command errors.",
 			},
-			[]string{"instance", "command"},
+			[]string{"redis_instance", "command"},
 		),
 		connectionPoolHits: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -85,7 +85,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "pool_hits",
 				Help:      "Snapshot of connection pool hit count (reused connections).",
 			},
-			[]string{"instance"},
+			[]string{"redis_instance"},
 		),
 		connectionPoolMisses: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -93,7 +93,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "pool_misses",
 				Help:      "Snapshot of connection pool miss count (new connections).",
 			},
-			[]string{"instance"},
+			[]string{"redis_instance"},
 		),
 		connectionPoolTimeouts: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -101,7 +101,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "pool_timeouts",
 				Help:      "Snapshot of connection pool timeout count.",
 			},
-			[]string{"instance"},
+			[]string{"redis_instance"},
 		),
 		connectionPoolSize: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -109,7 +109,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "pool_total_conns",
 				Help:      "Total number of connections in the pool.",
 			},
-			[]string{"instance"},
+			[]string{"redis_instance"},
 		),
 		connectionPoolIdle: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -117,7 +117,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "pool_idle_conns",
 				Help:      "Number of idle connections in the pool.",
 			},
-			[]string{"instance"},
+			[]string{"redis_instance"},
 		),
 		connectionPoolStale: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -125,7 +125,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "pool_stale_conns",
 				Help:      "Number of stale connections removed from the pool.",
 			},
-			[]string{"instance"},
+			[]string{"redis_instance"},
 		),
 		reconnectAttempts: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -133,7 +133,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "reconnect_attempts_total",
 				Help:      "Total number of reconnection attempts.",
 			},
-			[]string{"instance"},
+			[]string{"redis_instance"},
 		),
 		reconnectSuccesses: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -141,7 +141,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "reconnect_successes_total",
 				Help:      "Total number of successful reconnections.",
 			},
-			[]string{"instance"},
+			[]string{"redis_instance"},
 		),
 		connectionHealthy: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -149,7 +149,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "connection_healthy",
 				Help:      "Whether the Redis connection is healthy (1) or not (0).",
 			},
-			[]string{"instance"},
+			[]string{"redis_instance"},
 		),
 	}
 

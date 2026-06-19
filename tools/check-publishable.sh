@@ -33,8 +33,15 @@ find_go_mods() {
 }
 
 if command -v rg >/dev/null 2>&1; then
-  v0_matches=$(rg --no-heading --line-number "$INTERNAL_V0_PATTERN" \
+  # Match find_go_mods's file set exactly so the gate is deterministic
+  # regardless of which tool is installed: scan hidden files and ignore
+  # .gitignore (--no-ignore --hidden), then exclude the same .git /
+  # .claude / dist trees the find branch prunes. Without --no-ignore /
+  # --hidden, rg would honor .gitignore and skip dot-trees, scanning a
+  # different set than the find branch.
+  v0_matches=$(rg --no-heading --line-number --no-ignore --hidden "$INTERNAL_V0_PATTERN" \
     --glob 'go.mod' \
+    --glob '!**/.git/**' \
     --glob '!**/.claude/**' \
     --glob '!**/dist/**' \
     || true)

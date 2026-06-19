@@ -140,11 +140,17 @@ func (fb *faultyBackend) Set(ctx context.Context, key string, value []byte, ttl 
 // assertCounterValue checks a prometheus CounterVec label has the expected value.
 func assertCounterValue(t *testing.T, cv *prometheus.CounterVec, label string, expected float64) {
 	t.Helper()
+	assert.Equal(t, expected, getCounterValue(t, cv, label))
+}
+
+// getCounterValue reads the current value of a prometheus CounterVec label.
+func getCounterValue(t *testing.T, cv *prometheus.CounterVec, label string) float64 {
+	t.Helper()
 	counter, err := cv.GetMetricWithLabelValues(label)
 	require.NoError(t, err)
 	var m dto.Metric
 	require.NoError(t, counter.Write(&m))
-	assert.Equal(t, expected, m.GetCounter().GetValue())
+	return m.GetCounter().GetValue()
 }
 
 func TestComputeCache_BasicMissAndHit(t *testing.T) {
@@ -779,11 +785,26 @@ func TestComputeCache_ForegroundComputeIsolatesCancellation(t *testing.T) {
 // gatherGaugeValue reads the current value of a GaugeVec label.
 func gatherGaugeValue(t *testing.T, gv *prometheus.GaugeVec, label string) float64 {
 	t.Helper()
-	g, err := gv.GetMetricWithLabelValues(label)
+	v, err := readGaugeValue(gv, label)
 	require.NoError(t, err)
+	return v
+}
+
+// readGaugeValue reads a GaugeVec label WITHOUT touching *testing.T, so it
+// is safe to call from non-test goroutines (e.g. inside a ComputeFunc that
+// runs on the singleflight leader). Errors are returned for the test
+// goroutine to assert; calling require.* off the test goroutine would only
+// Goexit that goroutine and let the test pass spuriously.
+func readGaugeValue(gv *prometheus.GaugeVec, label string) (float64, error) {
+	g, err := gv.GetMetricWithLabelValues(label)
+	if err != nil {
+		return 0, err
+	}
 	var m dto.Metric
-	require.NoError(t, g.Write(&m))
-	return m.GetGauge().GetValue()
+	if err := g.Write(&m); err != nil {
+		return 0, err
+	}
+	return m.GetGauge().GetValue(), nil
 }
 
 // gatherHistogramSampleCount reads the total sample count of a HistogramVec label.
@@ -819,14 +840,18 @@ func TestComputeCache_SingleflightFollowerMetrics(t *testing.T) {
 	// inflightDuringCompute is recorded inside the leader's compute while
 	// the gauge is incremented. Reading the gauge here proves the gauge
 	// is observable while the singleflight leader is still running, not
-	// just before/after.
+	// just before/after. The read uses readGaugeValue (no *testing.T) and
+	// stashes any error for the test goroutine to assert after wg.Wait():
+	// require.* inside this closure runs on the singleflight leader's
+	// goroutine, where FailNow would only Goexit that goroutine.
 	var inflightDuringCompute float64
+	var sampleErr error
 	var sampled atomic.Bool
 	fn := func(ctx context.Context) (string, time.Duration, error) {
 		// Only sample once — every concurrent goroutine routes through the
 		// same singleflight leader so this closure runs once.
 		if sampled.CompareAndSwap(false, true) {
-			inflightDuringCompute = gatherGaugeValue(t, metrics.singleflightInflight, "sf_cache")
+			inflightDuringCompute, sampleErr = readGaugeValue(metrics.singleflightInflight, "sf_cache")
 		}
 		<-release
 		return "result", time.Minute, nil
@@ -847,6 +872,7 @@ func TestComputeCache_SingleflightFollowerMetrics(t *testing.T) {
 	close(release)
 	wg.Wait()
 
+	require.NoError(t, sampleErr, "reading inflight gauge inside the leader's compute")
 	assert.EqualValues(t, 1, inflightDuringCompute,
 		"gauge must read 1 while the single leader's compute is running")
 	assert.EqualValues(t, 0, gatherGaugeValue(t, metrics.singleflightInflight, "sf_cache"),
@@ -890,6 +916,124 @@ func TestComputeCache_SingleflightSoloCallerNotFollower(t *testing.T) {
 		"solo caller must not produce a wait sample")
 	assert.EqualValues(t, 0, gatherGaugeValue(t, metrics.singleflightInflight, "solo_cache"),
 		"inflight gauge must be 0 after solo compute completes")
+}
+
+// TestComputeCache_InflightEntryNotLeakedWhenJoiningBackgroundRefresh
+// guards the concurrency fix for the inflight map: when a foreground
+// compute JOINS an in-flight background refresh (the bg refresh already
+// holds singleflight leadership for the key), the foreground DoChan
+// closure never runs. The inflight entry must still be cleaned up by the
+// caller that stored it — otherwise it persists and misclassifies every
+// later caller on that key as a follower.
+//
+// Symptom of the leak: after the join settles, a fresh solo GetOrCompute
+// on the same key would be counted as a follower (and record a wait
+// sample) because the stale inflight entry survives.
+func TestComputeCache_InflightEntryNotLeakedWhenJoiningBackgroundRefresh(t *testing.T) {
+	backend := newTestBackend(t)
+	reg := prometheus.NewRegistry()
+	metrics := NewComputeMetrics(WithRegisterer(reg))
+
+	cc, err := NewComputeCache[string](backend, "leak:",
+		WithStaleTTL(time.Minute),
+		WithRefreshTimeout(5*time.Second),
+		WithComputeMetricsRegisterer(metrics),
+		WithComputeName("leak_cache"),
+	)
+	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
+
+	const fullKey = "leak:k"
+
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	var calls atomic.Int32
+	fn := func(context.Context) (string, time.Duration, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			// Seed value with a very short primary TTL so the next
+			// read falls into the stale window.
+			return "v1", 20 * time.Millisecond, nil
+		}
+		// The background refresh (singleflight leader) blocks here,
+		// holding leadership for the key while the foreground compute
+		// joins it.
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return "v2", time.Minute, nil
+	}
+
+	// Seed v1.
+	val, err := cc.GetOrCompute(context.Background(), "k", fn)
+	require.NoError(t, err)
+	require.Equal(t, "v1", val)
+	backend.Sync()
+
+	// Let the primary TTL expire so the entry is stale (still served).
+	time.Sleep(30 * time.Millisecond)
+
+	// Stale serve -> triggers background refresh, which becomes the
+	// singleflight leader and blocks inside fn.
+	val, err = cc.GetOrCompute(context.Background(), "k", fn)
+	require.NoError(t, err)
+	require.Equal(t, "v1", val, "stale value served while refresh runs")
+
+	// Wait until the background refresh is actually executing fn.
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background refresh did not start")
+	}
+
+	// Now force a foreground miss on the SAME key: delete the backend
+	// entry so the next GetOrCompute misses and routes through
+	// computeAndStore, whose DoChan JOINS the in-flight bg refresh. This
+	// is the path whose foreground closure never runs.
+	require.NoError(t, backend.Delete(context.Background(), fullKey))
+
+	joinDone := make(chan string, 1)
+	go func() {
+		v, _ := cc.GetOrCompute(context.Background(), "k", fn)
+		joinDone <- v
+	}()
+
+	// Give the joining caller time to reach DoChan and store its
+	// inflight entry before we release the leader.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+
+	select {
+	case v := <-joinDone:
+		require.Equal(t, "v2", v, "joining caller receives the leader's result")
+	case <-time.After(2 * time.Second):
+		t.Fatal("joining caller did not complete")
+	}
+	cc.Wait()
+	backend.Sync()
+
+	// The leak's symptom: a subsequent solo caller on the same key must
+	// NOT be classified as a follower. With v2 now cached fresh this is a
+	// plain hit, but we force a recompute by deleting the entry again so
+	// the solo caller goes through computeAndStore's classification path.
+	require.NoError(t, backend.Delete(context.Background(), fullKey))
+	followersBefore := getCounterValue(t, metrics.singleflightFollowers, "leak_cache")
+	waitBefore := gatherHistogramSampleCount(t, metrics.singleflightWait, "leak_cache")
+
+	_, err = cc.GetOrCompute(context.Background(), "k", func(context.Context) (string, time.Duration, error) {
+		return "v3", time.Minute, nil
+	})
+	require.NoError(t, err)
+	cc.Wait()
+
+	followersAfter := getCounterValue(t, metrics.singleflightFollowers, "leak_cache")
+	waitAfter := gatherHistogramSampleCount(t, metrics.singleflightWait, "leak_cache")
+	assert.Equal(t, followersBefore, followersAfter,
+		"solo recompute must not be counted as a follower (inflight entry leaked)")
+	assert.Equal(t, waitBefore, waitAfter,
+		"solo recompute must not record a follower wait sample")
 }
 
 // TestComputeCache_OverflowingTTL_Rejected guards L045: ComputeFunc

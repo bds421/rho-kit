@@ -26,6 +26,11 @@ type centrifugeMissingJWTAuthRule struct{}
 func (centrifugeMissingJWTAuthRule) Name() string { return "centrifuge-missing-jwt-auth" }
 
 var centrifugeImports = []string{
+	// Real module path consumers import; realtime/centrifuge has its
+	// own go.mod (module github.com/bds421/rho-kit/realtime/centrifuge/v2).
+	"github.com/bds421/rho-kit/realtime/centrifuge/v2",
+	// Legacy transposed path kept for backwards compatibility with
+	// existing callers/fixtures that referenced it.
 	"github.com/bds421/rho-kit/realtime/v2/centrifuge",
 }
 
@@ -52,6 +57,12 @@ func (r centrifugeMissingJWTAuthRule) Run(fset *token.FileSet, file *ast.File) [
 			return true
 		}
 		if !isPackageAliasCall(call, aliases, "NewNode") {
+			return true
+		}
+		// Options spread from a slice (NewNode(opts...)) cannot be
+		// inspected statically — stay silent rather than emit a Critical
+		// false positive.
+		if callOptionsUnverifiable(call) {
 			return true
 		}
 		if callHasOption(call, "WithJWTAuth") {

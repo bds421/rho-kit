@@ -2,9 +2,11 @@ package interceptor
 
 import (
 	"context"
+	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/bds421/rho-kit/resilience/v2/retry"
 )
@@ -25,6 +27,13 @@ type retryConfig struct {
 // retrying takes longer than that), INTERNAL (server-side bug, more
 // likely to repeat), UNAUTHENTICATED / PERMISSION_DENIED (a retry
 // without re-auth will hit the same wall).
+//
+// RESOURCE_EXHAUSTED is retried for rate-limit recovery, but gRPC also
+// emits it for a permanent message-size violation (a request/response
+// larger than the client's configured MaxSend/RecvMsgSize). Those are
+// guaranteed to fail again on the same client, so [RetryUnary] skips
+// them regardless of the configured code set — see
+// [isPermanentResourceExhausted].
 func DefaultRetryableCodes() []codes.Code {
 	return []codes.Code{
 		codes.Unavailable,
@@ -78,8 +87,18 @@ func RetryUnary(opts ...RetryOption) grpc.UnaryClientInterceptor {
 			return false
 		}
 		c := codeOf(err)
-		_, ok := cfg.retryOnCodes[c]
-		return ok
+		if _, ok := cfg.retryOnCodes[c]; !ok {
+			return false
+		}
+		// A ResourceExhausted caused by a message-size violation is
+		// permanent on this client: the next attempt sends/receives the
+		// same oversized payload against the same limit. Retrying only
+		// burns the budget, so skip it even though the code is in the
+		// retryable set.
+		if c == codes.ResourceExhausted && isPermanentResourceExhausted(err) {
+			return false
+		}
+		return true
 	}
 	return func(
 		ctx context.Context,
@@ -93,4 +112,23 @@ func RetryUnary(opts ...RetryOption) grpc.UnaryClientInterceptor {
 			return invoker(ctx, method, req, reply, cc, opts...)
 		}, retry.WithRetryIf(shouldRetry))
 	}
+}
+
+// isPermanentResourceExhausted reports whether a ResourceExhausted error
+// was produced by gRPC's own message-size enforcement. grpc-go phrases
+// these as "grpc: ... larger than max ..." or "grpc: message too large
+// ..." (see google.golang.org/grpc/rpc_util.go). Such errors are
+// permanent for a given client + payload, unlike a server-side
+// rate-limit which the same code also represents.
+func isPermanentResourceExhausted(err error) bool {
+	st, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+	msg := st.Message()
+	if !strings.HasPrefix(msg, "grpc: ") {
+		return false
+	}
+	return strings.Contains(msg, "larger than max") ||
+		strings.Contains(msg, "message too large")
 }

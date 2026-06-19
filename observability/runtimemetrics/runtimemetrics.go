@@ -11,10 +11,12 @@
 //   - go_heap_sys_bytes (gauge) — heap reservation from the OS
 //   - go_gc_pause_seconds_sum (counter) — cumulative GC pause time
 //   - go_gc_count_total (counter) — total GC cycles
-//   - go_max_rss_bytes (gauge, Linux only) — max resident-set size
+//   - go_max_rss_bytes (gauge, Linux/Darwin only) — max resident-set size
 //
 // All metrics derive from runtime.MemStats / runtime.NumGoroutine /
-// runtime.NumCPU. Cost is one mallocless ReadMemStats per scrape.
+// runtime.ThreadCreateProfile. Per-scrape cost is one
+// runtime.ReadMemStats (which briefly stops the world), plus a
+// runtime.NumGoroutine and a runtime.ThreadCreateProfile(nil) call.
 package runtimemetrics
 
 import (

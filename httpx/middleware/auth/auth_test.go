@@ -438,6 +438,43 @@ func TestJWT_InvalidToken(t *testing.T) {
 	}
 }
 
+// TestJWT_UnauthorizedSetsWWWAuthenticate verifies the RFC 7235 / RFC 6750
+// requirement that a 401 from a bearer-token endpoint advertises the Bearer
+// scheme so standard clients can drive re-auth.
+func TestJWT_UnauthorizedSetsWWWAuthenticate(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	handler := JWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for _, tt := range []struct {
+		name   string
+		header string
+	}{
+		{name: "missing token", header: ""},
+		{name: "invalid token", header: "Bearer invalid.jwt.token"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tt.header != "" {
+				req.Header.Set("Authorization", tt.header)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401, got %d", rec.Code)
+			}
+			if got := rec.Header().Get("WWW-Authenticate"); got != "Bearer" {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, "Bearer")
+			}
+		})
+	}
+}
+
 func TestJWT_RejectsDuplicateAuthorization(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
@@ -688,8 +725,15 @@ func TestRequireS2SAuth_ValidMTLS(t *testing.T) {
 	provider := newTestProvider(ks)
 
 	var capturedUserID string
+	var capturedPerms []string
+	var permsObserved bool
 	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedUserID = UserID(r.Context())
+		// Read permissions from the context the handler actually sees —
+		// the one the middleware stamped — not the original request
+		// context, which never had auth state regardless of behaviour.
+		capturedPerms = Permissions(r.Context())
+		permsObserved = true
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -705,9 +749,11 @@ func TestRequireS2SAuth_ValidMTLS(t *testing.T) {
 		t.Errorf("UserID = %q, want %q", capturedUserID, testUUID)
 	}
 
-	perms := Permissions(withUserIDForTest(req.Context(), testUUID))
-	if perms != nil {
-		t.Errorf("S2S should have nil permissions, got %v", perms)
+	if !permsObserved {
+		t.Fatal("handler was not invoked, so the S2S permissions invariant was not exercised")
+	}
+	if capturedPerms != nil {
+		t.Errorf("S2S branch must stamp no permissions onto the handler context, got %v", capturedPerms)
 	}
 }
 
@@ -1612,6 +1658,86 @@ func TestRequireS2SAuthWithIdentity_SANURIMatch(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for SAN URI match, got %d", rec.Code)
+	}
+}
+
+// TestRequireS2SAuthWithIdentity_GuardReceivesPrefixedIdentity locks the
+// documented contract on WithS2SImpersonationGuard: the identity argument is
+// the matched value prefixed with its kind ("cn:", "dns:", "uri:"), not the
+// bare service name. A guard comparing against the bare name would fail closed
+// on every request, so this contract must not regress silently.
+func TestRequireS2SAuthWithIdentity_GuardReceivesPrefixedIdentity(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	uri, err := url.Parse("spiffe://example.org/svc-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name         string
+		cert         *x509.Certificate
+		wantIdentity string
+	}{
+		{
+			name: "cn",
+			cert: &x509.Certificate{
+				Subject:     pkix.Name{CommonName: "backend"},
+				ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			},
+			wantIdentity: "cn:backend",
+		},
+		{
+			name: "dns",
+			cert: &x509.Certificate{
+				Subject:     pkix.Name{CommonName: ""},
+				DNSNames:    []string{"svc-a.internal"},
+				ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			},
+			wantIdentity: "dns:svc-a.internal",
+		},
+		{
+			name: "uri",
+			cert: &x509.Certificate{
+				Subject:     pkix.Name{CommonName: ""},
+				URIs:        []*url.URL{uri},
+				ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			},
+			wantIdentity: "uri:spiffe://example.org/svc-a",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotIdentity string
+			guardCalled := false
+			handler := RequireS2SAuthWithIdentity(provider,
+				WithAllowedCNs("backend"),
+				WithAllowedSANs("svc-a.internal", "spiffe://example.org/svc-a"),
+				WithS2SImpersonationGuard(func(_ *http.Request, identity, _ string) error {
+					guardCalled = true
+					gotIdentity = identity
+					return nil
+				}),
+			)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), tt.cert)
+			req.Header.Set("X-User-Id", testUUID)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", rec.Code)
+			}
+			if !guardCalled {
+				t.Fatal("impersonation guard was not called")
+			}
+			if gotIdentity != tt.wantIdentity {
+				t.Errorf("guard identity = %q, want %q (kind-prefixed per documented contract)", gotIdentity, tt.wantIdentity)
+			}
+		})
 	}
 }
 

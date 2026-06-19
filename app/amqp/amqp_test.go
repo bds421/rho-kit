@@ -62,10 +62,10 @@ func TestModule_AllowsPlaintextWithOptOut(t *testing.T) {
 
 func TestModule_TLSSafety_Table(t *testing.T) {
 	cases := []struct {
-		name         string
-		url          string
-		opts         []Option
-		wantPanic    bool
+		name      string
+		url       string
+		opts      []Option
+		wantPanic bool
 	}{
 		{name: "amqp loopback name", url: "amqp://localhost"},
 		{name: "amqp loopback IPv4", url: "amqp://127.0.0.1:5672"},
@@ -135,4 +135,53 @@ func TestModule_WithoutTLS_AllowsURLProviderPath(t *testing.T) {
 	m := Module("", WithURLProvider(provider), WithoutTLS()).(*messagingModule)
 	assert.True(t, m.allowPlaintext)
 	assert.NotNil(t, m.urlProvider)
+}
+
+// TestModule_LoopbackPlaintext_PropagatesToBackend pins the loopback
+// exemption contract: a bare amqp:// loopback URL skips the
+// construction-time transport-safety panic (it "bypasses the check"
+// per the docs), so the same plaintext URL must also be accepted by
+// the backend dial path. Without threading the exemption into
+// allowPlaintext, Init appends no amqpbackend.WithoutTLS and the lazy
+// dial later rejects ("amqp URL must use amqps or WithTLS") or — with
+// service TLS configured — silently upgrades amqp:// to amqps:// and
+// fails the handshake against a plaintext local broker.
+func TestModule_LoopbackPlaintext_PropagatesToBackend(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{name: "loopback name", url: "amqp://localhost"},
+		{name: "loopback name with port", url: "amqp://localhost:5672"},
+		{name: "loopback IPv4", url: "amqp://127.0.0.1:5672"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := Module(tc.url).(*messagingModule)
+			assert.True(t, m.allowPlaintext,
+				"loopback exemption must thread plaintext acceptance into the backend dial path")
+		})
+	}
+}
+
+// TestModule_LoopbackPlaintext_NotSetForAMQPS guards against
+// over-broadening the loopback exemption: an amqps:// URL is already
+// TLS and must not flip the plaintext flag via the loopback heuristic.
+func TestModule_LoopbackPlaintext_NotSetForAMQPS(t *testing.T) {
+	m := Module("amqps://localhost:5671").(*messagingModule)
+	assert.False(t, m.allowPlaintext,
+		"amqps:// is already TLS; the loopback heuristic must not set the plaintext flag")
+}
+
+// TestModule_LoopbackPlaintext_NotSetForProviderOnly guards that the
+// static-URL loopback heuristic does not fire when only a provider is
+// supplied: the provider's URL is unknown at construction time, so
+// callers needing plaintext must opt in explicitly via WithoutTLS.
+func TestModule_LoopbackPlaintext_NotSetForProviderOnly(t *testing.T) {
+	provider := func(context.Context) (string, error) {
+		return "amqp://localhost:5672/", nil
+	}
+	m := Module("", WithURLProvider(provider)).(*messagingModule)
+	assert.False(t, m.allowPlaintext,
+		"provider-only construction has no static URL to apply the loopback heuristic to")
 }

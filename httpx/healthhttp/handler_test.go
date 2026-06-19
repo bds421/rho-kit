@@ -2,6 +2,7 @@ package healthhttp
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -45,6 +46,76 @@ func TestHTTPCheckReturnsValidDependencyCheck(t *testing.T) {
 	client := &http.Client{}
 	check := HTTPCheck("upstream-api", "http://127.0.0.1", client)
 	assert.NoError(t, health.ValidateDependencyCheck(check))
+}
+
+func TestHTTPCheck_PanicsOnInvalidName(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = HTTPCheck("Bad Name!", "http://127.0.0.1", &http.Client{})
+	})
+}
+
+func TestHTTPCheck_PanicsOnEmptyURL(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = HTTPCheck("upstream-api", "", &http.Client{})
+	})
+}
+
+func TestHTTPCheck_PanicsOnMalformedURL(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = HTTPCheck("upstream-api", "://missing-scheme", &http.Client{})
+	})
+}
+
+func TestCriticalHTTPCheck_PanicsOnInvalidName(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = CriticalHTTPCheck("Bad Name!", "http://127.0.0.1", &http.Client{})
+	})
+}
+
+func TestHTTPCheck_DrainsResponseBodyWithByteCap(t *testing.T) {
+	// A dependency that streams forever must not block the probe on the
+	// body drain: the check caps the drain at a small fixed limit.
+	read := make(chan struct{}, 1)
+	transport := healthRoundTripper(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(infiniteReader{read: read}),
+		}, nil
+	})
+	check := HTTPCheck("upstream-api", "http://127.0.0.1", &http.Client{
+		Timeout:       time.Second,
+		Transport:     transport,
+		CheckRedirect: blockHTTPCheckRedirect,
+	})
+
+	done := make(chan string, 1)
+	go func() { done <- check.Check(t.Context()) }()
+
+	select {
+	case got := <-done:
+		if got != health.StatusHealthy {
+			t.Fatalf("status = %q, want %q", got, health.StatusHealthy)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTPCheck did not cap the body drain: probe hung on an infinite body")
+	}
+}
+
+// infiniteReader produces bytes forever, modelling a dependency that streams
+// without end. It records that it was read from at least once.
+type infiniteReader struct {
+	read chan<- struct{}
+}
+
+func (r infiniteReader) Read(p []byte) (int, error) {
+	select {
+	case r.read <- struct{}{}:
+	default:
+	}
+	for i := range p {
+		p[i] = 'x'
+	}
+	return len(p), nil
 }
 
 func TestDependencyHTTPClient_FillsSafeDefaultsWithoutMutatingCaller(t *testing.T) {

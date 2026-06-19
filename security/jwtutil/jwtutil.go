@@ -65,14 +65,25 @@ type Claims struct {
 }
 
 // KeySet holds a JWKS key set for JWT signature verification.
+//
+// ExpectedIssuer / ExpectedAudience are read by [KeySet.Verify] WITHOUT
+// synchronisation. Set them once, before the KeySet is shared with any
+// verifying goroutine, and never mutate them afterwards: assigning a field
+// on a *KeySet that another goroutine is verifying through is an unsynchronised
+// data race that silently changes verification policy. When a single parsed
+// KeySet is reused across multiple policies, do NOT toggle these fields per
+// caller — construct a [Provider] per policy and call [Provider.Verify], which
+// carries issuer/audience on the Provider and never touches these shared fields.
 type KeySet struct {
 	set jwk.Set
 	// ExpectedIssuer, when non-empty, is validated against the "iss" claim.
+	// Set-once-before-use only (see the KeySet type doc on concurrency).
 	ExpectedIssuer string
 	// ExpectedAudience, when non-empty, is validated against the "aud" claim.
 	// REQUIRED for multi-service deployments — without it, a token issued for
 	// service A is silently valid at service B as long as both trust the same
 	// signer. Standard JWT confused-deputy mitigation (RFC 7519 §4.1.3).
+	// Set-once-before-use only (see the KeySet type doc on concurrency).
 	ExpectedAudience string
 }
 

@@ -82,8 +82,11 @@ type FieldError struct {
 }
 
 // AppError is the common interface for all application error types.
-// This interface is sealed: it is only implemented by types within the
-// apperror package. External packages should use the constructor functions
+// By convention it is implemented only by the concrete types within the
+// apperror package: AppError has no unexported marker method, so it is
+// technically implementable externally, but code that type-switches on the
+// kit's concrete types (e.g. transport adapters) only recognizes the types
+// defined here. External packages should use the constructor functions
 // (NewNotFound, NewValidation, etc.) and predicate functions (IsNotFound,
 // IsValidation, etc.) rather than implementing AppError directly.
 //
@@ -133,9 +136,9 @@ func (e *ValidationError) Error() string {
 	return e.Message
 }
 
-func (e *ValidationError) Unwrap() error    { return e.cause }
-func (e *ValidationError) ErrorCode() Code  { return CodeValidation }
-func (e *ValidationError) Retryable() bool  { return false }
+func (e *ValidationError) Unwrap() error   { return e.cause }
+func (e *ValidationError) ErrorCode() Code { return CodeValidation }
+func (e *ValidationError) Retryable() bool { return false }
 
 // ConflictError indicates a resource conflict (duplicate, version mismatch).
 // Retryable defaults to false: most conflicts (unique-constraint violations,

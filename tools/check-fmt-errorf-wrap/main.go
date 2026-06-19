@@ -13,11 +13,16 @@
 //
 // # Detection
 //
-// Reports any call to fmt.Errorf whose final argument is an
-// identifier (typically named "err", "perr", or similar) AND whose
-// format string contains a `: %w` segment. The identifier check is
-// the simplest reliable signal — passing `err` to fmt.Errorf with
-// `%w` is exactly the pattern wave 136 swept.
+// Reports any call to fmt.Errorf whose final argument is a bare
+// identifier AND whose format string contains a `: %w` segment. The fmt
+// import is resolved per file, so an aliased (import f "fmt"; f.Errorf) or
+// dot-imported (import . "fmt"; Errorf) fmt cannot slip past the gate.
+// Any local error name is flagged (err, perr, marshalErr, loadErr,
+// ...), not a fixed list — wrapping a local with `%w` is exactly the
+// pattern wave 136 swept. Two identifier shapes are deliberately not
+// flagged: the blank/nil placeholders, and exported package-level
+// sentinels (names with an `Err` prefix such as ErrValidation), which
+// are kit-owned values safe to render verbatim.
 //
 // # Allowlist
 //
@@ -27,8 +32,10 @@
 //
 //	return fmt.Errorf("redis cache get: %w", sharedcache.ErrValueTooLarge) // kit:ok-fmt-errorf-wrap
 //
-// Package-level sentinels are NOT auto-detected — the heuristic for
-// "is this a kit sentinel?" is too brittle. The opt-out keeps each
+// Package-qualified sentinels (pkg.ErrFoo) are never flagged because
+// they are selector expressions, not bare identifiers. Bare exported
+// sentinels (ErrFoo) are skipped by the naming convention above; any
+// other bare local still requires the opt-out marker, which keeps each
 // kept-as-is wrap visible at code-review time.
 //
 // Exit codes:
@@ -145,13 +152,20 @@ func scanFile(path string) ([]violation, error) {
 		}
 	}
 
+	// Resolve how the "fmt" package is named in this file so an aliased
+	// (import f "fmt"; f.Errorf) or dot-imported (import . "fmt"; Errorf)
+	// fmt does not silently bypass the gate. fmtName is the selector
+	// receiver to match ("fmt" by default, or the alias); dotImported is
+	// true when fmt was dot-imported, in which case Errorf is a bare ident.
+	fmtName, dotImported := resolveFmtName(f)
+
 	var out []violation
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		if !isFmtErrorf(call.Fun) {
+		if !isFmtErrorf(call.Fun, fmtName, dotImported) {
 			return true
 		}
 		if len(call.Args) < 2 {
@@ -187,7 +201,47 @@ func scanFile(path string) ([]violation, error) {
 	return out, nil
 }
 
-func isFmtErrorf(expr ast.Expr) bool {
+// resolveFmtName scans the file's import specs for the standard-library
+// "fmt" package and returns the local name it is bound to. A plain import
+// binds the package's own name ("fmt"); an alias (import f "fmt") binds the
+// alias; a dot import (import . "fmt") makes Errorf a bare identifier. The
+// returned bool reports whether fmt was dot-imported. If fmt is not
+// imported, fmtName is "" and dotImported is false, so isFmtErrorf can never
+// match a same-named selector from an unrelated package.
+func resolveFmtName(f *ast.File) (fmtName string, dotImported bool) {
+	for _, imp := range f.Imports {
+		if imp.Path == nil || imp.Path.Value != `"fmt"` {
+			continue
+		}
+		if imp.Name == nil {
+			return "fmt", false
+		}
+		switch imp.Name.Name {
+		case ".":
+			return "", true
+		case "_":
+			// Blank import cannot be used to call Errorf.
+			return "", false
+		default:
+			return imp.Name.Name, false
+		}
+	}
+	return "", false
+}
+
+// isFmtErrorf reports whether expr is a call to the standard-library
+// fmt.Errorf, accounting for how fmt is bound in the current file: a normal
+// or aliased import is a selector (fmtName.Errorf), while a dot import is a
+// bare Errorf identifier. fmtName=="" with dotImported==false means fmt is
+// not imported, so nothing matches.
+func isFmtErrorf(expr ast.Expr, fmtName string, dotImported bool) bool {
+	if dotImported {
+		id, ok := expr.(*ast.Ident)
+		return ok && id.Name == "Errorf"
+	}
+	if fmtName == "" {
+		return false
+	}
 	sel, ok := expr.(*ast.SelectorExpr)
 	if !ok {
 		return false
@@ -196,13 +250,54 @@ func isFmtErrorf(expr ast.Expr) bool {
 	if !ok {
 		return false
 	}
-	return pkg.Name == "fmt" && sel.Sel.Name == "Errorf"
+	return pkg.Name == fmtName && sel.Sel.Name == "Errorf"
 }
 
+// isErrorIdent reports whether a bare identifier passed as the final
+// argument to fmt.Errorf("...: %w", x) is a local error value that the
+// wave-136 gate should flag. The original implementation matched a
+// closed list of nine names (err, perr, ...) and silently missed every
+// other local — e.g. marshalErr, loadErr, storeErr — which are exactly
+// the backend-derived errors that leak across the trust boundary.
+//
+// Instead of enumerating local names, exclude the two categories that
+// are NOT local backend errors:
+//
+//   - the blank identifier and the predeclared nil placeholder, which
+//     never carry a renderable backend message; and
+//   - package-level sentinels, which by Go convention are exported and
+//     prefixed with "Err" (e.g. ErrValidation, ErrBatchTooLarge). These
+//     are kit-owned values that are safe to render verbatim.
+//
+// Package-qualified sentinels (sharedcache.ErrValueTooLarge) are
+// *ast.SelectorExpr, not *ast.Ident, so the caller already excludes
+// them before reaching this function. Any remaining bare identifier is
+// treated as a local error and flagged; deliberate exceptions use the
+// // kit:ok-fmt-errorf-wrap line marker.
 func isErrorIdent(name string) bool {
 	switch name {
-	case "err", "perr", "rerr", "gErr", "slErr", "saveErr", "closeErr", "relErr", "ctxErr":
+	case "", "_", "nil":
+		return false
+	}
+	if isExportedSentinel(name) {
+		return false
+	}
+	return true
+}
+
+// isExportedSentinel reports whether name follows the package-level
+// sentinel convention: an exported identifier whose name begins with the
+// "Err" prefix (Err, ErrFoo, ...). "Errors" or "Erratic" do not qualify
+// because the rune after the prefix, if any, must not be lowercase —
+// sentinels are always "Err" followed by an upper-case word or nothing.
+func isExportedSentinel(name string) bool {
+	const prefix = "Err"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	rest := name[len(prefix):]
+	if rest == "" {
 		return true
 	}
-	return false
+	return !(rest[0] >= 'a' && rest[0] <= 'z')
 }

@@ -54,6 +54,11 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 	if now == nil {
 		now = time.Now
 	}
+	// dummyKey is verified against the presented secret on a repository miss
+	// so the unknown-id path performs the same constant-time hash comparison
+	// as a known-id/bad-secret path. This keeps the two indistinguishable by
+	// response timing, not just by response body — see the miss branch below.
+	dummyKey := apikeycore.Key{Hash: apikeycore.Hash("")}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +76,10 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 			if err != nil {
 				// Do not distinguish "no such key" from a bad secret —
 				// both are 401 so the endpoint does not leak which key
-				// ids exist.
+				// ids exist. Run a dummy Verify so the miss path does the
+				// same hash comparison work as a bad-secret hit, equalising
+				// response timing as well as the response body.
+				_ = dummyKey.Verify(secret, now())
 				unauthorized(w, cfg.Logger, "unknown api key", err)
 				return
 			}

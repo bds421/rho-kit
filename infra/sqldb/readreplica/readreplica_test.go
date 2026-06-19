@@ -141,6 +141,13 @@ func TestAcquire_FallbackToPrimaryWhenAllReplicasUnhealthy(t *testing.T) {
 
 	// Fallback counter should be at least 1.
 	require.GreaterOrEqual(t, counterValue(t, reg, "sqldb_readreplica_replica_fallback_total"), 1.0)
+
+	// primary_acquires_total counts every connection taken from the
+	// primary pool, including read-only fallbacks (its help text says so).
+	// Both reads above fell back to the primary, so the counter must
+	// equal the number of primary.Acquire calls.
+	require.Equal(t, 2.0, counterValue(t, reg, "sqldb_readreplica_primary_acquires_total"),
+		"primary_acquires_total must include read-only fallbacks to primary")
 }
 
 func TestHealthLoop_ReAddsReplicaAfterRecovery(t *testing.T) {
@@ -224,6 +231,44 @@ func TestReplicaConcurrency(t *testing.T) {
 	require.Equal(t, 2500, r.acquireCount(), "all reads on the one healthy replica")
 }
 
+func TestNew_SharedRegistererDoesNotClobberGauges(t *testing.T) {
+	// Two RoutingPools sharing one registerer (the DefaultRegisterer
+	// behaviour) must not corrupt each other's gauges. A shared
+	// single-series gauge would let the second pool's Set overwrite the
+	// first pool's value; per-pool series keep each pool independent.
+	reg := prometheus.NewRegistry()
+
+	rpA, err := readreplica.New(readreplica.Config{
+		Primary:  &fakeAcquirer{name: "pa"},
+		Replicas: []readreplica.Acquirer{&fakeAcquirer{}, &fakeAcquirer{}},
+	},
+		readreplica.WithoutHealthCheck(),
+		readreplica.WithMetricsRegisterer(reg),
+	)
+	require.NoError(t, err)
+	defer rpA.Close()
+
+	rpB, err := readreplica.New(readreplica.Config{
+		Primary:  &fakeAcquirer{name: "pb"},
+		Replicas: []readreplica.Acquirer{&fakeAcquirer{}, &fakeAcquirer{}, &fakeAcquirer{}, &fakeAcquirer{}, &fakeAcquirer{}},
+	},
+		readreplica.WithoutHealthCheck(),
+		readreplica.WithMetricsRegisterer(reg),
+	)
+	require.NoError(t, err)
+	defer rpB.Close()
+
+	// Both pools' replicas_total values must survive simultaneously:
+	// pool A configured 2, pool B configured 5.
+	totals := gaugeValues(t, reg, "sqldb_readreplica_replicas_total")
+	require.ElementsMatch(t, []float64{2, 5}, totals,
+		"each pool must keep its own replicas_total gauge series")
+
+	healthy := gaugeValues(t, reg, "sqldb_readreplica_replicas_healthy")
+	require.ElementsMatch(t, []float64{2, 5}, healthy,
+		"each pool must keep its own replicas_healthy gauge series")
+}
+
 func counterValue(t *testing.T, reg *prometheus.Registry, name string) float64 {
 	t.Helper()
 	families, err := reg.Gather()
@@ -237,6 +282,22 @@ func counterValue(t *testing.T, reg *prometheus.Registry, name string) float64 {
 		}
 	}
 	return 0
+}
+
+func gaugeValues(t *testing.T, reg *prometheus.Registry, name string) []float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	var out []float64
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			out = append(out, m.GetGauge().GetValue())
+		}
+	}
+	return out
 }
 
 var _ = dto.MetricFamily{} // keep dto import linked for diagnostics

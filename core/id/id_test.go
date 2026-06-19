@@ -137,6 +137,11 @@ func TestParse_WrapsUnderlyingError(t *testing.T) {
 // TestGenerator_IsSwappableForDeterministicOutput demonstrates the
 // test-mode swap that consumers should follow when they want stable
 // IDs in log assertions or golden files.
+//
+// This test deliberately does NOT call t.Parallel: Generator is an
+// unsynchronized package-level variable, so reassigning it while a
+// parallel sibling reads it would be a data race (see the Generator
+// doc comment). Keep all Generator-swap tests serial.
 func TestGenerator_IsSwappableForDeterministicOutput(t *testing.T) {
 	const fixedID = "01900000-0000-7000-8000-000000000001"
 

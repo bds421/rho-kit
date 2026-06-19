@@ -26,6 +26,26 @@ func FuzzParseSSRFURL(f *testing.F) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, in string) {
-		_, _ = parseSSRFURL(in) // must not panic
+		u, err := parseSSRFURL(in)
+		if err != nil {
+			return // documented contract: any rejected input returns an error
+		}
+		// On success the parser must have produced a usable URL: a
+		// non-nil *url.URL whose scheme is http/https and whose host is
+		// non-empty. A regression that returned (e.g.) "http://" with a
+		// nil error — the exact empty-host footgun parseSSRFURL exists to
+		// prevent — must fail here rather than slip through to a dial.
+		if u == nil {
+			t.Fatalf("parseSSRFURL(%q) returned nil URL with nil error", in)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			t.Fatalf("parseSSRFURL(%q) accepted non-http(s) scheme %q", in, u.Scheme)
+		}
+		if u.Hostname() == "" {
+			t.Fatalf("parseSSRFURL(%q) accepted empty host", in)
+		}
+		if u.User != nil {
+			t.Fatalf("parseSSRFURL(%q) accepted userinfo", in)
+		}
 	})
 }

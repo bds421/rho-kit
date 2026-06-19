@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -247,6 +248,49 @@ func TestAPIKeyAuthenticator_MultipleHeadersRejected(t *testing.T) {
 		"multiple header values must be invalid-credentials, not unauthenticated")
 }
 
+func TestAPIKeyAuthenticator_OversizedKeyRejectedWithoutCallingVerifier(t *testing.T) {
+	verifierCalled := false
+	v := auth.APIKeyVerifierFunc(func(context.Context, string) (auth.Identity, error) {
+		verifierCalled = true
+		return auth.Identity{UserID: testUserID}, nil
+	})
+	a := auth.NewAPIKeyAuthenticator("X-API-Key", v)
+
+	// 8KiB + 1 exceeds the maxBearerTokenLen cap shared with the bearer path.
+	oversized := strings.Repeat("k", 8*1024+1)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-API-Key", oversized)
+	_, err := a.Authenticate(req)
+
+	require.True(t, errors.Is(err, auth.ErrInvalidCredentials),
+		"an oversized API key must be rejected as invalid credentials")
+	require.False(t, verifierCalled,
+		"the verifier must not be invoked for an oversized key (DoS hardening)")
+}
+
+func TestAPIKeyAuthenticator_MaxLengthKeyAccepted(t *testing.T) {
+	// A key exactly at the cap must still reach the verifier — the cap is
+	// inclusive of maxBearerTokenLen, matching the bearer-token boundary.
+	atLimit := strings.Repeat("k", 8*1024)
+	verifierCalled := false
+	v := auth.APIKeyVerifierFunc(func(_ context.Context, key string) (auth.Identity, error) {
+		verifierCalled = true
+		if key != atLimit {
+			return auth.Identity{}, errors.New("nope")
+		}
+		return auth.Identity{UserID: testUserID}, nil
+	})
+	a := auth.NewAPIKeyAuthenticator("X-API-Key", v)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-API-Key", atLimit)
+	id, err := a.Authenticate(req)
+
+	require.NoError(t, err, "a key at exactly the length cap must be accepted")
+	require.True(t, verifierCalled, "the verifier must be invoked for a key at the cap")
+	require.Equal(t, testUserID, id.UserID)
+}
+
 func TestAPIKeyAuthenticator_VerifierErrorIsInvalidCredentials(t *testing.T) {
 	v := auth.APIKeyVerifierFunc(func(context.Context, string) (auth.Identity, error) {
 		return auth.Identity{}, errors.New("nope")
@@ -257,6 +301,56 @@ func TestAPIKeyAuthenticator_VerifierErrorIsInvalidCredentials(t *testing.T) {
 	req.Header.Set("X-API-Key", "anything")
 	_, err := a.Authenticate(req)
 	require.True(t, errors.Is(err, auth.ErrInvalidCredentials))
+}
+
+func TestAPIKeyAuthenticator_VerifierErrorWrapsCause(t *testing.T) {
+	// A verifier-internal failure (DB outage, context cancelled, timeout)
+	// must still surface as ErrInvalidCredentials for callers and the
+	// opaque wire response, but the underlying cause must be preserved so
+	// operators can tell an infra outage apart from a forged key in logs.
+	cause := errors.New("dial tcp: connection refused")
+	v := auth.APIKeyVerifierFunc(func(context.Context, string) (auth.Identity, error) {
+		return auth.Identity{}, cause
+	})
+	a := auth.NewAPIKeyAuthenticator("X-API-Key", v)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-API-Key", "anything")
+	_, err := a.Authenticate(req)
+
+	require.Error(t, err)
+	require.True(t, errors.Is(err, auth.ErrInvalidCredentials),
+		"verifier failure must remain ErrInvalidCredentials for callers")
+	require.Contains(t, err.Error(), cause.Error(),
+		"verifier error cause must be preserved for logging")
+}
+
+func TestAPIKeyAuthenticator_VerifierErrorStillStopsChain(t *testing.T) {
+	// Defence-in-depth: preserving the cause must NOT let a verifier
+	// failure fall through to a weaker strategy in a Chain, even if the
+	// cause itself happens to wrap ErrUnauthenticated.
+	calls := []string{}
+	first := auth.NewAPIKeyAuthenticator("X-API-Key",
+		auth.APIKeyVerifierFunc(func(context.Context, string) (auth.Identity, error) {
+			calls = append(calls, "first")
+			return auth.Identity{}, auth.ErrUnauthenticated
+		}))
+	second := auth.AuthenticatorFunc(func(*http.Request) (auth.Identity, error) {
+		calls = append(calls, "second")
+		return auth.Identity{UserID: testUserID}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-API-Key", "present-but-rejected")
+	_, err := auth.Chain(first, second).Authenticate(req)
+
+	require.Error(t, err)
+	require.True(t, errors.Is(err, auth.ErrInvalidCredentials),
+		"present-but-invalid key must surface as ErrInvalidCredentials")
+	require.False(t, errors.Is(err, auth.ErrUnauthenticated),
+		"a present key's verifier failure must not masquerade as Unauthenticated")
+	require.Equal(t, []string{"first"}, calls,
+		"chain must stop after the API-key verifier failed for a present key")
 }
 
 func TestAPIKeyAuthenticator_NilPanics(t *testing.T) {

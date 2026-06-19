@@ -44,10 +44,16 @@ type ServeOptions struct {
 // Returns an error wrapping [storage.ErrObjectNotFound] when the key
 // does not exist — callers should map this to HTTP 404.
 //
-// Note: in the streaming fallback path, if io.Copy fails after
-// WriteHeader(200) has been sent, the HTTP status code cannot be changed.
-// The returned error should be logged but cannot be translated into an
-// HTTP error response at that point.
+// Streaming-error caveat: in the non-seekable streaming fallback path, Go
+// flushes a 200 status on the first body Write. If io.Copy then fails
+// partway through, ServeFile still returns that error, but the client has
+// already received a 200 with a TRUNCATED, corrupt body — the status can no
+// longer be changed. Callers MUST NOT attempt to map this returned error to
+// an HTTP 5xx (e.g. http.Error / WriteHeader(500)): doing so is a no-op or
+// panics on a second WriteHeader. Instead, log and alert so the truncated
+// download is observable, and treat the error as a delivery failure rather
+// than a request-handling failure. (The seekable path via http.ServeContent
+// is not affected: it can still emit a Range/precondition error response.)
 func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, key string, opts ServeOptions) error {
 	if w == nil {
 		return fmt.Errorf("storagehttp: response writer is required")

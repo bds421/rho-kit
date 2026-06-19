@@ -73,6 +73,7 @@ type compiledSchema struct {
 	compiled         *jsonschema.Schema
 	requiredNonEmpty map[string]struct{} // JSON-pointer paths (dot-joined) of required-non-empty fields
 	fieldOrder       map[string]int      // dotted field path -> declaration index
+	collections      map[string]int      // schema path of array/map field -> nested element levels (stripped before lookup)
 }
 
 // New constructs an isolated Validator. Tests and callers that need
@@ -92,9 +93,17 @@ func New() *Validator {
 // [apperror.NewOperationFailedWithCause] so misuse is not blamed on
 // the caller's input.
 func (v *Validator) Struct(s any) error {
-	v.mu.Lock()
-	v.frozen.CompareAndSwap(false, true)
-	v.mu.Unlock()
+	// Freeze the format registry on the first Struct call so a later
+	// RegisterFormat fails rather than racing concurrent validation.
+	// After the first transition the registry is permanently frozen, so
+	// the steady-state path only does a lock-free atomic load — avoiding
+	// a process-wide mutex acquisition on every request for the
+	// package-level singleton shared by httpx/typed and MCP handlers.
+	if !v.frozen.Load() {
+		v.mu.Lock()
+		v.frozen.Store(true)
+		v.mu.Unlock()
+	}
 
 	if s == nil {
 		return nil
@@ -137,7 +146,7 @@ func (v *Validator) Struct(s any) error {
 	if !errors.As(verr, &ve) {
 		return apperror.NewOperationFailedWithCause("validate: unexpected validator error", verr)
 	}
-	fields := collectFieldErrors(ve, cs.requiredNonEmpty, cs.fieldOrder)
+	fields := collectFieldErrors(ve, cs.requiredNonEmpty, cs.fieldOrder, cs.collections)
 	if len(fields) == 0 {
 		// Defensive: santhosh-tekuri always returns at least one
 		// leaf error, but if the shape ever changes we surface the
@@ -240,7 +249,13 @@ func (v *Validator) schemaForType(t reflect.Type) (*compiledSchema, error) {
 	for _, f := range builtinFormats(bs.parametricFormats) {
 		compiler.RegisterFormat(f)
 	}
-	for _, f := range v.snapshotFormats() {
+	// Freezing here (not only in Struct) is what makes the freeze
+	// invariant hold for SchemaFor / SchemaForType too: those paths also
+	// compile-and-cache a schema against the current format snapshot, so
+	// a RegisterFormat that lands afterwards would otherwise succeed yet
+	// never run for this already-cached type. Freeze atomically with the
+	// snapshot so no registration can slip between the two.
+	for _, f := range v.freezeAndSnapshotFormats() {
 		compiler.RegisterFormat(f)
 	}
 	const resourceURL = "schema://kit/validate"
@@ -256,16 +271,23 @@ func (v *Validator) schemaForType(t reflect.Type) (*compiledSchema, error) {
 		compiled:         compiled,
 		requiredNonEmpty: bs.requiredNonEmpty,
 		fieldOrder:       bs.fieldOrder,
+		collections:      bs.collections,
 	}
 	actual, _ := v.schemas.LoadOrStore(t, cs)
 	return actual.(*compiledSchema), nil
 }
 
-// snapshotFormats returns a stable copy of the registered formats so
-// the compiler call does not hold the validator's mutex.
-func (v *Validator) snapshotFormats() []*jsonschema.Format {
+// freezeAndSnapshotFormats freezes the format registry and returns a
+// stable copy of the registered formats so the compiler call does not
+// hold the validator's mutex. The freeze and the snapshot happen under
+// the same lock as RegisterFormat's frozen check, so once a schema is
+// compiled (via Struct, SchemaFor, or SchemaForType) any later
+// RegisterFormat fails rather than being silently dropped for the
+// schemas already cached.
+func (v *Validator) freezeAndSnapshotFormats() []*jsonschema.Format {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	v.frozen.Store(true)
 	out := make([]*jsonschema.Format, 0, len(v.formats))
 	for _, f := range v.formats {
 		out = append(out, f)

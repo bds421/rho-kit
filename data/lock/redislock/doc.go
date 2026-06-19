@@ -3,10 +3,11 @@
 // Wave 126 migrated this package to wrap
 // [github.com/go-redsync/redsync/v4] in single-pool mode. The kit keeps
 // its [Locker] / [lock.Lock] surface; redsync owns the Lua scripts,
-// retry loop, and token-fenced release/extend semantics. Redsync's
-// Redlock multi-master quorum mode is NOT used — single-pool keeps the
-// kit on the same operational contract as before, with [DegradedLocker]
-// as the Redis-outage fallback.
+// retry loop, and token-fenced release/extend semantics. This package
+// does NOT use redsync's Redlock multi-master quorum mode — single-pool
+// keeps the kit on the same operational contract as before, with
+// [DegradedLocker] as the Redis-outage fallback. For the multi-master
+// quorum variant, see the redlock subpackage's [redlock.QuorumLocker].
 //
 // # Limitations
 //
@@ -20,10 +21,11 @@
 //     lock holder's TTL expires while it is still processing (e.g.
 //     due to a GC pause or slow I/O), a second process can acquire
 //     the lock and both may write to shared resources concurrently.
-//   - Single-node: if Redis restarts, all locks are lost. Redlock
-//     quorum is intentionally not adopted: the consensus argument is
-//     contested and the kit prefers a single, well-understood failure
-//     mode over a quorum that masks correctness gaps.
+//   - Single-node: if Redis restarts, all locks are lost. For a
+//     multi-master quorum that survives the loss of a minority of
+//     nodes, use the [github.com/bds421/rho-kit/data/lock/redislock/redlock]
+//     subpackage's [redlock.QuorumLocker], which implements the
+//     Redlock algorithm over independent Redis instances.
 //   - Clock-dependent: TTL accuracy depends on Redis and client clocks
 //     agreeing within reasonable bounds.
 //

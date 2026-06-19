@@ -58,14 +58,12 @@ func TestTenantSampler_OverrideRouteForKnownTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(s))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-
 	exporter := tracetest.NewInMemoryExporter()
-	tp = sdktrace.NewTracerProvider(
+	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(s),
 		sdktrace.WithSyncer(exporter),
 	)
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tr := tp.Tracer("test")
 
 	// Anonymous request — default sampler (0%) drops the span.

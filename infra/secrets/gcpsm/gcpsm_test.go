@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
-	"google.golang.org/api/option"
+	gax "github.com/googleapis/gax-go/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -21,7 +21,7 @@ type fakeAPI struct {
 	err  error
 }
 
-func (f *fakeAPI) AccessSecretVersion(_ context.Context, _ *secretmanagerpb.AccessSecretVersionRequest, _ ...option.ClientOption) (*secretmanagerpb.AccessSecretVersionResponse, error) {
+func (f *fakeAPI) AccessSecretVersion(_ context.Context, _ *secretmanagerpb.AccessSecretVersionRequest, _ ...gax.CallOption) (*secretmanagerpb.AccessSecretVersionResponse, error) {
 	return f.resp, f.err
 }
 
@@ -54,13 +54,13 @@ func TestLoader_OtherErrorMapsToUnavailable(t *testing.T) {
 }
 
 func TestLoader_BareNameRequiresProject(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatalf("expected panic when bare name and no project")
-		}
-	}()
+	// A bare key against a loader without WithProject must surface as an
+	// error on the request path, never a panic — otherwise a background
+	// refresh goroutine (CachedLoader.spawnRefresh) would crash the whole
+	// process. Matches awssm and vaultkv, which always return errors.
 	l := gcpsm.New(&fakeAPI{})
-	_, _ = l.Get(context.Background(), "k")
+	_, err := l.Get(context.Background(), "k")
+	require.ErrorIs(t, err, secrets.ErrLoaderUnavailable)
 }
 
 func TestLoader_FullyQualifiedNameBypassesProject(t *testing.T) {

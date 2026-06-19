@@ -62,11 +62,15 @@ func NewCursorSigner(key []byte) (*CursorSigner, error) {
 	}, nil
 }
 
-// Close zeroes the wrapped HMAC signing key. Subsequent [CursorSigner.Encode]
-// returns "" (the empty key short-circuits) and [CursorSigner.Decode] fails
-// closed with a wrapped [ErrInvalidCursor]. Idempotent; safe for concurrent
-// use with in-flight Encode / Decode callers (the [secret.String.Zero]
-// path holds an internal mutex against [secret.String.Use]).
+// Close zeroes the wrapped HMAC signing key. After Close, [CursorSigner.Decode]
+// fails closed with a wrapped [ErrInvalidCursor] (it rejects an empty key),
+// so any cursor minted after Close is unusable. [CursorSigner.Encode] still
+// short-circuits to "" only for an empty id; for a non-empty id it returns a
+// cursor signed with the now-empty key, which will not verify on Decode. Treat
+// a closed signer as unusable rather than relying on Encode to return "".
+// Idempotent; safe for concurrent use with in-flight Encode / Decode callers
+// (the [secret.String.Zero] path holds an internal mutex against
+// [secret.String.Use]).
 //
 // Always returns nil — the signature matches [io.Closer] so the signer
 // can be wired into resource-cleanup helpers (L058).

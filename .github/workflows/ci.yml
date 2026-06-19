@@ -49,14 +49,25 @@ jobs:
       # The build cache holds compiled object files; reusing them across
       # commits where the bulk of code is unchanged cuts test/build time
       # significantly (~24m → ~6m on incremental commits).
+      #
+      # Salt the key per ISO-week instead of per-commit (github.sha): a
+      # per-commit suffix wrote a fresh ~107-module entry on every push that
+      # was never reused (only restore-keys fell back), leaking cache that
+      # relied on GitHub's 10 GB LRU eviction to clean up. A weekly salt
+      # bounds cardinality while letting same-week commits reuse and refresh
+      # one entry per go.sum, and it scopes restore by ref so a PR-populated
+      # build cache cannot be restored into a later main run.
+      - name: Compute build-cache salt
+        id: gobuild-cache
+        run: echo "salt=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       - name: Cache Go build cache
         uses: actions/cache@v5
         with:
           path: ~/.cache/go-build
-          key: ${{ runner.os }}-gobuild-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          key: ${{ runner.os }}-gobuild-${{ github.ref }}-${{ hashFiles('**/go.sum') }}-${{ steps.gobuild-cache.outputs.salt }}
           restore-keys: |
-            ${{ runner.os }}-gobuild-${{ hashFiles('**/go.sum') }}-
-            ${{ runner.os }}-gobuild-
+            ${{ runner.os }}-gobuild-${{ github.ref }}-${{ hashFiles('**/go.sum') }}-
+            ${{ runner.os }}-gobuild-${{ github.ref }}-
 
       - name: Configure git for private modules
         env:

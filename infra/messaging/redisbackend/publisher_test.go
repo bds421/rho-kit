@@ -129,6 +129,28 @@ func TestPublisher_InvalidMessageRejectedBeforePublish(t *testing.T) {
 	assert.ErrorIs(t, err, messaging.ErrInvalidMessage)
 }
 
+func TestPublisher_ProducerErrorIsNamespacedAndSafe(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	// Force the underlying XAdd to fail so we exercise the producer-error
+	// path rather than the pre-publish validation guards.
+	require.NoError(t, client.Close())
+
+	pub := NewPublisher(stream.NewProducer(client))
+	msg := messaging.Message{ID: "msg-1", Type: "test.event", Payload: json.RawMessage(`{}`)}
+
+	err := pub.Publish(context.Background(), "stream", "test.event", msg)
+
+	require.Error(t, err)
+	// Carries the redisbackend layer prefix for log attribution...
+	assert.Contains(t, err.Error(), "redisbackend: publish")
+	// ...and the redacted rendering never leaks the underlying driver text.
+	assert.Contains(t, err.Error(), "redacted error")
+	assert.NotContains(t, err.Error(), "client is closed")
+	// The unwrap chain is preserved so callers can still match the cause.
+	assert.ErrorIs(t, err, goredis.ErrClosed)
+}
+
 func testProducer(t *testing.T) (*stream.Producer, func()) {
 	t.Helper()
 	mr := miniredis.RunT(t)

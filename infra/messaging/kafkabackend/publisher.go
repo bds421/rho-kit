@@ -65,7 +65,8 @@ func WithRequiredAcks(acks kafka.RequiredAcks) PublisherOption {
 // WithBatchTimeout overrides how long the writer waits before flushing
 // an incomplete batch. Default: 10ms — kafka-go's default flushes at
 // 1s, which is unnecessarily latent for a synchronous Publish path.
-// Values <= 0 fall back to kafka-go's default.
+// A zero value falls back to kafka-go's default; negative durations
+// panic.
 func WithBatchTimeout(d time.Duration) PublisherOption {
 	if d < 0 {
 		panic("kafkabackend: WithBatchTimeout requires a non-negative duration")
@@ -183,9 +184,9 @@ func WithAllowAutoTopicCreation(allow bool) PublisherOption {
 // kit-side exchange parameter becomes the Kafka topic at every
 // Publish call.
 //
-// Panics if brokers is empty or a SASL / TLS misconfiguration is
-// detected — these are configuration errors that must surface at
-// startup.
+// Returns an error if brokers is empty or a SASL / TLS
+// misconfiguration is detected — these are configuration errors that
+// must surface at startup.
 func NewPublisher(brokers []string, opts ...PublisherOption) (*Publisher, error) {
 	cfg := Config{Brokers: brokers}
 	return NewPublisherWithConfig(cfg, opts...)
@@ -272,7 +273,7 @@ func (p *Publisher) ready() error {
 //
 // Publish blocks until the kafka.Writer has flushed the message and
 // the broker has acknowledged it (with RequiredAcks=RequireAll, that
-// means the full ISR). A non-nil return therefore guarantees the
+// means the full ISR). A nil return therefore guarantees the
 // message will not be lost to a broker crash.
 func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, msg messaging.Message) error {
 	if err := p.ready(); err != nil {

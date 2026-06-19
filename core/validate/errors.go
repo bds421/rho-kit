@@ -30,22 +30,22 @@ import (
 // order. santhosh-tekuri makes no ordering guarantee on the causes
 // it returns; without this sort, Example tests would flake on map
 // iteration order.
-func collectFieldErrors(ve *jsonschema.ValidationError, requiredNonEmpty map[string]struct{}, fieldOrder map[string]int) []apperror.FieldError {
+func collectFieldErrors(ve *jsonschema.ValidationError, requiredNonEmpty map[string]struct{}, fieldOrder map[string]int, collections map[string]int) []apperror.FieldError {
 	var raw []apperror.FieldError
-	collectFieldErrorsInto(ve, requiredNonEmpty, &raw)
-	return sortFieldErrors(dedupeFieldErrors(raw), fieldOrder)
+	collectFieldErrorsInto(ve, requiredNonEmpty, collections, &raw)
+	return sortFieldErrors(dedupeFieldErrors(raw), fieldOrder, collections)
 }
 
 // sortFieldErrors orders the slice by the field's declaration index
 // in fieldOrder. Unknown fields (paths the walker did not record)
 // fall to the end in alphabetical order.
-func sortFieldErrors(in []apperror.FieldError, fieldOrder map[string]int) []apperror.FieldError {
+func sortFieldErrors(in []apperror.FieldError, fieldOrder map[string]int, collections map[string]int) []apperror.FieldError {
 	if len(in) <= 1 || len(fieldOrder) == 0 {
 		return in
 	}
 	sort.SliceStable(in, func(i, j int) bool {
-		ai, aOK := fieldOrder[in[i].Field]
-		bi, bOK := fieldOrder[in[j].Field]
+		ai, aOK := fieldOrder[normalizeInstancePath(in[i].Field, collections)]
+		bi, bOK := fieldOrder[normalizeInstancePath(in[j].Field, collections)]
 		switch {
 		case aOK && bOK:
 			return ai < bi
@@ -83,10 +83,10 @@ func dedupeFieldErrors(in []apperror.FieldError) []apperror.FieldError {
 	return out
 }
 
-func collectFieldErrorsInto(ve *jsonschema.ValidationError, requiredNonEmpty map[string]struct{}, out *[]apperror.FieldError) {
+func collectFieldErrorsInto(ve *jsonschema.ValidationError, requiredNonEmpty map[string]struct{}, collections map[string]int, out *[]apperror.FieldError) {
 	if len(ve.Causes) > 0 {
 		for _, c := range ve.Causes {
-			collectFieldErrorsInto(c, requiredNonEmpty, out)
+			collectFieldErrorsInto(c, requiredNonEmpty, collections, out)
 		}
 		// Required violations live at the parent (the object missing
 		// the property); emit one FieldError per missing property,
@@ -112,7 +112,7 @@ func collectFieldErrorsInto(ve *jsonschema.ValidationError, requiredNonEmpty map
 	}
 	*out = append(*out, apperror.FieldError{
 		Field:   field,
-		Message: messageFor(field, ve.ErrorKind, requiredNonEmpty),
+		Message: messageFor(normalizeInstancePath(field, collections), ve.ErrorKind, requiredNonEmpty),
 	})
 }
 
@@ -132,6 +132,49 @@ func joinPath(loc []string, leaf string) string {
 	return strings.Join(loc, ".") + "." + leaf
 }
 
+// normalizeInstancePath collapses the per-element segments santhosh-
+// tekuri injects into an instance path into the schema-side path the
+// walker recorded. The walker did not know the concrete indices/keys
+// at build time, so a required-non-empty field inside a slice element
+// is keyed "items.name" while the violation arrives at "items.0.name";
+// likewise a map element arrives at "m.somekey.label" for the
+// schema-side "m.label". collections maps a schema path to the number
+// of element levels nested directly under it; whenever the schema path
+// accumulated so far names a collection, exactly that many following
+// instance segments are element indices/keys and are dropped. Nested
+// collections that share a path (slice-of-slice, map-of-slice) carry a
+// count above one and collapse the same way. When collections is empty
+// the input is returned unchanged, so non-collection schemas pay no
+// allocation.
+func normalizeInstancePath(field string, collections map[string]int) string {
+	if field == "" || len(collections) == 0 {
+		return field
+	}
+	segs := strings.Split(field, ".")
+	out := make([]string, 0, len(segs))
+	var canonical string
+	skip := 0
+	for _, seg := range segs {
+		if skip > 0 {
+			// This segment is an element index/key under the most
+			// recently seen collection; drop it without extending the
+			// canonical path.
+			skip--
+			continue
+		}
+		out = append(out, seg)
+		if canonical == "" {
+			canonical = seg
+		} else {
+			canonical += "." + seg
+		}
+		if n, isCollection := collections[canonical]; isCollection {
+			skip = n
+		}
+	}
+	return strings.Join(out, ".")
+}
+
 // messageFor renders a santhosh-tekuri ErrorKind as the kit's
 // human-readable validation message. The phrasing mirrors the v1
 // go-playground messages so callers that grep for "must be a valid
@@ -147,9 +190,9 @@ func messageFor(field string, k jsonschema.ErrorKind, requiredNonEmpty map[strin
 				return "is required"
 			}
 		}
-		return "must be at least " + strconv.Itoa(e.Want) + " characters"
+		return "must be at least " + pluralize(e.Want, "character")
 	case *kind.MaxLength:
-		return "must be at most " + strconv.Itoa(e.Want) + " characters"
+		return "must be at most " + pluralize(e.Want, "character")
 	case *kind.Minimum:
 		return "must be greater than or equal to " + ratString(e.Want)
 	case *kind.Maximum:
@@ -164,9 +207,9 @@ func messageFor(field string, k jsonschema.ErrorKind, requiredNonEmpty map[strin
 				return "is required"
 			}
 		}
-		return "must have at least " + strconv.Itoa(e.Want) + " items"
+		return "must have at least " + pluralize(e.Want, "item")
 	case *kind.MaxItems:
-		return "must have at most " + strconv.Itoa(e.Want) + " items"
+		return "must have at most " + pluralize(e.Want, "item")
 	case *kind.Pattern:
 		return "must match pattern " + e.Want
 	case *kind.Enum:
@@ -178,9 +221,9 @@ func messageFor(field string, k jsonschema.ErrorKind, requiredNonEmpty map[strin
 	case *kind.Type:
 		return "must be " + strings.Join(e.Want, " or ")
 	case *kind.MinProperties:
-		return "must have at least " + strconv.Itoa(e.Want) + " properties"
+		return "must have at least " + pluralize(e.Want, "property")
 	case *kind.MaxProperties:
-		return "must have at most " + strconv.Itoa(e.Want) + " properties"
+		return "must have at most " + pluralize(e.Want, "property")
 	case *kind.UniqueItems:
 		return "must contain unique items"
 	case *kind.MultipleOf:
@@ -198,6 +241,23 @@ func messageFor(field string, k jsonschema.ErrorKind, requiredNonEmpty map[strin
 		return "is required"
 	}
 	return "failed validation"
+}
+
+// pluralize renders "<n> <unit>" with the unit pluralised for any
+// count other than one, so a min=1 / len=1 constraint reads "must be at
+// least 1 character" rather than the grammatically-wrong "1 characters".
+// Plurals follow the simple English rule the kit's units need: a "y"
+// terminal becomes "ies" (property -> properties), otherwise "s" is
+// appended (character -> characters, item -> items).
+func pluralize(n int, unit string) string {
+	if n == 1 {
+		return "1 " + unit
+	}
+	plural := unit + "s"
+	if strings.HasSuffix(unit, "y") {
+		plural = strings.TrimSuffix(unit, "y") + "ies"
+	}
+	return strconv.Itoa(n) + " " + plural
 }
 
 // ratString renders a *big.Rat as the JSON-Schema author would have
@@ -241,7 +301,7 @@ func formatMessage(name string) string {
 		return "must be a valid email address"
 	case name == "uri" || name == "url" || name == "iri":
 		return "must be a valid URL"
-	case name == "uuid":
+	case name == "uuid" || name == "uuid4":
 		return "must be a valid UUID"
 	case name == "ipv4" || name == "ipv6" || name == "ip" || name == "ipv4-or-ipv6":
 		return "must be a valid IP address"

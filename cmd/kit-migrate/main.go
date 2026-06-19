@@ -22,8 +22,8 @@ import (
 	actionlogpostgres "github.com/bds421/rho-kit/data/actionlog/postgres/v2"
 	approvalpostgres "github.com/bds421/rho-kit/data/approval/postgres/v2"
 	"github.com/bds421/rho-kit/data/idempotency/pgstore/v2"
-	auditlogpostgres "github.com/bds421/rho-kit/observability/auditlog/postgres/v2"
 	outboxpostgres "github.com/bds421/rho-kit/infra/outbox/postgres/v2"
+	auditlogpostgres "github.com/bds421/rho-kit/observability/auditlog/postgres/v2"
 )
 
 // registry maps kit component names to their embedded migration
@@ -194,6 +194,21 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "Error preparing directory: %v\n", err)
 		return 1
 	}
+	// A drift gate aimed at a directory that does not exist (e.g. a
+	// typo'd path in CI) would otherwise read every migration as absent,
+	// count zero, and print "OK: 0 migration(s) in sync" — a silent pass.
+	// Treat a missing target directory as an error so the gate fails loud.
+	if info, err := os.Stat(targetDir); err != nil {
+		if os.IsNotExist(err) {
+			writef(stderr, "Error: target directory does not exist\n")
+			return 1
+		}
+		writef(stderr, "Error reading target directory: %v\n", err)
+		return 1
+	} else if !info.IsDir() {
+		writef(stderr, "Error: target is not a directory\n")
+		return 1
+	}
 
 	drifted := 0
 	checked := 0
@@ -212,11 +227,11 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			if err := rejectSymlinkPathComponents(targetDir, filepath.Dir(targetPath)); err != nil {
-				writef(stderr, "Error reading %s: %v\n", targetPath, err)
+				writef(stderr, "Error reading %s: %v\n", filename, err)
 				return 1
 			}
 			if err := rejectSymlinkTarget(targetPath); err != nil {
-				writef(stderr, "Error reading %s: %v\n", targetPath, err)
+				writef(stderr, "Error reading %s: %v\n", filename, err)
 				return 1
 			}
 			existing, err := os.ReadFile(targetPath)
@@ -224,7 +239,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 				if os.IsNotExist(err) {
 					continue
 				}
-				writef(stderr, "Error reading %s: %v\n", targetPath, err)
+				writef(stderr, "Error reading %s\n", filename)
 				return 1
 			}
 
@@ -302,6 +317,10 @@ func parseTargetAndComponent(args []string) (string, string, error) {
 func buildPublishPlan(targetDir, filterName string) (publishPlan, error) {
 	var plan publishPlan
 
+	if err := checkDuplicateVersions(filterName); err != nil {
+		return publishPlan{}, err
+	}
+
 	for _, entry := range registryEntries(filterName) {
 		files, err := listMigrations(entry.fsys)
 		if err != nil {
@@ -347,6 +366,48 @@ func buildPublishPlan(targetDir, filterName string) (publishPlan, error) {
 	}
 
 	return plan, nil
+}
+
+// gooseVersion returns the numeric goose version prefix of a migration
+// filename (the leading run of characters before the first '_'), e.g.
+// "20260514000001" for "20260514000001_create_outbox_entries.sql".
+// goose collects migrations by this version, so two files sharing it in
+// one directory are a "duplicate migration version" that goose refuses
+// to run.
+func gooseVersion(filename string) string {
+	if i := strings.IndexByte(filename, '_'); i >= 0 {
+		return filename[:i]
+	}
+	return filename
+}
+
+// checkDuplicateVersions fails the publish when two distinct kit
+// migrations selected by filterName share the same goose version
+// prefix. A publish flattens every selected component's migrations into
+// one directory; if two of them collide on version, goose errors with
+// "found duplicate migration version" on the next `goose up`, leaving
+// the service unable to migrate. Detecting the collision before writing
+// anything turns a silent footgun into an actionable error.
+func checkDuplicateVersions(filterName string) error {
+	seen := make(map[string]string)
+	for _, entry := range registryEntries(filterName) {
+		files, err := listMigrations(entry.fsys)
+		if err != nil {
+			return fmt.Errorf("reading migrations failed")
+		}
+		for _, filename := range files {
+			version := gooseVersion(filename)
+			prev, ok := seen[version]
+			if ok && prev != filename {
+				return fmt.Errorf(
+					"duplicate goose version %s shared by %s and %s; goose refuses to run a directory with duplicate versions (publish a single component with the NAME argument instead)",
+					version, prev, filename,
+				)
+			}
+			seen[version] = filename
+		}
+	}
+	return nil
 }
 
 func migrationTargetPath(targetDir, filename string) (string, error) {

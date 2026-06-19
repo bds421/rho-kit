@@ -31,10 +31,27 @@
 //
 // # Key format
 //
-// Keys are written as `signedrequest:nonce:<nonce>`. Nonces in the
-// kit are 16 random bytes base64-encoded, so collisions across
-// callers are statistically impossible — there is no need to
-// partition by key id.
+// Keys are written as `signedrequest:nonce:<nonce>`. The keyspace is
+// global: nonces are NOT partitioned by key id. The kit's
+// [signedrequest.NonceStore] contract only hands SeenOrStore the
+// nonce, never the resolving key id, so per-key-id scoping is not
+// expressible at this layer.
+//
+// Global scoping is safe against accidental cross-caller collisions:
+// kit nonces are 16 random bytes base64-encoded, so two honest
+// callers independently minting the same nonce is statistically
+// impossible.
+//
+// It is NOT a defense against an adversarial co-tenant. Any holder of
+// a different valid key who learns another caller's nonce before that
+// caller's request is delivered (e.g. via a header-logging proxy or
+// shared telemetry) can sign their own request with the stolen nonce
+// and burn it first, causing the victim's request to be rejected as a
+// replay (401). The preconditions are narrow — nonce disclosure to a
+// distinct key holder ahead of delivery — but if your threat model
+// includes mutually distrusting tenants behind a shared Redis, give
+// each tenant its own [WithKeyPrefix] namespace so a nonce burned
+// under one prefix cannot reject a fresh request under another.
 //
 // # Failure mode
 //

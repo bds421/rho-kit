@@ -544,6 +544,7 @@ func TestValidateKeyPrefix(t *testing.T) {
 
 	err := ValidateKeyPrefix(strings.Repeat("x", MaxKeyPrefixLen+1))
 	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrPrefixTooLong)
 	assert.Contains(t, err.Error(), "exceeds maximum")
 	assert.NotContains(t, err.Error(), "512")
 	assert.NotContains(t, err.Error(), "513")
@@ -659,6 +660,12 @@ func TestMemoryCache_SetNX_ConcurrentAtomicity(t *testing.T) {
 	wg.Add(goroutines)
 
 	var trueCount int64
+	// Collect errors from worker goroutines instead of calling
+	// require.* inside them: require's FailNow only exits the goroutine
+	// it runs on (runtime.Goexit), which from a non-test goroutine lets
+	// the test continue and pass spuriously. Assert on the test
+	// goroutine after wg.Wait().
+	errCh := make(chan error, goroutines)
 	start := make(chan struct{})
 
 	for range goroutines {
@@ -666,7 +673,10 @@ func TestMemoryCache_SetNX_ConcurrentAtomicity(t *testing.T) {
 			defer wg.Done()
 			<-start
 			ok, err := mc.SetNX(ctx, "race-key", []byte("v"), time.Minute)
-			require.NoError(t, err)
+			if err != nil {
+				errCh <- err
+				return
+			}
 			if ok {
 				atomic.AddInt64(&trueCount, 1)
 			}
@@ -674,7 +684,11 @@ func TestMemoryCache_SetNX_ConcurrentAtomicity(t *testing.T) {
 	}
 	close(start)
 	wg.Wait()
+	close(errCh)
 
+	for err := range errCh {
+		require.NoError(t, err)
+	}
 	assert.EqualValues(t, 1, trueCount, "exactly one SetNX must win, got %d winners", trueCount)
 }
 

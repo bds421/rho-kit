@@ -44,7 +44,8 @@ wsHandler := websocket.Handle(
     websocket.WithPingInterval(30 * time.Second),
     websocket.WithWriteTimeout(10 * time.Second),
 )
-mux.Handle("/ws", auth.JWT(jwks)(ratelimit.IP(100, time.Minute)(wsHandler)))
+rl := ratelimit.NewLimiter(100, time.Minute)
+mux.Handle("/ws", auth.JWT(provider)(ratelimit.Middleware(rl)(wsHandler)))
 srv := httpx.NewServer(":8080", stack.Default(mux, logger))
 ```
 

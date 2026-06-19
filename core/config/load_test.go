@@ -1,10 +1,12 @@
 package config
 
 import (
+	"errors"
 	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -542,6 +544,60 @@ func TestReadSecretFile_ErrorClassification(t *testing.T) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, fs.ErrInvalid)
 	})
+}
+
+// cyclicPtrTagFirst reaches itself through a pointer field that is declared
+// AFTER a tagged field. hasEnvTags short-circuits to true on the tagged field
+// before reaching the cycle, but loadWithEnvTracking still recurses into the
+// pointer field and would otherwise overflow the stack.
+type cyclicPtrTagFirst struct {
+	Name string             `env:"TEST_CYCLE_PTR_TAG_FIRST"`
+	Next *cyclicPtrTagFirst //nolint:unused // exercises recursion guard
+}
+
+// cyclicPtrFirst reaches itself through a pointer field declared BEFORE any
+// tagged field, so the cycle is hit during hasEnvTags as well.
+type cyclicPtrFirst struct {
+	Next *cyclicPtrFirst //nolint:unused // exercises recursion guard
+	Name string          `env:"TEST_CYCLE_PTR_FIRST"`
+}
+
+func TestLoad_RejectsSelfReferentialStruct(t *testing.T) {
+	t.Run("pointer cycle after tagged field", func(t *testing.T) {
+		_, err := Load[cyclicPtrTagFirst]()
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrConfigCycle)
+	})
+
+	t.Run("pointer cycle before tagged field", func(t *testing.T) {
+		// hasEnvTags must not overflow on this shape either; Load returns a
+		// clean error (cycle for the loader path, or no-tags for the pre-check
+		// — either way no crash).
+		_, err := Load[cyclicPtrFirst]()
+		require.Error(t, err)
+		assert.True(t,
+			errors.Is(err, ErrConfigCycle) || strings.Contains(err.Error(), "no env struct tags"),
+			"expected a typed error, got %v", err)
+	})
+}
+
+func TestLoad_DiamondSameTypeStillLoads(t *testing.T) {
+	// Two sibling fields of the same struct type are NOT a cycle and must
+	// still load — the recursion guard tracks the active stack, not every
+	// type ever seen.
+	type leaf struct {
+		Host string `env:"TEST_DIAMOND_HOST" default:"dh"`
+	}
+	type cfg struct {
+		Primary   leaf
+		Secondary leaf
+	}
+	clearEnv("TEST_DIAMOND_HOST")
+
+	c, err := Load[cfg]()
+	require.NoError(t, err)
+	assert.Equal(t, "dh", c.Primary.Host)
+	assert.Equal(t, "dh", c.Secondary.Host)
 }
 
 func TestReadSecretFile_TrimsTrailingLineEndings(t *testing.T) {

@@ -137,6 +137,57 @@ func TestMiddleware_PanicAfterWriteHeaderLogsButDoesNotDoubleWrite(t *testing.T)
 	}
 }
 
+func TestMiddleware_PanicAfterFlushLogsButDoesNotDoubleWrite(t *testing.T) {
+	// A streaming/SSE-style handler that flushes (implicitly committing a 200)
+	// and then panics must take the "response started" path: log only, no 500
+	// JSON body appended to the already-flushed stream.
+	cases := []struct {
+		name  string
+		flush func(t *testing.T, w http.ResponseWriter)
+	}{
+		{
+			name: "direct Flusher",
+			flush: func(_ *testing.T, w http.ResponseWriter) {
+				w.(http.Flusher).Flush()
+			},
+		},
+		{
+			name: "ResponseController",
+			flush: func(t *testing.T, w http.ResponseWriter) {
+				if err := http.NewResponseController(w).Flush(); err != nil {
+					t.Fatalf("ResponseController.Flush: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, buf := newCapturingLogger()
+			mw := Middleware(WithLogger(logger))
+
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				// SSE-style: flush to commit a 200 status line before any
+				// body bytes, then panic. net/http implicitly sends 200 on
+				// flush, so the response has started.
+				tc.flush(t, w)
+				panic("oops — flushed already")
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/x", nil)
+			handler.ServeHTTP(rec, req)
+
+			if !strings.Contains(buf.String(), "panic after response started") {
+				t.Errorf("expected response-started warning, got: %q", buf.String())
+			}
+			if strings.Contains(rec.Body.String(), `"INTERNAL"`) {
+				t.Errorf("must not write recovery JSON body after flush; body = %q", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestMiddleware_MetricsCounterIncrements(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	metrics := NewMetrics(WithRegisterer(reg))
@@ -255,6 +306,32 @@ func TestMiddleware_CustomStatusCode(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+func TestWithStatusCode_RejectsOutOfRange(t *testing.T) {
+	for _, code := range []int{0, -1, 99, 1000} {
+		t.Run("", func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatalf("WithStatusCode(%d) should panic at construction", code)
+				}
+			}()
+			Middleware(WithStatusCode(code))
+		})
+	}
+}
+
+func TestWithStatusCode_AcceptsInRange(t *testing.T) {
+	for _, code := range []int{100, 200, 418, 500, 599, 999} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("WithStatusCode(%d) should not panic, got: %v", code, r)
+				}
+			}()
+			Middleware(WithStatusCode(code))
+		}()
 	}
 }
 

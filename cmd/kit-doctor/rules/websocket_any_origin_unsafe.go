@@ -27,6 +27,11 @@ type websocketAnyOriginUnsafeRule struct{}
 func (websocketAnyOriginUnsafeRule) Name() string { return "websocket-any-origin-unsafe" }
 
 var websocketImports = []string{
+	// Real module path consumers import; httpx/websocket has its own
+	// go.mod (module github.com/bds421/rho-kit/httpx/websocket/v2).
+	"github.com/bds421/rho-kit/httpx/websocket/v2",
+	// Legacy transposed path kept for backwards compatibility with
+	// existing callers/fixtures that referenced it.
 	"github.com/bds421/rho-kit/httpx/v2/websocket",
 }
 

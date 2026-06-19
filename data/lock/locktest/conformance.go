@@ -148,30 +148,53 @@ func testConcurrentWinner(t *testing.T, factory Factory) {
 	ctx := context.Background()
 	const key = "key-race"
 
-	var winners atomic.Int32
+	var (
+		winners    atomic.Int32 // total acquirers that ever held the lock
+		inCritical atomic.Int32 // holders currently inside the held window
+		maxHolders atomic.Int32 // high-water mark of concurrent holders
+	)
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			got, ok, err := l.Acquire(ctx, key)
-			if err == nil && ok && got != nil {
-				winners.Add(1)
-				// Hold briefly so siblings race against a held
-				// lock, not the post-release state.
-				time.Sleep(5 * time.Millisecond)
-				_ = got.Release(ctx)
+			if err != nil || !ok || got == nil {
+				return
 			}
+			winners.Add(1)
+
+			// Enter the critical section. The kit's central safety
+			// property is "exactly one holder at any instant": this
+			// counter must never read above 1. Record the high-water
+			// mark so a Locker that grants the lock to every caller
+			// is caught.
+			held := inCritical.Add(1)
+			for {
+				prev := maxHolders.Load()
+				if held <= prev || maxHolders.CompareAndSwap(prev, held) {
+					break
+				}
+			}
+
+			// Hold briefly so siblings race against a held lock, not
+			// the post-release state — this widens the window in
+			// which a mutual-exclusion violation would be observed.
+			time.Sleep(5 * time.Millisecond)
+
+			inCritical.Add(-1)
+			_ = got.Release(ctx)
 		}()
 	}
 	wg.Wait()
-	// At most 16 winners IF the holder Releases mid-race; the kit
-	// contract is "exactly one CONCURRENT winner at any instant."
-	// For a tight harness assertion we want >=1 winner (race
-	// resolved) and <=16 (all winners ran sequentially after
-	// each Release). The interesting invariant is: never two
-	// concurrent winners.
-	n := winners.Load()
-	assert.GreaterOrEqual(t, int(n), 1, "at least one acquirer must win")
-	assert.LessOrEqual(t, int(n), 16, "winners cap matches the goroutine count")
+
+	// The race must resolve to at least one winner, and at no instant
+	// may two holders share the critical section. Without the
+	// maxHolders assertion a Locker that hands the lock to all 16
+	// callers simultaneously would pass — that is the bug this guards.
+	assert.GreaterOrEqual(t, int(winners.Load()), 1, "at least one acquirer must win")
+	assert.LessOrEqual(t, int(winners.Load()), 16, "winners cap matches the goroutine count")
+	assert.EqualValues(t, 0, inCritical.Load(), "all holders must have left the critical section")
+	assert.LessOrEqual(t, int(maxHolders.Load()), 1,
+		"mutual exclusion violated: two or more holders were in the critical section at once")
 }

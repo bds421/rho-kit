@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -311,14 +312,22 @@ func TestRun_SessionExpiryCancelsLeaderCtx(t *testing.T) {
 }
 
 // TestRun_OnAcquiredPanic_IsCaptured asserts that a panic in
-// OnAcquired does not crash the elector goroutine; the panic value is
-// folded into the joined term error.
+// OnAcquired does not crash the elector goroutine and that the panic is
+// folded into the per-term error. etcd's Run loops and only returns
+// ctx.Err() after cancellation, so the per-term panic error is not
+// surfaced from Run's return value — it is funnelled through
+// joinTermErrors and logged as the "term ended with error" warning.
+// We assert on that observable log record (level + message + redacted
+// error attr) rather than on Run's return, which proves the panic was
+// captured rather than merely that the process did not crash.
 func TestRun_OnAcquiredPanic_IsCaptured(t *testing.T) {
 	sess := newFakeSession()
 	elect := &fakeElection{}
 	rf := &recordingFactory{sessions: []*fakeSession{sess}, elections: []*fakeElection{elect}}
 
+	rec := newRecordingHandler()
 	e := newElectorForTest(rf.factory())
+	e.logger = slog.New(rec)
 
 	cb := leaderelection.Callbacks{
 		OnAcquired: func(_ context.Context) {
@@ -338,6 +347,18 @@ func TestRun_OnAcquiredPanic_IsCaptured(t *testing.T) {
 
 	// Run should return without crashing the goroutine.
 	_ = e.Run(ctx, cb)
+
+	// The captured panic must have been folded into the per-term error
+	// and surfaced as the warn-level "term ended with error" record,
+	// carrying a non-empty (redacted) error attribute. Its absence would
+	// mean the panic was swallowed or the process would have crashed.
+	r, ok := rec.find(slog.LevelWarn, "leader-election: term ended with error")
+	if !ok {
+		t.Fatalf("expected warn 'term ended with error' record carrying the captured panic, got records: %v", rec.messages())
+	}
+	if got := r.attr("error"); got == "" {
+		t.Fatalf("term-ended warning must carry the redacted panic error attr, got record %+v", r)
+	}
 }
 
 // TestRun_DrainTimeout_ReturnsSentinel verifies WithCallbackDrainTimeout
@@ -381,6 +402,130 @@ func TestRun_DrainTimeout_ReturnsSentinel(t *testing.T) {
 	close(hang)
 }
 
+// TestRun_DrainTimeout_StillRunsOnLost locks in the documented
+// contract that on the drain-timeout path OnLost is still invoked
+// (matching k8slease / pgadvisory / redislock), even though the
+// orphaned OnAcquired has not returned. The doc on
+// WithCallbackDrainTimeout / ErrCallbackDrainTimeout warns callers that
+// OnLost therefore may run concurrently with the stalled callback; this
+// test guards against silently dropping OnLost on that path.
+func TestRun_DrainTimeout_StillRunsOnLost(t *testing.T) {
+	sess := newFakeSession()
+	elect := &fakeElection{}
+	rf := &recordingFactory{sessions: []*fakeSession{sess}, elections: []*fakeElection{elect}}
+
+	e := newElectorForTest(rf.factory())
+	e.drainTimeout = 100 * time.Millisecond
+	e.drainWarnTick = 50 * time.Millisecond
+
+	hang := make(chan struct{})
+	lost := make(chan struct{})
+	cb := leaderelection.Callbacks{
+		OnAcquired: func(_ context.Context) {
+			<-hang // never closes until the test releases the orphan
+		},
+		OnLost: func() { close(lost) },
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx, cb) }()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-lost:
+	case <-time.After(2 * time.Second):
+		close(hang)
+		t.Fatal("OnLost must still run on the drain-timeout path")
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrCallbackDrainTimeout) {
+			t.Fatalf("expected ErrCallbackDrainTimeout in chain, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		close(hang)
+		t.Fatal("Run did not return within drain-timeout budget")
+	}
+	close(hang)
+}
+
+// TestRun_HealthyTermDoesNotDrainTimeout verifies that the drain
+// watchdog (warn ticker + drain timeout) starts only after leadership
+// ends, not at term start. A healthy term whose OnAcquired correctly
+// waits on its leader ctx must be able to run longer than the
+// configured drain timeout without being forcibly resigned or
+// surfacing ErrCallbackDrainTimeout — the drain budget governs the
+// post-leadership cleanup window, not the steady-state term itself.
+func TestRun_HealthyTermDoesNotDrainTimeout(t *testing.T) {
+	sess := newFakeSession()
+	elect := &fakeElection{}
+	rf := &recordingFactory{sessions: []*fakeSession{sess}, elections: []*fakeElection{elect}}
+
+	e := newElectorForTest(rf.factory())
+	// A drain timeout shorter than the term length. With the bug, the
+	// timer starts at term start and fires mid-term; with the fix it
+	// only arms after leadership ends.
+	e.drainTimeout = 80 * time.Millisecond
+	e.drainWarnTick = 40 * time.Millisecond
+
+	acquired := make(chan struct{})
+	cb := leaderelection.Callbacks{
+		OnAcquired: func(ctx context.Context) {
+			close(acquired)
+			<-ctx.Done() // well-behaved: drains promptly once leadership ends
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx, cb) }()
+
+	select {
+	case <-acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnAcquired never invoked")
+	}
+
+	// Hold the healthy term for well over the drain timeout WITHOUT
+	// cancelling. A correct elector must still be leader and must not
+	// have resigned or returned a drain-timeout error.
+	time.Sleep(250 * time.Millisecond)
+
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned during a healthy term (drain watchdog fired mid-term): %v", err)
+	default:
+	}
+
+	if !e.IsLeader() {
+		t.Fatal("IsLeader must remain true during a healthy term that outlasts the drain timeout")
+	}
+	if elect.resigned.Load() {
+		t.Fatal("Resign must not be called during a healthy term")
+	}
+
+	// Now end the term cleanly; the well-behaved callback drains within
+	// the budget so Run returns the plain context error, never
+	// ErrCallbackDrainTimeout.
+	cancel()
+	select {
+	case err := <-done:
+		if errors.Is(err, ErrCallbackDrainTimeout) {
+			t.Fatalf("healthy term must not surface ErrCallbackDrainTimeout, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after ctx cancel")
+	}
+}
+
 // TestRun_ContextCancelDuringCampaign exits cleanly when the caller
 // ctx is cancelled while Campaign is still blocking.
 func TestRun_ContextCancelDuringCampaign(t *testing.T) {
@@ -413,6 +558,87 @@ func TestRun_ContextCancelDuringCampaign(t *testing.T) {
 		t.Fatal("Run did not return within budget after ctx cancel")
 	}
 	close(elect.campaignBlock)
+}
+
+// TestRun_CleanShutdownDuringCampaign_NoWarn locks in that an orderly
+// shutdown of a standby replica — caller ctx cancelled while Campaign
+// blocks — does NOT emit a spurious warn-level "term ended with error"
+// log. Every non-leader replica spends its life blocked in Campaign, so
+// a warn on every clean shutdown would be alarm noise suggesting a fault
+// where there is none. The cancellation is instead logged at Debug.
+func TestRun_CleanShutdownDuringCampaign_NoWarn(t *testing.T) {
+	sess := newFakeSession()
+	elect := &fakeElection{campaignBlock: make(chan struct{})}
+	rf := &recordingFactory{sessions: []*fakeSession{sess}, elections: []*fakeElection{elect}}
+
+	rec := newRecordingHandler()
+	e := newElectorForTest(rf.factory())
+	e.logger = slog.New(rec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx, leaderelection.Callbacks{}) }()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		close(elect.campaignBlock)
+		t.Fatal("Run did not return within budget after ctx cancel")
+	}
+	close(elect.campaignBlock)
+
+	if _, ok := rec.find(slog.LevelWarn, "leader-election: term ended with error"); ok {
+		t.Fatalf("clean shutdown during Campaign must not emit a warn 'term ended with error'; records: %v", rec.messages())
+	}
+	if _, ok := rec.find(slog.LevelDebug, "leader-election: term ended during shutdown"); !ok {
+		t.Fatalf("clean shutdown should log at Debug; records: %v", rec.messages())
+	}
+}
+
+// TestRun_BackendTermError_StillWarns guards the inverse of the
+// clean-shutdown suppression: a genuine non-context backend failure
+// (here, session creation failing while the caller ctx is still live)
+// must still surface at warn level so real faults stay operator-visible
+// and the suppression in TestRun_CleanShutdownDuringCampaign_NoWarn does
+// not silence legitimate errors.
+func TestRun_BackendTermError_StillWarns(t *testing.T) {
+	rec := newRecordingHandler()
+	var calls atomic.Int32
+	// First call returns a non-context backend error; the elector should
+	// warn and then back off. Cancel the ctx out-of-band so Run exits.
+	ctx, cancel := context.WithCancel(context.Background())
+	factory := func(_ context.Context, _ int, _ string) (session, election, error) {
+		if calls.Add(1) == 1 {
+			return nil, nil, errors.New("simulated etcd dial failure")
+		}
+		// Subsequent terms: cancel and report the cancellation so Run stops.
+		cancel()
+		return nil, nil, context.Canceled
+	}
+
+	e := newElectorForTest(factory)
+	e.logger = slog.New(rec)
+	e.reacquireBackoff = 10 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx, leaderelection.Callbacks{}) }()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("Run did not return within budget")
+	}
+
+	if _, ok := rec.find(slog.LevelWarn, "leader-election: term ended with error"); !ok {
+		t.Fatalf("a non-context backend term error must still warn; records: %v", rec.messages())
+	}
 }
 
 func TestRun_OnLostPanic_DoesNotCrash(t *testing.T) {
@@ -452,4 +678,71 @@ func newElectorForTest(f sessionFactory) *Elector {
 		logger:           slog.Default(),
 		sessionFactory:   f,
 	}
+}
+
+// capturedRecord is a flattened, comparison-friendly copy of an
+// slog.Record kept by recordingHandler so tests can assert on level,
+// message, and string-valued attributes without re-walking the record.
+type capturedRecord struct {
+	level slog.Level
+	msg   string
+	attrs map[string]string
+}
+
+func (r capturedRecord) attr(key string) string { return r.attrs[key] }
+
+// recordingHandler is a minimal concurrency-safe slog.Handler that
+// retains every record so tests can assert on the elector's logging
+// contract (e.g. that a clean shutdown does not warn). Attribute values
+// are rendered with fmt so the redacted-string stamps the elector emits
+// are captured verbatim.
+type recordingHandler struct {
+	mu      sync.Mutex
+	records *[]capturedRecord
+}
+
+func newRecordingHandler() *recordingHandler {
+	recs := make([]capturedRecord, 0, 8)
+	return &recordingHandler{records: &recs}
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	rec := capturedRecord{level: r.Level, msg: r.Message, attrs: map[string]string{}}
+	r.Attrs(func(a slog.Attr) bool {
+		rec.attrs[a.Key] = a.Value.String()
+		return true
+	})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	*h.records = append(*h.records, rec)
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
+
+// find returns the first captured record matching level and message.
+func (h *recordingHandler) find(level slog.Level, msg string) (capturedRecord, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range *h.records {
+		if r.level == level && r.msg == msg {
+			return r, true
+		}
+	}
+	return capturedRecord{}, false
+}
+
+// messages returns the captured (level, message) pairs for failure
+// diagnostics.
+func (h *recordingHandler) messages() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]string, 0, len(*h.records))
+	for _, r := range *h.records {
+		out = append(out, r.level.String()+":"+r.msg)
+	}
+	return out
 }

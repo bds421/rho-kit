@@ -4,7 +4,11 @@
 //
 // Chained automatically by [client.NewClient] (outermost first):
 //
-//	recovery -> logging -> metrics -> retry -> deadline -> caller -> RPC
+//	recovery -> propagation -> logging -> metrics -> retry -> deadline -> caller -> RPC
+//
+// The propagation pair ([PropagationUnaryClientInterceptor] /
+// [PropagationStreamClientInterceptor]) is always on, so correlation and
+// request IDs reach the server even when logging is disabled.
 //
 // Each interceptor is independently usable for callers building a
 // custom chain via [client.WithUnaryInterceptors] / [client.WithStreamInterceptors].

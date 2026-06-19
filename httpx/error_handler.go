@@ -156,11 +156,17 @@ func WriteValidationError(w http.ResponseWriter, logger *slog.Logger, err error)
 // linkable type URIs).
 func WriteServiceProblem(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error, opts ...problemdetails.Option) {
 	ctx, method, path := serviceErrorContext(r)
+	// Resolve the logger the same way WriteServiceError does: the
+	// request-scoped logger when r != nil, otherwise the supplied logger or
+	// slog.Default. This stops 5xx (unavailable/operation-failed) errors from
+	// vanishing silently when the caller passes a nil logger.
+	if r != nil {
+		logger = Logger(ctx, logger)
+	} else if logger == nil {
+		logger = slog.Default()
+	}
 	instance := serviceProblemInstance(r)
 	logErr := func(msg string) {
-		if logger == nil {
-			return
-		}
 		attrs := []any{
 			logattr.Error(err),
 			logattr.RequestID(contextutil.RequestID(ctx)),
@@ -185,6 +191,15 @@ func WriteServiceProblem(w http.ResponseWriter, r *http.Request, logger *slog.Lo
 		logErr("operation failed")
 	default:
 		logErr("unhandled service error")
+	}
+
+	// Mirror WriteServiceError: emit the RFC-compliant Retry-After header so
+	// standard clients, proxies, and CDNs honoring the header (not just the
+	// retry_after_seconds body extension) get correct backoff signaling.
+	if rl, ok := apperror.AsRateLimit(err); ok && rl.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(rl.RetryAfter.Seconds()))))
+	} else if ue, ok := apperror.AsUnavailable(err); ok && ue.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(ue.RetryAfter.Seconds()))))
 	}
 
 	allOpts := append([]problemdetails.Option{

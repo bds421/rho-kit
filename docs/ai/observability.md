@@ -78,7 +78,8 @@ Use a custom registry in tests to avoid duplicate collector registration:
 
 ```go
 reg := prometheus.NewRegistry()
-mw := redmetrics.NewHTTPMiddleware(redmetrics.WithRegisterer(reg))
+metrics := redmetrics.NewHTTP(redmetrics.WithHTTPRegisterer(reg))
+mw := metrics.Middleware(func(r *http.Request) string { return r.URL.Path })
 ```
 
 Use `promutil` helpers when registering collectors from shared libraries so

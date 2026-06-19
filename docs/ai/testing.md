@@ -75,13 +75,13 @@ Each call starts a fresh PostgreSQL container that terminates via `t.Cleanup`.
 func TestRedisCache(t *testing.T) {
     url := redistest.Start(t)
 
-    opts, err := redis.ParseURL(url)
+    opts, err := goredis.ParseURL(url)
     require.NoError(t, err)
-    conn, err := redis.Connect(opts, redis.Logger(slog.Default()))
+    conn, err := redis.Connect(opts, redis.WithLogger(slog.Default()))
     require.NoError(t, err)
     t.Cleanup(func() { _ = conn.Close() })
 
-    c, err := rediscache.New(conn.Client(), "test-"+t.Name())
+    c, err := rediscache.NewCache(conn.Client(), "test-"+t.Name())
     require.NoError(t, err)
     // ... test operations
 }
@@ -97,7 +97,7 @@ Redis and RabbitMQ helpers reuse a shared container per process. Use unique key 
 func TestMessaging(t *testing.T) {
     url := rabbitmqtest.Start(t)
 
-    conn, err := amqpbackend.Dial(url, slog.Default())
+    conn, err := amqpbackend.Connect(url, slog.Default())
     require.NoError(t, err)
     t.Cleanup(func() { _ = conn.Close() })
 

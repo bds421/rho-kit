@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -35,8 +34,8 @@ type Option func(*config)
 type Metrics struct {
 	hits      prometheus.Counter // cached response replayed
 	misses    prometheus.Counter // no cached response, processing
-	conflicts prometheus.Counter // key already being processed (409)
-	errors    prometheus.Counter // store errors (500)
+	conflicts prometheus.Counter // key in flight (409) or reused with a different body (422)
+	errors    prometheus.Counter // store Get/TryLock/Set faults (500); client body-read failures are NOT counted here
 }
 
 // MetricsOption configures the idempotency metric constructor.
@@ -117,6 +116,7 @@ const defaultPostHandlerTimeout = 5 * time.Second
 type config struct {
 	userExtractor      func(*http.Request) string
 	ttl                time.Duration
+	lockTTL            time.Duration // processing-lock TTL; 0 means "use ttl"
 	header             string
 	requiredMethods    map[string]bool
 	logger             *slog.Logger
@@ -124,6 +124,7 @@ type config struct {
 	fingerprintBody    bool
 	allowSharedKeys    bool
 	preserveHeaders    map[string]bool // optional override of identityResponseHeaders
+	uncachedStatuses   map[int]bool    // statuses released (not cached) after the handler
 	postHandlerTimeout time.Duration
 	// semanticHeaders are HTTP headers folded into the fingerprint
 	// key (audit FR-029). Use this for headers whose value affects
@@ -173,6 +174,69 @@ func WithTTL(d time.Duration) Option {
 		panic("middleware/idempotency: WithTTL requires a positive duration; zero/negative TTLs create permanent locks in Redis")
 	}
 	return func(c *config) { c.ttl = d }
+}
+
+// WithLockTTL sets a separate, typically short, TTL for the processing lock
+// acquired before the handler runs. Unset, the processing lock inherits the
+// response-cache TTL ([WithTTL], default 24h).
+//
+// The two TTLs serve different purposes. The cache TTL governs how long a
+// completed response is replayed. The processing lock only needs to outlive a
+// single in-flight handler: its deferred Unlock releases the lock on normal
+// completion and on panic, but a hard crash (kill -9, OOM, node loss) mid
+// handler cannot run the deferred Unlock, so the lock lingers until its TTL
+// expires. With a shared 24h TTL that crash locks the key out — every retry
+// gets 409 "request already in progress" — for a full day. A short lock TTL
+// (Stripe-style, e.g. 30-60s) lets retries recover quickly after a crash while
+// the cache TTL stays long.
+//
+// Pick a lock TTL comfortably above the slowest expected handler latency so a
+// legitimately slow handler does not lose its lock mid-flight (which surfaces
+// as [idem.ErrLockLost] on Set). Panics on non-positive durations.
+func WithLockTTL(d time.Duration) Option {
+	if d <= 0 {
+		panic("middleware/idempotency: WithLockTTL requires a positive duration")
+	}
+	return func(c *config) { c.lockTTL = d }
+}
+
+// WithUncachedStatuses lists HTTP status codes whose responses are NOT cached.
+// After the handler returns one of these statuses the middleware releases the
+// processing lock instead of storing the response, so a subsequent retry with
+// the same Idempotency-Key re-executes the handler rather than replaying the
+// earlier response for the full cache TTL.
+//
+// The default behaviour caches every status, including transient 500/502/503
+// from backend failures, and replays them for up to the cache TTL (default
+// 24h) — a client that correctly retries with the same key can never recover
+// from a transient error inside that window. Pass the transient/error statuses
+// your service wants retries to recover from, e.g.:
+//
+//	WithUncachedStatuses(http.StatusBadGateway, http.StatusServiceUnavailable,
+//	    http.StatusGatewayTimeout)
+//
+// Only cache the statuses that are genuinely safe to replay (typically 2xx and
+// deliberate 4xx). Releasing the lock means concurrent retries of the same key
+// may both run the handler, so callers that opt in accept at-least-once
+// execution for the listed statuses — which is exactly the right trade-off for
+// transient failures the caller wants to retry. Panics on status codes outside
+// the 100-599 range.
+func WithUncachedStatuses(statuses ...int) Option {
+	set := make(map[int]bool, len(statuses))
+	for _, s := range statuses {
+		if s < 100 || s > 599 {
+			panic("middleware/idempotency: WithUncachedStatuses requires valid HTTP status codes (100-599)")
+		}
+		set[s] = true
+	}
+	return func(c *config) {
+		if c.uncachedStatuses == nil {
+			c.uncachedStatuses = make(map[int]bool, len(set))
+		}
+		for s := range set {
+			c.uncachedStatuses[s] = true
+		}
+	}
 }
 
 // WithHeader sets the header name used as idempotency key. Default: "Idempotency-Key".
@@ -233,8 +297,12 @@ func WithRequiredMethods(methods ...string) Option {
 }
 
 // WithoutRequiredMethods disables the "method requires an idempotency
-// key" enforcement entirely — every request becomes optional even for
-// mutating methods. The long, explicit name is deliberate: this is
+// key" enforcement entirely. With no required methods every request —
+// including mutating ones — takes the early pass-through: the middleware
+// performs NO deduplication or caching, and an Idempotency-Key header a
+// client sends anyway is ignored, not honoured opportunistically. (This
+// is also why non-required methods under the default config carry their
+// key straight through.) The long, explicit name is deliberate: this is
 // the unsafe-by-default escape hatch that turns off the middleware's
 // main protection. Use only when the caller has an out-of-band reason
 // (an upstream gateway already enforces idempotency, or the routes
@@ -314,6 +382,16 @@ func defaultConfig() config {
 			http.MethodPatch: true,
 		},
 	}
+}
+
+// lockOrCacheTTL resolves the TTL used for the processing lock. When no
+// dedicated lock TTL is configured ([WithLockTTL]) the lock inherits the
+// response-cache TTL, preserving the historical single-TTL behaviour.
+func (c config) lockOrCacheTTL() time.Duration {
+	if c.lockTTL > 0 {
+		return c.lockTTL
+	}
+	return c.ttl
 }
 
 // Middleware deduplicates requests by the Idempotency-Key header.
@@ -433,9 +511,19 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 							"idempotency fingerprint headers are invalid")
 						return
 					}
-					if cfg.metrics != nil {
-						cfg.metrics.errors.Inc()
+					var maxBytesErr *http.MaxBytesError
+					if errors.As(fpErr, &maxBytesErr) {
+						// An upstream maxbody (http.MaxBytesReader) cap below the
+						// fingerprint limit tripped while buffering the body. This
+						// is a client/oversized-payload failure, not a store error:
+						// surface 413 and do NOT bump the store-errors counter.
+						httpx.WriteError(w, http.StatusRequestEntityTooLarge,
+							"request body exceeds configured maximum size")
+						return
 					}
+					// A read failure here is a client/transport problem (client
+					// disconnect, truncated upload), not a store error — do not
+					// bump the store-errors counter for it.
 					httpx.WriteError(w, http.StatusBadRequest, "could not read request body")
 					return
 				}
@@ -447,6 +535,8 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 
 			cached, fpMismatch, err := store.Get(r.Context(), key, bodyFingerprint)
 			if err != nil {
+				cfg.logger.Error("idempotency: store Get failed",
+					redact.Error(err), redact.String("key", rawKey))
 				if cfg.metrics != nil {
 					cfg.metrics.errors.Inc()
 				}
@@ -469,8 +559,10 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 				return
 			}
 
-			token, fpMismatchOnLock, locked, lockErr := store.TryLock(r.Context(), key, bodyFingerprint, cfg.ttl)
+			token, fpMismatchOnLock, locked, lockErr := store.TryLock(r.Context(), key, bodyFingerprint, cfg.lockOrCacheTTL())
 			if lockErr != nil {
+				cfg.logger.Error("idempotency: store TryLock failed",
+					redact.Error(lockErr), redact.String("key", rawKey))
 				if cfg.metrics != nil {
 					cfg.metrics.errors.Inc()
 				}
@@ -518,6 +610,18 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 			next.ServeHTTP(rec, r)
 			panicked = false
 
+			// A handler that set headers via w.Header() but returned without
+			// calling Write/WriteHeader produces an implicit 200. Until now
+			// captured headers were only copied to the real writer inside
+			// WriteHeader, so the first caller received a bare 200 while the
+			// cache snapshot below recorded the unsent headers — every replay
+			// then carried headers the original response never emitted. Flush
+			// the captured headers to the underlying writer so the first
+			// caller and the cached/replayed response agree.
+			if !rec.wroteHeader {
+				rec.WriteHeader(rec.statusCode)
+			}
+
 			if rec.bodyOverflow {
 				cfg.logger.Warn("idempotency: response too large to cache, skipping",
 					redact.String("key", rawKey))
@@ -530,9 +634,30 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 				return
 			}
 
+			if cfg.uncachedStatuses[rec.statusCode] {
+				// The caller opted this status out of caching (typically
+				// transient 5xx). Release the lock instead of storing the
+				// response so a retry with the same key re-runs the handler
+				// and can recover, rather than replaying the error for the
+				// full cache TTL.
+				ctx, cancel := postHandlerContext(r.Context(), cfg.postHandlerTimeout)
+				defer cancel()
+				if unlockErr := store.Unlock(ctx, key, token); unlockErr != nil {
+					cfg.logger.Error("idempotency: failed to unlock after uncached status",
+						redact.Error(unlockErr), redact.String("key", rawKey))
+				}
+				return
+			}
+
 			headers := make(map[string][]string, len(rec.Header()))
 			for k, vals := range rec.Header() {
-				if !cfg.preserveHeaders[k] && identityResponseHeaders[http.CanonicalHeaderKey(k)] {
+				// Canonicalise the key for BOTH the preserve override and the
+				// strip list. preserveHeaders keys are stored canonical, so a
+				// handler that wrote an identity header via direct map access
+				// (rc.Header()["set-cookie"] = ...) would otherwise miss the
+				// override and be stripped even when WithPreserveHeaders named it.
+				canonical := http.CanonicalHeaderKey(k)
+				if !cfg.preserveHeaders[canonical] && identityResponseHeaders[canonical] {
 					continue
 				}
 				cp := make([]string, len(vals))
@@ -739,20 +864,12 @@ func canonicalRequestPath(u *url.URL) string {
 // canonicalQuery serializes a url.Values with deterministic key
 // ordering. Two requests whose query strings differ only in
 // parameter order produce identical canonical forms.
+//
+// url.Values.Encode already sorts keys (and preserves per-key value
+// order), so it is exactly the canonical form we need — there is no
+// need to pre-sort into a second url.Values.
 func canonicalQuery(v url.Values) string {
-	if len(v) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(v))
-	for k := range v {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	out := url.Values{}
-	for _, k := range keys {
-		out[k] = v[k]
-	}
-	return out.Encode()
+	return v.Encode()
 }
 
 func replay(w http.ResponseWriter, cached *idem.CachedResponse) {
@@ -781,6 +898,15 @@ func (rc *responseCapture) Header() http.Header {
 }
 
 func (rc *responseCapture) WriteHeader(code int) {
+	// 1xx are informational, repeatable responses (e.g. 103 Early Hints):
+	// net/http allows emitting them before the single final WriteHeader.
+	// Forward them to the wire but do NOT latch — otherwise the first 1xx
+	// would lock statusCode and suppress the real final status, and every
+	// replay would serve the 1xx code with a body as the final response.
+	if code >= 100 && code < 200 {
+		rc.ResponseWriter.WriteHeader(code)
+		return
+	}
 	if rc.wroteHeader {
 		return
 	}

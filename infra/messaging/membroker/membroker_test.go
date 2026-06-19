@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,6 +34,40 @@ func TestBroker_PublishAndDrain(t *testing.T) {
 	assert.Len(t, received, 1)
 	assert.Equal(t, "user.created", received[0].Message.Type)
 	assert.Equal(t, "events", received[0].Exchange)
+}
+
+func TestBroker_ConcurrentPublishAndDrainDeliversEachMessageOnce(t *testing.T) {
+	b := New()
+
+	const messageCount = 200
+
+	var mu sync.Mutex
+	deliveries := make(map[string]int, messageCount)
+	b.Subscribe("events", "user.created", func(_ context.Context, d messaging.Delivery) error {
+		mu.Lock()
+		deliveries[d.Message.ID]++
+		mu.Unlock()
+		return nil
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(messageCount)
+	for i := 0; i < messageCount; i++ {
+		go func(i int) {
+			defer wg.Done()
+			msg, err := messaging.NewMessage("user.created", map[string]int{"i": i})
+			require.NoError(t, err)
+			require.NoError(t, b.PublishAndDrain(context.Background(), "events", "user.created", msg))
+		}(i)
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, deliveries, messageCount, "every published message must be delivered exactly once")
+	for id, count := range deliveries {
+		assert.Equalf(t, 1, count, "message %s delivered %d times, want exactly once", id, count)
+	}
 }
 
 func TestBroker_MaxMessageBytesRejects(t *testing.T) {

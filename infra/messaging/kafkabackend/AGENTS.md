@@ -15,8 +15,8 @@
 
 ## Key APIs
 
-- `NewPublisher(brokers, opts...)` / `NewConsumer(brokers, group, opts...)` — backend implementations of `messaging.Publisher` / `messaging.Consumer`.
-- `WithSASL(...)` — supports PLAIN and SCRAM. **OAUTHBEARER is NOT supported** (Confluent Cloud, AWS MSK with IAM are tracked as a follow-up).
+- `NewPublisher(brokers []string, opts...) (*Publisher, error)` / `NewSubscriber(brokers []string, groupID string, topics []string, opts...) (*Subscriber, error)` — backend implementations of `messaging.Publisher` / `messaging.Consumer`.
+- SASL is configured via `Config` fields (`SASLMechanism`, `SASLUsername`, `SASLPassword`) passed through `NewPublisherWithConfig` / `NewSubscriberWithConfig` — there is no `WithSASL` option. Supported mechanisms: `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512`. **OAUTHBEARER is NOT supported** (Confluent Cloud, AWS MSK with IAM are tracked as a follow-up).
 
 ## Common mistakes
 

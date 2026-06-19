@@ -130,6 +130,66 @@ func TestHandle_HandlerErrorClosesWithInternalError(t *testing.T) {
 	assert.Equal(t, coderws.StatusInternalError, closeStatus)
 }
 
+// TestHandle_NormalClosureReturnedByHandlerIsNotInternalError asserts
+// that the natural handler pattern — read in a loop and return the read
+// error on disconnect — does NOT escalate a routine client close into a
+// StatusInternalError close. When the returned error carries a normal
+// (1000) or going-away (1001) close status the connection must close
+// with that same code, not 1011.
+func TestHandle_NormalClosureReturnedByHandlerIsNotInternalError(t *testing.T) {
+	reg := prometheus.NewRegistry()
+
+	handler := websocket.Handle(
+		websocket.WithHandler(func(_ context.Context, c *websocket.Conn) error {
+			// Block on a read; when the peer closes normally the read
+			// returns a redacted close error which we surface verbatim,
+			// exactly as the package's own round-trip handlers do.
+			_, _, err := c.ReadMessage()
+			return err
+		}),
+		websocket.WithMetrics(reg),
+	)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	require.NoError(t, err)
+
+	// Client performs a normal close. The server handler observes the
+	// read error and returns it.
+	require.NoError(t, conn.Close(coderws.StatusNormalClosure, "bye"))
+
+	// The server's close handshake must not be StatusInternalError. We
+	// inspect the close metric: a 1011 here would mean the kit
+	// escalated a routine disconnect into a handler-error close.
+	require.Eventually(t, func() bool {
+		families, gerr := reg.Gather()
+		if gerr != nil {
+			return false
+		}
+		for _, f := range families {
+			if f.GetName() != "httpx_websocket_close_total" {
+				continue
+			}
+			for _, m := range f.GetMetric() {
+				for _, lp := range m.GetLabel() {
+					if lp.GetName() == "code" {
+						if lp.GetValue() == "1011" {
+							t.Fatalf("routine normal close escalated to StatusInternalError (1011)")
+						}
+					}
+				}
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 20*time.Millisecond, "close metric was never recorded")
+}
+
 func TestHandle_RespectsMaxMessageBytes(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	var handlerErr error
@@ -222,6 +282,32 @@ func TestHandle_PanicsOnNilLogger(t *testing.T) {
 func TestHandle_PanicsOnNilMetricsReg(t *testing.T) {
 	assert.Panics(t, func() {
 		websocket.WithMetrics(nil)
+	})
+}
+
+// TestHandle_PanicsOnPongTimeoutWithoutPingInterval guards the fail-fast
+// contract: a pong timeout is inert without a heartbeat, so configuring
+// it without WithPingInterval must surface as a startup panic rather
+// than being silently dropped.
+func TestHandle_PanicsOnPongTimeoutWithoutPingInterval(t *testing.T) {
+	assert.Panics(t, func() {
+		websocket.Handle(
+			websocket.WithHandler(func(context.Context, *websocket.Conn) error { return nil }),
+			websocket.WithPongTimeout(5*time.Second),
+		)
+	})
+}
+
+// TestHandle_PongTimeoutWithPingIntervalOK is the positive control: a
+// pong timeout paired with a ping interval is a valid configuration and
+// must not panic.
+func TestHandle_PongTimeoutWithPingIntervalOK(t *testing.T) {
+	assert.NotPanics(t, func() {
+		websocket.Handle(
+			websocket.WithHandler(func(context.Context, *websocket.Conn) error { return nil }),
+			websocket.WithPingInterval(10*time.Second),
+			websocket.WithPongTimeout(5*time.Second),
+		)
 	})
 }
 
@@ -420,6 +506,171 @@ func TestHandle_MaxConnections_Rejects503(t *testing.T) {
 		_ = c.Close(coderws.StatusNormalClosure, "")
 		return true
 	}, 2*time.Second, 20*time.Millisecond, "slot was never released")
+}
+
+// TestHandle_PushOnlyHeartbeat_KilledWithoutReadDrain documents the
+// upstream constraint: coder/websocket's Ping waits for a Reader call
+// to pump the pong, so a server-push handler that never reads is killed
+// by its own heartbeat. This is the failure mode WithReadDrain exists
+// to fix.
+func TestHandle_PushOnlyHeartbeat_KilledWithoutReadDrain(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	ended := make(chan struct{}, 1)
+
+	handler := websocket.Handle(
+		websocket.WithHandler(func(ctx context.Context, c *websocket.Conn) error {
+			defer func() { ended <- struct{}{} }()
+			ticker := time.NewTicker(20 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-ticker.C:
+					if err := c.WriteMessage(websocket.MessageText, []byte("tick")); err != nil {
+						return err
+					}
+				}
+			}
+		}),
+		websocket.WithPingInterval(30*time.Millisecond),
+		websocket.WithPongTimeout(30*time.Millisecond),
+		websocket.WithMetrics(reg),
+	)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(coderws.StatusNormalClosure, "") }()
+
+	// Client reads continuously so it auto-responds to pings.
+	go func() {
+		for {
+			if _, _, e := conn.Read(ctx); e != nil {
+				return
+			}
+		}
+	}()
+
+	// The heartbeat must time out and close the push-only connection.
+	select {
+	case <-ended:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the push-only handler to be torn down by the heartbeat")
+	}
+
+	require.Eventually(t, func() bool {
+		families, gerr := reg.Gather()
+		if gerr != nil {
+			return false
+		}
+		for _, f := range families {
+			if f.GetName() != "httpx_websocket_pings_total" {
+				continue
+			}
+			for _, m := range f.GetMetric() {
+				for _, lp := range m.GetLabel() {
+					if lp.GetName() == "result" && lp.GetValue() == "timeout" &&
+						m.GetCounter().GetValue() >= 1 {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}, 2*time.Second, 20*time.Millisecond, "ping timeout was never recorded")
+}
+
+// TestHandle_PushOnlyHeartbeat_SurvivesWithReadDrain asserts the fix:
+// with WithReadDrain the kit pumps the read side internally so the
+// heartbeat's pong is read, and a push-only handler stays alive across
+// several ping intervals without a timeout-driven close.
+func TestHandle_PushOnlyHeartbeat_SurvivesWithReadDrain(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	writes := make(chan struct{}, 64)
+
+	handler := websocket.Handle(
+		websocket.WithHandler(func(ctx context.Context, c *websocket.Conn) error {
+			ticker := time.NewTicker(20 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-ticker.C:
+					if err := c.WriteMessage(websocket.MessageText, []byte("tick")); err != nil {
+						return err
+					}
+					select {
+					case writes <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}),
+		websocket.WithReadDrain(),
+		websocket.WithPingInterval(30*time.Millisecond),
+		websocket.WithPongTimeout(30*time.Millisecond),
+		websocket.WithMetrics(reg),
+	)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	require.NoError(t, err)
+
+	// Client reads continuously so it auto-responds to pings.
+	go func() {
+		for {
+			if _, _, e := conn.Read(ctx); e != nil {
+				return
+			}
+		}
+	}()
+
+	// Run for well past several ping intervals; the connection must
+	// survive — i.e. writes keep flowing and no ping timeout is logged.
+	deadline := time.After(400 * time.Millisecond)
+	count := 0
+loop:
+	for {
+		select {
+		case <-writes:
+			count++
+		case <-deadline:
+			break loop
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("push-only writes stalled — connection was torn down despite WithReadDrain")
+		}
+	}
+	assert.Greater(t, count, 5, "expected continuous push writes across multiple ping intervals")
+
+	// No ping must have timed out.
+	families, gerr := reg.Gather()
+	require.NoError(t, gerr)
+	for _, f := range families {
+		if f.GetName() != "httpx_websocket_pings_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "result" && lp.GetValue() == "timeout" {
+					t.Fatalf("ping timed out despite WithReadDrain (count=%v)", m.GetCounter().GetValue())
+				}
+			}
+		}
+	}
+
+	_ = conn.Close(coderws.StatusNormalClosure, "done")
 }
 
 // Sanity check that the Handle return type composes naturally with

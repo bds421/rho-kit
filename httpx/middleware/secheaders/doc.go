@@ -8,7 +8,7 @@
 //   - Permissions-Policy: geolocation=(), microphone=(), camera=() — disables browser APIs
 //   - Strict-Transport-Security: max-age=63072000; includeSubDomains — sent ONLY when the request arrived over TLS (see HSTS section below)
 //   - Cache-Control: no-store — prevents caching of API responses
-//   - Content-Security-Policy: default-src 'none' — strictest CSP for pure API services
+//   - Content-Security-Policy: default-src 'none'; frame-ancestors 'none' — strictest CSP for pure API services
 //   - Cross-Origin-Opener-Policy: same-origin — severs cross-origin window.opener access
 //   - Cross-Origin-Embedder-Policy: require-corp — every embedded resource must opt in
 //   - Cross-Origin-Resource-Policy: same-origin — this service's responses can only be loaded by same-origin documents

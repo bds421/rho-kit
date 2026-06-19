@@ -326,7 +326,7 @@ others (interceptor ordering, streaming exhaustion).
 | G-02 | Unauthenticated RPC | A1 | Auth interceptor wired by `app/jwt.Module` / `app/paseto.Module`; rejects requests without a valid token | caller-must-cooperate | [app/jwt](../../app/jwt/), [app/paseto](../../app/paseto/) |
 | G-03 | Streaming flood — client opens N streams and never sends | A1 | `grpcx.NewServer` pins `grpc.MaxConcurrentStreams` to 1000 per connection by default (Go gRPC default is `math.MaxUint32`) plus the per-RPC default-deadline interceptor; operators override the cap via `grpcx.WithMaxConcurrentStreams` | kit-enforced | [grpcx/server.go](../../grpcx/server.go) |
 | G-04 | Error message leakage via gRPC status messages | A1 | `grpcx/apperror_status.go` maps `core/apperror` codes to gRPC codes + safe messages — never returns the underlying `error.Error()` | kit-enforced | [grpcx/apperror_status.go](../../grpcx/apperror_status.go) |
-| G-05 | Health probe leaks service liveness to attacker | A1 | Builder serves gRPC Health Checking Protocol on the internal ops listener over h2c; public gRPC health is disabled unless the operator explicitly calls `WithPublicGRPCHealth()` | kit-enforced | [app/builder.go](../../app/builder.go), [app/internal_grpc_health.go](../../app/internal_grpc_health.go) |
+| G-05 | Health probe leaks service liveness to attacker | A1 | Builder serves gRPC Health Checking Protocol on the internal ops listener over h2c; public gRPC health is disabled unless the operator explicitly calls `grpc.WithPublicHealth()` | kit-enforced | [app/builder.go](../../app/builder.go), [app/grpc/grpc.go](../../app/grpc/grpc.go) |
 
 ### 4.3 Message broker (`infra/messaging`)
 
@@ -736,13 +736,14 @@ app.New("payments", version, cfg.BaseConfig).
 	    With(ratelimit.IP(100, time.Minute)).
 	    Router(func(infra app.Infrastructure) http.Handler {
 	        h := payments.NewHandler(postgres.Pool(infra), redis.Connection(infra), audit)
+	        idempStore := redisstore.New(redis.Connection(infra).Client())
 	        csrfMW := csrf.New(
 	            csrf.WithSecrets(cfg.CSRFSecret, cfg.PreviousCSRFSecrets...),
 	            csrf.WithAllowedOrigins(cfg.PublicOrigin),
 	        )
 	        return stack.Default(h, infra.Logger,
 	            stack.WithOuter(csrfMW, csrf.RequireJSONContentType),
-	            stack.WithInner(auth.Required, idempotency.Middleware(infra.IdempStore)),
+	            stack.WithInner(auth.JWT(jwt.Provider(infra)), idempotency.Middleware(idempStore)),
 	        )
 	    }).Run()
 ```
@@ -767,7 +768,7 @@ Request lifecycle and threat coverage:
 | 8 | `csrf.New(...)` double-submit cookie + Origin/Referer allowlist (outer wedge — runs before auth so CSRF failures are not gated by auth) | H-04 |
 | 9 | `csrf.RequireJSONContentType` | H-04 (defence-in-depth) |
 | 10 | `timeout` middleware (30s default) | H-03 |
-| 11 | `auth.Required` (JWT verify, issuer + audience checked) | T-01, T-02, H-09 |
+| 11 | `auth.JWT` (JWT verify, issuer + audience checked) | T-01, T-02, H-09 |
 | 12 | `idempotency.Middleware` (Redis-backed) | I-01, I-02, I-04 |
 | 13 | `tenant.Required` (called by handler from JWT claim) | A2 cross-tenant prevention |
 | 14 | `core/validate.Struct` on decoded body | H-14 |
@@ -823,7 +824,10 @@ key, err := tenant.Key(ctx, "user", userID, "profile")
 if err != nil {
     return err
 }
-hit, err := infra.Cache.Get(ctx, key, &profile)
+raw, err := redisCache.Get(ctx, key) // *rediscache.Cache, returns ([]byte, error)
+if errors.Is(err, cache.ErrCacheMiss) {
+    // cold cache → upstream fetch with the same tenant-scoped key
+}
 ```
 
 Threats and the mitigation chain:

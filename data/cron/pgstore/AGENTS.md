@@ -8,7 +8,7 @@ without redeploying the binary.
 
 ## Public API
 
-- `Store.New(db *sql.DB, opts ...Option) *Store`
+- `New(db *sql.DB, opts ...Option) *Store`
 - `Store.Add(ctx, ScheduleRecord) error`             — insert, error on duplicate
 - `Store.Upsert(ctx, ScheduleRecord) error`          — insert-or-update
 - `Store.Remove(ctx, name) error`                    — idempotent delete

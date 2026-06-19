@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	stream "github.com/bds421/rho-kit/data/stream/redisstream/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
@@ -24,6 +25,12 @@ import (
 type Consumer struct {
 	consumer *stream.Consumer
 	logger   *slog.Logger
+	// consumed records whether Consume/ConsumeOnce has already been
+	// invoked. The wrapped *stream.Consumer is single-shot and panics
+	// across the package boundary on a second Consume; this flag lets
+	// the wrapper return a clear error instead. Construct one Consumer
+	// per (stream, group) pair.
+	consumed atomic.Bool
 }
 
 // NewConsumer creates a Consumer backed by the given StreamConsumer.
@@ -63,6 +70,13 @@ func (c *Consumer) Consume(ctx context.Context, b messaging.Binding, handler mes
 	}
 	if b.ConsumerGroup != "" && b.ConsumerGroup != c.consumer.Group() {
 		return fmt.Errorf("redisbackend: Binding.ConsumerGroup does not match wrapped consumer group (FR-064): construct a separate Consumer per group")
+	}
+	// The wrapped *stream.Consumer is single-shot: a second Consume panics
+	// across the package boundary. Guard here so re-invoking Consume or
+	// ConsumeOnce (which delegates to Consume) returns a clear error
+	// instead. Construct a separate Consumer per (stream, group) pair.
+	if !c.consumed.CompareAndSwap(false, true) {
+		return fmt.Errorf("redisbackend: Consumer already consumed; construct a separate Consumer per stream: %w", messaging.ErrInvalidConsumer)
 	}
 	streamName := b.Exchange
 	c.consumer.Consume(ctx, streamName, func(ctx context.Context, sm stream.Message) error {

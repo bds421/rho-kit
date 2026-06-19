@@ -177,6 +177,11 @@ func TestAppend_RejectsInvalidBoundedFields(t *testing.T) {
 		mut  func(*Entry)
 	}{
 		{"id too long", func(e *Entry) { e.ID = strings.Repeat("a", MaxIDLen+1) }},
+		{"id invalid utf8", func(e *Entry) { e.ID = string([]byte{0xff}) }},
+		{"id contains nul", func(e *Entry) { e.ID = "entry\x001" }},
+		{"id contains newline", func(e *Entry) { e.ID = "entry\n1" }},
+		{"id contains space", func(e *Entry) { e.ID = "entry 1" }},
+		{"id contains tab", func(e *Entry) { e.ID = "entry\t1" }},
 		{"tenant too long", func(e *Entry) { e.TenantID = strings.Repeat("t", MaxTenantIDLen+1) }},
 		{"tenant invalid token", func(e *Entry) { e.TenantID = "tenant/1" }},
 		{"actor too long", func(e *Entry) { e.Actor = strings.Repeat("a", MaxActorLen+1) }},
@@ -907,6 +912,82 @@ func TestVerifyChain_SpansKeyRotation(t *testing.T) {
 	require.NoError(t, logger2.VerifyChain(context.Background(), "t"))
 }
 
+// countingSecrets wraps a SecretSource and tallies Resolve calls per
+// keyID so a test can assert that List/VerifyChain memoize resolution
+// instead of issuing one (potentially remote) Resolve per verified row.
+type countingSecrets struct {
+	inner    SecretSource
+	mu       sync.Mutex
+	resolves map[string]int
+}
+
+func newCountingSecrets(inner SecretSource) *countingSecrets {
+	return &countingSecrets{inner: inner, resolves: map[string]int{}}
+}
+
+func (c *countingSecrets) CurrentKeyID(ctx context.Context) (string, error) {
+	return c.inner.CurrentKeyID(ctx)
+}
+
+func (c *countingSecrets) Resolve(ctx context.Context, keyID string) ([]byte, error) {
+	c.mu.Lock()
+	c.resolves[keyID]++
+	c.mu.Unlock()
+	return c.inner.Resolve(ctx, keyID)
+}
+
+func (c *countingSecrets) count(keyID string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.resolves[keyID]
+}
+
+// TestList_MemoizesSecretResolution asserts the N+1 fix (one Resolve per
+// distinct keyID per page, not one per row). Without memoization a page
+// of N entries signed under one key would issue N Resolve calls — one
+// remote round-trip each for KMS/Vault-backed sources.
+func TestList_MemoizesSecretResolution(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+
+	const rows = 5
+	for i := 0; i < rows; i++ {
+		_, err := logger.Append(context.Background(), Entry{
+			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+		})
+		require.NoError(t, err)
+	}
+
+	counter := newCountingSecrets(newTestSecrets(t))
+	verifying := New(store, counter)
+	got, _, err := verifying.List(context.Background(), Query{TenantID: "t"})
+	require.NoError(t, err)
+	require.Len(t, got, rows)
+	assert.Equal(t, 1, counter.count("k1"),
+		"List should Resolve each distinct keyID once per page, not once per row")
+}
+
+// TestVerifyChain_MemoizesSecretResolution asserts the same N+1 fix for
+// a chain sweep: one Resolve per distinct keyID across the whole chain.
+func TestVerifyChain_MemoizesSecretResolution(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+
+	const rows = 5
+	for i := 0; i < rows; i++ {
+		_, err := logger.Append(context.Background(), Entry{
+			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+		})
+		require.NoError(t, err)
+	}
+
+	counter := newCountingSecrets(newTestSecrets(t))
+	verifying := New(store, counter)
+	require.NoError(t, verifying.VerifyChain(context.Background(), "t"))
+	assert.Equal(t, 1, counter.count("k1"),
+		"VerifyChain should Resolve each distinct keyID once per sweep, not once per row")
+}
+
 func TestNewStaticSecrets_PanicsOnUnknownCurrent(t *testing.T) {
 	assert.Panics(t, func() {
 		NewStaticSecrets("missing", map[string][]byte{"v1": make([]byte, 32)})
@@ -943,4 +1024,89 @@ func TestNewStaticSecrets_PanicsOnEmptyKeyIDInMap(t *testing.T) {
 			"":   make([]byte, 32),
 		})
 	})
+}
+
+// usStore wraps a memStore but truncates OccurredAt to microsecond
+// precision on the way in, mimicking a TIMESTAMPTZ-backed store (e.g.
+// Postgres via pgx, which encodes sub-microsecond nanoseconds away on a
+// TIMESTAMPTZ column). It is the minimal model that exercises the
+// signing/persistence precision mismatch without a database.
+type usStore struct {
+	inner *memStore
+}
+
+func newUSStore() *usStore { return &usStore{inner: newMemStore()} }
+
+func (s *usStore) AppendChained(ctx context.Context, tenantID string, build func(prev Entry, prevSeq int64) (Entry, error)) (Entry, error) {
+	return s.inner.AppendChained(ctx, tenantID, func(prev Entry, prevSeq int64) (Entry, error) {
+		e, err := build(prev, prevSeq)
+		if err != nil {
+			return Entry{}, err
+		}
+		e.OccurredAt = e.OccurredAt.Truncate(time.Microsecond)
+		return e, nil
+	})
+}
+
+func (s *usStore) Get(ctx context.Context, id string) (Entry, error) {
+	return s.inner.Get(ctx, id)
+}
+
+func (s *usStore) List(ctx context.Context, q Query) ([]Entry, string, error) {
+	return s.inner.List(ctx, q)
+}
+
+func (s *usStore) RangeByTenantSeq(ctx context.Context, tenantID string, fn func(Entry) error) error {
+	return s.inner.RangeByTenantSeq(ctx, tenantID, fn)
+}
+
+// TestAppend_SurvivesMicrosecondTruncatingStore is the regression test
+// for the precision mismatch: canonicalForm signs OccurredAt at
+// RFC3339Nano (full ns), but TIMESTAMPTZ-backed stores persist at µs
+// granularity. With a ns-precision clock, the entry read back has a
+// different canonical form and Get/List/VerifyChain reject it unless
+// Append truncates OccurredAt to µs before signing.
+func TestAppend_SurvivesMicrosecondTruncatingStore(t *testing.T) {
+	store := newUSStore()
+	// A clock whose nanosecond component is non-zero modulo a
+	// microsecond — exactly what time.Now() yields on Linux.
+	nsClock := func() time.Time {
+		return time.Date(2026, 6, 15, 12, 0, 0, 123456789, time.UTC)
+	}
+	logger := New(store, newTestSecrets(t), WithClock(nsClock))
+
+	written, err := logger.Append(context.Background(), Entry{
+		TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+	})
+	require.NoError(t, err)
+
+	got, err := logger.Get(context.Background(), written.ID)
+	require.NoError(t, err)
+	assert.Equal(t, written.OccurredAt, got.OccurredAt)
+
+	out, _, err := logger.List(context.Background(), Query{TenantID: "t"})
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+
+	require.NoError(t, logger.VerifyChain(context.Background(), "t"))
+}
+
+// TestAppend_TruncatesCallerSuppliedOccurredAt verifies the truncation
+// also applies when the caller supplies a ns-precision OccurredAt rather
+// than relying on the clock.
+func TestAppend_TruncatesCallerSuppliedOccurredAt(t *testing.T) {
+	store := newUSStore()
+	logger := New(store, newTestSecrets(t))
+
+	occurred := time.Date(2026, 6, 15, 12, 0, 0, 987654321, time.UTC)
+	written, err := logger.Append(context.Background(), Entry{
+		TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+		OccurredAt: occurred,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, occurred.Truncate(time.Microsecond), written.OccurredAt)
+
+	got, err := logger.Get(context.Background(), written.ID)
+	require.NoError(t, err)
+	assert.Equal(t, written.OccurredAt, got.OccurredAt)
 }

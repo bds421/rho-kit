@@ -250,8 +250,15 @@ revocation checker is configured, missing `jti` fails closed.
 ### Testing JWTs
 
 ```go
-ks, _ := jwtutil.ParseKeySetFromPEM(testPrivKeyPEM, "test-kid")
-provider := jwtutil.NewProviderWithKeySet(ks) // no HTTP fetch
+// ParseKeySetFromPEM takes the PEM-encoded verification (public) key.
+ks, _ := jwtutil.ParseKeySetFromPEM(testPubKeyPEM, "test-kid")
+// NewProviderWithKeySet panics unless an issuer policy AND an audience
+// policy are supplied (RFC 7519 confused-deputy guard). In tests use the
+// explicit allow-any opt-outs or pin the expected values.
+provider := jwtutil.NewProviderWithKeySet(ks, // no HTTP fetch
+    jwtutil.WithExpectedIssuer("https://issuer.test"),
+    jwtutil.WithExpectedAudience("test-audience"),
+)
 ```
 
 ## API Keys (Opaque, External-Facing)
@@ -444,14 +451,16 @@ Options:
 - `WithSecret(key)` — Required HMAC key (min 32 bytes).
 - `WithSecrets(current, previous...)` — Zero-downtime rotation; signs new cookies with `current` and accepts previous secrets until the overlap window ends.
 - `WithDevSecret()` — Local-development-only random per-process secret.
-- `WithSecure(false)` — Explicit local plain-HTTP opt-out; default is `Secure=true`.
+- `WithoutSecureCookieForLocalHTTP()` — Explicit local plain-HTTP opt-out; default is `Secure=true`.
 - `WithAllowedOrigins(origin...)` — Origin/Referer allowlist; each entry must be a full `http(s)://host[:port]` origin with no path, query, fragment, userinfo, or trailing slash.
 - `WithCookieName(name)` — Custom cookie name (default: `__csrf`).
 - `WithHeaderName(name)` — Custom header name (default: `X-CSRF-Token`).
 - `WithSameSite(mode)` — SameSite attribute (default: `Lax`).
 
-**Note:** `csrf.RequireCSRF` (header-presence-only check) is deprecated.
-Use `csrf.New()` for all new code.
+**Note:** Use `csrf.New()` (cookie + signed-token double-submit with
+Origin/Referer checks) for all new code. For defense-in-depth, wrap handlers
+with `csrf.RequireJSONContentType` so simple-request forms cannot smuggle
+state-changing payloads.
 
 ## Anti-Patterns
 
@@ -461,7 +470,7 @@ Use `csrf.New()` for all new code.
 - **Never** trust `X-User-Id` / `x-user-id` identity metadata without mTLS verification and an impersonation guard — use `auth.RequireS2SAuth` or `grpcx/interceptor.MTLSAuthUnary`.
 - **Never** reuse `SSRFSafeTransport` across requests — DNS can change.
 - **Never** skip SSRF validation on user-supplied webhook URLs.
-- **Never** use `csrf.RequireCSRF` for new browser flows — use `csrf.New(...)` with a shared secret.
+- **Never** rely on a header-presence-only CSRF check for browser flows — use `csrf.New(...)` (signed double-submit token + Origin/Referer allowlist) with a shared secret.
 - **Never** store API-key plaintext or log it — persist only the SHA-256 hash; `apikey.Generate`/`Manager.Issue` return the token once.
 - **Never** run API keys through `crypto/passhash` (argon2) — that's for low-entropy passwords; high-entropy keys use the SHA-256 lookup hash in `security/apikey`.
 - **Never** distinguish "unknown key" from "wrong secret" in responses — both are 401, as `httpx/middleware/apikey` does, so endpoints don't leak which key ids exist.

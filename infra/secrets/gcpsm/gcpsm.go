@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
-	"google.golang.org/api/option"
+	gax "github.com/googleapis/gax-go/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -17,7 +17,7 @@ import (
 // API is the minimal GCP Secret Manager surface this backend uses. The
 // real [*secretmanager.Client] satisfies it; tests stub it.
 type API interface {
-	AccessSecretVersion(ctx context.Context, req *secretmanagerpb.AccessSecretVersionRequest, opts ...option.ClientOption) (*secretmanagerpb.AccessSecretVersionResponse, error)
+	AccessSecretVersion(ctx context.Context, req *secretmanagerpb.AccessSecretVersionRequest, opts ...gax.CallOption) (*secretmanagerpb.AccessSecretVersionResponse, error)
 }
 
 // Loader implements [secrets.Loader] backed by GCP Secret Manager.
@@ -68,7 +68,10 @@ func New(api API, opts ...Option) *Loader {
 //   - (zero, secrets.ErrSecretNotFound)      when GCP reports NotFound
 //   - (zero, wrapped ErrLoaderUnavailable)   on transport / auth errors
 func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
-	name := l.resolveName(key)
+	name, err := l.resolveName(key)
+	if err != nil {
+		return secrets.Secret{}, err
+	}
 	resp, err := l.api.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{
 		Name: name,
 	})
@@ -84,22 +87,33 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 	}
 	version := ""
 	if resp.Name != "" {
-		// Name is "projects/P/secrets/S/versions/N"; expose N.
+		// Name is the full resource path
+		// "projects/P/secrets/S/versions/N"; Secret.Version exposes it
+		// verbatim. Unlike awssm (bare VersionId) and vaultkv (bare
+		// integer), gcpsm returns the full path — see gcpsm_test.go,
+		// which pins this behavior.
 		version = resp.Name
 	}
 	return secrets.MakeSecret(append([]byte(nil), resp.Payload.Data...), version), nil
 }
 
-func (l *Loader) resolveName(key string) string {
+func (l *Loader) resolveName(key string) (string, error) {
 	// If the caller passes a fully-qualified path, use it verbatim so
 	// they can target a different project / secret-version per call.
 	if hasPrefix(key, "projects/") {
-		return key
+		return key, nil
 	}
 	if l.project == "" {
-		panic("gcpsm: bare secret name requires WithProject")
+		// A bare key against a loader without WithProject is a
+		// configuration error. Return it (rather than panicking) so a
+		// per-call/per-tenant key on a misconfigured loader surfaces as
+		// an error on the request path instead of crashing the caller's
+		// goroutine — matching awssm and vaultkv.
+		return "", redact.WrapSentinel(secrets.ErrLoaderUnavailable,
+			redact.WrapError("gcpsm: AccessSecretVersion "+key,
+				errors.New("bare secret name requires WithProject")))
 	}
-	return fmt.Sprintf("projects/%s/secrets/%s/versions/%s", l.project, key, l.version)
+	return fmt.Sprintf("projects/%s/secrets/%s/versions/%s", l.project, key, l.version), nil
 }
 
 func hasPrefix(s, prefix string) bool {

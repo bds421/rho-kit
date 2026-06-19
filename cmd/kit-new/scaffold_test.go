@@ -1,6 +1,8 @@
 package main
 
 import (
+	"go/format"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,6 +84,66 @@ func TestScaffold_GeneratedWireUsesAppBuilder(t *testing.T) {
 		"generated wire.go must build the service via app.Builder")
 	assert.Contains(t, wire, "Run()",
 		"generated wire.go must call Builder.Run() so signal handling and lifecycle ordering come from the kit")
+
+	// The build-time version must reach the Builder's /version probe,
+	// not just the log lines. Run() takes the version and threads it
+	// into kitapp.New so /version reports the -ldflags value.
+	assert.Contains(t, wire, "func Run(_ *slog.Logger, version string) error",
+		"generated wire.go must accept the build-time version")
+	assert.Contains(t, wire, `kitapp.New("demo", version, cfg)`,
+		"generated wire.go must thread version into kitapp.New so it reaches the /version probe")
+
+	mainBody, err := os.ReadFile(filepath.Join(out, "cmd/demo/main.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(mainBody), "svcapp.Run(logger, version)",
+		"generated main.go must pass the build-time version into Run")
+}
+
+// TestScaffold_GeneratedGoFilesAreGofmtClean guards against import
+// ordering drift in the templates: a check-only `make lint` fails on
+// non-gofmt-clean files, so every rendered .go file must already be
+// gofmt-clean as written.
+func TestScaffold_GeneratedGoFilesAreGofmtClean(t *testing.T) {
+	for name, opts := range map[string]Params{
+		"default":  {},
+		"mcp":      {MCP: true},
+		"postgres": {Postgres: true},
+		"tenant":   {Tenant: true},
+		"all":      {MCP: true, Postgres: true, Tenant: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := t.TempDir()
+			require.NoError(t, scaffold(out, Params{
+				ServiceName: "demo",
+				ModulePath:  "example.com/demo",
+				MCP:         opts.MCP,
+				Postgres:    opts.Postgres,
+				Tenant:      opts.Tenant,
+			}))
+
+			err := filepath.WalkDir(out, func(path string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if d.IsDir() || !strings.HasSuffix(path, ".go") {
+					return nil
+				}
+				src, readErr := os.ReadFile(path)
+				if readErr != nil {
+					return readErr
+				}
+				formatted, fmtErr := format.Source(src)
+				if fmtErr != nil {
+					return fmtErr
+				}
+				rel, _ := filepath.Rel(out, path)
+				assert.Equal(t, string(formatted), string(src),
+					"%s is not gofmt-clean as rendered", rel)
+				return nil
+			})
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestScaffold_DefaultGoModHasNoUnpublishablePin(t *testing.T) {
@@ -161,6 +223,50 @@ func TestScaffold_AcceptsKebabServiceName(t *testing.T) {
 
 func TestScaffold_RejectsEmptyModulePath(t *testing.T) {
 	require.Error(t, scaffold(t.TempDir(), Params{ServiceName: "demo"}))
+}
+
+func TestScaffold_RejectsUnsafeModulePath(t *testing.T) {
+	// Each of these would otherwise be rendered verbatim into go.mod's
+	// module line and the import strings in main.go/wire.go, producing a
+	// silently broken tree or injecting content into generated files.
+	cases := map[string]string{
+		"space":           "example.com/my service",
+		"newline":         "example.com/demo\nrequire evil v1.0.0",
+		"quote":           `example.com/"demo"`,
+		"leading slash":   "/example.com/demo",
+		"trailing slash":  "example.com/demo/",
+		"empty element":   "example.com//demo",
+		"tab":             "example.com/de\tmo",
+		"backtick inject": "example.com/demo`)\nvar x = `",
+	}
+	for name, modulePath := range cases {
+		t.Run(name, func(t *testing.T) {
+			out := t.TempDir()
+			err := scaffold(out, Params{ServiceName: "demo", ModulePath: modulePath})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "ModulePath")
+			assert.NotContains(t, err.Error(), modulePath, "error must not echo the rejected value")
+
+			// A rejected module path must abort before any file is written.
+			entries, readErr := os.ReadDir(out)
+			require.NoError(t, readErr)
+			assert.Empty(t, entries, "scaffold must not write files when ModulePath is invalid")
+		})
+	}
+}
+
+func TestValidateModulePath_AcceptsValidPaths(t *testing.T) {
+	valid := []string{
+		"example.com/demo",
+		"github.com/org/my-service",
+		"github.com/org/my-service/v2",
+		"example.com/demo_v1",
+		"single",
+		"k8s.io/api",
+	}
+	for _, p := range valid {
+		assert.NoErrorf(t, ValidateModulePath(p), "expected %q to be a valid module path", p)
+	}
 }
 
 func TestScaffold_RefusesToOverwriteExistingFiles(t *testing.T) {
@@ -478,6 +584,8 @@ func TestScaffold_TenantFlag_WiresTenantWrappers(t *testing.T) {
 	gomod, err := os.ReadFile(filepath.Join(out, "go.mod"))
 	require.NoError(t, err)
 	mod := string(gomod)
+	assert.Contains(t, mod, "github.com/bds421/rho-kit/app/tenant/v2 v2.0.0",
+		"tenant scaffold's go.mod must pin app/tenant/v2 that wire.go imports")
 	assert.Contains(t, mod, "github.com/bds421/rho-kit/data/cache/rediscache/v2 v2.0.0")
 	assert.Contains(t, mod, "github.com/bds421/rho-kit/data/idempotency/redisstore/v2 v2.0.0")
 	assert.Contains(t, mod, "github.com/bds421/rho-kit/data/v2 v2.0.0")

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	kid "github.com/bds421/rho-kit/core/v2/id"
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // DurableStep is the persistence-aware analogue of [Step]. Forward and
@@ -185,16 +186,31 @@ func (e *DurableExecutor) Run(ctx context.Context, instanceID string) error {
 // resource until it is ready), so resuming sequentially lets one slow or stuck
 // saga starve every other recoverable saga behind it — and, when Resume is
 // called synchronously at startup, stall the whole process. Driving them
-// concurrently isolates a stuck saga to its own slot; the bound keeps a large
-// recovery backlog from exhausting goroutines or hammering downstream APIs.
+// concurrently lets up to resumeConcurrency slow sagas make progress in
+// parallel; the bound keeps a large recovery backlog from exhausting goroutines
+// or hammering downstream APIs.
+//
+// The bound is a throughput limit, not a hard isolation guarantee: it caps the
+// blast radius to resumeConcurrency slots, but it does not cap any individual
+// saga's runtime. If resumeConcurrency or more sagas each block forever in a
+// step that ignores ctx, every slot fills, the dispatch loop blocks acquiring
+// the next slot, and Resume itself stalls until one of them returns. Steps that
+// poll must honour ctx cancellation (and callers should pass a cancellable ctx)
+// so a stuck saga can be unblocked rather than pinning a slot indefinitely.
 const resumeConcurrency = 8
 
 // Resume scans the store for non-terminal instances older than olderThan and
 // runs each to completion / compensation. Use this on service startup to
 // recover sagas left in flight by a previous process. Instances are driven
-// CONCURRENTLY (bounded by [resumeConcurrency]) so one stuck saga cannot block
-// the others. Returns the per-instance error via the summary slice (in input
-// order); individual failures do not short-circuit the batch.
+// CONCURRENTLY (up to [resumeConcurrency] at a time) so a small number of slow
+// or stuck sagas do not block the others. Returns the per-instance error via
+// the summary slice (in input order); individual failures (including a
+// panicking step) do not short-circuit the batch.
+//
+// The concurrency bound is not a per-saga timeout: if [resumeConcurrency] or
+// more recovered sagas each block forever in a ctx-ignoring step, all slots
+// fill and Resume itself stalls. Pass a cancellable ctx and write steps that
+// honour cancellation so a stuck saga can be released.
 func (e *DurableExecutor) Resume(ctx context.Context, olderThan time.Duration) ([]ResumeResult, error) {
 	pending, err := e.store.ListResumable(ctx, olderThan)
 	if err != nil {
@@ -218,6 +234,21 @@ func (e *DurableExecutor) Resume(ctx context.Context, olderThan time.Duration) (
 		go func(i int, def *DurableDefinition, instanceID string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// A panicking user step (Forward/Compensate) must not crash
+			// the host process or short-circuit the batch — it surfaces
+			// as this instance's ResumeResult.Err while siblings keep
+			// running. The raw panic value is redacted because it may
+			// carry tokens, request bodies, or domain structs.
+			defer func() {
+				if rec := recover(); rec != nil {
+					e.logger.Error("saga resume step panicked",
+						slog.String("instance", instanceID),
+						slog.String("definition", def.Name),
+						redact.Panic(rec),
+					)
+					results[i].Err = fmt.Errorf("saga: resume panicked: %s", redact.PanicValue(rec))
+				}
+			}()
 			results[i].Err = e.executeInstance(ctx, def, instanceID)
 		}(i, def, inst.ID)
 	}

@@ -466,6 +466,97 @@ func TestConcurrentSweepAndConsume_PreservesCap(t *testing.T) {
 		"concurrent Consume must make progress against an active sweeper")
 }
 
+// TestSweepDoesNotOverGrantCapDuringRollover pins the L039 sweep race:
+// sweep() must not delete a bucket that a concurrent Consume is rolling
+// to the current period while holding bk.mu. If sweep reads the stale
+// periodN and CompareAndDeletes after Consume's live-entry recheck but
+// before Consume's periodN store, the charge lands on an orphaned bucket
+// and the next Consume in the SAME window mints a fresh full cap — letting
+// total admits in one window exceed cap.
+//
+// This is a LOGICAL race, not a data race: every shared field is touched
+// through sync/atomic, so `go test -race` stays silent. The invariant is
+// the user-visible one: within any single period, total admitted units
+// never exceed cap.
+//
+// The test runs each period as a discrete, barriered phase so admits are
+// attributed to the exact window that decided them: the clock is held
+// fixed for the whole phase, all callers Consume against it, then a barrier
+// joins them before the clock advances. The bucket left behind by the
+// previous phase is stale at the start of the next, so the aggressive
+// sweeper has a freshly-stale bucket to race against the first rolling
+// Consume of every window — exactly the L039 interleaving.
+func TestSweepDoesNotOverGrantCapDuringRollover(t *testing.T) {
+	if testing.Short() {
+		t.Skip("sweep-rollover race stress test is slow under -short")
+	}
+
+	const cap = int64(50)
+	const period = time.Millisecond
+	const key = "rollover"
+	const callers = 80 // > cap so a correct window saturates at cap and any
+	// extra admit (a minted fresh cap) pushes the count strictly over cap.
+	const windows = 300
+
+	// Clock quantised to period boundaries; windowN selects the period.
+	var windowN atomic.Int64
+	periodNs := int64(period)
+	base := time.Unix(0, (time.Unix(1_700_000_000, 0).UTC().UnixNano()/periodNs)*periodNs).UTC()
+	now := func() time.Time {
+		return time.Unix(0, base.UnixNano()+windowN.Load()*periodNs).UTC()
+	}
+
+	b := memory.New(cap, period,
+		memory.WithClock(now),
+		memory.WithSweeper(time.Microsecond),
+	)
+	t.Cleanup(func() { _ = b.Close() })
+
+	ctx := context.Background()
+	for w := 0; w < windows; w++ {
+		// Pre-spawn the callers and block them on a barrier BEFORE
+		// advancing the clock, so the window flip and the burst of rolling
+		// Consumes land at the same instant the sweeper is scanning the
+		// now-stale previous bucket. That overlap is the L039 interleaving:
+		// the sweeper reads the stale periodN, a Consume rolls+charges the
+		// bucket, and the sweeper's CompareAndDelete then orphans it.
+		var admitted atomic.Int64
+		var start sync.WaitGroup
+		var ready sync.WaitGroup
+		var done sync.WaitGroup
+		start.Add(1)
+		ready.Add(callers)
+		done.Add(callers)
+		for i := 0; i < callers; i++ {
+			go func() {
+				defer done.Done()
+				ready.Done()
+				start.Wait()
+				ok, _, _, err := b.Consume(ctx, key, 1)
+				if err != nil {
+					t.Errorf("window %d: Consume err: %v", w, err)
+					return
+				}
+				if ok {
+					admitted.Add(1)
+				}
+			}()
+		}
+		ready.Wait()            // all callers parked on the barrier
+		windowN.Store(int64(w)) // flip the window: previous bucket now stale
+		start.Done()            // release the burst into the active sweep
+		done.Wait()
+
+		// The clock is fixed at window w for this whole phase, so every
+		// admit above belongs to window w. With callers > cap a correct
+		// budget saturates at exactly cap; the sweep bug mints a fresh cap
+		// mid-phase, letting the count climb strictly above cap.
+		require.LessOrEqualf(t, admitted.Load(), cap,
+			"window %d admitted %d > cap %d: sweep over-granted a fresh cap mid-rollover",
+			w, admitted.Load(), cap)
+	}
+}
+
 // TestHonorsCancelledContext pins the H-011 finding. A cancelled ctx
 // must return ctx.Err() without consuming budget or mutating state,
 // matching the Redis-backed implementation. Without this, memory and

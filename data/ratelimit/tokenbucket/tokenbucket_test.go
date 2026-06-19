@@ -222,6 +222,41 @@ func TestSweeper_RemovesColdBuckets(t *testing.T) {
 	assert.Equal(t, 0, l.Len(), "sweeper must drop fully-refilled buckets")
 }
 
+// TestSweeper_EvictsFractionalCapacityBuckets pins the rounding contract
+// between newBucket and sweep: rate.NewLimiter takes an integer burst, so
+// int(10.5) == 10 caps TokensAt at 10.0. sweep must compare a refilled
+// bucket against the real burst (the truncated capacity), not the
+// un-truncated float, otherwise a fractional capacity > 1 would never
+// evict and the per-key map grows unboundedly.
+func TestSweeper_EvictsFractionalCapacityBuckets(t *testing.T) {
+	cases := []struct {
+		name     string
+		capacity float64
+	}{
+		{name: "fractional gt one", capacity: 10.5},
+		{name: "fractional just above one", capacity: 1.5},
+		{name: "integer baseline", capacity: 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			l := New(tc.capacity, 1, WithClock(func() time.Time { return now }))
+			t.Cleanup(func() { _ = l.Close() })
+
+			// Spend one token so the bucket is no longer at full capacity.
+			require.True(t, mustAllow(t, l, "k"))
+			require.Equal(t, 1, l.Len())
+
+			// Advance well past full refill so the bucket is
+			// indistinguishable from a fresh one.
+			now = now.Add(time.Hour)
+
+			l.sweep()
+			assert.Equal(t, 0, l.Len(), "fully-refilled bucket must be evicted")
+		})
+	}
+}
+
 func TestClose_Idempotent(t *testing.T) {
 	l := New(1, 1, WithSweeper(time.Hour))
 	require.NoError(t, l.Close())

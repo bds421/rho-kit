@@ -115,6 +115,21 @@ func PerFeatureHealthChecks(conn *Connection, features []FeatureCheck) []health.
 	return checks
 }
 
+// isFailFastPolicy reports whether p is the fail-fast policy in either its
+// value form ([FailFastPolicy]) or its pointer form (*[FailFastPolicy]).
+// Both satisfy [DegradationPolicy] because the policy's methods use value
+// receivers, so a value-only type assertion would silently treat a caller's
+// &FailFastPolicy{} as non-critical/degraded — inverting the intended
+// fail-fast health semantics.
+func isFailFastPolicy(p DegradationPolicy) bool {
+	switch p.(type) {
+	case FailFastPolicy, *FailFastPolicy:
+		return true
+	default:
+		return false
+	}
+}
+
 func newFeatureHealthCheck(conn *Connection, fc FeatureCheck) health.DependencyCheck {
 	if err := health.ValidateCheckName(fc.Feature); err != nil {
 		panic("redis: invalid feature name")
@@ -123,7 +138,7 @@ func newFeatureHealthCheck(conn *Connection, fc FeatureCheck) health.DependencyC
 		panic("redis: degradation policy must not be nil")
 	}
 	checkName := fmt.Sprintf("redis-%s", fc.Feature)
-	_, isFailFast := fc.Policy.(FailFastPolicy)
+	isFailFast := isFailFastPolicy(fc.Policy)
 	return health.DependencyCheck{
 		Name: checkName,
 		Check: func(_ context.Context) string {

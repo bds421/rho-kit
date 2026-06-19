@@ -34,6 +34,15 @@ const (
 // process rather than retrying the elector in-place. Mirrors the
 // shape used by [k8slease] and [pgadvisory] for cross-adapter
 // consistency.
+//
+// On this timeout path the kit's usual "OnLost runs only after
+// OnAcquired returns" no-overlap guarantee is suspended: OnLost is
+// still invoked (matching [k8slease] / [pgadvisory] / redislock) but
+// the orphaned OnAcquired is by definition still running, so OnLost
+// may execute concurrently with it. Cleanup hooks on this path must
+// not assume exclusive access to state the leader callback touches.
+// This window only exists when WithCallbackDrainTimeout is set; the
+// default wait-forever behaviour preserves strict no-overlap.
 var ErrCallbackDrainTimeout = errors.New("leaderelection/etcd: OnAcquired callback drain timed out")
 
 // Elector is a [leaderelection.Elector] backed by an etcd lease and
@@ -151,6 +160,13 @@ func WithCallbackDrainWarnInterval(d time.Duration) Option {
 // the timeout as fatal and restart the process rather than retrying
 // the elector in-place.
 //
+// On the timeout path OnLost is still invoked (for cross-adapter
+// symmetry with [k8slease] / [pgadvisory] / redislock) even though the
+// orphaned OnAcquired has not returned, so OnLost may run concurrently
+// with the stalled leader callback — see [ErrCallbackDrainTimeout].
+// Cleanup hooks used with this option must tolerate that overlap; the
+// default wait-forever behaviour does not have it.
+//
 // Use this option when an external orchestrator (Kubernetes pod
 // restart, systemd) will SIGKILL the process within a bounded grace
 // window anyway and the kit should record the stalled-callback
@@ -259,11 +275,24 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 			break
 		}
 		if termErr != nil {
-			e.logger.Warn("leader-election: term ended with error",
-				redact.String("election", e.electionKey),
-				redact.String("identity", e.identity),
-				redact.Error(termErr),
-			)
+			// An orderly shutdown of a non-leader replica (caller ctx
+			// cancelled while Campaign blocks, or session create failing
+			// on the cancelled ctx) surfaces as a context error. That is
+			// expected steady-state teardown, not a fault, so log it at
+			// Debug to avoid a spurious warn on every clean shutdown.
+			if ctx.Err() != nil && isContextTermination(termErr) {
+				e.logger.Debug("leader-election: term ended during shutdown",
+					redact.String("election", e.electionKey),
+					redact.String("identity", e.identity),
+					redact.Error(termErr),
+				)
+			} else {
+				e.logger.Warn("leader-election: term ended with error",
+					redact.String("election", e.electionKey),
+					redact.String("identity", e.identity),
+					redact.Error(termErr),
+				)
+			}
 		}
 		if ctx.Err() != nil {
 			break
@@ -350,7 +379,26 @@ func (e *Elector) runOnce(ctx context.Context, cb leaderelection.Callbacks) (err
 		}
 	}()
 
-	drainResult := e.awaitCallbackDrain(cbDone)
+	// Hold phase: wait for the term to end before arming the drain
+	// watchdog. The watchdog (warn ticker + optional drain timeout)
+	// governs the post-leadership cleanup window, NOT the steady-state
+	// term — starting it at term start would emit spurious "still
+	// draining" warnings, record full healthy terms as "drained", and
+	// (with WithCallbackDrainTimeout) forcibly resign any healthy term
+	// longer than the timeout. This mirrors the hold-then-drain shape in
+	// pgadvisory.holdLeadership / redislock.holdLeadership / k8slease
+	// (drain in OnStoppedLeading).
+	//
+	// If OnAcquired returns on its own while still leader, the term is
+	// over with no drain accounting. Otherwise leaderCtx.Done() (lease
+	// lost or caller ctx cancelled) ends the term and we drain.
+	var drainResult callbackResult
+	select {
+	case drainResult = <-cbDone:
+		// Callback returned during a healthy term — no drain window.
+	case <-leaderCtx.Done():
+		drainResult = e.awaitCallbackDrain(cbDone)
+	}
 	leaderCancel() // ensure leader ctx is cancelled before resign
 
 	// Mark leader=false BEFORE runOnLost. The kit's contract is that
@@ -379,6 +427,13 @@ func (e *Elector) runOnce(ctx context.Context, cb leaderelection.Callbacks) (err
 	lostErr := e.runOnLost(cb)
 	termErr := joinTermErrors(lostErr, drainResult)
 	return termErr, drainResult.timedOut
+}
+
+// isContextTermination reports whether a term error is just the caller
+// ctx being cancelled or timing out — the expected end of every standby
+// replica's term on orderly shutdown rather than a backend fault.
+func isContextTermination(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func detachedReleaseContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {

@@ -42,7 +42,10 @@ type Hooks struct {
 // calling the corresponding hook before/after each operation.
 //
 // The wrapper forwards [Lister], [Copier], [PresignedStore], and
-// [PublicURLer] capabilities if the underlying backend implements them.
+// [PublicURLer] capabilities if the underlying backend implements them. It
+// also exposes [BatchDeleter] so [DeleteMany] runs BeforeDelete/AfterDelete
+// for batch deletions instead of bypassing the hooks via the backend's native
+// batch delete.
 //
 // Panics if backend is nil — a nil backend would only surface as a confusing
 // nil-pointer panic on the first storage operation.
@@ -160,6 +163,65 @@ func (h *hookedStorage) Delete(ctx context.Context, key string) error {
 		h.hooks.AfterDelete(ctx, key)
 	}
 	return nil
+}
+
+// DeleteMany runs BeforeDelete/AfterDelete around a bulk delete so batch
+// deletions honour the same hooks as single Delete calls. Without it,
+// [DeleteMany] would discover the underlying backend's native BatchDeleter
+// through Unwrap and bypass the hooks entirely (only the sequential fallback
+// fired them). BeforeDelete still acts as a per-key abort; aborted keys are
+// reported as failures and never reach the backend. The method is defined on
+// *hookedStorage so every WithHooks wrapper variant exposes BatchDeleter.
+func (h *hookedStorage) DeleteMany(ctx context.Context, keys []string) map[string]error {
+	var failures map[string]error
+	fail := func(key string, err error) {
+		if failures == nil {
+			failures = make(map[string]error)
+		}
+		failures[key] = err
+	}
+
+	toDelete := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if err := ValidateKey(key); err != nil {
+			fail(key, err)
+			continue
+		}
+		if h.hooks.BeforeDelete != nil {
+			if err := h.hooks.BeforeDelete(ctx, key); err != nil {
+				fail(key, err)
+				continue
+			}
+		}
+		toDelete = append(toDelete, key)
+	}
+
+	if bd, ok := AsBatchDeleter(h.backend); ok {
+		for key, err := range bd.DeleteMany(ctx, toDelete) {
+			fail(key, err)
+		}
+		for _, key := range toDelete {
+			if _, failed := failures[key]; failed {
+				continue
+			}
+			if h.hooks.AfterDelete != nil {
+				h.hooks.AfterDelete(ctx, key)
+			}
+		}
+		return failures
+	}
+
+	// Sequential fallback: no native batch delete on the backend.
+	for _, key := range toDelete {
+		if err := h.backend.Delete(ctx, key); err != nil {
+			fail(key, err)
+			continue
+		}
+		if h.hooks.AfterDelete != nil {
+			h.hooks.AfterDelete(ctx, key)
+		}
+	}
+	return failures
 }
 
 // Close delegates [storage.Close] to the wrapped backend so a

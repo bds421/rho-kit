@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,6 +146,71 @@ func TestRunAll_DetectsMissingHeader(t *testing.T) {
 		}
 	}
 	t.Fatal("secheaders-x-content-type-options probe not found in results")
+}
+
+func TestRunAll_DuplicateListHeadersPass(t *testing.T) {
+	// RFC 9110 §5.2/§5.3: multiple field lines with the same name are
+	// equivalent to a single comma-joined value. A proxy appending its
+	// own Cache-Control / X-Frame-Options line is legal, so the value
+	// and presence probes must NOT treat duplicates as missing/mismatched.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Cache-Control", "no-store")
+		w.Header().Add("Cache-Control", "no-store")
+		w.Header().Add("X-Content-Type-Options", "nosniff")
+		w.Header().Add("X-Content-Type-Options", "nosniff")
+		w.Header().Add("X-Frame-Options", "DENY")
+		w.Header().Add("X-Frame-Options", "DENY")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	hc := &http.Client{Timeout: 2 * time.Second}
+	results := runAll(hc, srv.URL)
+
+	wantPass := map[string]bool{
+		"readiness-no-store":                true,
+		"secheaders-x-content-type-options": true,
+		"secheaders-x-frame-options":        true,
+	}
+	seen := map[string]bool{}
+	for _, r := range results {
+		if wantPass[r.Probe] {
+			seen[r.Probe] = true
+			assert.Equalf(t, StatusPass, r.Status,
+				"duplicate-but-valid header must PASS for %s: %s", r.Probe, r.Detail)
+		}
+	}
+	assert.Len(t, seen, len(wantPass), "expected all list-header probes present in results")
+}
+
+func TestExpectHeader_AbsentHeaderFails(t *testing.T) {
+	// Guard the merge path: a header with no field lines must still FAIL
+	// (the merge must not turn "absent" into "present").
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	status, detail := expectHeader(&http.Client{Timeout: 2 * time.Second}, srv.URL, "Cache-Control", "no-store")
+	assert.Equal(t, StatusFail, status)
+	assert.Contains(t, detail, "Cache-Control")
+
+	status, _ = expectHeaderPresent(&http.Client{Timeout: 2 * time.Second}, srv.URL, "X-Frame-Options")
+	assert.Equal(t, StatusFail, status)
+}
+
+func TestExpectHeader_DuplicateWithOneMatchingValuePasses(t *testing.T) {
+	// A proxy may append a different value; the merged value still
+	// contains the expected token, so the contains-check must PASS.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Cache-Control", "private")
+		w.Header().Add("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	status, detail := expectHeader(&http.Client{Timeout: 2 * time.Second}, srv.URL, "Cache-Control", "no-store")
+	assert.Equalf(t, StatusPass, status, "merged Cache-Control should contain no-store: %s", detail)
 }
 
 func TestExitNonZero_FailAlwaysExitsNonZero(t *testing.T) {
@@ -304,6 +370,46 @@ func TestParseConfig_RejectsInvalidFormatTimeoutAndProbePath(t *testing.T) {
 			assert.NotContains(t, err.Error(), tc.forbidden)
 		})
 	}
+}
+
+func TestRun_FlagParseErrorPrintedOnce(t *testing.T) {
+	// flag.ContinueOnError + fs.SetOutput(stderr) makes the flag package
+	// print the error + usage; run() must not re-print the same message,
+	// otherwise every bad-flag invocation emits it twice in CI logs.
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-nonexistent-flag"}, &stdout, &stderr)
+
+	assert.Equal(t, 2, code)
+	out := stderr.String()
+	assert.Contains(t, out, "flag provided but not defined: -nonexistent-flag")
+	assert.Equal(t, 1, strings.Count(out, "flag provided but not defined: -nonexistent-flag"),
+		"flag-parse error must appear exactly once, got:\n%s", out)
+	// Usage block from the flag package is still present.
+	assert.Contains(t, out, "Usage of kit-verify:")
+}
+
+func TestRun_ValidationErrorPrintedOnce(t *testing.T) {
+	// Post-parse validation errors are NOT printed by the flag package,
+	// so run() is the sole printer and must emit them exactly once.
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-url=https://example.test", "-format=yaml"}, &stdout, &stderr)
+
+	assert.Equal(t, 2, code)
+	out := stderr.String()
+	assert.Equal(t, 1, strings.Count(out, "-format must be text or json"),
+		"validation error must appear exactly once, got:\n%s", out)
+}
+
+func TestRun_HelpExitsZeroWithoutError(t *testing.T) {
+	// -h triggers flag.ErrHelp: run() must exit 0 and not print an error
+	// line (the flag package already wrote usage to stderr).
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-h"}, &stdout, &stderr)
+
+	assert.Equal(t, 0, code)
+	out := stderr.String()
+	assert.Contains(t, out, "Usage of kit-verify:")
+	assert.NotContains(t, out, "kit-verify: flag parse error already reported")
 }
 
 func TestRun_RejectsUnsupportedURLScheme(t *testing.T) {

@@ -265,6 +265,11 @@ func (m *grpcModule) serve() error {
 	}
 	lis, err := net.Listen("tcp", m.addr)
 	if err != nil {
+		// Log the redacted cause (concrete error type + chain) so an
+		// operator can distinguish a port conflict (EADDRINUSE) from a
+		// permissions or invalid-address failure. The returned error stays
+		// sanitized so the listen address is never leaked upstream.
+		m.logger.Error("gRPC listen failed", redact.Error(err), redact.ErrorChain(err))
 		return fmt.Errorf("gRPC listen failed")
 	}
 

@@ -149,7 +149,11 @@ func IDFromTrusted(s string) ID { return ID(s) }
 func MustNewID(s string) ID {
 	id, err := NewID(s)
 	if err != nil {
-		panic("tenant: MustNewID invalid input")
+		// The ValidateID messages identify which rule failed (empty,
+		// overlong, whitespace/forbidden byte at offset N) without
+		// echoing input content, so propagating err is redaction-safe
+		// and makes a startup-crash directly diagnosable.
+		panic(fmt.Sprintf("tenant: MustNewID: %v", err))
 	}
 	return id
 }

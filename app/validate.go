@@ -11,8 +11,8 @@ import (
 // loopback (127.0.0.0/8 or ::1). Used by the production-safety
 // validator to enforce that the internal ops port (which serves
 // /metrics, /healthz, /ready without authentication) binds only to
-// the loopback interface unless [Builder.AllowInternalNonLoopback]
-// has been called.
+// the loopback interface unless [http.WithInternalNonLoopback]
+// has been registered.
 //
 // FR-010 [HIGH]: pre-2.0 the validator only rejected unspecified
 // (wildcard) hosts, so INTERNAL_HOST=10.0.0.5 (or any other reachable
@@ -20,7 +20,7 @@ import (
 // The new contract is: only loopback binds pass the default check;
 // everything else — wildcard, private-network, public IP, or
 // hostname that resolves outside loopback — requires
-// AllowInternalNonLoopback.
+// http.WithInternalNonLoopback.
 //
 // Empty host counts as loopback because [InternalConfig.Addr]
 // defaults empty to "127.0.0.1" at listen time. Bracket-only IPv6
@@ -65,11 +65,11 @@ func isLoopbackHost(host string) bool {
 //
 // All checks run unconditionally. The kit does not have a development
 // mode — production safety is the only mode. Each tightening can be
-// individually relaxed via an explicit Without*() opt-out (e.g.
-// [Builder.WithoutTLS], [Builder.AllowInternalNonLoopback],
-// [Builder.WithoutJWTIssuer], [Builder.WithoutJWTAudience]). Those
-// opt-outs are deliberate, documented declarations — they are not
-// gated on KIT_ENV.
+// individually relaxed via an explicit opt-out registered on the
+// owning module (e.g. [http.WithoutTLS], [http.WithInternalNonLoopback]
+// from app/http, and [jwt.WithoutIssuer], [jwt.WithoutAudience] from
+// app/jwt). Those opt-outs are deliberate, documented declarations —
+// they are not gated on KIT_ENV.
 func (b *Builder) Validate() error {
 	if b == nil {
 		return fmt.Errorf("builder is nil")
@@ -121,9 +121,9 @@ func (b *Builder) validateProductionSafety() error {
 	// C-2: TLS must be configured. Partial TLSConfig silently falls back
 	// to plaintext HTTP (see netutil.TLSConfig.Enabled). Operators who
 	// terminate TLS at an external proxy must opt in explicitly via
-	// http.AllowPlaintext() or b.WithoutTLS().
+	// http.WithoutTLS().
 	if !b.cfg.TLS.Enabled() && !httpCfg.allowPlaintext {
-		return fmt.Errorf("TLS must be configured (TLS_CA_CERT, TLS_CERT, TLS_KEY) or call http.AllowPlaintext() / WithoutTLS for services fronted by an external TLS terminator — partial configuration silently falls back to plaintext HTTP")
+		return fmt.Errorf("TLS must be configured (TLS_CA_CERT, TLS_CERT, TLS_KEY) or call http.WithoutTLS() for services fronted by an external TLS terminator — partial configuration silently falls back to plaintext HTTP")
 	}
 
 	// Lens F A.5: a Builder.Run() call that declares no rate limiter at
@@ -146,7 +146,7 @@ func (b *Builder) validateProductionSafety() error {
 	// requires loopback; non-loopback binds — wildcard, private,
 	// public — all need explicit AllowInternalNonLoopback.
 	if !isLoopbackHost(b.cfg.Internal.Host) && !httpCfg.allowInternalNonLoopback {
-		return fmt.Errorf("Internal.Host is not loopback — exposes unauthenticated /metrics on a routable interface; bind to 127.0.0.1 / localhost / ::1, or call http.AllowInternalNonLoopback() / AllowInternalNonLoopback when network isolation is enforced")
+		return fmt.Errorf("Internal.Host is not loopback — exposes unauthenticated /metrics on a routable interface; bind to 127.0.0.1 / localhost / ::1, or call http.WithInternalNonLoopback() when network isolation is enforced")
 	}
 
 	// Postgres TLS validation lives inside the pgx package's Connect — by

@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -240,6 +241,33 @@ func TestServer_DecodeFailure_DoesNotLeakArgumentValue(t *testing.T) {
 	assert.NotContains(t, res.Content[0].Text, "secret-token")
 }
 
+func TestServer_DecodeFailure_RecordsAuditEntry(t *testing.T) {
+	// Argument-decode failures must produce a failure audit entry, the same
+	// as validation and destructive-gate refusals, so operators reviewing the
+	// audit log see malformed-argument probes — not just schema-validation
+	// probes — against a tool.
+	logger, _ := newTestActionLogger(t)
+	s := mcp.NewServer(
+		mcp.WithActionLogger(logger),
+		withTestActor("agent-decode"),
+	)
+	require.NoError(t, mcp.Register[timeIn, echoOut](s, "time", func(context.Context, timeIn) (echoOut, error) {
+		return echoOut{}, nil
+	}))
+
+	h := withTenantHandler(s.HTTP(), "tenant-decode")
+	res, rpc := callTool(t, h, "time", map[string]any{"at": "not-a-date"}, nil)
+	require.Nil(t, rpc.Error)
+	require.True(t, res.IsError, "decode failure must surface as a tool error")
+
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-decode"})
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "decode failure must be audited")
+	assert.Equal(t, actionlog.OutcomeFailure, entries[0].Outcome)
+	// The raw argument value must NOT leak into the audit reason.
+	assert.NotContains(t, entries[0].Reason, "not-a-date")
+}
+
 func TestServer_UnknownTool_ReturnsErrorResponse(t *testing.T) {
 	// Pre-SDK kits scrubbed the tool name from the "method not
 	// found" message. The SDK ships the spec-compliant form
@@ -249,10 +277,12 @@ func TestServer_UnknownTool_ReturnsErrorResponse(t *testing.T) {
 	// only asserts the error surfaces.
 	s := newTestServer(t)
 	res, rpc := callTool(t, s.HTTP(), "unknown-tool-xyz", map[string]any{}, nil)
-	if rpc.Error != nil {
-		return
-	}
-	require.True(t, res.IsError, "unknown tool must produce an error response")
+	// Whichever envelope the SDK chooses for an unknown tool, exactly one of
+	// the two error channels must signal failure. Asserting the disjunction
+	// (rather than returning early on the rpc.Error branch) catches a
+	// regression where unknown tools start returning a success envelope.
+	require.True(t, rpc.Error != nil || res.IsError,
+		"unknown tool must produce an error response (rpc.Error or res.IsError)")
 }
 
 func TestServer_HandlerInternalError_MaskedToCallerAndLoggedServerSide(t *testing.T) {
@@ -275,6 +305,57 @@ func TestServer_HandlerInternalError_MaskedToCallerAndLoggedServerSide(t *testin
 	logged := logBuf.String()
 	assert.Contains(t, logged, "<redacted error")
 	assert.NotContains(t, logged, "boom: pq: relation")
+}
+
+func TestServer_HandlerPanic_RecoveredAndMaskedToCaller(t *testing.T) {
+	// The SDK dispatch path has no recover(); a panicking handler would
+	// otherwise unwind to net/http (crashing the server) and skip the
+	// audit append. wrapToolHandler must recover, mask the caller, and
+	// log server-side without leaking the panic value.
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	s := mcp.NewServer(mcp.WithLogger(logger))
+	boom := func(_ context.Context, _ echoIn) (echoOut, error) {
+		panic("handler exploded: secret=hunter2")
+	}
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "fail", boom))
+
+	res, rpc := callTool(t, s.HTTP(), "fail", map[string]any{"message": "x"}, nil)
+	require.Nil(t, rpc.Error)
+	require.True(t, res.IsError, "a panicking handler must surface as a tool error, not crash")
+	require.Len(t, res.Content, 1)
+	assert.Equal(t, "internal error", res.Content[0].Text)
+
+	logged := logBuf.String()
+	assert.Contains(t, logged, "panic")
+	assert.NotContains(t, logged, "hunter2",
+		"the panic value must not leak to the caller-visible content")
+}
+
+func TestServer_HandlerPanic_StrictAudit_WritesFailureEntry(t *testing.T) {
+	// The strict-audit invariant: every executed tool call produces a
+	// signed entry. A panicking handler still "executed" (side effects
+	// may have occurred), so the recovered panic must be audited as a
+	// failure.
+	logger, _ := newTestActionLogger(t)
+	s := mcp.NewServer(mcp.WithActionLogger(logger), mcp.WithActorFromHeader("X-Actor-Id"))
+	boom := func(_ context.Context, _ echoIn) (echoOut, error) {
+		panic("handler exploded")
+	}
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "fail", boom))
+
+	h := withTenantHandler(s.HTTP(), "tenant-panic")
+	res, rpc := callTool(t, h, "fail", map[string]any{"message": "x"},
+		func(r *http.Request) { r.Header.Set("X-Actor-Id", "agent-7") })
+	require.Nil(t, rpc.Error)
+	require.True(t, res.IsError)
+
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-panic"})
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "a recovered handler panic must still produce an audit entry")
+	assert.Equal(t, actionlog.OutcomeFailure, entries[0].Outcome)
+	assert.NotEmpty(t, entries[0].Reason)
 }
 
 func TestServer_RejectsCyclicTypeAtRegistration(t *testing.T) {
@@ -304,6 +385,72 @@ func TestServer_RejectsUnsupportedTypeWithoutReflectingName(t *testing.T) {
 	assert.NotContains(t, err.Error(), "secret-token-tool")
 	assert.NotContains(t, err.Error(), "secretTokenUnsupportedIn")
 	assert.NotContains(t, err.Error(), "chan")
+}
+
+func TestServer_RejectsNonObjectInputType(t *testing.T) {
+	// SDK AddTool panics unless the input schema's "type" is exactly
+	// "object". validate.SchemaFor emits a non-object schema for scalar/
+	// slice/time.Time/json.RawMessage In types; Register must surface a
+	// clean error (and leave the catalog unchanged) rather than panic
+	// after reserving the slot.
+	s := mcp.NewServer()
+	err := mcp.Register[string, echoOut](s, "scalar-tool", func(_ context.Context, _ string) (echoOut, error) {
+		return echoOut{}, nil
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "schema")
+	assert.NotContains(t, err.Error(), "scalar-tool",
+		"registration error must not reflect the tool name")
+	assert.Empty(t, s.Tools(), "failed registration must not leave a phantom catalog entry")
+	// The slot must be free: a follow-up registration with the same name
+	// and a valid type must succeed.
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "scalar-tool", echoHandler))
+}
+
+func TestServer_RejectsNonObjectOutputType(t *testing.T) {
+	s := mcp.NewServer()
+	err := mcp.Register[echoIn, string](s, "scalar-out-tool", func(_ context.Context, _ echoIn) (string, error) {
+		return "", nil
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "schema")
+	assert.Empty(t, s.Tools(), "failed registration must not leave a phantom catalog entry")
+}
+
+func TestServer_RejectsRawMessageInputType(t *testing.T) {
+	// json.RawMessage infers the permissive empty schema ({}), which has
+	// no "type" key and would also panic in AddTool.
+	s := mcp.NewServer()
+	err := mcp.Register[json.RawMessage, echoOut](s, "raw-tool", func(_ context.Context, _ json.RawMessage) (echoOut, error) {
+		return echoOut{}, nil
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "schema")
+	assert.Empty(t, s.Tools())
+}
+
+func TestRegister_RejectsTypelessSchemaOverrides(t *testing.T) {
+	// validateSchemaOverride accepts overrides lacking a "type" key (or
+	// with a non-string "type"); both panic in AddTool. Register must
+	// reject them up front.
+	tests := []struct {
+		name string
+		opt  mcp.ToolOption
+	}{
+		{name: "input no type", opt: mcp.WithInputSchema(json.RawMessage(`{}`))},
+		{name: "input non-string type", opt: mcp.WithInputSchema(json.RawMessage(`{"type":123}`))},
+		{name: "output no type", opt: mcp.WithOutputSchema(json.RawMessage(`{"title":"x"}`))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := mcp.NewServer()
+			err := mcp.Register[echoIn, echoOut](s, "secret-token-tool", echoHandler, tt.opt)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "schema")
+			assert.NotContains(t, err.Error(), "secret-token-tool")
+			assert.Empty(t, s.Tools())
+		})
+	}
 }
 
 func TestServer_RejectsDuplicateName(t *testing.T) {
@@ -586,6 +733,39 @@ func TestServer_ActionLog_FailureEntryRecordsReason(t *testing.T) {
 	assert.Equal(t, "kaboom", entries[0].Reason)
 }
 
+func TestServer_ActionLog_FailureReasonWithInvalidBytes_StillRecorded(t *testing.T) {
+	// A handler error embedding NUL or invalid-UTF-8 bytes (e.g. echoing
+	// raw caller input) must not poison the audit append: the signed
+	// store rejects such reasons, so the kit must sanitise the reason
+	// before building the entry. Otherwise strict sync mode loses the
+	// failure entry AND swaps the mapped caller message for a bare
+	// "internal error".
+	logger, _ := newTestActionLogger(t)
+	s := mcp.NewServer(mcp.WithActionLogger(logger), mcp.WithActorFromHeader("X-Actor-Id"))
+	boom := func(_ context.Context, _ echoIn) (echoOut, error) {
+		return echoOut{}, apperror.NewValidation("bad arg \x00\xff\xfe value")
+	}
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "fail", boom))
+
+	h := withTenantHandler(s.HTTP(), "tenant-9")
+	res, rpc := callTool(t, h, "fail", map[string]any{"message": "x"},
+		func(r *http.Request) { r.Header.Set("X-Actor-Id", "agent-bad") })
+	require.Nil(t, rpc.Error)
+	require.True(t, res.IsError)
+	require.Len(t, res.Content, 1)
+	// The validation error must still map to the caller-facing message,
+	// not be masked as "internal error" by an audit-append failure.
+	assert.Equal(t, "invalid request", res.Content[0].Text,
+		"audit sanitisation must not change the caller-facing error")
+
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-9"})
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "executed tool call must still produce an audit entry")
+	assert.Equal(t, actionlog.OutcomeFailure, entries[0].Outcome)
+	assert.NotContains(t, entries[0].Reason, "\x00", "sanitised reason must not contain NUL")
+	assert.True(t, utf8.ValidString(entries[0].Reason), "sanitised reason must be valid UTF-8")
+}
+
 func invokeCounterHandler(counter *int) mcp.Handler[echoIn, echoOut] {
 	return func(_ context.Context, in echoIn) (echoOut, error) {
 		*counter++
@@ -771,26 +951,35 @@ func TestServer_ActionLog_AsyncMode_PreservesContextValuesAfterCancellation(t *t
 	)
 	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
 
+	// Dispatch with a LIVE request context that carries a trace value but is
+	// cancelled the instant the response is written. The async audit worker
+	// must observe the value (propagated) yet a NON-cancelled context, because
+	// asyncAuditContext detaches cancellation via context.WithoutCancel. The
+	// SDK only sees a live context at dispatch time, so the audit job is
+	// guaranteed to enqueue — making the assertions below unconditional.
 	parent := context.WithValue(context.Background(), auditContextKey{}, "trace-123")
 	ctx, cancel := context.WithCancel(parent)
-	cancel()
+	defer cancel()
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hi"}}}`
 	r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body)).WithContext(ctx)
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Accept", "application/json, text/event-stream")
 	w := httptest.NewRecorder()
 	withTenantHandler(s.HTTP(), "tenant-async-context").ServeHTTP(w, r)
-	// Either the SDK refused due to cancelled context or the request
-	// went through; either way the audit job should already have been
-	// enqueued before the strict-audit invariant kicks in.
+	// Cancel after the handler returned but before the async worker drains, so
+	// any naive context inheritance would surface as a cancelled audit context.
+	cancel()
+
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer stopCancel()
 	require.NoError(t, s.Stop(stopCtx))
 
-	if logger.value != nil {
-		assert.Equal(t, "trace-123", logger.value)
-		assert.NoError(t, logger.ctxErr)
-	}
+	// Unconditional: the job MUST have enqueued and the worker context MUST
+	// preserve the value while dropping the cancellation.
+	require.Equal(t, "trace-123", logger.value,
+		"async audit context must preserve request values via WithoutCancel")
+	assert.NoError(t, logger.ctxErr,
+		"async audit context must not inherit the request's cancellation")
 }
 
 func TestServer_ActionLog_SyncMode_AppendBeforeResponse(t *testing.T) {
@@ -1129,6 +1318,59 @@ func TestServer_AsyncAudit_StopDrainsWorkers(t *testing.T) {
 	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-drain"})
 	require.NoError(t, err)
 	assert.Len(t, entries, 4)
+}
+
+func TestServer_AsyncAudit_StopAfterTimeout_StillDrains(t *testing.T) {
+	// A first Stop whose context times out while workers are still draining
+	// must NOT mark the server as cleanly stopped: a retry with a fresh
+	// context must re-wait on the worker drain rather than returning a false
+	// success that races process exit against in-flight audit appends.
+	innerLogger, store := newTestActionLogger(t)
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	blocking := &asyncBlockingLogger{
+		inner:   innerLogger,
+		release: make(chan struct{}),
+		wg:      wg,
+	}
+	s := mcp.NewServer(
+		mcp.WithActionLogger(blocking),
+		withTestActor("agent-stop-drain"),
+		mcp.WithAsyncAuditDispatch(),
+		mcp.WithAsyncAuditWorkers(1),
+		mcp.WithAsyncAuditQueue(1),
+	)
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
+
+	h := withTenantHandler(s.HTTP(), "tenant-stop-drain")
+	_, rpc := callTool(t, h, "echo", map[string]any{"message": "hi"}, nil)
+	require.Nil(t, rpc.Error)
+
+	// First Stop: the worker is blocked on the logger, so the short context
+	// must time out and report the error.
+	firstCtx, firstCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer firstCancel()
+	err := s.Stop(firstCtx)
+	require.Error(t, err, "first Stop must time out while the worker is blocked")
+
+	// Release the worker shortly AFTER the second Stop begins, so that a buggy
+	// Stop (one that returns nil immediately on the already-stopped path) would
+	// return before the append lands, whereas the correct Stop re-waits on the
+	// drain and only returns once the append has completed.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		close(blocking.release)
+	}()
+	secondCtx, secondCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer secondCancel()
+	require.NoError(t, s.Stop(secondCtx), "retry Stop must wait for the drain to complete")
+
+	// The second Stop returning successfully MUST imply the drain finished.
+	// Check immediately (no wg.Wait first) so a premature return is caught.
+	entries, _, listErr := store.List(context.Background(), actionlog.Query{TenantID: "tenant-stop-drain"})
+	require.NoError(t, listErr)
+	require.Len(t, entries, 1, "the audit append must have landed before the second Stop returned")
+	wg.Wait()
 }
 
 func TestServer_StopRejectsNilContext(t *testing.T) {

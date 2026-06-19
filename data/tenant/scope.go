@@ -84,7 +84,17 @@ func (s Scope) IsZero() bool { return s.id.IsZero() }
 // prefer this over hand-rolled string concatenation; the function
 // is a one-line guard against off-by-one mistakes in the
 // placeholder counter.
+//
+// Panics if currentArgCount is negative: a query cannot have fewer
+// than zero existing placeholders, so a negative count is a
+// programmer bug. Failing loud here matches the package's fail-loud
+// style ([MustNewScope]) and avoids silently emitting an
+// out-of-range "$0"/"$-1" that only surfaces later as an obscure
+// pgx error at query time.
 func (s Scope) WhereClause(currentArgCount int) (clause string, tenantArg any) {
+	if currentArgCount < 0 {
+		panic(fmt.Sprintf("data/tenant: WhereClause: negative currentArgCount %d", currentArgCount))
+	}
 	return fmt.Sprintf("tenant_id = $%d", currentArgCount+1), s.id.String()
 }
 

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"runtime/debug"
 	"time"
@@ -78,7 +79,11 @@ func validateBackgroundSpec(name string, fn func(context.Context) error) {
 
 func validateDependencyCheck(check health.DependencyCheck, where string) {
 	if err := health.ValidateDependencyCheck(check); err != nil {
-		panic("app: health check invalid")
+		// err is kit-controlled validator output (no caller-supplied
+		// secret content), so it is safe to surface alongside the call
+		// site. This mirrors the %w-wrapped diagnostics on the
+		// module-collected path in Builder.Run.
+		panic(fmt.Sprintf("app: %s: invalid health check: %v", where, err))
 	}
 }
 
@@ -142,4 +147,3 @@ type TracingProvider interface {
 	// flush.
 	TracingActive() bool
 }
-

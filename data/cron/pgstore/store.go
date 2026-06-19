@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"time"
 
+	robcron "github.com/robfig/cron/v3"
+
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/runtime/v2/cron"
 )
@@ -71,13 +73,20 @@ func New(db *sql.DB, opts ...Option) *Store {
 
 // Add inserts a new schedule. Returns an error if the name already
 // exists (use [Store.Upsert] for create-or-update).
+//
+// A newly added schedule is ENABLED by default: the enabled column is
+// omitted from the INSERT so its DEFAULT (TRUE) applies. Forwarding the
+// zero-value ScheduleRecord.Enabled would silently create a disabled
+// schedule that never runs — a footgun for the common Add({Name, Spec})
+// call. Use [Store.Upsert] for explicit enabled control, or [Store.Enable]
+// to toggle an existing schedule.
 func (s *Store) Add(ctx context.Context, rec ScheduleRecord) error {
 	if err := s.validate(rec); err != nil {
 		return err
 	}
-	query := fmt.Sprintf(`INSERT INTO %s (name, spec, enabled, description)
-		VALUES ($1, $2, $3, $4)`, s.table)
-	_, err := s.db.ExecContext(ctx, query, rec.Name, rec.Spec, rec.Enabled, nullString(rec.Description))
+	query := fmt.Sprintf(`INSERT INTO %s (name, spec, description)
+		VALUES ($1, $2, $3)`, s.table)
+	_, err := s.db.ExecContext(ctx, query, rec.Name, rec.Spec, nullString(rec.Description))
 	if err != nil {
 		return redact.WrapError("pgstore: Add", err)
 	}
@@ -204,22 +213,49 @@ func (s *Store) ApplyTo(ctx context.Context, scheduler *cron.Scheduler, jobs map
 	if err != nil {
 		return nil, err
 	}
-	var unknown []string
+	return applyRecords(scheduler, records, jobs), nil
+}
+
+// applyRecords registers enabled records whose name is known to jobs and
+// whose spec/name pass validation, returning the names of records that
+// were NOT registered (either unknown to this binary or invalid).
+//
+// Records are read from Postgres, which doc.go documents as editable via
+// raw SQL — that path bypasses [Store.validate]. cron.Scheduler.Add
+// PANICS on an invalid name or unparseable schedule, so a single bad row
+// would crash the consumer on every startup (a persistent crash loop).
+// Validating here turns a bad row into a skipped record the caller can
+// log, exactly like an unknown record.
+func applyRecords(scheduler *cron.Scheduler, records []ScheduleRecord, jobs map[string]JobFunc) []string {
+	var skipped []string
 	for _, rec := range records {
 		if !rec.Enabled {
 			continue
 		}
 		fn, ok := jobs[rec.Name]
 		if !ok {
-			unknown = append(unknown, rec.Name)
+			skipped = append(skipped, rec.Name)
+			continue
+		}
+		if err := validateRecord(rec); err != nil {
+			skipped = append(skipped, rec.Name)
 			continue
 		}
 		scheduler.Add(rec.Name, rec.Spec, fn)
 	}
-	return unknown, nil
+	return skipped
 }
 
 func (s *Store) validate(rec ScheduleRecord) error {
+	return validateRecord(rec)
+}
+
+// validateRecord checks a schedule's Name and Spec. The Spec is parsed
+// with the same standard cron parser runtime/cron.Scheduler.Add uses, so
+// an unparseable schedule is rejected at write time (Add/Upsert) and
+// treated as invalid at read time (ApplyTo) rather than panicking the
+// scheduler.
+func validateRecord(rec ScheduleRecord) error {
 	if !validName.MatchString(rec.Name) {
 		return fmt.Errorf("pgstore: invalid Name %q (lowercase alphanumeric + - _, max 128)", rec.Name)
 	}
@@ -228,6 +264,9 @@ func (s *Store) validate(rec ScheduleRecord) error {
 	}
 	if len(rec.Spec) > 128 {
 		return errors.New("pgstore: Spec exceeds 128 chars")
+	}
+	if _, err := robcron.ParseStandard(rec.Spec); err != nil {
+		return fmt.Errorf("pgstore: invalid Spec %q: %w", rec.Spec, err)
 	}
 	return nil
 }

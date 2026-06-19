@@ -92,6 +92,54 @@ func TestMiddleware_RejectsMissingMalformedAndWrong(t *testing.T) {
 	}
 }
 
+// TestMiddleware_UnknownIDAndBadSecretAreIndistinguishable verifies the
+// contract documented in doc.go: the middleware never reveals whether a key id
+// exists. An unknown id and a known id with a wrong secret must yield the exact
+// same 401 response. The unknown-id path additionally runs a dummy Verify so
+// it performs the same constant-time hash comparison as the bad-secret path,
+// keeping the two indistinguishable by timing as well as by body.
+func TestMiddleware_UnknownIDAndBadSecretAreIndistinguishable(t *testing.T) {
+	repo := apikeycore.NewMemoryRepository()
+	token := issue(t, repo, apikeycore.GenerateOptions{Owner: "o"})
+	h := mw.Middleware(mw.Config{Repository: repo})(okHandler())
+
+	// Known id, wrong secret: same prefix+id as a stored key, tampered tail.
+	badSecretReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	badSecretReq.Header.Set("Authorization", "Bearer "+token+"x")
+	badSecretRec := httptest.NewRecorder()
+	h.ServeHTTP(badSecretRec, badSecretReq)
+
+	// Unknown id: well-formed token whose id is not in the repository.
+	unknownReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	unknownReq.Header.Set("Authorization", "Bearer rho_00000000-0000-0000-0000-000000000000_deadbeef")
+	unknownRec := httptest.NewRecorder()
+	h.ServeHTTP(unknownRec, unknownReq)
+
+	require.Equal(t, http.StatusUnauthorized, badSecretRec.Code)
+	assert.Equal(t, badSecretRec.Code, unknownRec.Code,
+		"unknown id and bad secret must share the same status code")
+	assert.Equal(t, badSecretRec.Body.String(), unknownRec.Body.String(),
+		"unknown id and bad secret must share the same response body so id existence does not leak")
+}
+
+// TestMiddleware_UnknownIDNeverAuthenticates guards the dummy-Verify on the
+// repository-miss path: no matter what well-formed secret is presented for an
+// unknown id, the request must be rejected. A regression that let the dummy
+// key (or any default key) authenticate would surface here.
+func TestMiddleware_UnknownIDNeverAuthenticates(t *testing.T) {
+	repo := apikeycore.NewMemoryRepository()
+	h := mw.Middleware(mw.Config{Repository: repo})(okHandler())
+
+	for _, secret := range []string{"deadbeef", "", "x"} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-API-Key", "rho_00000000-0000-0000-0000-000000000000_"+secret)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code,
+			"unknown id with secret %q must be rejected", secret)
+	}
+}
+
 func TestMiddleware_RejectsExpiredAndRevoked(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	repo := apikeycore.NewMemoryRepository()

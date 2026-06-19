@@ -716,8 +716,12 @@ func validatePNGEnd(body []byte) error {
 // Entropy-coded image data is a stream of bytes where any 0xFF byte is
 // followed by a stuff byte (0x00) or by a restart marker (FFD0..FFD7).
 // A standalone FFD9 inside the entropy stream is impossible because
-// 0xFF is always stuffed. We scan forward and stop at the first FFD9
-// that is not preceded by stuffing/restart context.
+// 0xFF is always stuffed. We scan the segment headers up to SOS, then
+// scan the entropy stream for the *first* EOI (FFD9) and require it to
+// land exactly at the end of the body. A polyglot of the form
+// <valid JPEG ...FFD9><payload>FFD9 decodes cleanly (jpeg.Decode stops
+// at the first EOI and ignores trailing bytes) but the appended payload
+// sits between the first EOI and end-of-body, so it is rejected here.
 func validateJPEGEnd(body []byte) error {
 	if len(body) < 4 {
 		return ErrInvalidImage
@@ -725,16 +729,9 @@ func validateJPEGEnd(body []byte) error {
 	if body[0] != 0xFF || body[1] != 0xD8 {
 		return ErrInvalidImage
 	}
-	// Trailing bytes test is structural: the spec requires the file to
-	// end with FFD9. We don't re-parse the whole segment table — Go's
-	// jpeg.Decode already accepted the body — but we do require that
-	// the very last two bytes are FFD9 with no padding after.
-	if body[len(body)-2] != 0xFF || body[len(body)-1] != 0xD9 {
-		return ErrInvalidImage
-	}
-	// Walk the segment header chain up to SOS (FFDA). After SOS the
-	// entropy stream runs to EOI; we already verified EOI position
-	// above. This catches blatant truncation/injection in the headers.
+	// Walk the segment header chain up to SOS (FFDA). This catches
+	// blatant truncation/injection in the headers and positions us at
+	// the start of the entropy-coded stream.
 	off := 2
 	for off < len(body) {
 		if body[off] != 0xFF {
@@ -751,10 +748,13 @@ func validateJPEGEnd(body []byte) error {
 		marker = body[off]
 		off++
 		switch {
-		case marker == 0xD9: // EOI — only valid at the very end
+		case marker == 0xD9: // EOI before any SOS — only valid at the very end
+			if off != len(body) {
+				return ErrInvalidImage
+			}
 			return nil
-		case marker == 0xDA: // SOS — entropy stream follows, EOI already verified
-			return nil
+		case marker == 0xDA: // SOS — entropy stream follows up to the first EOI
+			return validateJPEGEntropyEnd(body, off)
 		case marker >= 0xD0 && marker <= 0xD8: // RSTn or SOI (already consumed)
 			continue
 		default:
@@ -771,23 +771,156 @@ func validateJPEGEnd(body []byte) error {
 	return ErrInvalidImage
 }
 
-// validateGIFEnd walks GIF data and confirms the body ends at the
-// trailer byte 0x3B with no trailing data. GIF layout is a stream of
-// blocks; the trailer terminates the data stream. Rather than re-parse
-// the entire block table (gif.Decode already accepted the body), we
-// require the last byte to be 0x3B.
+// validateJPEGEntropyEnd scans the entropy-coded stream starting at off
+// for the first EOI (FFD9) marker and requires it to terminate the body
+// with no trailing bytes. Inside the stream every 0xFF is followed by a
+// stuff byte (0x00) or a restart marker (FFD0..FFD7); the first 0xFF
+// that is not so escaped marks the end of the scan. EOI (FFD9) must be
+// the last two bytes of the body; any other marker — or trailing bytes
+// after EOI — indicates an appended-payload polyglot.
+func validateJPEGEntropyEnd(body []byte, off int) error {
+	for off < len(body) {
+		if body[off] != 0xFF {
+			off++
+			continue
+		}
+		if off+1 >= len(body) {
+			return ErrInvalidImage
+		}
+		switch next := body[off+1]; {
+		case next == 0x00: // stuffed 0xFF literal — part of entropy data
+			off += 2
+		case next >= 0xD0 && next <= 0xD7: // restart marker — part of the scan
+			off += 2
+		case next == 0xFF: // fill byte; re-examine the following byte
+			off++
+		case next == 0xD9: // EOI — must terminate the body exactly
+			if off+2 != len(body) {
+				return ErrInvalidImage
+			}
+			return nil
+		default:
+			// Any other marker inside the entropy stream is malformed.
+			return ErrInvalidImage
+		}
+	}
+	return ErrInvalidImage
+}
+
+// validateGIFEnd walks GIF data structurally and confirms the trailer
+// byte 0x3B is the final byte with no trailing data. GIF is a stream of
+// blocks; the trailer terminates the data stream. gif.Decode returns at
+// the first trailer and ignores trailing bytes, so a polyglot of the
+// form <valid GIF ...0x3B><payload>0x3B decodes cleanly and ends in
+// 0x3B — checking only the last byte would accept it. We therefore walk
+// the block structure to the first trailer and require it to be the end
+// of the body.
+//
+// GIF layout (87a/89a):
+//
+//	header(6) | logical screen descriptor(7) | [global color table] |
+//	  blocks... | trailer(0x3B)
+//
+// Each block is one of: image descriptor (0x2C), extension (0x21), or
+// trailer (0x3B). Image data and extension data are stored as a chain
+// of sub-blocks (length byte + that many bytes) ending with a zero-length
+// sub-block.
 func validateGIFEnd(body []byte) error {
-	if len(body) < 6 {
+	if len(body) < 13 {
 		return ErrInvalidImage
 	}
 	// GIF signature: "GIF87a" or "GIF89a".
-	if !bytes.Equal(body[:3], []byte("GIF")) {
+	if !bytes.Equal(body[:6], []byte("GIF87a")) && !bytes.Equal(body[:6], []byte("GIF89a")) {
 		return ErrInvalidImage
 	}
-	if body[len(body)-1] != 0x3B {
-		return ErrInvalidImage
+	off := 6 // past the 6-byte header.
+	// Logical Screen Descriptor is 7 bytes; bit 7 of the packed field
+	// (body[10]) signals a Global Color Table whose size is 3*2^(N+1).
+	packed := body[10]
+	off += 7
+	if packed&0x80 != 0 {
+		gctSize := 3 * (1 << ((packed & 0x07) + 1))
+		off += gctSize
 	}
-	return nil
+	for off < len(body) {
+		switch body[off] {
+		case 0x3B: // trailer — must be the final byte.
+			if off+1 != len(body) {
+				return ErrInvalidImage
+			}
+			return nil
+		case 0x2C: // image descriptor.
+			next, err := skipGIFImageBlock(body, off)
+			if err != nil {
+				return err
+			}
+			off = next
+		case 0x21: // extension introducer.
+			next, err := skipGIFExtensionBlock(body, off)
+			if err != nil {
+				return err
+			}
+			off = next
+		default:
+			return ErrInvalidImage
+		}
+	}
+	return ErrInvalidImage
+}
+
+// skipGIFImageBlock advances past an image descriptor (0x2C) at off:
+// 10-byte descriptor, optional local color table, LZW minimum code size
+// byte, then the image-data sub-block chain. Returns the offset of the
+// next block.
+func skipGIFImageBlock(body []byte, off int) (int, error) {
+	// Image descriptor is 10 bytes; the packed field is at offset 9.
+	if off+10 > len(body) {
+		return 0, ErrInvalidImage
+	}
+	packed := body[off+9]
+	off += 10
+	if packed&0x80 != 0 { // local color table present.
+		lctSize := 3 * (1 << ((packed & 0x07) + 1))
+		off += lctSize
+	}
+	if off >= len(body) { // LZW minimum code size byte.
+		return 0, ErrInvalidImage
+	}
+	off++ // LZW minimum code size.
+	return skipGIFSubBlocks(body, off)
+}
+
+// skipGIFExtensionBlock advances past an extension (0x21) at off: the
+// introducer, a label byte, then the sub-block chain. Returns the
+// offset of the next block.
+func skipGIFExtensionBlock(body []byte, off int) (int, error) {
+	// 0x21 introducer + 1 label byte.
+	if off+2 > len(body) {
+		return 0, ErrInvalidImage
+	}
+	off += 2
+	return skipGIFSubBlocks(body, off)
+}
+
+// skipGIFSubBlocks walks the data sub-block chain starting at off. Each
+// sub-block is a length byte followed by that many data bytes; a
+// zero-length sub-block terminates the chain. Returns the offset
+// immediately after the terminator.
+func skipGIFSubBlocks(body []byte, off int) (int, error) {
+	for {
+		if off >= len(body) {
+			return 0, ErrInvalidImage
+		}
+		size := int(body[off])
+		off++
+		if size == 0 { // block terminator.
+			return off, nil
+		}
+		off += size
+		if off > len(body) {
+			return 0, ErrInvalidImage
+		}
+	}
 }
 
 // validateWebPEnd parses the RIFF wrapper and confirms the body length

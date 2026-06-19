@@ -104,6 +104,15 @@ func WithWorkerPoolBuffer(size int) Option {
 
 // WithRegisterer sets the Prometheus registerer for eventbus metrics.
 // Default: [prometheus.DefaultRegisterer].
+//
+// Each [Bus] should use a distinct registerer. Two buses sharing one
+// registerer (including the default) register identical metric names, so
+// promutil resolves the duplicate to the SAME collector. The pool gauges
+// (eventbus_pool_active_workers, eventbus_pool_queue_depth) are written with
+// absolute Set calls, so the buses clobber each other's gauge value and a
+// Stop on one zeroes the shared queue_depth while the other still has events
+// queued. (The counters are additive and tolerate sharing.) Pass a separate
+// registerer per bus to keep their series independent.
 func WithRegisterer(reg prometheus.Registerer) Option {
 	return func(b *Bus) {
 		if b.poolCfg == nil {
@@ -499,12 +508,28 @@ func (b *Bus) HasHandlers(eventName string) bool {
 // or to an unbounded goroutine only when callers explicitly opt into
 // [WithUnboundedAsync].
 //
-// The returned error is non-nil only when the worker pool queue is full and
-// the configured [OnFullPolicy] surfaces it: [OnFullError] returns
-// [ErrQueueFull], [OnFullBlock] returns ctx.Err() if blocked too long, and
-// [OnFullDrop] returns nil (the event is dropped and metric-counted).
+// The returned error is non-nil only when the worker pool queue is full (or
+// the bus has been stopped) and the configured [OnFullPolicy] surfaces it:
+// [OnFullError] returns [ErrQueueFull] (or [ErrStopped] after Stop),
+// [OnFullBlock] returns ctx.Err() if blocked too long, and [OnFullDrop]
+// returns nil (the event is dropped and metric-counted). In unbounded-async
+// mode the same Stop gate applies even though there is no queue to saturate.
 func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredHandler, event any) error {
 	if b.pool == nil {
+		// Unbounded-async mode has no worker pool to gate on, but Stop must
+		// still halt dispatch so it matches ErrStopped's documented contract
+		// and the bounded path. ErrStopped is surfaced only to OnFullError
+		// callers (the default); Drop/Block treat shutdown as a silent drop,
+		// mirroring submit()/dispatchAsync's bounded behaviour.
+		b.startMu.Lock()
+		stopped := b.stopped
+		b.startMu.Unlock()
+		if stopped {
+			if b.onFull == OnFullError {
+				return ErrStopped
+			}
+			return nil
+		}
 		go b.runAsync(ctx, eventName, h, event)
 		return nil
 	}

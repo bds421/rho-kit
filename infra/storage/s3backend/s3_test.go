@@ -13,6 +13,7 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -334,6 +335,40 @@ func TestS3Backend_Get(t *testing.T) {
 		assert.NotContains(t, err.Error(), "secret-token")
 	})
 
+	t.Run("returns ErrObjectNotFound on typed NotFound", func(t *testing.T) {
+		t.Parallel()
+		client := &mockS3Client{
+			getFn: func(_ context.Context, _ *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+				return nil, &types.NotFound{}
+			},
+		}
+		b := newTestBackend(client)
+
+		_, _, err := b.Get(ctx, "missing.txt")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, storage.ErrObjectNotFound)
+	})
+
+	t.Run("returns ErrObjectNotFound on bodyless 404 (generic APIError)", func(t *testing.T) {
+		t.Parallel()
+		for _, code := range []string{"NoSuchKey", "NotFound"} {
+			code := code
+			t.Run(code, func(t *testing.T) {
+				t.Parallel()
+				client := &mockS3Client{
+					getFn: func(_ context.Context, _ *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+						return nil, &smithy.GenericAPIError{Code: code, Message: "Not Found"}
+					},
+				}
+				b := newTestBackend(client)
+
+				_, _, err := b.Get(ctx, "missing.txt")
+				require.Error(t, err)
+				assert.ErrorIs(t, err, storage.ErrObjectNotFound)
+			})
+		}
+	})
+
 	t.Run("returns stable error on S3 failure", func(t *testing.T) {
 		t.Parallel()
 		backendErr := errors.New("download failed for secret-token")
@@ -495,6 +530,32 @@ func TestS3Backend_PresignPutURL(t *testing.T) {
 		assert.Equal(t, "https://example.com/upload", url)
 		require.NotNil(t, presigner.putInput)
 		assert.Equal(t, map[string]string{"tenant-id": "acme"}, presigner.putInput.Metadata)
+	})
+
+	// When the caller declares a Size, it must be signed as Content-Length so
+	// the URL holder cannot upload a larger body than authorized (mirrors the
+	// Put path which sets ContentLength when meta.Size > 0).
+	t.Run("signs declared Size as Content-Length", func(t *testing.T) {
+		t.Parallel()
+		presigner := &mockPresigner{putURL: "https://example.com/upload"}
+		b := NewWithClient(&mockS3Client{}, presigner, "bucket")
+
+		_, err := b.PresignPutURL(ctx, "file.txt", 15*time.Minute, storage.ObjectMeta{Size: 1024})
+		require.NoError(t, err)
+		require.NotNil(t, presigner.putInput)
+		require.NotNil(t, presigner.putInput.ContentLength)
+		assert.Equal(t, int64(1024), *presigner.putInput.ContentLength)
+	})
+
+	t.Run("leaves Content-Length unset when Size is zero", func(t *testing.T) {
+		t.Parallel()
+		presigner := &mockPresigner{putURL: "https://example.com/upload"}
+		b := NewWithClient(&mockS3Client{}, presigner, "bucket")
+
+		_, err := b.PresignPutURL(ctx, "file.txt", 15*time.Minute, storage.ObjectMeta{})
+		require.NoError(t, err)
+		require.NotNil(t, presigner.putInput)
+		assert.Nil(t, presigner.putInput.ContentLength)
 	})
 
 	t.Run("rejects TTL exceeding maximum", func(t *testing.T) {
@@ -686,14 +747,19 @@ func TestS3Backend_List(t *testing.T) {
 		}
 		b := newTestBackend(client)
 
+		var seenErr error
 		for _, err := range b.List(ctx, "secret-token/", storage.ListOptions{}) {
-			require.Error(t, err)
-			assert.ErrorIs(t, err, backendErr)
-			assert.Contains(t, err.Error(), "s3backend: list")
-			assert.NotContains(t, err.Error(), "secret-token")
-			assert.NotContains(t, err.Error(), "access denied")
+			seenErr = err
 			break
 		}
+
+		// Assert after the loop so a List that swallows the backend error and
+		// yields nothing fails the test instead of passing vacuously.
+		require.Error(t, seenErr)
+		assert.ErrorIs(t, seenErr, backendErr)
+		assert.Contains(t, seenErr.Error(), "s3backend: list")
+		assert.NotContains(t, seenErr.Error(), "secret-token")
+		assert.NotContains(t, seenErr.Error(), "access denied")
 	})
 
 	t.Run("rejects invalid options before calling S3", func(t *testing.T) {
@@ -739,6 +805,28 @@ func TestS3Backend_Copy(t *testing.T) {
 		assert.Equal(t, "test-bucket", aws.ToString(capturedInput.Bucket))
 		assert.Equal(t, "test-bucket/src%2Ffile.txt", aws.ToString(capturedInput.CopySource))
 		assert.Equal(t, "dst/file.txt", aws.ToString(capturedInput.Key))
+	})
+
+	t.Run("encodes plus in source key so S3 does not decode it as space", func(t *testing.T) {
+		t.Parallel()
+		var capturedInput *s3.CopyObjectInput
+		client := &mockS3Client{
+			copyFn: func(_ context.Context, input *s3.CopyObjectInput) (*s3.CopyObjectOutput, error) {
+				capturedInput = input
+				return &s3.CopyObjectOutput{}, nil
+			},
+		}
+		b := newTestBackend(client)
+
+		// "+" is a valid key rune (storage.ValidateKey permits it) but S3
+		// URL-decodes x-amz-copy-source, treating a literal "+" as a space.
+		// It must be percent-encoded as %2B so the right object is copied.
+		err := b.Copy(ctx, "a+b/c.txt", "dst.txt")
+		require.NoError(t, err)
+
+		require.NotNil(t, capturedInput)
+		assert.Equal(t, "test-bucket/a%2Bb%2Fc.txt", aws.ToString(capturedInput.CopySource))
+		assert.NotContains(t, aws.ToString(capturedInput.CopySource), "+")
 	})
 
 	t.Run("applies configured KMS encryption to destination", func(t *testing.T) {
@@ -803,6 +891,53 @@ func TestS3Backend_Copy(t *testing.T) {
 		assert.NotContains(t, err.Error(), "secret-token")
 		assert.NotContains(t, err.Error(), "other-secret")
 		assert.NotContains(t, err.Error(), "not found")
+	})
+
+	// Portable callers use errors.Is(err, storage.ErrObjectNotFound) to detect
+	// a missing source (membackend and localbackend both map it that way).
+	// S3's CopyObject deserializer surfaces a missing source as a generic
+	// smithy API error with code "NoSuchKey" or "NotFound" (404), so s3backend
+	// must map those codes to keep behavior consistent across backends.
+	t.Run("maps missing source to ErrObjectNotFound", func(t *testing.T) {
+		t.Parallel()
+		cases := []struct {
+			name string
+			err  error
+		}{
+			{"NoSuchKey", &smithyErr{code: "NoSuchKey", message: "The specified key does not exist."}},
+			{"NotFound", &smithyErr{code: "NotFound", message: "Not Found"}},
+		}
+		for _, tc := range cases {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				client := &mockS3Client{
+					copyFn: func(_ context.Context, _ *s3.CopyObjectInput) (*s3.CopyObjectOutput, error) {
+						return nil, tc.err
+					},
+				}
+				b := newTestBackend(client)
+
+				err := b.Copy(ctx, "missing.txt", "dst.txt")
+				require.Error(t, err)
+				assert.ErrorIs(t, err, storage.ErrObjectNotFound)
+				assert.Contains(t, err.Error(), "s3backend: copy")
+			})
+		}
+	})
+
+	t.Run("typed NoSuchKey from copy maps to ErrObjectNotFound", func(t *testing.T) {
+		t.Parallel()
+		client := &mockS3Client{
+			copyFn: func(_ context.Context, _ *s3.CopyObjectInput) (*s3.CopyObjectOutput, error) {
+				return nil, &types.NoSuchKey{}
+			},
+		}
+		b := newTestBackend(client)
+
+		err := b.Copy(ctx, "missing.txt", "dst.txt")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, storage.ErrObjectNotFound)
 	})
 }
 

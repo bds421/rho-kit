@@ -19,7 +19,7 @@
 - `(*Runner).Run(ctx)` — blocks until SIGINT/SIGTERM or any component exits. Stops everything in reverse registration order with per-component budgets.
 - `WithStopTimeout(d)` — global stop budget. Per-component budget is `max(1s, min(stopTimeout/N, 5s))`.
 - `WithBeforeStop(fn)` — runs synchronously before component teardown. DB / broker connections are still live.
-- `HTTPServer(srv)` — adapts `*http.Server` to `Component`. Panics at construction if `ReadHeaderTimeout=0` or `Handler=nil`.
+- `NewHTTPServer(srv)` — adapts `*http.Server` to `Component`. Panics at construction if `ReadHeaderTimeout=0` or `Handler=nil`.
 - `NewFuncComponent(fn)` — wraps a function. One-shot; cannot be restarted.
 
 ## Common mistakes
@@ -27,7 +27,7 @@
 - **Long-running `Start` that ignores ctx** — `Stop` will time out because the component never returns. Always `select` on `<-ctx.Done()` in long-lived loops.
 - **Calling `Run` twice on the same `Runner`** — single-cycle by design. Construct a new `Runner` if you need to restart everything.
 - **`AddFunc` for a component that needs explicit `Stop` semantics** — `FuncComponent` cancels ctx and waits for the function to return. If your function needs an OUT-OF-BAND signal (e.g. flushing a buffer that's not ctx-aware), implement `Component` directly.
-- **`HTTPServer` without setting `ReadHeaderTimeout`** — the constructor panics. The kit refuses to let you ship a slow-loris-vulnerable server.
+- **`NewHTTPServer` without setting `ReadHeaderTimeout`** — the constructor panics. The kit refuses to let you ship a slow-loris-vulnerable server.
 - **Second SIGINT during shutdown** — the runner force-cancels stop timeouts (graceful → immediate). Operators expect this; don't intercept SIGINT yourself.
 
 ## Observability

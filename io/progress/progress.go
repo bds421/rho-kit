@@ -120,7 +120,7 @@ func (p *progressReader) Read(buf []byte) (int, error) {
 		}
 	}
 
-	if shouldFire && n > 0 || (shouldFire && err != nil) {
+	if shouldFire && (n > 0 || err != nil) {
 		p.fn(p.read, p.total)
 	}
 	return n, err

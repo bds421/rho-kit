@@ -31,9 +31,9 @@ type config struct {
 	hsts              string
 	cacheControl      string
 	csp               string
-	coop              string // Cross-Origin-Opener-Policy
-	coep              string // Cross-Origin-Embedder-Policy
-	corp              string // Cross-Origin-Resource-Policy
+	coop              string       // Cross-Origin-Opener-Policy
+	coep              string       // Cross-Origin-Embedder-Policy
+	corp              string       // Cross-Origin-Resource-Policy
 	trustedProxies    []*net.IPNet // for X-Forwarded-Proto trust
 	forceHSTS         bool
 }
@@ -364,15 +364,15 @@ func isTrustedRemote(remoteAddr string, trusted []*net.IPNet) bool {
 
 func validateHeaderValue(name, value string) {
 	if value != "" && strings.TrimSpace(value) != value {
-		panic("secheaders: header value contains leading or trailing whitespace")
+		panic("secheaders: " + name + " header value contains leading or trailing whitespace")
 	}
 	if !httpguts.ValidHeaderFieldValue(value) {
-		panic("secheaders: header value is invalid")
+		panic("secheaders: " + name + " header value is invalid")
 	}
 	for i := 0; i < len(value); i++ {
 		switch value[i] {
 		case 0, '\r', '\n':
-			panic("secheaders: header value is invalid")
+			panic("secheaders: " + name + " header value is invalid")
 		}
 	}
 }

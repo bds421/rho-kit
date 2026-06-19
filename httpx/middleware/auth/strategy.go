@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -252,6 +253,15 @@ func (f APIKeyVerifierFunc) VerifyAPIKey(ctx context.Context, key string) (Ident
 // rejected as [ErrInvalidCredentials]; absent header returns
 // [ErrUnauthenticated] so a [Chain] can fall through.
 //
+// Any error returned by v.VerifyAPIKey — including infrastructure
+// failures such as a backend outage, a cancelled context, or a
+// timeout — is flattened to [ErrInvalidCredentials] so the wire
+// response stays opaque and a [Chain] stops rather than pivoting to
+// a weaker strategy. The underlying cause is preserved in the
+// returned error's message (not as a wrapped sentinel) so operators
+// can distinguish an outage from a forged key in logs; callers that
+// need the precise category should inspect the cause themselves.
+//
 // Panics if v is nil, headerName is empty, or headerName fails
 // httpguts.ValidHeaderFieldName.
 func NewAPIKeyAuthenticator(headerName string, v APIKeyVerifier) Authenticator {
@@ -275,12 +285,25 @@ func NewAPIKeyAuthenticator(headerName string, v APIKeyVerifier) Authenticator {
 			return Identity{}, ErrInvalidCredentials
 		}
 		key := values[0]
-		if key == "" || strings.TrimSpace(key) != key || !httpguts.ValidHeaderFieldValue(key) {
+		// Cap the key length before invoking the verifier. Verifiers
+		// typically hash/compare the key, so an attacker-sized header
+		// value would cost CPU per request. Mirror the bearer-token cap
+		// (maxBearerTokenLen) so both credential paths in this package
+		// are hardened consistently.
+		if key == "" || len(key) > maxBearerTokenLen || strings.TrimSpace(key) != key || !httpguts.ValidHeaderFieldValue(key) {
 			return Identity{}, ErrInvalidCredentials
 		}
 		id, err := v.VerifyAPIKey(r.Context(), key)
 		if err != nil {
-			return Identity{}, ErrInvalidCredentials
+			// Flatten any verifier failure to ErrInvalidCredentials so
+			// the wire response stays opaque and a Chain still stops
+			// (no fall-through to a weaker strategy). The cause is kept
+			// in the message — not as a wrapped sentinel — so an infra
+			// outage (DB down, context cancelled, timeout) is
+			// distinguishable from a forged key in logs without letting
+			// the cause hijack the ErrUnauthenticated/ErrInvalidCredentials
+			// chain semantics.
+			return Identity{}, fmt.Errorf("%w: %v", ErrInvalidCredentials, err)
 		}
 		return id, nil
 	})

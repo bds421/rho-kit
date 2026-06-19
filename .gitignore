@@ -4,7 +4,6 @@ vendor/
 
 # Built command binaries — every cmd/<name>/<name> artifact.
 # Reproducible builds go into dist/ (also ignored).
-cmd/kit-bench-gate/kit-bench-gate
 cmd/kit-catalog/kit-catalog
 cmd/kit-doctor/kit-doctor
 cmd/kit-migrate/kit-migrate
@@ -13,7 +12,6 @@ cmd/kit-verify/kit-verify
 
 # Same binaries when accidentally built from repo root
 # (`go build ./cmd/<name>/...` drops the output in $PWD).
-/kit-bench-gate
 /kit-catalog
 /kit-doctor
 /kit-migrate

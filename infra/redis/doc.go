@@ -16,11 +16,12 @@
 // lazy-connect support. Use [WithLazyConnect] for services that should
 // start accepting requests while Redis is connecting.
 //
-// For security, the connection options (including any password) are cleared
-// from memory after the client is created. Note: go-redis retains the
-// password internally for its own reconnection logic — full secret erasure
-// is not possible without upstream support. Use environment variables for
-// password management and rotate credentials regularly.
+// [Connect] copies the supplied options before constructing the client so
+// later mutation of the caller's struct cannot race the connection. Note:
+// the password is NOT zeroed — both the caller's options and go-redis itself
+// retain it in memory for reconnection logic, and full secret erasure is not
+// possible without upstream support. Use environment variables for password
+// management and rotate credentials regularly.
 //
 // # Health Checks
 //

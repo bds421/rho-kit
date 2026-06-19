@@ -33,6 +33,34 @@ func TestStore_NilReceiverReturnsError(t *testing.T) {
 
 	_, err = s.LastHMAC(ctx)
 	assert.Error(t, err)
+
+	_, err = s.DeleteBefore(ctx, time.Now())
+	assert.Error(t, err)
+}
+
+func TestStore_DeleteBeforeNilPoolReturnsError(t *testing.T) {
+	s := &Store{pool: nil}
+	n, err := s.DeleteBefore(context.Background(), time.Now())
+	assert.Error(t, err)
+	assert.Zero(t, n)
+}
+
+func TestStore_DeleteBeforeHonorsCancelledContext(t *testing.T) {
+	s := &Store{pool: nil}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	n, err := s.DeleteBefore(ctx, time.Now())
+	// nil pool short-circuits first; either way DeleteBefore must not panic
+	// and must surface a non-nil error with a zero count.
+	assert.Error(t, err)
+	assert.Zero(t, n)
+}
+
+// TestStore_SatisfiesRetentionStore is a compile-time guard mirrored as a
+// test so the documented auditlog.RetentionJob(store, ...) wiring keeps
+// working with the production *Store.
+func TestStore_SatisfiesRetentionStore(t *testing.T) {
+	var _ auditlog.RetentionStore = (*Store)(nil)
 }
 
 func TestStore_AppendChainedRejectsNilBuild(t *testing.T) {
@@ -68,8 +96,8 @@ func TestCursorRejectsMalformed(t *testing.T) {
 		"no-colon",
 		":missing-ts",
 		"00000000000000ab:",
-		"deadbeef:id",          // ts hex not 16 chars
-		"GGGGGGGGGGGGGGGG:id",  // not hex
+		"deadbeef:id",         // ts hex not 16 chars
+		"GGGGGGGGGGGGGGGG:id", // not hex
 		"00000000000000ab:" + strings.Repeat("x", auditlog.MaxEventIDBytes+1),
 	}
 	for _, c := range cases {

@@ -28,8 +28,8 @@ type Claimer interface {
 	// [Janitor.ResetStaleProcessing]. Implementations MUST only update
 	// rows currently in "processing" state to avoid resurrecting rows
 	// that have already been marked published or failed. Returns the
-	// number of rows touched (useful for diagnostics; the relay logs
-	// unexpectedly low counts).
+	// number of rows touched for diagnostics; the relay currently
+	// discards this count and only checks the error.
 	Heartbeat(ctx context.Context, ids []string) (int64, error)
 }
 
@@ -120,4 +120,35 @@ type RelayStore interface {
 	Outcomer
 	Janitor
 	Observer
+}
+
+// PendingResetter is an OPTIONAL capability a [RelayStore] may implement
+// to support prompt shutdown recovery. When the relay's run context is
+// cancelled mid-batch (e.g. a deploy or rolling restart), rows it has
+// already claimed sit in "processing" until the slow stale-recovery
+// sweep (see [Janitor.ResetStaleProcessing], default ~5 minutes) returns
+// them to pending. That strands up to a full batch of claimed-but-
+// unpublished messages for minutes on every restart.
+//
+// A store that implements PendingResetter lets the relay return its own
+// still-claimed rows to "pending" immediately on shutdown, so a freshly
+// started replica can re-claim them on its next poll without waiting for
+// the stale window.
+//
+// Implementations MUST only reset rows that are still owned by the
+// caller's claim. A backend that fences claims (e.g. the postgres store's
+// claim_token) must require ownership so a late ResetPending cannot
+// resurrect a row another relay has since re-claimed or published.
+// Implementations MUST only touch rows still in "processing" state, the
+// same guard the outcome methods use. The relay treats this as
+// best-effort: failures are logged and never block shutdown.
+//
+// The relay detects support via a runtime type assertion, so existing
+// [RelayStore] implementations remain valid without change.
+type PendingResetter interface {
+	// ResetPending returns the listed claimed rows to "pending" so they
+	// become eligible for re-claim. ids that no longer belong to the
+	// caller's claim (re-claimed, published, failed, or deleted) MUST be
+	// skipped silently rather than reported as an error.
+	ResetPending(ctx context.Context, ids []string) error
 }

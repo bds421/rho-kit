@@ -365,6 +365,120 @@ func TestVerify_PastMaxAgeReturnsExpired(t *testing.T) {
 	assert.NotErrorIs(t, verifyErr, ErrSignatureClockSkew)
 }
 
+func TestSignContext_VerifyContext_RoundTrip(t *testing.T) {
+	s := NewSigner()
+	ctx := CanonicalContext{
+		Method: "POST",
+		Path:   "/v1/webhooks/incoming",
+		Domain: "myservice.webhook.v1",
+	}
+	body := []byte(`{"event":"deploy"}`)
+
+	sig, ts, err := s.SignContext(ctx, testSecret, body)
+	require.NoError(t, err)
+
+	err = s.VerifyContext(ctx, testSecret, body, ts, sig, DefaultSignatureMaxAge)
+	assert.NoError(t, err, "context round-trip with matching context should succeed")
+}
+
+func TestVerifyContext_MismatchedFieldFails(t *testing.T) {
+	signCtx := CanonicalContext{
+		Method: "POST",
+		Path:   "/v1/webhooks/incoming",
+		Domain: "myservice.webhook.v1",
+	}
+	body := []byte(`{"event":"deploy"}`)
+
+	tests := []struct {
+		name      string
+		verifyCtx CanonicalContext
+	}{
+		{
+			name: "different method",
+			verifyCtx: CanonicalContext{
+				Method: "PUT",
+				Path:   "/v1/webhooks/incoming",
+				Domain: "myservice.webhook.v1",
+			},
+		},
+		{
+			name: "different path",
+			verifyCtx: CanonicalContext{
+				Method: "POST",
+				Path:   "/v1/webhooks/other",
+				Domain: "myservice.webhook.v1",
+			},
+		},
+		{
+			name: "different domain",
+			verifyCtx: CanonicalContext{
+				Method: "POST",
+				Path:   "/v1/webhooks/incoming",
+				Domain: "otherservice.webhook.v1",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewSigner()
+			sig, ts, err := s.SignContext(signCtx, testSecret, body)
+			require.NoError(t, err)
+
+			err = s.VerifyContext(tt.verifyCtx, testSecret, body, ts, sig, DefaultSignatureMaxAge)
+			assert.ErrorIs(t, err, ErrInvalidSignature,
+				"signature must not be portable to a different %s", tt.name)
+		})
+	}
+}
+
+func TestVerifyContext_NonPortableAcrossVersions(t *testing.T) {
+	s := NewSigner()
+	ctx := CanonicalContext{
+		Method: "POST",
+		Path:   "/v1/webhooks/incoming",
+		Domain: "myservice.webhook.v1",
+	}
+	body := []byte(`{"event":"deploy"}`)
+
+	// A v2-context signature must be rejected by a plain (legacy) Verify:
+	// the legacy verifier MACs "<ts>.<body>" while the producer MACed the
+	// v2 layout, so a downgrade attempt fails.
+	ctxSig, ts, err := s.SignContext(ctx, testSecret, body)
+	require.NoError(t, err)
+	err = s.Verify(testSecret, body, ts, ctxSig, DefaultSignatureMaxAge)
+	assert.ErrorIs(t, err, ErrInvalidSignature,
+		"v2-context signature must not verify under legacy Verify")
+
+	// Conversely, a legacy signature must be rejected by VerifyContext with
+	// a non-empty context.
+	plainSig, ts2, err := s.Sign(testSecret, body)
+	require.NoError(t, err)
+	err = s.VerifyContext(ctx, testSecret, body, ts2, plainSig, DefaultSignatureMaxAge)
+	assert.ErrorIs(t, err, ErrInvalidSignature,
+		"legacy signature must not verify under VerifyContext")
+}
+
+func TestSignContext_EmptyContextEqualsSign(t *testing.T) {
+	// Passing the zero CanonicalContext must be byte-identical to Sign so
+	// the legacy (Stripe-webhook-style) contract is preserved: a signature
+	// produced by Sign must verify under VerifyContext{} and vice versa.
+	fixed := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
+	s := NewSigner(WithClock(func() time.Time { return fixed }))
+	body := []byte(`{"event":"deploy"}`)
+
+	plainSig, ts, err := s.Sign(testSecret, body)
+	require.NoError(t, err)
+	ctxSig, ts2, err := s.SignContext(CanonicalContext{}, testSecret, body)
+	require.NoError(t, err)
+
+	assert.Equal(t, plainSig, ctxSig, "empty context must produce the legacy payload")
+	assert.Equal(t, ts, ts2)
+
+	assert.NoError(t, s.VerifyContext(CanonicalContext{}, testSecret, body, ts, plainSig, DefaultSignatureMaxAge),
+		"empty-context Verify must accept a Sign signature")
+}
+
 // signWithTimestamp is a test helper that signs with an explicit timestamp.
 func signWithTimestamp(body []byte, secret Secret, timestamp int64) (string, int64) {
 	payload := fmt.Appendf(nil, "%d.", timestamp)

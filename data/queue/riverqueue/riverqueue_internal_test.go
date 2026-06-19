@@ -3,6 +3,7 @@ package riverqueue
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -12,6 +13,34 @@ import (
 
 	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 )
+
+// TestEnvelopeArgs_DedupeKeyedByIDOnly guards FR-059: with ByArgs set,
+// River scopes the uniqueness hash to the fields tagged `river:"unique"`.
+// Only the ID (the kit's idempotency token) may carry that tag. If Type
+// or Payload were also hashed, a second Enqueue with the same ID but a
+// different payload would produce a distinct unique key and execute
+// twice — defeating the idempotency-token semantics and diverging from
+// the redisqueue sibling, which keys strictly on the message ID.
+func TestEnvelopeArgs_DedupeKeyedByIDOnly(t *testing.T) {
+	typ := reflect.TypeOf(envelopeArgs{})
+
+	cases := []struct {
+		field      string
+		wantUnique bool
+	}{
+		{"ID", true},
+		{"Type", false},
+		{"Payload", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			f, ok := typ.FieldByName(tc.field)
+			require.True(t, ok, "field %s must exist", tc.field)
+			hasUnique := f.Tag.Get("river") == "unique"
+			assert.Equal(t, tc.wantUnique, hasUnique, "field %s river tag", tc.field)
+		})
+	}
+}
 
 func TestEnvelopeWorker_WorkDispatchesValidatedClone(t *testing.T) {
 	payload := []byte(`{"id":42}`)

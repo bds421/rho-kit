@@ -11,6 +11,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
 // TestMetrics_CountsCallsByOutcome pins the calls_total label
@@ -43,6 +45,63 @@ func TestMetrics_CountsCallsByOutcome(t *testing.T) {
 	assert.Equal(t, 1.0, testutil.ToFloat64(metrics.calls.WithLabelValues("test-breaker", outcomeSuccess)))
 	assert.Equal(t, 2.0, testutil.ToFloat64(metrics.calls.WithLabelValues("test-breaker", outcomeFail)))
 	assert.Equal(t, 1.0, testutil.ToFloat64(metrics.calls.WithLabelValues("test-breaker", outcomeRejectedOpen)))
+}
+
+// TestMetrics_OutcomeMatchesCustomPredicate pins that the calls_total
+// outcome label tracks the breaker's configured IsSuccessful predicate,
+// not the hardcoded default. With WithPermanentSuccess, an
+// apperror.Permanent error is counted as success by the breaker (it does
+// not contribute to opening the circuit), so the metric must label it
+// success too — otherwise dashboards disagree with breaker accounting.
+func TestMetrics_OutcomeMatchesCustomPredicate(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics := NewMetrics(WithRegisterer(reg))
+
+	cb := NewCircuitBreaker(1, time.Minute,
+		WithName("permanent-success"),
+		WithPermanentSuccess(),
+		WithMetrics(metrics),
+	)
+
+	// A permanent error is success per the breaker's predicate.
+	perm := apperror.NewPermanent("bad request")
+	err := cb.ExecuteCtx(context.Background(), func(_ context.Context) error {
+		return perm
+	})
+	assert.ErrorIs(t, err, perm)
+	// Breaker stayed closed because the predicate treated it as success.
+	assert.Equal(t, StateClosed, cb.StateValue())
+
+	assert.Equal(t, 1.0,
+		testutil.ToFloat64(metrics.calls.WithLabelValues("permanent-success", outcomeSuccess)),
+		"permanent error counted as success by the breaker must be labeled success")
+	assert.Equal(t, 0.0,
+		testutil.ToFloat64(metrics.calls.WithLabelValues("permanent-success", outcomeFail)),
+		"permanent error must not be labeled fail when the breaker counts it as success")
+}
+
+// TestMetrics_OutcomeFailWhenPredicateFailsCanceled pins the inverse:
+// a custom predicate that treats context.Canceled as a failure must see
+// the metric label that call fail, not success.
+func TestMetrics_OutcomeFailWhenPredicateFailsCanceled(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics := NewMetrics(WithRegisterer(reg))
+
+	cb := NewCircuitBreaker(5, time.Minute,
+		WithName("strict-cancel"),
+		WithIsSuccessful(func(err error) bool { return err == nil }),
+		WithMetrics(metrics),
+	)
+
+	err := cb.Execute(func() error { return context.Canceled })
+	assert.ErrorIs(t, err, context.Canceled)
+
+	assert.Equal(t, 1.0,
+		testutil.ToFloat64(metrics.calls.WithLabelValues("strict-cancel", outcomeFail)),
+		"context.Canceled must be labeled fail when the predicate counts it as failure")
+	assert.Equal(t, 0.0,
+		testutil.ToFloat64(metrics.calls.WithLabelValues("strict-cancel", outcomeSuccess)),
+		"context.Canceled must not be labeled success when the predicate fails it")
 }
 
 // TestMetrics_RecordsStateChange verifies the closed→open transition

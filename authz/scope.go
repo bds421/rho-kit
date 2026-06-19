@@ -40,11 +40,12 @@ type registry struct {
 var globalScopes = &registry{scopes: map[Scope]string{}}
 
 // Register catalogues scope with a human-readable description for
-// OpenAPI generation. Returns ErrScopeAlreadyRegistered if the same
-// scope name was registered with a different description (re-registering
+// OpenAPI generation. Returns a non-nil error if the same scope name
+// was already registered with a different description (re-registering
 // with the same description is a no-op so package init blocks survive
 // re-execution under hot-reload tests). Returns an error if scope does
-// not match [scopePattern].
+// not match [scopePattern]. These errors are plain (fmt.Errorf) values
+// not exported sentinels, so do not errors.Is against them.
 //
 // Concurrency-safe: callers can register from multiple init() blocks
 // without external locking.

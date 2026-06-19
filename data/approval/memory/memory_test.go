@@ -407,7 +407,11 @@ func TestWithClock_PanicsOnNil(t *testing.T) {
 }
 
 func TestNew_PanicsOnNilOption(t *testing.T) {
-	assert.Panics(t, func() { New(nil) })
+	// A nil Option (not a nil signer) must trip the per-option guard in
+	// New. Pass a valid signer so the only thing that can panic is the
+	// nil entry in opts, exercising New's "option must not be nil"
+	// branch rather than the nil-signer branch.
+	assert.Panics(t, func() { New(testCursorSigner(t), nil) })
 }
 
 // TestNew_PanicsOnNilCursorSigner pins the cursor-signer-required

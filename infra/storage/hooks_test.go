@@ -255,6 +255,73 @@ func TestWithHooks(t *testing.T) {
 	})
 }
 
+func TestWithHooks_BatchDelete(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("AfterDelete fires for native batch delete through the hooks wrapper", func(t *testing.T) {
+		t.Parallel()
+		backend := &batchDeleteBackend{}
+		var deleted []string
+		hooked := storage.WithHooks(backend, storage.Hooks{
+			AfterDelete: func(_ context.Context, key string) {
+				deleted = append(deleted, key)
+			},
+		})
+
+		err := storage.DeleteMany(ctx, hooked, []string{"a.txt", "b.txt"})
+		require.NoError(t, err)
+		assert.True(t, backend.called, "native batch delete should still be used")
+		assert.ElementsMatch(t, []string{"a.txt", "b.txt"}, deleted,
+			"AfterDelete must fire for every batch-deleted key")
+	})
+
+	t.Run("BeforeDelete can abort a key during batch delete", func(t *testing.T) {
+		t.Parallel()
+		backend := &batchDeleteBackend{}
+		hooked := storage.WithHooks(backend, storage.Hooks{
+			BeforeDelete: func(_ context.Context, key string) error {
+				if key == "blocked.txt" {
+					return errors.New("blocked by hook")
+				}
+				return nil
+			},
+		})
+
+		err := storage.DeleteMany(ctx, hooked, []string{"ok.txt", "blocked.txt"})
+		// The aborted key is reported as a failure (detail redacted by the
+		// batch aggregator), so DeleteMany surfaces an error overall.
+		require.Error(t, err)
+		// The aborted key must never reach the backend batch.
+		assert.Equal(t, []string{"ok.txt"}, backend.keys)
+	})
+}
+
+// batchDeleteBackend implements BatchDeleter natively so tests can exercise the
+// native batch path through the hooks wrapper.
+type batchDeleteBackend struct {
+	called bool
+	keys   []string
+}
+
+func (b *batchDeleteBackend) Put(context.Context, string, io.Reader, storage.ObjectMeta) error {
+	return nil
+}
+
+func (b *batchDeleteBackend) Get(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+	return nil, storage.ObjectMeta{}, storage.ErrObjectNotFound
+}
+
+func (b *batchDeleteBackend) Delete(context.Context, string) error { return nil }
+
+func (b *batchDeleteBackend) Exists(context.Context, string) (bool, error) { return false, nil }
+
+func (b *batchDeleteBackend) DeleteMany(_ context.Context, keys []string) map[string]error {
+	b.called = true
+	b.keys = append(b.keys, keys...)
+	return nil
+}
+
 type unwrapOnlyStorage struct {
 	storage.Storage
 }

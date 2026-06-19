@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +21,7 @@ import (
 	"github.com/bds421/rho-kit/data/v2/approval"
 	approvalmem "github.com/bds421/rho-kit/data/v2/approval/memory"
 	budgetmem "github.com/bds421/rho-kit/data/v2/budget/memory"
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 type failingApprovalStore struct {
@@ -321,4 +325,95 @@ func TestBudgetStatus_MissingTenantUsesJSONError(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	assert.JSONEq(t, `{"error":"missing X-Tenant-Id","code":"VALIDATION"}`, rec.Body.String())
+}
+
+// TestServe_DrainsInFlightRequestBeforeReturning pins the graceful-shutdown
+// contract the example advertises: when the context is cancelled, serve must
+// not return until srv.Shutdown has finished draining in-flight requests.
+// The bug it guards against is returning as soon as ListenAndServe yields
+// http.ErrServerClosed (which happens the instant Shutdown begins), which
+// would let main() exit and truncate the still-draining response.
+func TestServe_DrainsInFlightRequestBeforeReturning(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	var (
+		mu              sync.Mutex
+		serveReturned   bool
+		responseWritten bool
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, _ *http.Request) {
+		close(requestStarted)
+		<-releaseHandler
+		mu.Lock()
+		// serve() must still be blocked inside Shutdown at this point —
+		// it must NOT have returned while a request is still draining.
+		assert.False(t, serveReturned, "serve returned before in-flight request drained")
+		responseWritten = true
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "drained")
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := httpx.NewServer(ln.Addr().String(), mux)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- serveListener(ctx, srv, ln)
+	}()
+
+	// Fire a slow request and wait until the handler is executing.
+	clientDone := make(chan struct{})
+	var (
+		clientStatus int
+		clientBody   string
+		clientErr    error
+	)
+	go func() {
+		defer close(clientDone)
+		resp, e := http.Get("http://" + ln.Addr().String() + "/slow")
+		if e != nil {
+			clientErr = e
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		clientStatus = resp.StatusCode
+		b, _ := io.ReadAll(resp.Body)
+		clientBody = string(b)
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never started")
+	}
+
+	// Trigger graceful shutdown while the request is in flight.
+	cancel()
+	// Give the shutdown goroutine a moment to enter Shutdown, then let the
+	// handler complete. A correct serve() stays blocked until the drain
+	// finishes; a buggy one has already returned.
+	time.Sleep(50 * time.Millisecond)
+	close(releaseHandler)
+
+	select {
+	case e := <-serveErr:
+		require.NoError(t, e, "serve must return nil after a clean drained shutdown")
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not return after shutdown")
+	}
+	mu.Lock()
+	serveReturned = true
+	wrote := responseWritten
+	mu.Unlock()
+
+	<-clientDone
+	require.NoError(t, clientErr, "in-flight request must complete, not be truncated")
+	assert.True(t, wrote, "handler must finish writing its response")
+	assert.Equal(t, http.StatusOK, clientStatus)
+	assert.Equal(t, "drained", clientBody)
 }

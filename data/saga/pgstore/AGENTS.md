@@ -11,6 +11,12 @@ replicas can share the same instance pool without double-advancing.
 - `New(db *sql.DB, opts ...Option) *Store`
 - `WithTableName(string) Option`
 - `Store.Put / Get / ListResumable / Delete` — implements `saga.StateStore`
+- `Store.DeleteTerminalBefore(ctx, cutoff)` — backend-specific retention
+  sweep (not on `saga.StateStore`): prunes completed/failed instances
+  older than `cutoff`. Run from a scheduled job; the executor never
+  deletes terminal rows on its own, so without this the table grows
+  unbounded. Mirrors `outbox.DeletePublishedBefore` /
+  `idempotency.DeleteExpired`.
 - `ErrConcurrentUpdate` — surfaced when Put fails the optimistic
   updated_at check
 
@@ -35,6 +41,24 @@ CREATE INDEX idx_saga_instances_resumable
     ON saga_instances (state, updated_at)
     WHERE state IN ('pending', 'running', 'compensating');
 ```
+
+`migrations/20260601000003_terminal_index.sql` adds the partial index
+backing `DeleteTerminalBefore`:
+
+```sql
+CREATE INDEX idx_saga_instances_terminal
+    ON saga_instances (state, updated_at)
+    WHERE state IN ('completed', 'failed');
+```
+
+## Retention
+
+Terminal (completed / failed) instances are never deleted by the
+executor, so wire `DeleteTerminalBefore(ctx, cutoff)` into a periodic
+job (the same way idempotency wires `DeleteExpired`). The
+`idx_saga_instances_terminal` partial index keeps the sweep
+proportional to the rows being removed. Without a scheduled prune the
+table grows for the life of the deployment.
 
 ## Concurrency
 

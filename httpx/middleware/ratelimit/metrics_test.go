@@ -205,6 +205,44 @@ func TestKeyedActiveKeysGauge_IdempotentRegistration(t *testing.T) {
 	}
 }
 
+// TestKeyedActiveKeysGauge_ConstructionScrapeRace exercises the window in
+// NewKeyedLimiter where WithKeyedMetrics publishes the limiter to the
+// active-keys collector before the constructor finishes writing the shard
+// LRUs and the name. A concurrent scrape's Collect reads those fields, so
+// the unsynchronized constructor writes must not race. Run with -race.
+func TestKeyedActiveKeysGauge_ConstructionScrapeRace(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics := NewMetrics(WithRegisterer(reg))
+
+	stop := make(chan struct{})
+	scrapeDone := make(chan struct{})
+	go func() {
+		defer close(scrapeDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				// Gather drives the collector's Collect, which walks each
+				// published limiter's shards and reads its name.
+				if _, err := reg.Gather(); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		_ = NewKeyedLimiter(100, time.Minute,
+			WithKeyedMetrics(metrics),
+			WithKeyedLimiterName("api_key"),
+		)
+	}
+
+	close(stop)
+	<-scrapeDone
+}
+
 func activeKeysSample(t *testing.T, reg *prometheus.Registry, limiter string) float64 {
 	t.Helper()
 	families, err := reg.Gather()

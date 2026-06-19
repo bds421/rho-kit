@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/pkg/sftp"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
@@ -642,7 +644,13 @@ func TestSFTPBackend_List(t *testing.T) {
 			results = append(results, info)
 		}
 
-		assert.LessOrEqual(t, len(results), 2)
+		// Exactly 2: seeding 3 deterministic files with MaxKeys=2 must yield 2.
+		// An under-yielding regression (stopping early / dropping results) would
+		// pass a LessOrEqual assertion but fails this exact-count check.
+		require.Len(t, results, 2)
+		// Sorted output means the first two keys are a.txt and b.txt.
+		assert.Equal(t, "a.txt", results[0].Key)
+		assert.Equal(t, "b.txt", results[1].Key)
 	})
 
 	t.Run("empty prefix lists all", func(t *testing.T) {
@@ -750,6 +758,286 @@ func TestSFTPBackend_List(t *testing.T) {
 		require.ErrorIs(t, seenErr, storage.ErrValidation)
 		assert.Equal(t, 0, calls)
 	})
+
+	t.Run("yields keys in sorted order despite unsorted readdir", func(t *testing.T) {
+		t.Parallel()
+		mock := newMockSFTPClient("/data")
+		mock.store["/data/b.txt"] = []byte("b")
+		mock.store["/data/a.txt"] = []byte("a")
+		mock.store["/data/c/d.txt"] = []byte("d")
+		mock.store["/data/c/a.txt"] = []byte("ca")
+		mock.store["/data/aa.txt"] = []byte("aa")
+		mock.readFn = unsortedReadDir(mock)
+		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
+
+		var keys []string
+		for info, err := range b.List(ctx, "", storage.ListOptions{}) {
+			require.NoError(t, err)
+			keys = append(keys, info.Key)
+		}
+
+		want := []string{"a.txt", "aa.txt", "b.txt", "c/a.txt", "c/d.txt"}
+		assert.Equal(t, want, keys, "List must yield keys in lexicographic order")
+	})
+
+	t.Run("StartAfter pagination is complete and non-duplicating with unsorted readdir", func(t *testing.T) {
+		t.Parallel()
+		mock := newMockSFTPClient("/data")
+		want := []string{
+			"a.txt", "aa.txt", "b.txt", "c/a.txt", "c/d.txt", "c/z.txt", "e.txt",
+		}
+		for _, k := range want {
+			mock.store["/data/"+k] = []byte(k)
+		}
+		mock.readFn = unsortedReadDir(mock)
+		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
+
+		var got []string
+		opts := storage.ListOptions{MaxKeys: 2}
+		for {
+			page, err := storage.ListPage(ctx, b, "", opts)
+			require.NoError(t, err)
+			for _, info := range page.Objects {
+				got = append(got, info.Key)
+			}
+			if !page.Truncated {
+				break
+			}
+			opts.StartAfter = page.NextStartAfter
+		}
+
+		assert.Equal(t, want, got, "paging via StartAfter must return every key exactly once in order")
+	})
+}
+
+// unsortedReadDir returns a ReadDir implementation backed by m.store that
+// yields directory entries in reverse-lexicographic order, simulating a real
+// SFTP server (and pkg/sftp's client.ReadDir), which does not sort results.
+func unsortedReadDir(m *mockSFTPClient) func(string) ([]os.FileInfo, error) {
+	return func(p string) ([]os.FileInfo, error) {
+		prefix := p
+		if !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
+
+		seen := make(map[string]bool)
+		var result []os.FileInfo
+		anyMatch := false
+
+		for key, data := range m.store {
+			if !strings.HasPrefix(key, prefix) {
+				continue
+			}
+			anyMatch = true
+
+			remainder := key[len(prefix):]
+			if remainder == "" {
+				continue
+			}
+
+			if slashIdx := strings.Index(remainder, "/"); slashIdx == -1 {
+				if !seen[remainder] {
+					seen[remainder] = true
+					result = append(result, fakeFileInfo{name: remainder, size: int64(len(data))})
+				}
+			} else {
+				dirName := remainder[:slashIdx]
+				if !seen[dirName] {
+					seen[dirName] = true
+					result = append(result, fakeFileInfo{name: dirName, dir: true})
+				}
+			}
+		}
+
+		if !anyMatch {
+			return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+		}
+
+		// Reverse-lexicographic order: the opposite of what the production
+		// code needs, to prove List sorts internally rather than relying on
+		// server-provided ordering.
+		sort.Slice(result, func(i, j int) bool { return result[i].Name() > result[j].Name() })
+		return result, nil
+	}
+}
+
+// TestSFTPBackend_List_SortsUnorderedReadDir pins the ordering/pagination
+// contract against a ReadDir that returns entries in a non-lexicographic order,
+// which is what real pkg/sftp does. List must collect-then-sort so that the
+// StartAfter cursor and MaxKeys truncation never skip keys. A regression that
+// yields in raw ReadDir order would fail these assertions.
+func TestSFTPBackend_List_SortsUnorderedReadDir(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Intentionally non-sorted: real pkg/sftp ReadDir does not sort. The
+	// readFn returns files for the flat root in reverse-lexicographic order.
+	newUnsortedMock := func() *mockSFTPClient {
+		mock := newMockSFTPClient("/data")
+		mock.readFn = func(p string) ([]os.FileInfo, error) {
+			if p != "/data" {
+				return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+			}
+			// Deliberately unsorted (d, b, e, a, c).
+			return []os.FileInfo{
+				fakeFileInfo{name: "d.txt", size: 1},
+				fakeFileInfo{name: "b.txt", size: 1},
+				fakeFileInfo{name: "e.txt", size: 1},
+				fakeFileInfo{name: "a.txt", size: 1},
+				fakeFileInfo{name: "c.txt", size: 1},
+			}, nil
+		}
+		return mock
+	}
+
+	t.Run("yields lexicographically sorted keys", func(t *testing.T) {
+		t.Parallel()
+		b := NewWithClient(newUnsortedMock(), Config{Host: "localhost", RootPath: "/data"})
+
+		var keys []string
+		for info, err := range b.List(ctx, "", storage.ListOptions{}) {
+			require.NoError(t, err)
+			keys = append(keys, info.Key)
+		}
+		assert.Equal(t, []string{"a.txt", "b.txt", "c.txt", "d.txt", "e.txt"}, keys)
+	})
+
+	t.Run("StartAfter is an exclusive cursor over sorted keys", func(t *testing.T) {
+		t.Parallel()
+		b := NewWithClient(newUnsortedMock(), Config{Host: "localhost", RootPath: "/data"})
+
+		var keys []string
+		for info, err := range b.List(ctx, "", storage.ListOptions{StartAfter: "b.txt"}) {
+			require.NoError(t, err)
+			keys = append(keys, info.Key)
+		}
+		// Everything strictly after "b.txt" in sorted order — never skipping
+		// c/d/e, which an unsorted inline cursor would drop nondeterministically.
+		assert.Equal(t, []string{"c.txt", "d.txt", "e.txt"}, keys)
+	})
+
+	t.Run("StartAfter paginates without skipping keys", func(t *testing.T) {
+		t.Parallel()
+		b := NewWithClient(newUnsortedMock(), Config{Host: "localhost", RootPath: "/data"})
+
+		// First page of 2.
+		page1, err := storage.ListPage(ctx, b, "", storage.ListOptions{MaxKeys: 2})
+		require.NoError(t, err)
+		require.True(t, page1.Truncated)
+		require.Len(t, page1.Objects, 2)
+		assert.Equal(t, "a.txt", page1.Objects[0].Key)
+		assert.Equal(t, "b.txt", page1.Objects[1].Key)
+		require.Equal(t, "b.txt", page1.NextStartAfter)
+
+		// Resume — must continue exactly where page1 left off, no skips/dupes.
+		page2, err := storage.ListPage(ctx, b, "", storage.ListOptions{
+			MaxKeys:    2,
+			StartAfter: page1.NextStartAfter,
+		})
+		require.NoError(t, err)
+		require.Len(t, page2.Objects, 2)
+		assert.Equal(t, "c.txt", page2.Objects[0].Key)
+		assert.Equal(t, "d.txt", page2.Objects[1].Key)
+	})
+}
+
+// TestSFTPBackend_SymlinkRejectionRecordsMetrics pins the consistency finding:
+// Get/Delete/Exists must record an operation in storage_sftp_* even when they
+// return early because rejectSymlinkPath flagged a symlink, so per-operation
+// counts match the happy/remote-error paths and symlink-rejection events are
+// visible on dashboards.
+func TestSFTPBackend_SymlinkRejectionRecordsMetrics(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	symlinkLstat := func(p string) (os.FileInfo, error) {
+		switch p {
+		case "/data":
+			return fakeFileInfo{name: "data", dir: true}, nil
+		case "/data/link":
+			return fakeFileInfo{name: "link", mode: os.ModeSymlink | 0o777}, nil
+		default:
+			return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+		}
+	}
+
+	t.Run("delete", func(t *testing.T) {
+		t.Parallel()
+		reg := prometheus.NewRegistry()
+		mock := newMockSFTPClient("/data")
+		mock.lstatFn = symlinkLstat
+		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"},
+			WithMetricsRegisterer(reg))
+
+		err := b.Delete(ctx, "link")
+		require.Error(t, err)
+
+		assert.Equal(t, float64(1),
+			testutil.ToFloat64(b.metrics.opErrors.WithLabelValues("default", "delete")),
+			"symlink rejection must increment delete errors")
+		assert.Equal(t, uint64(1),
+			collectHistogramCount(t, reg, "storage_sftp_operation_duration_seconds", "delete"),
+			"symlink rejection must record a delete duration sample")
+	})
+
+	t.Run("exists", func(t *testing.T) {
+		t.Parallel()
+		reg := prometheus.NewRegistry()
+		mock := newMockSFTPClient("/data")
+		mock.lstatFn = symlinkLstat
+		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"},
+			WithMetricsRegisterer(reg))
+
+		_, err := b.Exists(ctx, "link")
+		require.Error(t, err)
+
+		assert.Equal(t, float64(1),
+			testutil.ToFloat64(b.metrics.opErrors.WithLabelValues("default", "exists")),
+			"symlink rejection must increment exists errors")
+		assert.Equal(t, uint64(1),
+			collectHistogramCount(t, reg, "storage_sftp_operation_duration_seconds", "exists"),
+			"symlink rejection must record an exists duration sample")
+	})
+
+	t.Run("get", func(t *testing.T) {
+		t.Parallel()
+		reg := prometheus.NewRegistry()
+		mock := newMockSFTPClient("/data")
+		mock.lstatFn = symlinkLstat
+		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"},
+			WithMetricsRegisterer(reg))
+
+		_, _, err := b.Get(ctx, "link")
+		require.Error(t, err)
+
+		assert.Equal(t, float64(1),
+			testutil.ToFloat64(b.metrics.opErrors.WithLabelValues("default", "get")),
+			"symlink rejection must increment get errors")
+		assert.Equal(t, uint64(1),
+			collectHistogramCount(t, reg, "storage_sftp_operation_duration_seconds", "get"),
+			"symlink rejection must record a get duration sample")
+	})
+}
+
+// collectHistogramCount returns the sample count of the histogram metric
+// `family` whose "operation" label equals op.
+func collectHistogramCount(t *testing.T, reg *prometheus.Registry, family, op string) uint64 {
+	t.Helper()
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	for _, mf := range families {
+		if mf.GetName() != family {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, label := range m.GetLabel() {
+				if label.GetName() == "operation" && label.GetValue() == op {
+					return m.GetHistogram().GetSampleCount()
+				}
+			}
+		}
+	}
+	return 0
 }
 
 func TestSFTPBackend_RejectsSymlinkParent(t *testing.T) {

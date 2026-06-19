@@ -219,8 +219,11 @@ const defaultFutureSkew = 30 * time.Second
 // Used as the comparison operand when the signature has a format error (missing
 // prefix, invalid hex), ensuring constant-time comparison runs regardless of
 // input validity — this prevents timing side-channels that distinguish format
-// errors from HMAC mismatches. Declared as a fixed-size array so it cannot be
-// accidentally mutated (slicing creates a copy header).
+// errors from HMAC mismatches. It must stay all-zero: fallbackMAC[:] aliases
+// this shared backing array (slicing copies only the slice header, not the
+// bytes), so it is only safe because the comparison path reads it via
+// hmac.Equal and never writes through the slice. Do not write through any slice
+// of this array.
 var fallbackMAC [sha256.Size]byte
 
 // Verify checks an HMAC-SHA256 signature using the Signer's clock for age

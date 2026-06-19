@@ -178,9 +178,11 @@ func WithSubscriberMetrics(m *Metrics) SubscriberOption {
 
 // NewSubscriber constructs a Subscriber bound to brokers and the
 // consumer group identified by groupID. The topics slice declares the
-// topic set the underlying [kafka.Reader] subscribes to via
-// [kafka.ReaderConfig.GroupTopics]. Callers can register more than
-// one topic and let Consume dispatch by Binding.Exchange.
+// topic set the subscriber accepts bindings for. Callers can register
+// more than one topic and let Consume dispatch by Binding.Exchange:
+// each Consume call constructs a private [kafka.Reader] scoped to that
+// single binding topic, so a record for one topic never reaches a
+// handler bound to another.
 //
 // groupID must be non-empty; the kit refuses to fabricate a stable
 // group ID for the caller (a missing group is almost always a
@@ -272,8 +274,11 @@ func (s *Subscriber) ready() error {
 // shutdown (ctx cancelled) or an error if Reader construction fails.
 //
 // Retry behaviour: when a handler returns a non-nil error, the
-// committed offset is NOT advanced. The message will be re-delivered
-// after a group rebalance or restart. A permanent error
+// committed offset is NOT advanced and the Reader is reset so it
+// rewinds to the last committed offset; the failed record is then
+// re-fetched and redelivered (a later success on the same partition
+// can no longer commit a watermark past it). The same record is also
+// re-delivered after a group rebalance or restart. A permanent error
 // ([apperror.IsPermanent]) is treated as a poison pill: the offset IS
 // committed so the consumer can make forward progress.
 //
@@ -312,6 +317,9 @@ func (s *Subscriber) Consume(ctx context.Context, b messaging.Binding, handler m
 		return err
 	}
 	defer func() {
+		if reader == nil {
+			return
+		}
 		if closeErr := reader.Close(); closeErr != nil {
 			s.logger.Warn("kafkabackend: reader close failed",
 				redact.String("topic", b.Exchange),
@@ -343,8 +351,53 @@ func (s *Subscriber) Consume(ctx context.Context, b messaging.Binding, handler m
 			}
 			continue
 		}
-		s.dispatch(ctx, reader, km, handler)
+		if s.dispatch(ctx, reader, km, handler) {
+			// A transient handler error left this record's offset
+			// uncommitted. Reset the reader so the next fetch rewinds to
+			// the last committed offset (before the failed record) — a
+			// later success on this partition must not commit past it
+			// and silently drop the failed message. See dispatch's doc
+			// for the Kafka-watermark rationale.
+			newReader, resetErr := s.resetReader(ctx, reader, b.Exchange)
+			// The old reader is closed inside resetReader; clear it so
+			// the deferred cleanup does not double-close it.
+			reader = newReader
+			if resetErr != nil {
+				return resetErr
+			}
+			if newReader == nil {
+				// ctx cancelled during the back-off.
+				return nil
+			}
+		}
 	}
+}
+
+// resetReader closes the current reader and constructs a fresh one
+// bound to the same topic and group, after a bounded back-off. The new
+// reader resumes from the partition's last committed offset, so a
+// record whose handler returned a transient error is re-fetched and
+// redelivered. Returns (nil, nil) when ctx is cancelled during the
+// back-off and (nil, err) when a fresh reader cannot be built.
+func (s *Subscriber) resetReader(ctx context.Context, old *kafka.Reader, topic string) (*kafka.Reader, error) {
+	if closeErr := old.Close(); closeErr != nil {
+		s.logger.Warn("kafkabackend: reader close failed during reset",
+			redact.String("topic", topic),
+			redact.Error(closeErr),
+		)
+	}
+	// Soft back-off so a persistently-failing handler does not spin the
+	// fetch/reset loop. Bounded by ctx.
+	select {
+	case <-ctx.Done():
+		return nil, nil
+	case <-time.After(500 * time.Millisecond):
+	}
+	reader, err := s.newReader(topic)
+	if err != nil {
+		return nil, err
+	}
+	return reader, nil
 }
 
 // ConsumeOnce reads from the topic until ctx is cancelled or an error
@@ -365,10 +418,23 @@ func (s *Subscriber) subscribesTo(topic string) bool {
 }
 
 func (s *Subscriber) newReader(topic string) (*kafka.Reader, error) {
+	// Scope the Reader to the single binding topic, NOT the full
+	// constructor topic set. A Subscriber may be constructed with many
+	// topics, but each Consume call binds one Reader to exactly one
+	// topic (the Binding.Exchange) so dispatch only ever sees records
+	// for that binding — "let Consume dispatch by Binding.Exchange".
+	// Using GroupTopics with the whole topic set would let topic-b
+	// records reach a Consume(Binding{Exchange:"a"}) handler, and
+	// concurrent Consume calls on one group would receive arbitrary
+	// partition assignments across topics.
+	//
+	// kafka.ReaderConfig requires Topic OR GroupTopics but not both —
+	// the single-topic Topic field is kafka-go's idiomatic shape and is
+	// fully valid alongside GroupID.
 	rc := kafka.ReaderConfig{
 		Brokers:           s.cfg.Brokers,
 		GroupID:           s.groupID,
-		GroupTopics:       append([]string(nil), s.topics...),
+		Topic:             topic,
 		MinBytes:          s.options.minBytes,
 		MaxBytes:          s.options.maxBytes,
 		MaxWait:           s.options.maxWait,
@@ -380,20 +446,32 @@ func (s *Subscriber) newReader(topic string) (*kafka.Reader, error) {
 		QueueCapacity:     s.options.queueCapacity,
 		Dialer:            s.options.dialer,
 	}
-	// kafka.ReaderConfig requires Topic OR GroupTopics but not both —
-	// when constructing with a single topic, set Topic and clear
-	// GroupTopics to mirror kafka-go's idiomatic single-topic shape.
-	if len(s.topics) == 1 {
-		rc.Topic = topic
-		rc.GroupTopics = nil
-	}
 	if err := rc.Validate(); err != nil {
 		return nil, redact.WrapError("kafkabackend: reader config", err)
 	}
 	return kafka.NewReader(rc), nil
 }
 
-func (s *Subscriber) dispatch(ctx context.Context, reader *kafka.Reader, km kafka.Message, handler messaging.Handler) {
+// committer is the subset of [kafka.Reader] the dispatch path needs to
+// acknowledge a record. It exists as a seam so the per-record decision
+// logic can be unit-tested without a live broker.
+type committer interface {
+	CommitMessages(ctx context.Context, msgs ...kafka.Message) error
+}
+
+// dispatch processes one fetched record. It returns true when a
+// transient (non-permanent) handler error left the offset uncommitted,
+// signalling the Consume loop that it MUST reset the reader before
+// fetching further records on this partition.
+//
+// Why the reset is required: Kafka commits are partition watermarks,
+// not per-message acks. If the loop simply continued fetching after a
+// transient error, a later record on the same partition that succeeds
+// would commit an offset PAST the failed record, permanently skipping
+// it — turning the documented at-least-once redelivery into at-most-
+// once. Resetting the reader rewinds to the last committed offset so
+// the failed record is re-fetched and redelivered.
+func (s *Subscriber) dispatch(ctx context.Context, reader committer, km kafka.Message, handler messaging.Handler) (retry bool) {
 	started := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
@@ -414,7 +492,7 @@ func (s *Subscriber) dispatch(ctx context.Context, reader *kafka.Reader, km kafk
 		)
 		s.metrics.observeHandler(km.Topic, s.groupID, kafkaHandlerOutcomeDecodeError, started)
 		s.commitWithOutcome(ctx, reader, km, kafkaConsumeOutcomeDecodeError)
-		return
+		return false
 	}
 	if err := messaging.ValidateMessage(delivery.Message); err != nil {
 		s.logger.Error("kafkabackend: inbound message failed validation — committing offset to skip",
@@ -424,7 +502,7 @@ func (s *Subscriber) dispatch(ctx context.Context, reader *kafka.Reader, km kafk
 		)
 		s.metrics.observeHandler(km.Topic, s.groupID, kafkaHandlerOutcomeValidateError, started)
 		s.commitWithOutcome(ctx, reader, km, kafkaConsumeOutcomeValidateError)
-		return
+		return false
 	}
 	if err := handler(ctx, delivery); err != nil {
 		if apperror.IsPermanent(err) {
@@ -435,7 +513,7 @@ func (s *Subscriber) dispatch(ctx context.Context, reader *kafka.Reader, km kafk
 			)
 			s.metrics.observeHandler(km.Topic, s.groupID, kafkaHandlerOutcomeError, started)
 			s.commitWithOutcome(ctx, reader, km, kafkaConsumeOutcomePermanent)
-			return
+			return false
 		}
 		s.logger.Warn("kafkabackend: handler returned error — leaving offset uncommitted for redelivery",
 			redact.String("topic", km.Topic),
@@ -444,13 +522,14 @@ func (s *Subscriber) dispatch(ctx context.Context, reader *kafka.Reader, km kafk
 		)
 		s.metrics.observeHandler(km.Topic, s.groupID, kafkaHandlerOutcomeError, started)
 		s.metrics.observeConsumed(km.Topic, s.groupID, kafkaConsumeOutcomeRetry)
-		return
+		return true
 	}
 	s.metrics.observeHandler(km.Topic, s.groupID, kafkaHandlerOutcomeSuccess, started)
 	s.commitWithOutcome(ctx, reader, km, kafkaConsumeOutcomeAcked)
+	return false
 }
 
-func (s *Subscriber) commitWithOutcome(ctx context.Context, reader *kafka.Reader, km kafka.Message, outcome string) {
+func (s *Subscriber) commitWithOutcome(ctx context.Context, reader committer, km kafka.Message, outcome string) {
 	if err := reader.CommitMessages(ctx, km); err != nil {
 		s.logger.Warn("kafkabackend: commit offset failed",
 			redact.String("topic", km.Topic),

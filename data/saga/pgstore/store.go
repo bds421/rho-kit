@@ -13,11 +13,20 @@ import (
 	"github.com/bds421/rho-kit/runtime/v2/saga"
 )
 
-// ErrConcurrentUpdate is returned by Put when the row's updated_at
-// has advanced since the Instance the caller read. Surfaces the
-// optimistic-concurrency conflict so the executor can re-read state
-// instead of overwriting a sibling replica's progress.
+// ErrConcurrentUpdate is returned by Put when the write affected no
+// row: either an insert lost the ON CONFLICT race (another writer
+// created the row first) or an update found the row already gone (a
+// concurrent Delete). It signals the caller should re-read state rather
+// than assume the write landed.
 var ErrConcurrentUpdate = errors.New("pgstore: saga instance updated concurrently")
+
+// ErrInvalidStore is returned by Store methods invoked on a nil receiver
+// or a zero-value &Store{} that bypassed [New] (e.g. db is nil). It
+// mirrors the kit-wide invalid-receiver convention used by sibling
+// backends (queue.ErrInvalidQueue, ratelimit.ErrInvalidLimiter): a
+// method call on an uninitialized handle returns a sentinel rather than
+// panicking with a nil-pointer dereference.
+var ErrInvalidStore = errors.New("pgstore: store is not initialized")
 
 var validIdent = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$`)
 
@@ -25,6 +34,17 @@ var validIdent = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0
 type Store struct {
 	db    *sql.DB
 	table string
+}
+
+// ready reports whether s is usable. A nil receiver or a zero-value
+// &Store{} that skipped [New] (nil db, empty table) is not usable and
+// yields [ErrInvalidStore]. [New] always sets both fields, so a
+// constructed Store always passes.
+func (s *Store) ready() error {
+	if s == nil || s.db == nil || s.table == "" {
+		return ErrInvalidStore
+	}
+	return nil
 }
 
 // Option configures the Store.
@@ -56,19 +76,24 @@ func New(db *sql.DB, opts ...Option) *Store {
 // Put implements [saga.StateStore]. Routes to two distinct SQL paths
 // based on whether the caller's Instance carries a non-zero UpdatedAt:
 //
-//   - UpdatedAt zero → INSERT ... ON CONFLICT (id) DO NOTHING. A row
-//     with the same ID already existing surfaces as ErrConcurrentUpdate
-//     (the executor will re-read and re-decide). NEVER overwrites.
-//   - UpdatedAt non-zero → UPDATE ... WHERE updated_at = $old. Strict
-//     optimistic concurrency: any other replica's write since the
-//     caller read state surfaces as ErrConcurrentUpdate.
+//   - UpdatedAt zero → INSERT ... ON CONFLICT (id) DO NOTHING. This is
+//     the first write of a fresh instance; a row with the same ID
+//     already existing surfaces as ErrConcurrentUpdate (the executor
+//     will re-read and re-decide). NEVER overwrites.
+//   - UpdatedAt non-zero → UPDATE the existing row in place by ID. The
+//     caller has already read the instance via Get, so this overwrites
+//     its mutable columns, matching the "writes (or overwrites)"
+//     contract of [saga.StateStore.Put]. A vanished row (concurrent
+//     Delete) surfaces as ErrConcurrentUpdate.
 //
-// Splitting the paths closes the v2.0 blocker B2: a single
-// INSERT…ON CONFLICT DO UPDATE WHERE (updated_at=$9 OR $9 IS NULL)
-// had a `IS NULL` escape that let a misbehaving caller bypass the
-// concurrency check by passing a fresh Instance{} with an existing
-// ID. Two-path implementation has no such escape.
+// The UPDATE path does NOT gate on updated_at: the executor reads an
+// Instance once and then Puts repeatedly without re-reading, so its
+// in-memory UpdatedAt is stale after the first write. See
+// putUpdateOptimistic for the full rationale.
 func (s *Store) Put(ctx context.Context, inst saga.Instance) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
 	if inst.ID == "" {
 		return errors.New("pgstore: Put requires Instance.ID")
 	}
@@ -113,8 +138,21 @@ func (s *Store) putInsertOnly(ctx context.Context, inst saga.Instance, compensat
 	return nil
 }
 
-// putUpdateOptimistic handles state-advance semantics: UPDATE only
-// when updated_at still matches what the caller read. No NULL escape.
+// putUpdateOptimistic handles state-advance semantics: UPDATE the row
+// in place by ID, overwriting its mutable columns.
+//
+// It deliberately does NOT gate on `updated_at` matching the caller's
+// snapshot. The [saga.StateStore.Put] contract is "writes (or
+// overwrites) the instance"; it carries no read-your-write token, and
+// saga.DurableExecutor.executeInstance reads an Instance ONCE via Get
+// and then calls Put repeatedly without re-reading. The server stamps a
+// fresh updated_at on every write, so after the first Put the caller's
+// in-memory UpdatedAt is stale by design. Gating on it would make every
+// Put after the first match zero rows and fail every multi-step saga.
+//
+// A zero-row result here means the row vanished between the caller's Get
+// and this Put (e.g. a concurrent Delete) — surfaced as
+// ErrConcurrentUpdate so the executor does not silently no-op.
 func (s *Store) putUpdateOptimistic(ctx context.Context, inst saga.Instance, compensatedJSON, resultsJSON []byte) error {
 	query := fmt.Sprintf(`UPDATE %s SET
 		  state         = $1,
@@ -123,12 +161,12 @@ func (s *Store) putUpdateOptimistic(ctx context.Context, inst saga.Instance, com
 		  step_results  = $4::jsonb,
 		  last_error    = $5,
 		  updated_at    = now()
-		WHERE id = $6 AND updated_at = $7`,
+		WHERE id = $6`,
 		s.table)
 	res, err := s.db.ExecContext(ctx, query,
 		string(inst.State), inst.CurrentStep,
 		string(compensatedJSON), string(resultsJSON), inst.LastError,
-		inst.ID, inst.UpdatedAt,
+		inst.ID,
 	)
 	if err != nil {
 		return redact.WrapError("pgstore: Put update", err)
@@ -145,6 +183,9 @@ func (s *Store) putUpdateOptimistic(ctx context.Context, inst saga.Instance, com
 
 // Get implements [saga.StateStore].
 func (s *Store) Get(ctx context.Context, id string) (saga.Instance, error) {
+	if err := s.ready(); err != nil {
+		return saga.Instance{}, err
+	}
 	query := fmt.Sprintf(`SELECT id, definition, state, current_step,
 		compensated, input, step_results, last_error, created_at, updated_at
 		FROM %s WHERE id = $1`, s.table)
@@ -154,6 +195,9 @@ func (s *Store) Get(ctx context.Context, id string) (saga.Instance, error) {
 
 // ListResumable implements [saga.StateStore].
 func (s *Store) ListResumable(ctx context.Context, olderThan time.Duration) ([]saga.Instance, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
 	var (
 		query string
 		args  []any
@@ -194,12 +238,50 @@ func (s *Store) ListResumable(ctx context.Context, olderThan time.Duration) ([]s
 
 // Delete implements [saga.StateStore]. Idempotent.
 func (s *Store) Delete(ctx context.Context, id string) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
 	query := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.table)
 	_, err := s.db.ExecContext(ctx, query, id)
 	if err != nil {
 		return redact.WrapError("pgstore: Delete", err)
 	}
 	return nil
+}
+
+// DeleteTerminalBefore prunes terminal (completed / failed) saga
+// instances whose updated_at is older than before, returning the number
+// of rows removed. It is the retention sweep for this store: the
+// executor leaves completed and failed instances in place (each carries
+// input + per-step JSONB results), so without a periodic prune the table
+// grows unbounded. Run it from a scheduled job — mirrors
+// outbox.DeletePublishedBefore / DeleteFailedBefore and
+// idempotency.DeleteExpired.
+//
+// Only terminal states are touched, so an in-flight (pending / running /
+// compensating) instance is never collected even if its updated_at is
+// stale; ResetStaleProcessing-style recovery via ListResumable stays
+// intact. The partial index idx_saga_instances_terminal keeps the sweep
+// O(rows-to-delete). Not part of [saga.StateStore]: it is a
+// backend-specific extension, like the outbox store's prune methods, so
+// adding it does not force the in-memory backend to implement retention.
+func (s *Store) DeleteTerminalBefore(ctx context.Context, before time.Time) (int64, error) {
+	if err := s.ready(); err != nil {
+		return 0, err
+	}
+	query := fmt.Sprintf(
+		`DELETE FROM %s WHERE state IN ('completed', 'failed') AND updated_at < $1`,
+		s.table,
+	)
+	res, err := s.db.ExecContext(ctx, query, before.UTC())
+	if err != nil {
+		return 0, redact.WrapError("pgstore: DeleteTerminalBefore", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, redact.WrapError("pgstore: DeleteTerminalBefore rows", err)
+	}
+	return n, nil
 }
 
 // scannable is the minimal contract both *sql.Row and *sql.Rows
@@ -213,11 +295,16 @@ func (s *Store) scanRow(row scannable) (saga.Instance, error) {
 		inst            saga.Instance
 		stateStr        string
 		compensatedJSON []byte
+		inputBytes      []byte
 		resultsJSON     []byte
 	)
+	// input is a nullable BYTEA: a saga started with no input stores SQL
+	// NULL. database/sql cannot scan NULL into json.RawMessage directly
+	// (it errors "unsupported Scan ... <nil> into *json.RawMessage"), so
+	// scan through a plain []byte, which receives NULL as nil.
 	err := row.Scan(
 		&inst.ID, &inst.Definition, &stateStr, &inst.CurrentStep,
-		&compensatedJSON, &inst.Input, &resultsJSON, &inst.LastError,
+		&compensatedJSON, &inputBytes, &resultsJSON, &inst.LastError,
 		&inst.CreatedAt, &inst.UpdatedAt,
 	)
 	if err != nil {
@@ -225,6 +312,9 @@ func (s *Store) scanRow(row scannable) (saga.Instance, error) {
 			return saga.Instance{}, saga.ErrInstanceNotFound
 		}
 		return saga.Instance{}, redact.WrapError("pgstore: scan", err)
+	}
+	if inputBytes != nil {
+		inst.Input = json.RawMessage(inputBytes)
 	}
 	inst.State = saga.State(stateStr)
 	if len(compensatedJSON) > 0 {

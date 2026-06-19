@@ -148,10 +148,19 @@ func (s *StaticKeyStore) Key(_ context.Context, keyID string) ([]byte, error) {
 		return nil, ErrUnknownKeyID
 	}
 	k, ok := s.keys[keyID]
-	if !ok || k == nil || k.IsEmpty() {
+	if !ok || k == nil {
 		return nil, ErrUnknownKeyID
 	}
-	return k.Reveal(), nil
+	// Reveal once and branch on the result. A concurrent Close can zero
+	// the wrapped secret between a separate IsEmpty check and Reveal,
+	// which would yield (nil, nil) — a success-shaped result with no
+	// key. Treating an empty reveal as ErrUnknownKeyID preserves the
+	// documented "ErrUnknownKeyID after Close" contract.
+	b := k.Reveal()
+	if len(b) == 0 {
+		return nil, ErrUnknownKeyID
+	}
+	return b, nil
 }
 
 // CurrentKeyID returns the active signing key ID and secret. The
@@ -163,10 +172,19 @@ func (s *StaticKeyStore) CurrentKeyID(context.Context) (string, []byte, error) {
 		return "", nil, nil
 	}
 	k, ok := s.keys[s.currentID]
-	if !ok || k == nil || k.IsEmpty() {
+	if !ok || k == nil {
 		return s.currentID, nil, nil
 	}
-	return s.currentID, k.Reveal(), nil
+	// Reveal once and branch on the result, mirroring Key: a concurrent
+	// Close can zero the wrapped secret between a separate IsEmpty check
+	// and Reveal, yielding (currentID, nil, nil) — an id with no secret.
+	// Report the cleared key with the documented after-Close shape
+	// ("", nil, nil) so callers never see an id without its secret.
+	b := k.Reveal()
+	if len(b) == 0 {
+		return "", nil, nil
+	}
+	return s.currentID, b, nil
 }
 
 // Close zeroes every wrapped key in the store. Subsequent Key /

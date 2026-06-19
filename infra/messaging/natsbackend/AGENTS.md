@@ -13,8 +13,8 @@
 
 ## Key APIs
 
-- `NewPublisher(conn, opts...)` / `NewConsumer(conn, opts...)`.
-- `WithCredentials(...)` — supports credentials file path and inline credentials. NKey support via `WithNKeyOptions(...)`.
+- `NewPublisher(conn, opts...)` / `NewConsumer(conn, cfg ConsumerConfig, logger, opts...)`.
+- Auth is configured on the `Config` struct passed to `Connect(ctx, cfg)`: set `CredentialsFile` for a NATS `.creds` JWT-NKey file, or `NKeyFile` for an NKey seed file (also `Username`/`Token`).
 
 ## Common mistakes
 

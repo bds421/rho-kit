@@ -61,6 +61,16 @@ var ErrInvalidRequest = errors.New("sign: invalid request")
 //     the caller; the inbound HTTP request is aborted before the
 //     network roundtrip starts. Static in-memory stores never need
 //     to surface an error.
+//
+// CurrentKeyID MUST return a fresh secret slice on every call and MUST
+// NOT retain or share that slice. The transport takes ownership of the
+// returned secret and zeroes it once the signature is computed, so the
+// store may not hand back a cached or pooled buffer: doing so corrupts
+// the store's own copy after the first request (later requests sign
+// with an all-zero key and fail verification) and races concurrent
+// RoundTrips that share the slice. The built-in static and reloading
+// stores already copy on read; KMS / Vault / Secrets Manager adapters
+// must do the same (e.g. append([]byte(nil), secret...)).
 type KeyStore interface {
 	CurrentKeyID(ctx context.Context) (keyID string, secret []byte, err error)
 }
@@ -171,6 +181,15 @@ func WithNonceFn(fn func() string) Option {
 // X-Signature-Key-Id so the verifier can pick the right key from its
 // resolver.
 //
+// Request side effect: to keep the caller's *http.Request reusable
+// after the roundtrip (FR-023), the returned RoundTripper buffers the
+// body once and restores a fresh req.Body reader, setting
+// req.ContentLength to the buffered length. This is a deliberate
+// deviation from the http.RoundTripper contract's "should not modify
+// the request" guidance; callers composing this with other
+// contract-relying wrappers, or reusing the request concurrently
+// while a roundtrip is in flight, should account for it.
+//
 // Panics if secret is shorter than 32 bytes, keyID is empty or
 // exceeds the keyID length cap, or any option is nil — all
 // programmer-side wiring mistakes caught at construction.
@@ -199,6 +218,10 @@ func Wrap(base http.RoundTripper, secret []byte, keyID string, opts ...Option) h
 // caller's deadline applied. Use [WrapKeyStoreContext] when startup
 // validation against a remote store is required.
 //
+// Like [Wrap], the returned RoundTripper restores the caller's
+// req.Body and req.ContentLength after the roundtrip; see [Wrap] for
+// the full request side-effect note.
+//
 // Panics if keys is nil or any option is nil.
 func WrapKeyStore(base http.RoundTripper, keys KeyStore, opts ...Option) http.RoundTripper {
 	if keys == nil {
@@ -215,6 +238,10 @@ func WrapKeyStore(base http.RoundTripper, keys KeyStore, opts ...Option) http.Ro
 // key). Use this when "fail fast at startup if the KMS is
 // unreachable" is the desired behaviour; use [WrapKeyStore] when
 // the service should boot and surface KMS issues at first request.
+//
+// The returned RoundTripper restores the caller's req.Body and
+// req.ContentLength after the roundtrip; see [Wrap] for the full
+// request side-effect note.
 func WrapKeyStoreContext(ctx context.Context, base http.RoundTripper, keys KeyStore, opts ...Option) (http.RoundTripper, error) {
 	if keys == nil {
 		return nil, errors.New("sign: KeyStore must not be nil")
@@ -335,8 +362,9 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sign: resolve current key: %w", err)
 	}
-	// CurrentKeyID returns a per-call copy (the static and wrapped
-	// key stores both copy on read). Zero it immediately after the
+	// Per the KeyStore contract, CurrentKeyID returns a fresh per-call
+	// secret copy the transport owns (the built-in static and reloading
+	// stores both copy on read). Zero it immediately after the
 	// signature is computed so the secret does not sit on the heap
 	// until the next GC sweep. SignCanonical does not retain a
 	// reference, so wiping after the call is safe.

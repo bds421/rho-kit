@@ -64,6 +64,139 @@ func TestRetryStorage_RetriesTransient(t *testing.T) {
 	assert.Equal(t, int32(3), callCount.Load()) // 2 failures + 1 success
 }
 
+// consumingPutBackend drains the reader on every Put attempt (like a real
+// remote backend would) before optionally failing. This lets a test prove
+// that the reader is rewound between attempts: without a rewind the second
+// attempt would read zero bytes from the already-consumed reader.
+type consumingPutBackend struct {
+	*membackend.Backend
+	putCalls atomic.Int32
+	failPut  func() error
+	lastBody []byte
+}
+
+func (b *consumingPutBackend) Put(_ context.Context, _ string, r io.Reader, _ storage.ObjectMeta) error {
+	b.putCalls.Add(1)
+	data, err := io.ReadAll(r) // consume the reader, as a real upload would
+	if err != nil {
+		return err
+	}
+	b.lastBody = data
+	if b.failPut != nil {
+		if err := b.failPut(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func TestRetryStorage_Put_RetriesSeekableAndRewinds(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	backend := &consumingPutBackend{Backend: membackend.New()}
+	transientErr := storage.NewTransientError("put", "key", errors.New("timeout"))
+	backend.failPut = func() error {
+		// Fail the first attempt only; the reader must be rewound so the
+		// second attempt re-reads the full content rather than nothing.
+		if backend.putCalls.Load() == 1 {
+			return transientErr
+		}
+		return nil
+	}
+
+	r := New(backend, WithMaxAttempts(3), WithBaseDelay(time.Millisecond))
+
+	// *bytes.Reader implements io.Seeker, so Put retries and rewinds.
+	err := r.Put(ctx, "key", bytes.NewReader([]byte("hello world")), storage.ObjectMeta{})
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), backend.putCalls.Load(), "Put should retry once after a transient failure")
+
+	// The body seen on the successful (second) attempt must be the full
+	// payload, proving the reader was rewound after the first attempt
+	// consumed it.
+	assert.Equal(t, []byte("hello world"), backend.lastBody,
+		"reader must be rewound so the retried attempt uploads full content")
+}
+
+// nonSeekableReader wraps an io.Reader so it does NOT satisfy io.Seeker,
+// modelling streaming sources (e.g. network bodies) that cannot be rewound.
+type nonSeekableReader struct{ r io.Reader }
+
+func (n *nonSeekableReader) Read(p []byte) (int, error) { return n.r.Read(p) }
+
+func TestRetryStorage_Put_NonSeekableDoesNotRetry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var putCalls atomic.Int32
+	transientErr := storage.NewTransientError("put", "key", errors.New("timeout"))
+	backend := &failingBackend{
+		underlying: membackend.New(),
+		putFn: func() error {
+			putCalls.Add(1)
+			return transientErr
+		},
+	}
+
+	r := New(backend, WithMaxAttempts(5), WithBaseDelay(time.Millisecond))
+
+	reader := &nonSeekableReader{r: bytes.NewReader([]byte("hello world"))}
+	err := r.Put(ctx, "key", reader, storage.ObjectMeta{})
+
+	// A non-seekable reader cannot be rewound, so Put must return the first
+	// error immediately without retrying.
+	require.ErrorIs(t, err, transientErr)
+	assert.Equal(t, int32(1), putCalls.Load(), "non-seekable Put must attempt exactly once")
+}
+
+// copierBackend embeds membackend and records Copy attempts so retry
+// forwarding can be verified.
+type copierBackend struct {
+	*membackend.Backend
+	copyCalls atomic.Int32
+	failCopy  func() error
+}
+
+func (b *copierBackend) Copy(ctx context.Context, srcKey, dstKey string) error {
+	b.copyCalls.Add(1)
+	if b.failCopy != nil {
+		if err := b.failCopy(); err != nil {
+			return err
+		}
+	}
+	return b.Backend.Copy(ctx, srcKey, dstKey)
+}
+
+func TestAsCopier_RetryForwardsAndRetries(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	backend := &copierBackend{Backend: membackend.New()}
+	require.NoError(t, backend.Put(ctx, "src.txt", bytes.NewReader([]byte("payload")), storage.ObjectMeta{}))
+
+	var attempts atomic.Int32
+	backend.failCopy = func() error {
+		if attempts.Add(1) == 1 {
+			return storage.NewTransientError("copy", "src.txt", errors.New("timeout"))
+		}
+		return nil
+	}
+
+	copier, ok := storage.AsCopier(New(backend, WithMaxAttempts(3), WithBaseDelay(time.Millisecond)))
+	require.True(t, ok, "retry must expose Copier when underlying has it")
+
+	require.NoError(t, copier.Copy(ctx, "src.txt", "dst.txt"))
+	assert.Equal(t, int32(2), backend.copyCalls.Load(), "Copy should retry once after a transient failure")
+
+	rc, _, err := backend.Get(ctx, "dst.txt")
+	require.NoError(t, err)
+	defer func() { _ = rc.Close() }()
+	data, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("payload"), data)
+}
+
 func TestRetryStorage_StopsOnPermanent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -132,17 +265,26 @@ func TestRetryStorage_RespectsContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancel
 
+	// Inject an always-transient Delete error so the retry loop would loop
+	// forever (within MaxAttempts) if it ignored the cancelled context.
+	var deleteCalls atomic.Int32
 	transientErr := storage.NewTransientError("delete", "key", errors.New("timeout"))
 	backend := &failingBackend{
 		underlying: membackend.New(),
 		deleteFn: func() error {
+			deleteCalls.Add(1)
 			return transientErr
 		},
 	}
 
 	r := New(backend, WithMaxAttempts(5), WithBaseDelay(time.Millisecond))
 	err := r.Delete(ctx, "key")
-	assert.Error(t, err)
+
+	// A pre-cancelled context must short-circuit before the backend is ever
+	// invoked and surface the cancellation rather than the transient error.
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, int32(0), deleteCalls.Load(),
+		"backend Delete must not be called when ctx is already cancelled")
 }
 
 func TestRetryStorage_Exists(t *testing.T) {
@@ -288,7 +430,7 @@ func TestAsPresigned_RetryDoesNotClaimWhenBackendLacks(t *testing.T) {
 	assert.False(t, ok, "retry must not expose Presigned when underlying lacks it")
 }
 
-func TestAsLister_RetryRetriesUnderlyingErrors(t *testing.T) {
+func TestAsPresigned_RetryRetriesUnderlyingErrors(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -315,6 +457,28 @@ func TestAsLister_RetryRetriesUnderlyingErrors(t *testing.T) {
 	assert.Equal(t, int32(2), backend.presignCalls.Load(), "retry should have made 2 calls")
 }
 
+func TestAsLister_RetryForwardsListItems(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	backend := membackend.New()
+	for _, key := range []string{"a.txt", "b.txt", "c.txt"} {
+		require.NoError(t, backend.Put(ctx, key, bytes.NewReader([]byte(key)), storage.ObjectMeta{}))
+	}
+
+	lister, ok := storage.AsLister(New(backend))
+	require.True(t, ok, "retry must expose Lister when underlying has it")
+
+	var keys []string
+	for info, err := range lister.List(ctx, "", storage.ListOptions{}) {
+		require.NoError(t, err)
+		keys = append(keys, info.Key)
+	}
+
+	assert.Equal(t, []string{"a.txt", "b.txt", "c.txt"}, keys,
+		"retry-wrapped Lister must forward all objects from the backend")
+}
+
 func TestAsPublicURLer_ReachesUnderlyingThroughRetry(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -330,14 +494,80 @@ func TestAsPublicURLer_ReachesUnderlyingThroughRetry(t *testing.T) {
 	assert.Equal(t, "https://public/key", url)
 }
 
+func TestRetryStorage_Put_RewindsToInitialOffsetOnRetry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var (
+		attempts atomic.Int32
+		captured [][]byte
+	)
+	backend := &capturingPutBackend{
+		putFn: func(r io.Reader) error {
+			data, err := io.ReadAll(r)
+			if err != nil {
+				return err
+			}
+			captured = append(captured, data)
+			if attempts.Add(1) == 1 {
+				return storage.NewTransientError("put", "key", errors.New("timeout"))
+			}
+			return nil
+		},
+	}
+
+	// Reader positioned mid-stream: the first 4 bytes ("HEAD") have already
+	// been consumed by the caller before handing the reader to Put.
+	sr := bytes.NewReader([]byte("HEADbody"))
+	_, err := sr.Seek(4, io.SeekStart)
+	require.NoError(t, err)
+
+	r := New(backend, WithMaxAttempts(3), WithBaseDelay(time.Millisecond))
+	require.NoError(t, r.Put(ctx, "key", sr, storage.ObjectMeta{}))
+
+	require.Len(t, captured, 2)
+	// Both attempts must upload identical content starting from the caller's
+	// initial offset — not byte 0 on retry.
+	assert.Equal(t, []byte("body"), captured[0])
+	assert.Equal(t, []byte("body"), captured[1])
+}
+
+// capturingPutBackend records the bytes seen by each Put attempt and can inject
+// errors so retries can be observed.
+type capturingPutBackend struct {
+	putFn func(r io.Reader) error
+}
+
+func (b *capturingPutBackend) Put(_ context.Context, _ string, r io.Reader, _ storage.ObjectMeta) error {
+	if b.putFn != nil {
+		return b.putFn(r)
+	}
+	_, err := io.Copy(io.Discard, r)
+	return err
+}
+
+func (b *capturingPutBackend) Get(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+	return nil, storage.ObjectMeta{}, errors.New("not implemented")
+}
+
+func (b *capturingPutBackend) Delete(context.Context, string) error { return nil }
+
+func (b *capturingPutBackend) Exists(context.Context, string) (bool, error) { return false, nil }
+
 // failingBackend wraps MemBackend but can inject errors per-operation.
 type failingBackend struct {
 	underlying *membackend.Backend
 	getFn      func() error
 	deleteFn   func() error
+	putFn      func() error
 }
 
 func (f *failingBackend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+	if f.putFn != nil {
+		if err := f.putFn(); err != nil {
+			return err
+		}
+	}
 	return f.underlying.Put(ctx, key, r, meta)
 }
 

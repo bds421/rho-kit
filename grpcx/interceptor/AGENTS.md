@@ -20,19 +20,19 @@
 - `DeadlineUnary(d)` / `DeadlineStream(d)` — server-side default deadline (wave 119).
 - `RecoveryUnary(logger)` / `RecoveryStream(logger)` — panic-to-error conversion. Always be FIRST in the chain.
 - `LoggingUnary(logger)` / `LoggingStream(logger)` — structured access log.
-- `MTLSAuthUnary(opts...)` / `MTLSAuthStream(opts...)` — mTLS identity gating with allowed SAN/CN.
-- `Metrics().UnaryInterceptor()` / `StreamInterceptor()` — Prometheus + OTel spans.
+- `MTLSAuthUnary(provider, opts...)` / `MTLSAuthStream(provider, opts...)` — mTLS identity gating with allowed SAN/CN. The first argument is the required `*jwtutil.Provider`.
+- `NewMetrics(opts...).UnaryInterceptor()` / `.StreamInterceptor()` — Prometheus request counters/histograms. (OTel spans are not emitted here; use `grpcx.WithTracingStatsHandler` for tracing.)
 
 ## Interceptor ordering
 
-Outermost first (the interceptor wrapper applies in the order given). Always: **Recovery → Metrics → Logging → Auth → Deadline → MaxConcurrent → StreamIdleTimeout → (custom)**. A panic in a `StreamIdleTimeout`-watched handler must surface through `Recovery` BEFORE the timeout records it as an idle close.
+Outermost first (the interceptor wrapper applies in the order given). Matching `grpcx.NewServer`'s auto-chain: **Recovery → Logging → Metrics → Auth → Deadline → MaxConcurrent → StreamIdleTimeout → (custom)**. A panic in a `StreamIdleTimeout`-watched handler must surface through `Recovery` BEFORE the timeout records it as an idle close.
 
 ## Common mistakes
 
 - **Recovery interceptor NOT first** — panics inside Metrics/Logging interceptors bypass recovery and crash the goroutine.
 - **`MaxConcurrentStreamsServer(0, ...)`** — panics at construction. Pick a value based on your service's connection budget.
 - **`StreamIdleTimeout(<your slowest-message interval, ...)`** — the watchdog will reap legitimate slow streams. Set the value > worst-case-message-interval × 2.
-- **Two `Metrics` interceptors in the chain** — counts every call twice.
+- **Two `NewMetrics` interceptors in the chain** — counts every call twice.
 
 ## Observability
 

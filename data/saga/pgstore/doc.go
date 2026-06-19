@@ -15,11 +15,16 @@
 //   - Tests / single-process services — use
 //     [saga.NewMemoryStateStore] instead.
 //
-// # Replica safety
+// # Write semantics
 //
-// Put uses an optimistic-concurrency check on the row's updated_at
-// column so two replicas calling DurableExecutor.Run for the same
-// instance never both advance CurrentStep. The losing replica's Put
-// returns [ErrConcurrentUpdate]; the executor's loop treats it as a
-// retryable signal and re-reads the instance state.
+// Put's first write of a fresh instance (UpdatedAt zero) uses
+// INSERT … ON CONFLICT (id) DO NOTHING and never overwrites an existing
+// row; a collision returns [ErrConcurrentUpdate]. Subsequent writes
+// (UpdatedAt non-zero) UPDATE the row in place by ID, overwriting its
+// mutable columns to match the "writes (or overwrites)" contract of
+// saga.StateStore.Put. The update does not gate on updated_at because
+// DurableExecutor reads an instance once and then Puts repeatedly
+// without re-reading, leaving its in-memory UpdatedAt stale after the
+// first write. A vanished row (concurrent Delete) returns
+// [ErrConcurrentUpdate].
 package pgstore

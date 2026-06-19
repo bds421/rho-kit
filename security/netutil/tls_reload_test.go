@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -218,6 +219,129 @@ func TestReloadingClientTLS_FailsClosedWithoutServerName(t *testing.T) {
 		ServerName: "", // SDK that did not stamp the hostname
 	})
 	require.ErrorIs(t, err, ErrServerNameRequired)
+}
+
+// poolSource is a CertificateSource whose only meaningful method is
+// CAs(); ReloadingClientTLS.VerifyConnection consults only the trust
+// pool, so the cert getters fail loudly if the test path ever calls
+// them by accident.
+type poolSource struct{ pool *x509.CertPool }
+
+func (p poolSource) ServerCertificate() (*tls.Certificate, error) {
+	return nil, errors.New("poolSource: ServerCertificate not expected")
+}
+
+func (p poolSource) ClientCertificate() (*tls.Certificate, error) {
+	return nil, errors.New("poolSource: ClientCertificate not expected")
+}
+
+func (p poolSource) CAs() (*x509.CertPool, error) { return p.pool, nil }
+
+// testCA is a self-signed CA plus the material needed to sign leaves.
+type testCA struct {
+	cert *x509.Certificate
+	key  *ecdsa.PrivateKey
+	pool *x509.CertPool
+}
+
+func newTestCA(t *testing.T, commonName string) testCA {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: commonName},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	cert, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	pool := x509.NewCertPool()
+	pool.AddCert(cert)
+	return testCA{cert: cert, key: key, pool: pool}
+}
+
+// signLeaf issues a server leaf cert signed by ca for the given DNS SAN.
+func (ca testCA) signLeaf(t *testing.T, dnsName string) *x509.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: dnsName},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{dnsName},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, ca.cert, &key.PublicKey, ca.key)
+	require.NoError(t, err)
+	leaf, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	return leaf
+}
+
+// TestReloadingClientTLS_VerifyConnectionChain pins the core mTLS
+// server-cert verification path. Because ReloadingClientTLS sets
+// InsecureSkipVerify=true and replaces verification with
+// VerifyConnection, this callback is the only thing standing between a
+// client and an unauthenticated peer. A regression that turned the
+// chain Verify into a no-op (e.g. dropping the err check) would pass the
+// other tests while silently disabling peer authentication, so we assert
+// both the positive and the negative paths explicitly here.
+func TestReloadingClientTLS_VerifyConnectionChain(t *testing.T) {
+	t.Parallel()
+
+	ca := newTestCA(t, "trusted-ca")
+	foreign := newTestCA(t, "foreign-ca")
+
+	goodLeaf := ca.signLeaf(t, "good.example")         // signed by trusted CA
+	foreignLeaf := foreign.signLeaf(t, "good.example") // right name, wrong CA
+
+	tlsCfg := ReloadingClientTLS(poolSource{pool: ca.pool})
+	require.NotNil(t, tlsCfg.VerifyConnection)
+
+	t.Run("accepts chain signed by trusted CA with matching hostname", func(t *testing.T) {
+		err := tlsCfg.VerifyConnection(tls.ConnectionState{
+			ServerName:       "good.example",
+			PeerCertificates: []*x509.Certificate{goodLeaf},
+		})
+		require.NoError(t, err,
+			"a leaf signed by the source's trusted CA with a matching SAN must verify")
+	})
+
+	t.Run("rejects chain from an untrusted CA", func(t *testing.T) {
+		err := tlsCfg.VerifyConnection(tls.ConnectionState{
+			ServerName:       "good.example",
+			PeerCertificates: []*x509.Certificate{foreignLeaf},
+		})
+		require.Error(t, err,
+			"a leaf signed by a CA not in the trust pool must be rejected")
+	})
+
+	t.Run("rejects hostname mismatch even with a trusted CA", func(t *testing.T) {
+		err := tlsCfg.VerifyConnection(tls.ConnectionState{
+			ServerName:       "evil.example",
+			PeerCertificates: []*x509.Certificate{goodLeaf},
+		})
+		require.Error(t, err,
+			"a trusted-CA leaf whose SAN does not match ServerName must be rejected")
+	})
+
+	t.Run("rejects when peer presents no certificates", func(t *testing.T) {
+		err := tlsCfg.VerifyConnection(tls.ConnectionState{
+			ServerName:       "good.example",
+			PeerCertificates: nil,
+		})
+		require.Error(t, err,
+			"a handshake with no peer certificates must be rejected")
+	})
 }
 
 func mustServerCert(t *testing.T, s *FilesCertificateSource) *tls.Certificate {

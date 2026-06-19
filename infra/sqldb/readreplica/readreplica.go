@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,11 @@ import (
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
+
+// poolInstanceSeq assigns each RoutingPool a process-unique id used as the
+// gauge "pool" label so pools sharing a registerer keep distinct gauge
+// series instead of clobbering one another.
+var poolInstanceSeq atomic.Uint64
 
 // Acquirer is the minimal surface RoutingPool needs from each backend
 // pool. Both [*pgxpool.Pool] and tests' fake pools satisfy it.
@@ -37,12 +43,12 @@ type Config struct {
 type Option func(*routingConfig)
 
 type routingConfig struct {
-	healthInterval        time.Duration
-	maxConsecutiveFails   int
-	logger                *slog.Logger
-	registerer            prometheus.Registerer
-	disableHealthCheck    bool
-	probeTimeout          time.Duration
+	healthInterval      time.Duration
+	maxConsecutiveFails int
+	logger              *slog.Logger
+	registerer          prometheus.Registerer
+	disableHealthCheck  bool
+	probeTimeout        time.Duration
 }
 
 // WithHealthInterval overrides the replica health-probe interval
@@ -168,7 +174,8 @@ func New(cfg Config, opts ...Option) (*RoutingPool, error) {
 		st.healthy.Store(true)
 		rp.replicas = append(rp.replicas, st)
 	}
-	m, err := newRoutingMetrics(rc.registerer)
+	instanceID := strconv.FormatUint(poolInstanceSeq.Add(1), 10)
+	m, err := newRoutingMetrics(rc.registerer, instanceID)
 	if err != nil {
 		return nil, redact.WrapError("readreplica: metrics", err)
 	}
@@ -203,7 +210,14 @@ func (p *RoutingPool) Acquire(ctx context.Context, opts ...AcquireOption) (*pgxp
 		p.metrics.replicaAcquires.Inc()
 		return conn, nil
 	}
+	// Fallback path: this read-only Acquire could not find a healthy
+	// replica and must take a primary connection. Count it in both
+	// replica_fallback_total (the degradation event) and
+	// primary_acquires_total (the actual primary pool load) so the
+	// latter reflects every connection drawn from the primary, matching
+	// its help text.
 	p.metrics.replicaFallback.Inc()
+	p.metrics.primaryAcquires.Inc()
 	p.cfg.logger.Warn("readreplica: no healthy replicas, falling back to primary")
 	conn, err := p.primary.Acquire(ctx)
 	if err != nil {

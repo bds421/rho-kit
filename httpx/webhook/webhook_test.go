@@ -2,7 +2,6 @@ package webhook_test
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -53,6 +52,58 @@ func TestSend_HappyPath(t *testing.T) {
 	require.NotEmpty(t, gotSig)
 	require.NotEmpty(t, gotTS)
 	require.NotEmpty(t, gotID, "delivery id auto-generated when omitted")
+}
+
+// countingBody reports how many bytes were read from it and never reaches EOF
+// within the drain window, emulating a hostile receiver streaming an unbounded
+// response body.
+type countingBody struct {
+	read atomic.Int64
+}
+
+func (b *countingBody) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	b.read.Add(int64(len(p)))
+	return len(p), nil
+}
+
+func (b *countingBody) Close() error { return nil }
+
+// roundTripperFunc adapts a function to http.RoundTripper.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestSend_BoundsResponseBodyDrain verifies that a 2xx delivery whose receiver
+// streams an unbounded response body does not read the whole stream: the
+// dispatcher drains at most a bounded amount for keep-alive reuse, then closes.
+func TestSend_BoundsResponseBodyDrain(t *testing.T) {
+	body := &countingBody{}
+	client := &http.Client{
+		Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       body,
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	d := newDispatcher(t, client)
+	err := d.Send(context.Background(), webhook.Delivery{
+		URL:  "https://receiver.example/hook",
+		Body: []byte(`{"ok":true}`),
+	})
+	require.NoError(t, err)
+
+	// The drain must be bounded: well under the unbounded stream the receiver
+	// would otherwise feed. Allow a small slack over the cap for the final
+	// io.CopyN buffer chunk.
+	const cap = 64 * 1024
+	require.LessOrEqual(t, body.read.Load(), int64(cap)+64*1024,
+		"response body drain must be bounded, read %d bytes", body.read.Load())
 }
 
 func TestSend_DefaultsContentTypeJSON(t *testing.T) {
@@ -181,8 +232,12 @@ func TestSend_HonoursCtxCancel(t *testing.T) {
 	defer cancel()
 	err := d.Send(ctx, webhook.Delivery{URL: srv.URL})
 	require.Error(t, err)
-	require.True(t, errors.Is(err, context.DeadlineExceeded) || err != nil,
-		"expected ctx-derived error, got %v", err)
+	// The server keeps returning 503 (retryable), so Send must keep retrying
+	// until the context deadline fires and surface a ctx-derived error — not
+	// retry-budget exhaustion. Assert the cancellation cause directly rather
+	// than the previously tautological "|| err != nil".
+	require.ErrorIs(t, err, context.DeadlineExceeded,
+		"expected the context deadline to terminate retries, got %v", err)
 }
 
 func TestNew_ValidatesConfig(t *testing.T) {
@@ -201,9 +256,42 @@ func TestNew_NilOptionRejected(t *testing.T) {
 	_, err := webhook.New(webhook.Config{
 		HTTPClient: http.DefaultClient,
 		Signer:     signing.NewSigner(),
-		Secret:     signing.Secret("k"),
+		Secret:     signing.Secret("test-secret-32-bytes-padded-12345"),
 	}, nil)
 	require.Error(t, err)
+}
+
+// TestNew_RejectsShortSecret guards against the failure mode where New
+// accepts a non-empty-but-too-short secret and then every Send fails at
+// runtime: crypto/signing rejects secrets below 32 bytes, so New must
+// enforce the same floor at construction time (matching sibling
+// constructors like NewCursorSigner / NewStaticKeyStore).
+func TestNew_RejectsShortSecret(t *testing.T) {
+	tests := []struct {
+		name    string
+		secret  signing.Secret
+		wantErr bool
+	}{
+		{"empty", signing.Secret(""), true},
+		{"one byte", signing.Secret("k"), true},
+		{"31 bytes", signing.Secret("0123456789012345678901234567890"), true},
+		{"32 bytes", signing.Secret("01234567890123456789012345678901"), false},
+		{"33 bytes", signing.Secret("012345678901234567890123456789012"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := webhook.New(webhook.Config{
+				HTTPClient: http.DefaultClient,
+				Signer:     signing.NewSigner(),
+				Secret:     tt.secret,
+			})
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestSend_URLRequired(t *testing.T) {
@@ -211,6 +299,52 @@ func TestSend_URLRequired(t *testing.T) {
 	err := d.Send(context.Background(), webhook.Delivery{})
 	require.Error(t, err)
 }
+
+// TestSend_RejectsNonHTTPSchemes is an SSRF hardening guard: the
+// dispatcher signs a body and POSTs it to a caller/customer-supplied
+// URL, so a non-http(s) scheme (file://, gopher://, etc.) must be
+// rejected before any request is built — the kit only ever speaks
+// HTTP(S). The error must be permanent (no retry) and never reach the
+// transport.
+func TestSend_RejectsNonHTTPSchemes(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"file scheme", "file:///etc/passwd", true},
+		{"gopher scheme", "gopher://127.0.0.1:6379/_INFO", true},
+		{"ftp scheme", "ftp://internal/secret", true},
+		{"no scheme", "internal.host/path", true},
+		{"uppercase HTTPS allowed", "HTTPS://example.com/hook", false},
+		{"http allowed", "http://example.com/hook", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var hits atomic.Int32
+			rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				hits.Add(1)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(http.NoBody),
+				}, nil
+			})
+			d := newDispatcher(t, &http.Client{Transport: rt})
+			err := d.Send(context.Background(), webhook.Delivery{URL: tt.url})
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Equal(t, int32(0), hits.Load(),
+					"rejected scheme must never reach the transport")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestSend_CustomHeadersDoNotOverrideKitHeaders(t *testing.T) {
 	var gotSig string

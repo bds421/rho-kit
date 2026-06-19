@@ -49,6 +49,12 @@ func (c Config) LogValue() slog.Value {
 
 // LoadConfig reads GCS settings from environment variables.
 //
+// Unlike azurebackend/s3backend/sftpbackend, whose LoadConfig takes
+// (envPrefix, environment) parameters, gcsbackend reads a fixed set of
+// STORAGE_GCS_* variables and takes no arguments. This divergence is
+// intentional and preserved for backward compatibility; do not change the
+// signature without a major-version bump.
+//
 // Environment variables:
 //   - STORAGE_GCS_BUCKET (required)
 //   - STORAGE_GCS_PROJECT_ID (required)

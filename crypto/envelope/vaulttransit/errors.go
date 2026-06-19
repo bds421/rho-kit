@@ -27,7 +27,12 @@ func classifyVaultError(operation string, err error) error {
 	switch respErr.StatusCode {
 	case 429:
 		return apperror.NewDependencyUnavailable("kms", "vault throttled (429)", err)
-	case 408, 500, 502, 503, 504:
+	// 412 (eventual-consistency precondition on Enterprise/integrated
+	// storage), 472 (DR replication secondary), and 473 (performance
+	// standby) are Vault-specific transient statuses surfaced during routine
+	// HA/replication failovers; treat them as retryable like the generic 5xx
+	// transient set so apperror.IsUnavailable-driven backoff engages.
+	case 408, 412, 472, 473, 500, 502, 503, 504:
 		return apperror.NewDependencyUnavailable("kms", "vault transient (status "+statusString(respErr.StatusCode)+")", err)
 	case 401, 403:
 		return apperror.NewPermanentWithCause("vault access denied (status "+statusString(respErr.StatusCode)+")", err)

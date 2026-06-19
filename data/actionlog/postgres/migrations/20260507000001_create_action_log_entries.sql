@@ -1,4 +1,19 @@
 -- +goose Up
+-- Retention: this is a tamper-evident, append-only per-tenant hash chain
+-- (prev_hash + seq + signature). Unlike outbox (DeletePublishedBefore /
+-- DeleteFailedBefore), idempotency (DeleteExpired), and auditlog
+-- (DeleteBefore), the actionlog store ships NO Delete/Prune method — by
+-- design, because any row deletion or reordering breaks the per-tenant
+-- chain on the next VerifyChain call (there is no watermark-recovery
+-- equivalent here). The table therefore grows unbounded for the life of
+-- the deployment. Operators who need retention MUST handle it externally
+-- and accept that historical chain verification stops at the prune
+-- boundary: archive the rows out-of-band first, then either DELETE the
+-- oldest contiguous head per tenant (interior deletes are unrecoverable)
+-- or, preferred at scale, native range partitioning by occurred_at with
+-- whole-partition DETACH/DROP. Treat any prune as making
+-- VerifyChain/VerifyChainFrom fail for the pruned range — verify the
+-- archived copy, not the live table, for the retained-but-deleted span.
 CREATE TABLE IF NOT EXISTS action_log_entries (
     id                VARCHAR(36) PRIMARY KEY,
     tenant_id         VARCHAR(255) NOT NULL,

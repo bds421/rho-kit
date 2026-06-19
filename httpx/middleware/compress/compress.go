@@ -109,9 +109,12 @@ func WithoutGzip() Option {
 	}
 }
 
-// WithLogger overrides the slog.Logger used for warn-level diagnostics
-// (oversized prefix bypass, handler panics during compression).
-// Defaults to [slog.Default].
+// WithLogger sets the slog.Logger held by the middleware. A nil
+// argument is accepted; the default is [slog.Default].
+//
+// Note: the middleware does not currently emit any log records — the
+// compression bail-out and finalize paths are silent. This option only
+// overrides the stored logger for future use.
 func WithLogger(l *slog.Logger) Option {
 	return func(c *config) { c.logger = l }
 }
@@ -159,7 +162,11 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			enc := selectEncoder(r.Header.Get("Accept-Encoding"), cfg.encoders)
+			// Accept-Encoding is a list-typed header that may be split across
+			// multiple field lines; join them so a client sending e.g.
+			// "Accept-Encoding: br" + "Accept-Encoding: gzip" negotiates the
+			// full list rather than only the first line.
+			enc := selectEncoder(strings.Join(r.Header.Values("Accept-Encoding"), ","), cfg.encoders)
 			if enc == nil {
 				next.ServeHTTP(w, r)
 				return
@@ -172,6 +179,12 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 			}
 			defer cw.finalize()
 			next.ServeHTTP(cw, r)
+			// Mark normal completion. finalize (deferred above) only
+			// commits/flushes the response when this flag is set; on a
+			// handler panic it stays false so finalize leaves the writer
+			// untouched for an outer recover middleware to send a clean
+			// 500 instead of a committed 200.
+			cw.completed = true
 		})
 	}
 }
@@ -200,9 +213,17 @@ func selectEncoder(acceptEncoding string, encoders []Encoder) Encoder {
 		q     float64
 	}
 	var prefs []pref
+	// refused records tokens the client explicitly excluded with q=0 (RFC 9110
+	// §12.5.3). The wildcard ('*') must match only codings NOT explicitly
+	// mentioned, so a refused token must never be selected via the wildcard.
+	refused := make(map[string]bool)
 	for _, raw := range strings.Split(acceptEncoding, ",") {
 		token, q := parseAcceptEncodingEntry(raw)
-		if token == "" || q == 0 {
+		if token == "" {
+			continue
+		}
+		if q == 0 {
+			refused[strings.ToLower(token)] = true
 			continue
 		}
 		prefs = append(prefs, pref{token: token, q: q})
@@ -215,8 +236,14 @@ func selectEncoder(acceptEncoding string, encoders []Encoder) Encoder {
 	})
 	for _, p := range prefs {
 		if p.token == "*" {
-			// Wildcard: pick the first registered encoder.
-			return encoders[0]
+			// Wildcard matches codings not explicitly mentioned: pick the
+			// first registered encoder the client did not refuse with q=0.
+			for _, e := range encoders {
+				if !refused[strings.ToLower(e.ContentEncoding())] {
+					return e
+				}
+			}
+			continue
 		}
 		for _, e := range encoders {
 			if strings.EqualFold(e.ContentEncoding(), p.token) {

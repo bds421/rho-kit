@@ -54,7 +54,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Help:      "Duration of SFTP storage operations.",
 				Buckets:   []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 			},
-			[]string{"instance", "operation"},
+			[]string{"storage_instance", "operation"},
 		),
 		opErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -63,7 +63,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "operation_errors_total",
 				Help:      "Total SFTP operation errors.",
 			},
-			[]string{"instance", "operation"},
+			[]string{"storage_instance", "operation"},
 		),
 		connectionHealthy: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -72,7 +72,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Name:      "connection_healthy",
 				Help:      "Whether the SFTP connection is healthy (1) or not (0).",
 			},
-			[]string{"instance"},
+			[]string{"storage_instance"},
 		),
 	}
 

@@ -588,12 +588,46 @@ func TestBufferedPublisher_BufferFull(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when buffer full")
 	}
+	if !errors.Is(err, ErrBufferFull) {
+		t.Fatalf("buffer-full drop must be errors.Is(ErrBufferFull) so callers can shed load programmatically, got %v", err)
+	}
 	if strings.Contains(err.Error(), "2 messages") {
 		t.Fatalf("buffer full error leaked configured size: %v", err)
 	}
 
 	if pub.Pending() != 2 {
 		t.Fatalf("expected 2 pending, got %d", pub.Pending())
+	}
+}
+
+// TestBufferedPublisher_BufferFullAfterDirectFailure exercises the second
+// drop path: a direct publish fails, then the post-failure capacity re-check
+// finds the buffer full and drops the message. It must also carry the
+// ErrBufferFull sentinel.
+func TestBufferedPublisher_BufferFullAfterDirectFailure(t *testing.T) {
+	// Publisher always fails the direct publish so the failure-path append
+	// is taken; maxSize=1 with one buffered message means the re-check drops.
+	fp := &fakePublisher{failUntil: 1000}
+	var healthy atomic.Bool
+	healthy.Store(true)
+	pub := testBufferedPublisherWithHealthPtr(fp, &healthy, WithMaxSize(1))
+
+	// First publish: direct fails, buffer has room (0 -> 1).
+	msg1, _ := NewMessage("test.event", "m1")
+	if err := pub.Publish(context.Background(), "ex", "rk", msg1); err != nil {
+		t.Fatalf("first publish should buffer after direct failure, got %v", err)
+	}
+	if pub.Pending() != 1 {
+		t.Fatalf("expected 1 pending after direct failure, got %d", pub.Pending())
+	}
+
+	// Second publish: buffer already at capacity. Whether it takes the
+	// direct-failure re-check drop or the reserved-slot drop, the result
+	// must be the sentinel.
+	msg2, _ := NewMessage("test.event", "m2")
+	err := pub.Publish(context.Background(), "ex", "rk", msg2)
+	if !errors.Is(err, ErrBufferFull) {
+		t.Fatalf("over-capacity drop must be errors.Is(ErrBufferFull), got %v", err)
 	}
 }
 
@@ -1411,6 +1445,9 @@ func TestBufferedPublisher_PersistFailureAfterDirectPublishFail(t *testing.T) {
 // on-disk pending list stale and creating a duplicate-replay risk
 // on the next process crash.
 func TestBufferedPublisherDrain_SaveErrorFiresHookAndLastSaveError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based failure injection is bypassed when running as root")
+	}
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "buffered.json")
 
@@ -1467,5 +1504,466 @@ func TestBufferedPublisherDrain_SaveErrorFiresHookAndLastSaveError(t *testing.T)
 	}
 	if errPtr := lastErr.Load(); errPtr == nil || *errPtr == nil {
 		t.Error("OnSaveError invoked with nil error")
+	}
+}
+
+// TestBufferedPublisherPersistence_PreservesHeaders verifies that
+// transport headers survive the save/load round-trip. Message.Headers
+// is tagged json:"-", so a naive json.Marshal of the pending entry drops
+// correlation/request/tenant headers; after crash+restart drain would
+// then republish messages with nil Headers, silently losing metadata.
+func TestBufferedPublisherPersistence_PreservesHeaders(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, false, withStateFileAbsoluteForTest(stateFile))
+
+	msg := Message{
+		ID:      "msg-h1",
+		Type:    "test.event",
+		Payload: []byte(`{"k":"v"}`),
+		Headers: map[string]string{
+			HeaderCorrelationID: "corr-123",
+			HeaderRequestID:     "req-456",
+			"X-Tenant-Id":       "tenant-789",
+		},
+	}
+	if err := pub.Publish(context.Background(), "ex", "rk", msg); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if pub.Pending() != 1 {
+		t.Fatalf("expected 1 pending, got %d", pub.Pending())
+	}
+
+	// Simulate process restart: load from the same state file.
+	var headerSeen map[string]string
+	pub2 := newTestBufferedPublisher(
+		func(_ context.Context, _, _ string, m Message) error {
+			headerSeen = m.Headers
+			return nil
+		},
+		func() bool { return true },
+		withStateFileAbsoluteForTest(stateFile),
+	)
+	if err := pub2.load(); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if pub2.Pending() != 1 {
+		t.Fatalf("expected 1 pending after load, got %d", pub2.Pending())
+	}
+
+	pub2.drain(context.Background())
+
+	if headerSeen == nil {
+		t.Fatal("restored message lost all headers across save/load")
+	}
+	for k, want := range msg.Headers {
+		if got := headerSeen[k]; got != want {
+			t.Errorf("header %q after restart = %q, want %q", k, got, want)
+		}
+	}
+}
+
+// TestBufferedPublisherDrain_DrainsBeyondBatchLimit verifies that a
+// single drain() invocation publishes ALL pending messages while the
+// broker stays healthy, not just one bufferedDrainBatchLimit batch.
+// Without an internal batch loop, a sustained inflow above ~one batch
+// per drain interval prevents the buffer from ever reaching zero, so
+// direct mode never resumes and the buffer death-spirals to capacity.
+func TestBufferedPublisherDrain_DrainsBeyondBatchLimit(t *testing.T) {
+	fp := &fakePublisher{}
+	var healthy atomic.Bool
+	pub := testBufferedPublisherWithHealthPtr(fp, &healthy)
+
+	const total = bufferedDrainBatchLimit*2 + 5
+	for i := range total {
+		msg, _ := NewMessage("test.event", fmt.Sprintf("m%d", i))
+		_ = pub.Publish(context.Background(), "exchange", "routing.key", msg)
+	}
+	if pub.Pending() != total {
+		t.Fatalf("expected %d pending, got %d", total, pub.Pending())
+	}
+
+	healthy.Store(true)
+	pub.drain(context.Background())
+
+	if pub.Pending() != 0 {
+		t.Fatalf("expected 0 pending after single healthy drain, got %d", pub.Pending())
+	}
+	if fp.callCount() != total {
+		t.Fatalf("expected %d publish calls, got %d", total, fp.callCount())
+	}
+}
+
+// TestBufferedPublisherFinalDrain_DrainsBeyondBatchLimit verifies that
+// the shutdown final drain empties the whole buffer when the broker is
+// healthy and the timeout budget allows, rather than leaving pending-100
+// messages unsent (silent loss with ephemeral buffers).
+func TestBufferedPublisherFinalDrain_DrainsBeyondBatchLimit(t *testing.T) {
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, false)
+
+	const total = bufferedDrainBatchLimit*2 + 5
+	for i := range total {
+		msg, _ := NewMessage("test.event", fmt.Sprintf("m%d", i))
+		_ = pub.Publish(context.Background(), "exchange", "routing.key", msg)
+	}
+	if pub.Pending() != total {
+		t.Fatalf("expected %d pending, got %d", total, pub.Pending())
+	}
+
+	// Become healthy so finalDrain can publish.
+	pub.healthyFn = func() bool { return true }
+	pub.finalDrain(context.Background())
+
+	if pub.Pending() != 0 {
+		t.Fatalf("expected 0 pending after final drain, got %d", pub.Pending())
+	}
+	if fp.callCount() != total {
+		t.Fatalf("expected %d publish calls, got %d", total, fp.callCount())
+	}
+}
+
+// countJournalLines returns the number of non-empty newline-delimited lines
+// in the state file. A freshly-compacted snapshot is exactly one line; each
+// append adds one more. Tests use it to assert the on-disk shape (O(1) append
+// vs full rewrite) without pinning the exact JSON bytes.
+func countJournalLines(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+// TestBufferedPublisherJournal_AppendsInsteadOfRewriting pins the core fix:
+// each buffered Publish appends ONE journal line instead of rewriting the whole
+// snapshot. After N buffered publishes (well under the compaction floor) the
+// file is exactly the snapshot line plus one line per subsequent message.
+func TestBufferedPublisherJournal_AppendsInsteadOfRewriting(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, false, withStateFileAbsoluteForTest(stateFile))
+
+	const n = 5
+	for i := range n {
+		msg, _ := NewMessage("test.event", fmt.Sprintf("m%d", i))
+		if err := pub.Publish(context.Background(), "ex", "rk", msg); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+
+	// First publish writes a one-entry snapshot line; the remaining n-1 each
+	// append exactly one line. Total lines = 1 (snapshot) + (n-1) appends = n.
+	if got := countJournalLines(t, stateFile); got != n {
+		t.Fatalf("journal line count = %d, want %d (1 snapshot + %d appends)", got, n, n-1)
+	}
+}
+
+// TestBufferedPublisherJournal_RestartReplaysAllInOrder simulates a broker
+// outage burst followed by a process restart: publish N entries, then build a
+// brand-new publisher over the SAME state path and assert all N are restored in
+// FIFO order. This is the strict-durability contract the journal must preserve.
+func TestBufferedPublisherJournal_RestartReplaysAllInOrder(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, false, withStateFileAbsoluteForTest(stateFile))
+
+	const n = 10
+	want := make([]string, n)
+	for i := range n {
+		msg, _ := NewMessage("test.event", fmt.Sprintf("payload-%d", i))
+		want[i] = msg.ID
+		if err := pub.Publish(context.Background(), "ex", "rk", msg); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+	if pub.Pending() != n {
+		t.Fatalf("expected %d pending, got %d", n, pub.Pending())
+	}
+
+	// Restart: new publisher, same file.
+	fp2 := &fakePublisher{}
+	pub2 := newTestBufferedPublisher(fp2.publish, func() bool { return true }, withStateFileAbsoluteForTest(stateFile))
+	if err := pub2.load(); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if pub2.Pending() != n {
+		t.Fatalf("expected %d pending after restart, got %d", n, pub2.Pending())
+	}
+
+	pub2.drain(context.Background())
+	if pub2.Pending() != 0 {
+		t.Fatalf("expected 0 pending after drain, got %d", pub2.Pending())
+	}
+
+	fp2.mu.Lock()
+	defer fp2.mu.Unlock()
+	if len(fp2.calls) != n {
+		t.Fatalf("expected %d republished, got %d", n, len(fp2.calls))
+	}
+	for i, want := range want {
+		if got := fp2.calls[i].MsgID; got != want {
+			t.Fatalf("replay order mismatch at %d: got %q, want %q", i, got, want)
+		}
+	}
+}
+
+// TestBufferedPublisherJournal_BackwardCompatOldSnapshot pins the in-flight
+// upgrade contract: a state file written in the OLD single-array format (what
+// the pre-journal code persisted) must restore intact, and subsequent publishes
+// plus a drain must produce a consistent state.
+func TestBufferedPublisherJournal_BackwardCompatOldSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+
+	// Write an OLD-format file: a plain JSON array, exactly what the
+	// pre-journal saveLocked produced via atomicfile.Save.
+	old := []pendingMessage{
+		{Exchange: "ex", RoutingKey: "rk", Msg: Message{ID: "old-1", Type: "ok.event", Payload: json.RawMessage(`{}`)}},
+		{Exchange: "ex", RoutingKey: "rk", Msg: Message{ID: "old-2", Type: "ok.event", Payload: json.RawMessage(`{}`)}},
+	}
+	data, err := json.Marshal(old)
+	if err != nil {
+		t.Fatalf("marshal old state: %v", err)
+	}
+	if err := os.WriteFile(stateFile, data, 0o600); err != nil {
+		t.Fatalf("write old state: %v", err)
+	}
+
+	fp := &fakePublisher{}
+	var healthy atomic.Bool
+	pub := testBufferedPublisherWithHealthPtr(fp, &healthy, withStateFileAbsoluteForTest(stateFile))
+	if err := pub.load(); err != nil {
+		t.Fatalf("load old-format file: %v", err)
+	}
+	if pub.Pending() != 2 {
+		t.Fatalf("expected 2 restored from old format, got %d", pub.Pending())
+	}
+
+	// A new buffered publish (broker still down) must migrate the legacy
+	// single-array file into journal format without losing the old entries.
+	msg, _ := NewMessage("test.event", "new-after-upgrade")
+	if err := pub.Publish(context.Background(), "ex", "rk", msg); err != nil {
+		t.Fatalf("publish after upgrade: %v", err)
+	}
+	if pub.Pending() != 3 {
+		t.Fatalf("expected 3 pending after upgrade publish, got %d", pub.Pending())
+	}
+
+	// Reload from disk into a third publisher: all 3 must survive.
+	fp3 := &fakePublisher{}
+	pub3 := newTestBufferedPublisher(fp3.publish, func() bool { return true }, withStateFileAbsoluteForTest(stateFile))
+	if err := pub3.load(); err != nil {
+		t.Fatalf("reload after upgrade: %v", err)
+	}
+	if pub3.Pending() != 3 {
+		t.Fatalf("expected 3 pending after reload, got %d", pub3.Pending())
+	}
+
+	// Drain the upgraded publisher and confirm a clean, compacted state.
+	healthy.Store(true)
+	pub.drain(context.Background())
+	if pub.Pending() != 0 {
+		t.Fatalf("expected 0 pending after drain, got %d", pub.Pending())
+	}
+	if got := countJournalLines(t, stateFile); got != 1 {
+		t.Fatalf("expected compacted single snapshot line after drain, got %d lines", got)
+	}
+}
+
+// TestBufferedPublisherJournal_CompactsAfterDrain pins compaction on drain:
+// after appending several journal lines and then draining the buffer, the file
+// shrinks back to a single snapshot line ("[]").
+func TestBufferedPublisherJournal_CompactsAfterDrain(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+
+	fp := &fakePublisher{}
+	var healthy atomic.Bool
+	pub := testBufferedPublisherWithHealthPtr(fp, &healthy, withStateFileAbsoluteForTest(stateFile))
+
+	for i := range 5 {
+		msg, _ := NewMessage("test.event", fmt.Sprintf("m%d", i))
+		if err := pub.Publish(context.Background(), "ex", "rk", msg); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+	if got := countJournalLines(t, stateFile); got != 5 {
+		t.Fatalf("expected 5 journal lines before drain, got %d", got)
+	}
+
+	healthy.Store(true)
+	pub.drain(context.Background())
+	if pub.Pending() != 0 {
+		t.Fatalf("expected 0 pending after drain, got %d", pub.Pending())
+	}
+	if got := countJournalLines(t, stateFile); got != 1 {
+		t.Fatalf("expected single compacted snapshot line after drain, got %d lines", got)
+	}
+}
+
+// TestBufferedPublisherJournal_CompactsOnThreshold pins that a long append run
+// compacts back to a single snapshot line once the journal tail reaches the
+// compaction floor, instead of growing one line per message forever. Without
+// compaction the line count would equal the message count.
+func TestBufferedPublisherJournal_CompactsOnThreshold(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, false, withStateFileAbsoluteForTest(stateFile))
+
+	// Publish past the compaction floor. The first append-driven compaction
+	// fires when journalEntries reaches bufferedJournalCompactMinEntries, at
+	// which point the file collapses to one snapshot line again.
+	total := bufferedJournalCompactMinEntries + 5
+	for i := range total {
+		msg, _ := NewMessage("test.event", fmt.Sprintf("m%d", i))
+		if err := pub.Publish(context.Background(), "ex", "rk", msg); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+	if pub.Pending() != total {
+		t.Fatalf("expected %d pending, got %d", total, pub.Pending())
+	}
+
+	// The file must be far smaller than one-line-per-message: compaction has
+	// happened at least once, so the line count is well below `total`.
+	if got := countJournalLines(t, stateFile); got >= total {
+		t.Fatalf("journal never compacted: %d lines for %d messages", got, total)
+	}
+
+	// Despite compaction, a restart still restores every message in order.
+	fp2 := &fakePublisher{}
+	pub2 := newTestBufferedPublisher(fp2.publish, func() bool { return true }, withStateFileAbsoluteForTest(stateFile))
+	if err := pub2.load(); err != nil {
+		t.Fatalf("load after compaction: %v", err)
+	}
+	if pub2.Pending() != total {
+		t.Fatalf("expected %d restored after compaction, got %d", total, pub2.Pending())
+	}
+}
+
+// TestBufferedPublisherJournal_RecoversFromTornTrailingLine pins torn-write
+// recovery: a final partial append line (e.g. process crashed mid-write) is the
+// message the caller's Publish failed on, so replay drops only that trailing
+// line and restores every earlier message. Interior corruption stays fatal
+// (covered by TestBufferedPublisherLoad_CorruptFile_ReturnsError).
+func TestBufferedPublisherJournal_RecoversFromTornTrailingLine(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, false, withStateFileAbsoluteForTest(stateFile))
+
+	const n = 3
+	for i := range n {
+		msg, _ := NewMessage("test.event", fmt.Sprintf("m%d", i))
+		if err := pub.Publish(context.Background(), "ex", "rk", msg); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+
+	// Simulate a torn final append: a truncated JSON line with no newline.
+	f, err := os.OpenFile(stateFile, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open for torn append: %v", err)
+	}
+	if _, err := f.WriteString("\n{\"exchange\":\"ex\",\"routing_key\":\"rk\",\"msg\":{\"id\":\"torn"); err != nil {
+		t.Fatalf("torn append: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close torn file: %v", err)
+	}
+
+	fp2 := &fakePublisher{}
+	pub2 := newTestBufferedPublisher(fp2.publish, func() bool { return true }, withStateFileAbsoluteForTest(stateFile))
+	if err := pub2.load(); err != nil {
+		t.Fatalf("expected torn trailing line to be tolerated, got load error: %v", err)
+	}
+	if pub2.Pending() != n {
+		t.Fatalf("expected %d restored (torn line dropped), got %d", n, pub2.Pending())
+	}
+}
+
+// TestBufferedPublisherJournal_InteriorCorruptionFatal pins that corruption
+// before the final line stays fatal by default — only a torn TRAILING line is
+// recoverable.
+func TestBufferedPublisherJournal_InteriorCorruptionFatal(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+
+	// Snapshot line + a corrupt interior entry + a valid trailing entry.
+	content := "[]\n" +
+		"{ this is not valid json }\n" +
+		`{"exchange":"ex","routing_key":"rk","msg":{"id":"ok","type":"t","payload":{}}}` + "\n"
+	if err := os.WriteFile(stateFile, []byte(content), 0o600); err != nil {
+		t.Fatalf("write corrupt journal: %v", err)
+	}
+
+	pub := newBufferedPublisher(discardLogger(), withStateFileAbsoluteForTest(stateFile))
+	if err := pub.load(); err == nil {
+		t.Fatal("expected interior journal corruption to be fatal, got nil")
+	}
+}
+
+// TestBufferedPublisherJournal_PreservesHeadersAcrossAppendReplay confirms the
+// header round-trip (the json:"-" pitfall) still holds when entries arrive via
+// journal appends rather than a single snapshot rewrite.
+func TestBufferedPublisherJournal_PreservesHeadersAcrossAppendReplay(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, false, withStateFileAbsoluteForTest(stateFile))
+
+	// Two publishes: the second arrives as a journal append, not a snapshot.
+	for i := range 2 {
+		msg := Message{
+			ID:      fmt.Sprintf("h-%d", i),
+			Type:    "test.event",
+			Payload: []byte(`{"k":"v"}`),
+			Headers: map[string]string{HeaderCorrelationID: fmt.Sprintf("corr-%d", i)},
+		}
+		if err := pub.Publish(context.Background(), "ex", "rk", msg); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+
+	seen := make([]map[string]string, 0, 2)
+	pub2 := newTestBufferedPublisher(
+		func(_ context.Context, _, _ string, m Message) error {
+			seen = append(seen, m.Headers)
+			return nil
+		},
+		func() bool { return true },
+		withStateFileAbsoluteForTest(stateFile),
+	)
+	if err := pub2.load(); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	pub2.drain(context.Background())
+
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 republished, got %d", len(seen))
+	}
+	for i, h := range seen {
+		want := fmt.Sprintf("corr-%d", i)
+		if h[HeaderCorrelationID] != want {
+			t.Fatalf("entry %d header = %q, want %q (lost across journal replay)", i, h[HeaderCorrelationID], want)
+		}
 	}
 }

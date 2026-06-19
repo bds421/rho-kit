@@ -45,6 +45,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -266,7 +267,13 @@ func (v *V4PublicVerifier) Verify(token string, now time.Time) (*Claims, error) 
 // underlying Ed25519 private-key bytes; subsequent [V4PublicSigner.Sign]
 // calls return [ErrSignerClosed].
 type V4PublicSigner struct {
-	cfg         config
+	cfg config
+	// keyMu guards reads of priv (in Sign) against the in-place
+	// zero-write performed by Close. Sign takes it for reading and Close
+	// for writing, so a Close can never zero the Ed25519 backing array
+	// while ed25519.Sign is reading it. The atomic closed flag is kept
+	// for the lock-free already-closed fast path.
+	keyMu       sync.RWMutex
 	priv        paseto.V4AsymmetricSecretKey
 	initialized bool
 	closed      atomic.Bool
@@ -293,12 +300,23 @@ func (s *V4PublicSigner) Sign(claims Claims) (string, error) {
 	if s == nil || !s.initialized {
 		return "", ErrInvalidVerifier
 	}
+	// Lock-free fast path for an already-closed signer.
 	if s.closed.Load() {
 		return "", ErrSignerClosed
 	}
 	tok, err := buildToken(claims, s.cfg)
 	if err != nil {
 		return "", err
+	}
+	// Hold the read lock across the key read so Close cannot zero the
+	// Ed25519 backing array mid-signature. Re-check closed under the lock:
+	// Close sets the flag before acquiring the write lock, so a Close that
+	// began after the fast-path check is observed here and we bail out
+	// before reading (now-zeroed) key material.
+	s.keyMu.RLock()
+	defer s.keyMu.RUnlock()
+	if s.closed.Load() {
+		return "", ErrSignerClosed
 	}
 	return tok.V4Sign(s.priv, nil), nil
 }
@@ -316,6 +334,10 @@ func (s *V4PublicSigner) Sign(claims Claims) (string, error) {
 // to defensive-copy, this method becomes a no-op for the actual
 // private-key bytes — the closed flag still trips Sign — and we will
 // need to update the implementation.
+//
+// Close is safe to call concurrently with [V4PublicSigner.Sign]: it sets
+// the closed flag, then takes the write lock so the zero-write cannot
+// overlap an in-flight Sign reading the same key bytes.
 func (s *V4PublicSigner) Close() error {
 	if s == nil {
 		return nil
@@ -326,6 +348,10 @@ func (s *V4PublicSigner) Close() error {
 	if !s.initialized {
 		return nil
 	}
+	// Wait for any in-flight Sign to release its read lock before wiping
+	// the shared Ed25519 backing array.
+	s.keyMu.Lock()
+	defer s.keyMu.Unlock()
 	raw := s.priv.ExportBytes()
 	for i := range raw {
 		raw[i] = 0
@@ -365,7 +391,14 @@ func NewV4Local(key []byte, opts ...Option) (*V4Local, error) {
 	if err != nil {
 		return nil, fmt.Errorf("paseto: invalid V4Local key: %w", err)
 	}
-	return &V4Local{cfg: cfg, parser: paseto.NewParser(), key: wrapped, keyBytes: keyCopy, initialized: true}, nil
+	// Use a parser with no preloaded rules so this package's validate()
+	// owns all exp/nbf checks, matching NewV4PublicVerifier (which uses a
+	// zero-value paseto.Parser{}). paseto.NewParser() preloads the upstream
+	// NotExpired rule, which compares exp to time.Now() ignoring the
+	// caller-supplied now and the configured clock-skew tolerance, errors
+	// when exp is missing (breaking WithoutExpiration), and surfaces expiry
+	// as a generic parse error rather than ErrTokenExpired.
+	return &V4Local{cfg: cfg, parser: paseto.NewParserWithoutExpiryCheck(), key: wrapped, keyBytes: keyCopy, initialized: true}, nil
 }
 
 // Verify parses, authenticates, and validates a v4.local token.
@@ -402,12 +435,15 @@ func (v *V4Local) Seal(claims Claims) (string, error) {
 // Subsequent [V4Local.Seal] / [V4Local.Verify] calls return
 // [ErrV4LocalClosed]. Idempotent and safe for concurrent use.
 //
-// As with [V4PublicSigner.Close], the upstream library's
-// [paseto.V4SymmetricKey.ExportBytes] returns the underlying slice without
-// copying, so zeroing through the returned slice wipes the in-memory key
-// material in place. If a future upstream release changes ExportBytes to
-// defensive-copy, this method continues to trip the closed flag but the
-// actual byte zeroing becomes a no-op — covered by a tripwire test.
+// Unlike [V4PublicSigner.Close], the upstream
+// [paseto.V4SymmetricKey] stores its material in a backing [32]byte
+// value array, and [paseto.V4SymmetricKey.ExportBytes] has a value
+// receiver — it returns a slice over a *copy* of that array, so zeroing
+// the returned slice does NOT touch v.key's own material. To actually
+// wipe the wrapped key we replace v.key with one rebuilt from a zero
+// buffer; the previous V4SymmetricKey value (with its live material)
+// becomes garbage and is reclaimed by the GC. We also zero the kit-owned
+// raw copy, which we fully control.
 func (v *V4Local) Close() error {
 	if v == nil {
 		return nil
@@ -418,17 +454,16 @@ func (v *V4Local) Close() error {
 	if !v.initialized {
 		return nil
 	}
-	// Zero the kit-owned copy first — we KNOW we own these bytes.
+	// Zero the kit-owned copy — we KNOW we own these bytes.
 	for i := range v.keyBytes {
 		v.keyBytes[i] = 0
 	}
-	// And defensively zero whatever ExportBytes returns. When the
-	// upstream library shares the slice, this redundant zero is a
-	// no-op against an already-zero buffer; when upstream returns a
-	// copy, this catches any leak the kit-owned-copy zero missed.
-	raw := v.key.ExportBytes()
-	for i := range raw {
-		raw[i] = 0
+	// Replace the wrapped key with one derived from a zero buffer so its
+	// own backing array no longer holds live key material. Constructing
+	// from a 32-byte zero slice cannot fail (length is correct), but we
+	// guard the error path to stay honest about the upstream contract.
+	if zeroed, err := paseto.V4SymmetricKeyFromBytes(make([]byte, 32)); err == nil {
+		v.key = zeroed
 	}
 	return nil
 }

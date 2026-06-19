@@ -128,11 +128,20 @@ groups:
         # Sustained idle-timeout closures indicate clients pausing
         # without disconnecting (mobile background, dropped LB
         # affinity). Not paging — informational unless it spikes.
+        # The ratio alone is meaningless when the 1h-ago baseline is
+        # zero (off-hours, fresh deploy): clamp_min turns the divisor
+        # into 0.0001 and any trickle reads as a >5x spike. The
+        # `and rate(...) > 0.05` guard requires a meaningful current
+        # rate (>~3 closes/min) before the ratio is allowed to fire.
         expr: |
-          rate(grpc_server_streams_idle_closed_total[10m])
-          /
-          clamp_min(rate(grpc_server_streams_idle_closed_total[10m] offset 1h), 0.0001)
-            > 5
+          (
+            rate(grpc_server_streams_idle_closed_total[10m])
+            /
+            clamp_min(rate(grpc_server_streams_idle_closed_total[10m] offset 1h), 0.0001)
+              > 5
+          )
+          and
+          rate(grpc_server_streams_idle_closed_total[10m]) > 0.05
         for: 15m
         labels:
           severity: warn

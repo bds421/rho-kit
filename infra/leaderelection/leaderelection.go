@@ -12,6 +12,10 @@
 //     object via k8s.io/client-go for Kubernetes-native deployments.
 //     Recommended when the service already runs on k8s and the
 //     operator wants kubectl-visible leadership state.
+//   - infra/leaderelection/etcd — etcd concurrency Session/Election
+//     via go.etcd.io/etcd/client/v3. Recommended for bare-metal/VM
+//     deployments that already run etcd and need strong-consistency
+//     election without Kubernetes.
 //
 // The contract is: one leadership term calls OnAcquired at a time for
 // backends that provide strong exclusion. When ctx cancels, the

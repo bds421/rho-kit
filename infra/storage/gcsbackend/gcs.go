@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	gcsstorage "cloud.google.com/go/storage"
 	"github.com/prometheus/client_golang/prometheus"
@@ -13,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"google.golang.org/api/googleapi"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
@@ -245,7 +247,15 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 	// the Attrs and NewReader calls.
 	rc, err := obj.Generation(attrs.Generation).NewReader(ctx)
 	if err != nil {
-		b.metrics.observeOp(b.instance, "get", start, err)
+		// The object (or its pinned generation) can vanish in the
+		// Attrs->NewReader window. Treat that as not-found: route the
+		// metric through gcsMetricErr so it does not inflate
+		// operation_errors_total, and return ErrObjectNotFound so callers
+		// matching errors.Is keep working — same contract as the Attrs path.
+		b.metrics.observeOp(b.instance, "get", start, gcsMetricErr(err))
+		if errors.Is(err, gcsstorage.ErrObjectNotExist) {
+			return nil, storage.ObjectMeta{}, fmt.Errorf("gcsbackend: get: %w", storage.ErrObjectNotFound)
+		}
 		opErr := storage.WrapSafe("gcsbackend: get failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return nil, storage.ObjectMeta{}, opErr
@@ -353,6 +363,28 @@ func translateGCSCapacity(err error) error {
 		}
 	}
 	return nil
+}
+
+// Healthy reports whether the configured bucket is reachable. It performs a
+// lightweight single-object list probe; an empty bucket is still considered
+// healthy, mirroring the azurebackend / sftpbackend Healthy contract so
+// multi-backend wiring can treat the providers uniformly.
+func (b *Backend) Healthy() bool {
+	if b == nil || b.bucket == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	it := b.bucket.Objects(ctx, nil)
+	// Cap the API page at one item: we only need to know the bucket responds,
+	// not enumerate its contents.
+	it.PageInfo().MaxSize = 1
+	_, err := it.Next()
+	if err == nil || errors.Is(err, iterator.Done) {
+		return true
+	}
+	return false
 }
 
 // Close closes the underlying GCS client.

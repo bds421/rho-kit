@@ -191,7 +191,7 @@ func TestHash_RejectsExcessiveParamsWithStableErrors(t *testing.T) {
 	for name, params := range tests {
 		t.Run(name, func(t *testing.T) {
 			_, err := Hash("hunter2", params)
-			require.Error(t, err)
+			require.ErrorIs(t, err, ErrHashParamsOutOfBounds)
 			for _, leak := range []string{"1073741825", "101", "17", "65", "64"} {
 				assert.NotContains(t, err.Error(), leak)
 			}
@@ -272,3 +272,20 @@ func TestVerify_MalformedRejected(t *testing.T) {
 	}
 }
 
+// TestVerify_RejectsNonCanonicalVersionSegment guards the strict-parse
+// intent for the version segment: Sscanf("v=%d") tolerates trailing
+// garbage, leading zeros, and embedded whitespace, all of which parse
+// as version 19. parsePHC must reject these non-canonical PHC strings
+// as malformed via the same round-trip check the params segment uses.
+func TestVerify_RejectsNonCanonicalVersionSegment(t *testing.T) {
+	const saltHash = "$m=8192,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ"
+	cases := []string{
+		"$argon2id$v=19junk" + saltHash, // trailing garbage
+		"$argon2id$v=019" + saltHash,    // leading zero
+		"$argon2id$v= 19" + saltHash,    // embedded whitespace
+	}
+	for _, c := range cases {
+		_, _, _, err := parsePHC(c)
+		assert.ErrorIsf(t, err, ErrMalformed, "expected ErrMalformed for %q", c)
+	}
+}

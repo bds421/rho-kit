@@ -187,6 +187,110 @@ func TestHandleOrder_MissingIdempotencyKeyRejected(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// TestHandleOrder_InvalidIdempotencyKeyRejected pins the
+// validation contract: a non-empty but otherwise invalid
+// Idempotency-Key (whitespace, control chars, over-length) is
+// rejected with 400 BEFORE the saga runs. Otherwise the store
+// silently rejects the key — lookupCache treats it as a miss and
+// storeCache skips caching — so the saga re-executes on every
+// retry (the double-charge scenario this example prevents).
+func TestHandleOrder_InvalidIdempotencyKeyRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+	}{
+		// Note: newline/CR keys are rejected by the HTTP client
+		// before they reach the handler, so they are not exercised
+		// here; ValidateKey covers them at the unit level.
+		{name: "space", key: "bad key"},
+		{name: "tab", key: "bad\tkey"},
+		{name: "too long", key: string(bytes.Repeat([]byte("a"), 257))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var reserveCalls atomic.Int32
+			tracking := func(ctx context.Context, s *OrderState) error {
+				reserveCalls.Add(1)
+				return realInventoryReserve(ctx, s)
+			}
+			c := newCoordinator(tracking, realCardCharge, realShipmentDispatch)
+			mux := http.NewServeMux()
+			mux.HandleFunc("POST /orders", c.handleOrder)
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			body, _ := json.Marshal(OrderRequest{OrderID: "ord-bad-key", Amount: 10})
+			req, _ := http.NewRequest(http.MethodPost, srv.URL+"/orders", bytes.NewReader(body))
+			req.Header.Set("Idempotency-Key", tc.key)
+			resp, err := srv.Client().Do(req)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			assert.Equal(t, int32(0), reserveCalls.Load(), "saga must not run for an invalid idempotency key")
+		})
+	}
+}
+
+// TestKeyedMutex_ReleasesHolderEntry pins the resource-leak fix:
+// after every holder of a key releases, the keyedMutex must drop
+// the per-key *sync.Mutex so the holders map does not grow without
+// bound under attacker-controlled (unique-per-request) keys.
+func TestKeyedMutex_ReleasesHolderEntry(t *testing.T) {
+	var km keyedMutex
+
+	release := km.Lock("k1")
+	km.mu.Lock()
+	_, present := km.holders["k1"]
+	km.mu.Unlock()
+	assert.True(t, present, "holder must be tracked while locked")
+	release()
+
+	km.mu.Lock()
+	n := len(km.holders)
+	km.mu.Unlock()
+	assert.Equal(t, 0, n, "holder entry must be dropped once no caller holds the key")
+
+	// Re-locking the same key after release must still grant exclusion.
+	release2 := km.Lock("k1")
+	release2()
+}
+
+// TestKeyedMutex_ConcurrentSameKeySerializes guards against a
+// use-after-delete race in the reference-counted cleanup: many
+// goroutines contend on one key, and the critical section must
+// remain mutually exclusive throughout.
+func TestKeyedMutex_ConcurrentSameKeySerializes(t *testing.T) {
+	var km keyedMutex
+	var inCritical atomic.Int32
+	var maxConcurrent atomic.Int32
+
+	const N = 64
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			release := km.Lock("hot")
+			cur := inCritical.Add(1)
+			for {
+				old := maxConcurrent.Load()
+				if cur <= old || maxConcurrent.CompareAndSwap(old, cur) {
+					break
+				}
+			}
+			inCritical.Add(-1)
+			release()
+		}()
+	}
+	wg.Wait()
+
+	assert.Equal(t, int32(1), maxConcurrent.Load(), "the keyed mutex must serialize same-key holders")
+	km.mu.Lock()
+	n := len(km.holders)
+	km.mu.Unlock()
+	assert.Equal(t, 0, n, "all holder entries must be released after contention drains")
+}
+
 // TestHandleOrder_SagaFailureReturns422 pins the error-routing
 // contract: compensation completed cleanly → 422 (client should
 // not retry without a fix). Operators distinguish this from a
@@ -206,4 +310,16 @@ func TestHandleOrder_SagaFailureReturns422(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+}
+
+// failOnce is a test step callable that returns an error on every
+// call while counting invocations, so tests can drive the saga's
+// compensation paths and assert the failing step ran exactly once.
+type failOnce struct {
+	calls atomic.Int32
+}
+
+func (f *failOnce) fail(_ context.Context, _ *OrderState) error {
+	f.calls.Add(1)
+	return errors.New("synthetic step failure")
 }

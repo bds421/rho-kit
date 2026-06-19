@@ -334,6 +334,41 @@ func TestHandlers_LogoutClearsCookie(t *testing.T) {
 	require.Less(t, cookies[0].MaxAge, 0)
 }
 
+// TestHandlers_LogoutClearCookieMirrorsDomain ensures the logout
+// clearing cookie carries the same Domain attribute as the session
+// cookie set on login. A domain-scoped cookie can only be removed by a
+// clearing cookie that targets the same Domain, so an omitted Domain
+// would leave the stale session cookie lingering client-side.
+func TestHandlers_LogoutClearCookieMirrorsDomain(t *testing.T) {
+	const domain = "app.example.com"
+	issuer := newFakeIssuer(t, "test-client")
+	client, err := oauth2.NewClient(context.Background(),
+		oauth2.Config{
+			Issuer: issuer.server.URL, ClientID: "test-client",
+			RedirectURL: "https://app/cb",
+		},
+		oauth2.WithSessionStore(oauth2.NewMemorySessionStore()),
+		oauth2.WithStateStore(oauth2.NewMemoryStateStore()),
+		oauth2.WithInsecureCookie(),
+		oauth2.WithCookieDomain(domain),
+	)
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/", client.Handlers())
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: "kit_oauth_session", Value: "any"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	cookies := rec.Result().Cookies()
+	require.NotEmpty(t, cookies)
+	require.Less(t, cookies[0].MaxAge, 0)
+	require.Equal(t, domain, cookies[0].Domain,
+		"logout clearing cookie must mirror the session cookie Domain or the browser won't remove the domain-scoped cookie")
+}
+
 // TestHandlers_CallbackCtxCancelDuringExchange forces the
 // token-endpoint exchange to hang, then cancels the inbound request
 // context. Verifies the callback handler:

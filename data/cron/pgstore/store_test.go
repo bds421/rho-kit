@@ -1,12 +1,15 @@
 package pgstore_test
 
 import (
+	"context"
+	"database/sql"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/data/cron/pgstore/v2"
+	"github.com/bds421/rho-kit/runtime/v2/cron"
 )
 
 func TestStore_NewPanicsOnNilDB(t *testing.T) {
@@ -29,17 +32,17 @@ func TestWithTableName_PanicsOnInvalidIdentifier(t *testing.T) {
 
 func TestIsValidName(t *testing.T) {
 	cases := map[string]bool{
-		"nightly-cleanup":          true,
-		"job_a_42":                 true,
-		"a":                        true,
-		strings.Repeat("a", 128):   true,
-		"":                         false,
-		"BadCase":                  false,
-		"with space":               false,
-		"trailing-newline\n":       false,
-		"semicolon;drop":           false,
-		strings.Repeat("a", 129):   false,
-		"1-leading-digit":          false,
+		"nightly-cleanup":        true,
+		"job_a_42":               true,
+		"a":                      true,
+		strings.Repeat("a", 128): true,
+		"":                       false,
+		"BadCase":                false,
+		"with space":             false,
+		"trailing-newline\n":     false,
+		"semicolon;drop":         false,
+		strings.Repeat("a", 129): false,
+		"1-leading-digit":        false,
 	}
 	for name, ok := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -104,6 +107,90 @@ func TestValidateRecord(t *testing.T) {
 			Spec: "@hourly",
 		})
 		require.Error(t, err)
+	})
+
+	t.Run("unparseable spec rejected", func(t *testing.T) {
+		// A non-empty, in-bounds string that the cron parser cannot
+		// parse must be rejected at write time rather than deferred to
+		// the panic in cron.Scheduler.Add during ApplyTo.
+		for _, spec := range []string{"every day", "not-a-spec", "61 * * * *"} {
+			err := pgstore.ValidateRecord(pgstore.ScheduleRecord{
+				Name: "ok",
+				Spec: spec,
+			})
+			require.Error(t, err, "spec %q must be rejected", spec)
+		}
+	})
+
+	t.Run("valid specs accepted", func(t *testing.T) {
+		for _, spec := range []string{"0 3 * * *", "@hourly", "@every 1h30m", "* * * * *"} {
+			err := pgstore.ValidateRecord(pgstore.ScheduleRecord{
+				Name: "ok",
+				Spec: spec,
+			})
+			require.NoError(t, err, "spec %q must be accepted", spec)
+		}
+	})
+}
+
+func TestApplyRecords(t *testing.T) {
+	noop := func(context.Context) error { return nil }
+
+	t.Run("skips malformed records instead of panicking", func(t *testing.T) {
+		scheduler := cron.New(nil)
+		records := []pgstore.ScheduleRecord{
+			{Name: "good", Spec: "@hourly", Enabled: true},
+			{Name: "bad-spec", Spec: "every day", Enabled: true},
+			{Name: "disabled", Spec: "@daily", Enabled: false},
+			{Name: "unknown", Spec: "@daily", Enabled: true},
+		}
+		jobs := map[string]pgstore.JobFunc{
+			"good":     noop,
+			"bad-spec": noop,
+			"disabled": noop,
+			// "unknown" intentionally absent from jobs.
+		}
+
+		var unknown []string
+		require.NotPanics(t, func() {
+			unknown = pgstore.ApplyRecords(scheduler, records, jobs)
+		})
+		// Unknown and invalid records are surfaced, never registered.
+		require.ElementsMatch(t, []string{"unknown", "bad-spec"}, unknown)
+	})
+
+	t.Run("registers valid enabled records", func(t *testing.T) {
+		scheduler := cron.New(nil)
+		records := []pgstore.ScheduleRecord{
+			{Name: "good", Spec: "@hourly", Enabled: true},
+		}
+		jobs := map[string]pgstore.JobFunc{"good": noop}
+
+		var unknown []string
+		require.NotPanics(t, func() {
+			unknown = pgstore.ApplyRecords(scheduler, records, jobs)
+		})
+		require.Empty(t, unknown)
+	})
+}
+
+func TestApplyTo_NilArgs(t *testing.T) {
+	// New panics on a nil *sql.DB, so construct around a placeholder.
+	// These guards return before any query, so the DB is never used.
+	store := pgstore.New(&sql.DB{})
+	ctx := context.Background()
+	jobs := map[string]pgstore.JobFunc{"x": func(context.Context) error { return nil }}
+
+	t.Run("nil scheduler", func(t *testing.T) {
+		unknown, err := store.ApplyTo(ctx, nil, jobs)
+		require.Error(t, err)
+		require.Nil(t, unknown)
+	})
+
+	t.Run("nil jobs map", func(t *testing.T) {
+		unknown, err := store.ApplyTo(ctx, cron.New(nil), nil)
+		require.Error(t, err)
+		require.Nil(t, unknown)
 	})
 }
 

@@ -43,7 +43,6 @@
 //	if err != nil { ... }
 //
 //	mux.Handle("/connection/websocket", node.WebsocketHandler())
-//	mux.Handle("/connection/sockjs/", node.SockJSHandler("/connection/sockjs"))
 //
 //	// Wire into lifecycle.Runner — Start() runs the centrifuge node,
 //	// Stop() shuts it down gracefully.

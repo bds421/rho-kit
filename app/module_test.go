@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -244,6 +245,54 @@ func TestInitModules_FailureClosesInitialized(t *testing.T) {
 
 	// The third module should never have been init'd.
 	assert.False(t, m3.initCalled.Load())
+}
+
+func TestInitModules_HangingInitRespectsDeadline(t *testing.T) {
+	// FR-013: a module whose Init ignores ctx and blocks in non-context-aware
+	// code (DNS, vendor SDK) must not block startup forever. When the context
+	// passed to initModules is already past its deadline, initModules must
+	// return promptly with a deadline error instead of hanging on the
+	// synchronous Init call.
+	release := make(chan struct{})
+	defer close(release) // unblock the orphaned goroutine when the test ends
+
+	hung := newStubModule("hung-mod")
+	hung.initFn = func(_ context.Context, _ ModuleContext) error {
+		// Deliberately ignore ctx, mimicking a non-cooperative SDK call.
+		<-release
+		return nil
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := lifecycle.NewRunner(logger)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	var cleanup func(context.Context)
+	var err error
+	go func() {
+		cleanup, err = initModules(
+			ctx,
+			[]Module{hung},
+			"test-service",
+			logger,
+			runner,
+			BaseConfig{},
+			nil,
+		)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		require.Error(t, err, "hanging Init must surface a deadline error")
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Nil(t, cleanup)
+	case <-time.After(5 * time.Second):
+		t.Fatal("initModules blocked on a non-cooperative hanging Init; the startup deadline did not unblock it")
+	}
 }
 
 func TestInitModules_DependencyLookup(t *testing.T) {

@@ -84,6 +84,13 @@ func (m *Manager) Issue(ctx context.Context, opts IssueOptions) (Key, *secret.St
 // owner, kind, and scopes and records RotatedFrom = oldID. A zero or negative
 // overlap revokes the old key immediately.
 //
+// The replacement does not inherit the old key's absolute ExpiresAt — that
+// would yield a dead or near-dead key when rotating at or after expiry,
+// defeating the overlap window. Instead it is granted a fresh lifetime equal
+// to the old key's original lifetime (its ExpiresAt minus CreatedAt), measured
+// from the rotation instant. A non-expiring source key rotates to a
+// non-expiring replacement.
+//
 // It returns the new key record and its one-time token.
 func (m *Manager) Rotate(ctx context.Context, oldID string, overlap time.Duration) (Key, *secret.String, error) {
 	old, err := m.repo.FindByID(ctx, oldID)
@@ -97,7 +104,7 @@ func (m *Manager) Rotate(ctx context.Context, oldID string, overlap time.Duratio
 		Scopes:      old.Scopes,
 		Owner:       old.Owner,
 		Prefix:      prefixOf(old),
-		ExpiresAt:   old.ExpiresAt,
+		ExpiresAt:   rotatedExpiry(old, now),
 		RotatedFrom: oldID,
 		Now:         now,
 	})
@@ -135,6 +142,24 @@ func (m *Manager) List(ctx context.Context, owner string) ([]Key, error) {
 		return nil, fmt.Errorf("apikey: list: %w", err)
 	}
 	return keys, nil
+}
+
+// rotatedExpiry computes the replacement key's ExpiresAt during a rotation.
+// A non-expiring source key (zero ExpiresAt) rotates to a non-expiring key.
+// Otherwise the replacement is granted the source key's original lifetime
+// (ExpiresAt minus CreatedAt) measured from now, so rotating at or after the
+// old key's expiry still yields a fully usable replacement. When CreatedAt is
+// unknown (a non-positive original lifetime) the absolute ExpiresAt is kept as
+// a conservative fallback.
+func rotatedExpiry(old Key, now time.Time) time.Time {
+	if old.ExpiresAt.IsZero() {
+		return time.Time{}
+	}
+	ttl := old.ExpiresAt.Sub(old.CreatedAt)
+	if ttl <= 0 {
+		return old.ExpiresAt
+	}
+	return now.Add(ttl)
 }
 
 // prefixOf recovers the token prefix from a stored key's display prefix

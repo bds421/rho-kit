@@ -115,6 +115,11 @@ func WithVerifyOptions(opts ...Option) ProviderOption {
 // when refreshes fail, so the callback is the only signal that
 // rotation has stalled — wire it to a metric or alert.
 //
+// The callback runs on the Provider's refresh goroutine. It must not
+// call [Provider.Close]: Close blocks until that goroutine returns, so
+// closing from within the callback self-deadlocks. To shut down in
+// response to repeated failures, signal a separate goroutine instead.
+//
 // Panics if fn is nil: silently swallowing the callback would hide a
 // wiring bug and mask the only signal of stalled rotation.
 func WithOnRefreshError(fn func(error)) ProviderOption {
@@ -162,6 +167,7 @@ func OpenProvider(ctx context.Context, src PublicKeySource, interval time.Durati
 	}
 	for _, o := range opts {
 		if o == nil {
+			rootCancel()
 			panic("paseto: OpenProvider provider option must not be nil")
 		}
 		o(p)
@@ -171,6 +177,7 @@ func OpenProvider(ctx context.Context, src PublicKeySource, interval time.Durati
 	}
 
 	if err := p.refresh(ctx); err != nil {
+		rootCancel()
 		return nil, fmt.Errorf("paseto: initial key load: %w", err)
 	}
 
@@ -244,7 +251,12 @@ func (p *Provider) loop() {
 			ctx, cancel := context.WithTimeout(p.rootCtx, p.fetchTimeout)
 			err := p.refresh(ctx)
 			cancel()
-			if err != nil {
+			// Suppress the callback during shutdown: Close cancels
+			// rootCtx, so an in-flight refresh fails with
+			// context.Canceled. Reporting that as a refresh error would
+			// fire a false "rotation stalled" alert on every shutdown
+			// that races a tick.
+			if err != nil && !p.closed.Load() {
 				p.callOnRefreshError(err)
 			}
 		}

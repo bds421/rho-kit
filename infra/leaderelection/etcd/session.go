@@ -53,8 +53,10 @@ func defaultSessionFactory(client *clientv3.Client) sessionFactory {
 
 // sessionAdapter wraps [*concurrency.Session] so the production type
 // satisfies the unexported [session] interface. Done is forwarded
-// without modification; Close releases the lease without revoking it
-// (etcd's TTL handles eventual cleanup).
+// without modification; Close orphans the session and then attempts a
+// best-effort lease revoke. The revoke is derived from the Run ctx
+// passed via concurrency.WithContext, so once that ctx is cancelled at
+// shutdown the revoke fails and etcd's TTL handles eventual cleanup.
 type sessionAdapter struct{ s *concurrency.Session }
 
 func (a sessionAdapter) Done() <-chan struct{} { return a.s.Done() }
@@ -64,5 +66,7 @@ func (a sessionAdapter) Close() error          { return a.s.Close() }
 // type satisfies the unexported [election] interface.
 type electionAdapter struct{ e *concurrency.Election }
 
-func (a electionAdapter) Campaign(ctx context.Context, val string) error { return a.e.Campaign(ctx, val) }
-func (a electionAdapter) Resign(ctx context.Context) error               { return a.e.Resign(ctx) }
+func (a electionAdapter) Campaign(ctx context.Context, val string) error {
+	return a.e.Campaign(ctx, val)
+}
+func (a electionAdapter) Resign(ctx context.Context) error { return a.e.Resign(ctx) }

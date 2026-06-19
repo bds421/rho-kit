@@ -280,14 +280,26 @@ func (f Fields) Validate(envPrefix string) error {
 	return config.RejectWeakCredential(envPrefix+"_DB_PASSWORD", f.Database.Password)
 }
 
-// validateDatabaseHost rejects host values containing characters that
-// could break DSN parsing.
+// validateDatabaseHost rejects host values that are neither a valid IP nor a
+// hostname built only from RFC 1123 label characters (letters, digits, '-',
+// '.', and '_' for internal DNS names). An allowlist is used rather than a
+// character blocklist because the blocklist previously admitted whitespace,
+// '=' and ':' — characters that let a consumer hand-building a libpq keyword
+// DSN from Config.Host smuggle extra connection keywords
+// (e.g. "localhost sslmode=disable"). The error never echoes the value, which
+// may carry secrets.
 func validateDatabaseHost(host string) error {
 	if net.ParseIP(host) != nil {
 		return nil
 	}
 	for _, c := range host {
-		if c == ')' || c == '/' || c == '\'' || c == '\\' || c == '\x00' || c == '@' || c == '\n' || c == '\r' {
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '-', c == '.', c == '_':
+			// allowed RFC 1123 hostname character
+		default:
 			return fmt.Errorf("sqldb: DB_HOST contains invalid character")
 		}
 	}

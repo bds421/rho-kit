@@ -24,6 +24,7 @@ func builtinFormats(parametric []string) []*jsonschema.Format {
 		{Name: "email", Validate: validateEmail},
 		{Name: "uri", Validate: validateURI},
 		{Name: "uuid", Validate: validateUUID},
+		{Name: "uuid4", Validate: validateUUID4},
 		{Name: "ipv4-or-ipv6", Validate: validateIP},
 		{Name: "hostname", Validate: validateHostname},
 		{Name: "alpha", Validate: validateAlpha},
@@ -53,8 +54,21 @@ func validateEmail(v any) error {
 		// valid email address" on a missing required field.
 		return nil
 	}
-	_, err := mail.ParseAddress(s)
-	return err
+	addr, err := mail.ParseAddress(s)
+	if err != nil {
+		return err
+	}
+	// mail.ParseAddress accepts RFC 5322 display-name and comment forms
+	// ("Bob <bob@example.com>", "bob@example.com (Bob)") as well as
+	// bracket/whitespace-padded variants. The kit's `email` format is a
+	// bare-address constraint (matching the v1 go-playground tag), so a
+	// value that carries a display name, a trailing comment, or any
+	// surrounding syntax that ParseAddress normalised away is rejected:
+	// the canonical address must be exactly the input.
+	if addr.Name != "" || addr.Address != s {
+		return errors.New("must be a bare email address")
+	}
+	return nil
 }
 
 func validateURI(v any) error {
@@ -83,8 +97,53 @@ func validateUUID(v any) error {
 	if s == "" {
 		return nil
 	}
-	_, err := uuid.Parse(s)
+	_, err := parseCanonicalUUID(s)
 	return err
+}
+
+// validateUUID4 enforces the canonical 36-character hyphenated form
+// AND the version-4 nibble, so a v1 tag migrated from go-playground's
+// `uuid4` keeps its version constraint instead of silently widening to
+// "any UUID version". A version mismatch is reported distinctly so the
+// caller can tell a malformed value from a wrong-version one.
+func validateUUID4(v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return errors.New("not a string")
+	}
+	if s == "" {
+		return nil
+	}
+	u, err := parseCanonicalUUID(s)
+	if err != nil {
+		return err
+	}
+	if u.Version() != 4 {
+		return errors.New("not a version-4 UUID")
+	}
+	return nil
+}
+
+// parseCanonicalUUID parses s only in the canonical 36-character
+// hyphenated form (8-4-4-4-12). google/uuid.Parse otherwise also
+// accepts the urn:uuid: prefix, brace-wrapped, and unhyphenated 32-char
+// encodings; the kit's `uuid` format is the canonical-string constraint
+// the v1 validator implied, so those looser encodings are rejected.
+// Upper- and lower-case hex are both accepted (uuid.Parse is
+// case-insensitive and String() lower-cases, so we compare against the
+// lower-cased input).
+func parseCanonicalUUID(s string) (uuid.UUID, error) {
+	if len(s) != 36 {
+		return uuid.UUID{}, errors.New("not a canonical UUID")
+	}
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+	if u.String() != strings.ToLower(s) {
+		return uuid.UUID{}, errors.New("not a canonical UUID")
+	}
+	return u, nil
 }
 
 func validateIP(v any) error {

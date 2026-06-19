@@ -76,6 +76,11 @@ func (c *Consumer) deadLetter(ctx context.Context, stream, dlStream string, raw 
 				redact.String("redis_id", raw.ID),
 				redact.Error(cmds[1].Err()),
 			)
+			// XADD succeeded but XACK failed: the message stays in the source
+			// PEL and will be dead-lettered again on a later delivery, writing
+			// a second DLQ entry. Skip the increment here so the counter tracks
+			// unique dead-lettered messages rather than double-counting this one.
+			return
 		}
 	}
 
@@ -143,8 +148,14 @@ func (c *Consumer) claimStaleMessages(ctx context.Context, stream, dlStream stri
 			c.handleMessage(ctx, stream, dlStream, raw, handler, retryCounts[raw.ID])
 		}
 
-		// "0-0" means no more messages to claim.
-		if newStart == "0-0" || len(msgs) == 0 {
+		// "0-0" means the cursor has wrapped: no more PEL to scan. A non-"0-0"
+		// cursor with an empty page is legal — XAUTOCLAIM may scan a window
+		// holding no claimable entries (e.g. all younger than claimMinIdle)
+		// while older idle entries remain deeper in the PEL. Stopping on the
+		// empty page would abandon the scan and restart from "0-0" next tick,
+		// repeatedly re-scanning only the head window and starving those
+		// entries of recovery. Advance the cursor instead.
+		if newStart == "0-0" {
 			return
 		}
 		startID = newStart

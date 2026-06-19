@@ -3,9 +3,12 @@ package maxbody
 
 import "net/http"
 
-// MaxBodySize returns middleware that limits request body size.
-// Requests exceeding maxBytes will receive a 413 Request Entity Too Large
-// response when the handler attempts to read the body.
+// MaxBodySize returns middleware that limits request body size via
+// [http.MaxBytesReader]. Reads beyond maxBytes fail with
+// *[http.MaxBytesError]; the middleware does not write a status itself,
+// so the response code depends on the handler. The kit's decode helpers
+// (e.g. httpx.DecodeJSON) translate that error into HTTP 413 Request
+// Entity Too Large.
 // Panics if maxBytes is not positive — a zero or negative limit rejects all
 // bodies, which is always a misconfiguration.
 func MaxBodySize(maxBytes int64) func(http.Handler) http.Handler {

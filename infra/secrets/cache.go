@@ -9,6 +9,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
@@ -21,9 +22,22 @@ type CachedLoader struct {
 	cfg     cacheConfig
 	mu      sync.Mutex
 	entries map[string]*cacheEntry
-	sf      *singleflight
-	metrics *cacheMetrics
+	// refreshing tracks keys with an in-flight background refresh so the
+	// refresh-due window does not spawn one goroutine per Get. Guarded by
+	// mu. singleflight already coalesces the upstream fetch, but without
+	// this flag every refresh-due hit would still spawn a goroutine that
+	// parks in singleflight.do until the leader returns — on a hot path a
+	// slow backend yields RPS x refresh-timeout parked goroutines per key.
+	refreshing map[string]struct{}
+	sf         *singleflight
+	metrics    *cacheMetrics
 }
+
+// fetchTimeout bounds a single upstream Loader fetch (foreground miss and
+// background refresh alike). Both run on a context detached from the
+// caller's cancellation so one slow/cancelled caller cannot abort a fetch
+// shared via singleflight with other waiters.
+const fetchTimeout = 10 * time.Second
 
 type cacheConfig struct {
 	ttl          time.Duration
@@ -119,11 +133,12 @@ func NewCachedLoader(inner Loader, opts ...CacheOption) (*CachedLoader, error) {
 		return nil, err
 	}
 	return &CachedLoader{
-		inner:   inner,
-		cfg:     cfg,
-		entries: make(map[string]*cacheEntry),
-		sf:      newSingleflight(),
-		metrics: m,
+		inner:      inner,
+		cfg:        cfg,
+		entries:    make(map[string]*cacheEntry),
+		refreshing: make(map[string]struct{}),
+		sf:         newSingleflight(),
+		metrics:    m,
 	}, nil
 }
 
@@ -145,16 +160,27 @@ func (c *CachedLoader) Get(ctx context.Context, key string) (Secret, error) {
 		if now.After(entry.refreshAt) {
 			c.spawnRefresh(key)
 		}
-		return entry.value, nil
+		return copyForCaller(entry.value), nil
 	}
 
 	// Miss or expired — coalesce concurrent fetches per key.
+	//
+	// Detach the fetch from the leading caller's cancellation/deadline
+	// (preserving its values for auth/tracing) and bound it with a fixed
+	// timeout, mirroring spawnRefresh. singleflight shares one fetch
+	// outcome across all coalesced waiters; running it on the leader's raw
+	// ctx would let a leader with a near-expired deadline (or a cancelled
+	// request) fail the fetch for every waiter — including ones with
+	// generous deadlines — on a secrets hot path. A bounded detached
+	// context keeps a single slow/cancelled caller from poisoning the rest.
 	val, err := c.sf.do(key, func() (Secret, error) {
 		c.metrics.misses.Inc()
-		return c.fetchAndStore(ctx, key, now)
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+		defer cancel()
+		return c.fetchAndStore(fetchCtx, key, now)
 	})
 	if err == nil {
-		return val, nil
+		return copyForCaller(val), nil
 	}
 	// On loader-unavailable, fall back to a stale cached value if
 	// within the stale window. Surface other errors directly.
@@ -170,9 +196,9 @@ func (c *CachedLoader) Get(ctx context.Context, key string) (Secret, error) {
 	c.cfg.logger.Warn("secrets: returning stale cached value (loader unavailable)",
 		slog.String("key", key),
 		slog.Duration("stale_age", staleAge),
-		slog.String("error", err.Error()),
+		redact.Error(err),
 	)
-	return entry.value, nil
+	return copyForCaller(entry.value), nil
 }
 
 // Invalidate drops the cached entry for key (and zeroes its secret
@@ -210,11 +236,43 @@ func (c *CachedLoader) fetchAndStore(ctx context.Context, key string, now time.T
 
 // spawnRefresh fires a background fetch. Errors are logged but do not
 // invalidate the cached entry: the next foreground Get will retry.
+//
+// At most one background refresh per key runs at a time: a refresh-due
+// window crossed by many concurrent Gets spawns ONE goroutine, not one
+// per Get. Subsequent refresh-due hits while a refresh is in flight are
+// no-ops (they keep serving the cached value).
 func (c *CachedLoader) spawnRefresh(key string) {
+	c.mu.Lock()
+	if _, inFlight := c.refreshing[key]; inFlight {
+		c.mu.Unlock()
+		return
+	}
+	c.refreshing[key] = struct{}{}
+	c.mu.Unlock()
+
 	go func() {
+		defer func() {
+			c.mu.Lock()
+			delete(c.refreshing, key)
+			c.mu.Unlock()
+		}()
+		// A panicking loader (now propagated by singleflight rather than
+		// poisoning the key) must not crash the process from this
+		// background goroutine — recover and log it like a failed
+		// refresh. The foreground Get path still surfaces the panic to
+		// its own caller.
+		defer func() {
+			if r := recover(); r != nil {
+				c.metrics.refreshErrors.Inc()
+				c.cfg.logger.Warn("secrets: background refresh panicked",
+					slog.String("key", key),
+					redact.Panic(r),
+				)
+			}
+		}()
 		// Use a short standalone context so a cancelled caller ctx
 		// doesn't abort the refresh.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer cancel()
 		_, err := c.sf.do(key, func() (Secret, error) {
 			c.metrics.refreshes.Inc()
@@ -224,10 +282,33 @@ func (c *CachedLoader) spawnRefresh(key string) {
 			c.metrics.refreshErrors.Inc()
 			c.cfg.logger.Warn("secrets: background refresh failed",
 				slog.String("key", key),
-				slog.String("error", err.Error()),
+				redact.Error(err),
 			)
 		}
 	}()
+}
+
+// copyForCaller returns a Secret whose Value is an independent
+// [secret.String] copy of src's bytes. The cache hands callers a copy
+// rather than the shared cache-owned buffer so that:
+//
+//   - a caller following the documented `defer s.Value.Zero()` contract
+//     only wipes its own copy, not the cache's shared entry; and
+//   - the cache zeroing a displaced/invalidated value (fetchAndStore,
+//     Invalidate) cannot zero a buffer a concurrent caller is still
+//     using.
+//
+// The cache retains sole ownership of the zeroizable backing buffer.
+func copyForCaller(src Secret) Secret {
+	out := src
+	if src.Value != nil {
+		b := src.Value.Reveal()
+		out.Value = secret.New(b)
+		for i := range b {
+			b[i] = 0
+		}
+	}
+	return out
 }
 
 // MakeSecret is a small constructor backends use to build a [Secret]

@@ -517,6 +517,22 @@ func (c *Connection) Connected() <-chan struct{} {
 	return c.connected
 }
 
+// closing reports whether Stop has been called, i.e. c.closed is closed.
+// The reconnect loop checks this under c.mu after a successful dial so a
+// connection that finished dialing after Stop began is abandoned rather
+// than installed and leaked. Returns false for an uninitialised connection.
+func (c *Connection) closing() bool {
+	if c.closed == nil {
+		return false
+	}
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *Connection) watchConnection(conn *amqp.Connection, gen uint64) {
 	notifyClose := conn.NotifyClose(make(chan *amqp.Error, 1))
 
@@ -571,9 +587,45 @@ func (c *Connection) startReconnect() {
 	c.reconnectWG.Add(1)
 	go func() {
 		defer c.reconnectWG.Done()
-		defer c.reconnecting.Store(false)
-		c.reconnect()
+		for {
+			c.reconnect()
+			if !c.drainPendingReconnect() {
+				return
+			}
+		}
 	}()
+}
+
+// drainPendingReconnect releases the reconnecting flag and, if a reconnect
+// signal raced in between reconnect()'s final drain and this release,
+// re-acquires the flag so the caller runs reconnect() again. It returns true
+// when ownership was re-acquired (the loop must run another reconnect) and
+// false when the loop should exit.
+//
+// This closes the lost-signal window left by R7-46's drain-then-return: a
+// watcher whose connection drops after the loop's final reconnectSignal drain
+// but before the flag is cleared would fail the CAS in startReconnect, queue a
+// signal, and exit — leaving a buffered signal with no loop running and the
+// connection down forever. By re-checking the buffer after clearing the flag
+// we pick that signal up. If another startReconnect already re-acquired the
+// flag, we hand the signal back so its loop drains it.
+func (c *Connection) drainPendingReconnect() bool {
+	c.reconnecting.Store(false)
+	select {
+	case <-c.reconnectSignal:
+	default:
+		return false
+	}
+	if c.reconnecting.CompareAndSwap(false, true) {
+		return true
+	}
+	// Another startReconnect won the flag; return the signal so its loop
+	// observes it on its own drain rather than dropping it here.
+	select {
+	case c.reconnectSignal <- struct{}{}:
+	default:
+	}
+	return false
 }
 
 func (c *Connection) reconnect() {
@@ -612,6 +664,22 @@ func (c *Connection) reconnect() {
 		}
 
 		c.mu.Lock()
+		// If Stop ran while this dial was in flight, abandon the freshly
+		// dialed connection instead of installing it. Stop closes c.closed
+		// before taking c.mu, so checking c.closed under the lock fully
+		// serialises with Stop: either we see closed here and abandon, or
+		// we install and Stop's own under-lock close handles the new conn.
+		// Without this, a conn installed after Stop spent closeOnce would
+		// never be closed — a live TCP zombie with Healthy()=true and
+		// connection_up=1 surviving shutdown, plus onReconnect running
+		// post-Stop.
+		if c.closing() {
+			c.mu.Unlock()
+			if cerr := conn.Close(); cerr != nil {
+				c.logger.Debug("failed to close abandoned amqp connection after Stop", redact.Error(cerr))
+			}
+			return
+		}
 		old := c.conn
 		c.conn = conn
 		c.generation++

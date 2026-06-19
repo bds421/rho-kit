@@ -445,3 +445,48 @@ func TestHeaderValueOptions_PanicOnOuterWhitespace(t *testing.T) {
 		})
 	}
 }
+
+// TestHeaderValueOptions_PanicMessageNamesHeaderWithoutLeakingValue verifies
+// that a misconfigured value-bearing option panics with a message that
+// identifies which header failed (so an operator can locate the offending
+// option among several in one New(...) call) while still withholding the
+// invalid value itself.
+func TestHeaderValueOptions_PanicMessageNamesHeaderWithoutLeakingValue(t *testing.T) {
+	const secret = "secret-token-value"
+	tests := []struct {
+		name   string
+		fn     func(string) Option
+		header string
+		value  string
+	}{
+		{"referrer-control", WithReferrerPolicy, "Referrer-Policy", "ok\r\n" + secret},
+		{"permissions-control", WithPermissionsPolicy, "Permissions-Policy", "ok\r\n" + secret},
+		{"hsts-control", WithHSTS, "Strict-Transport-Security", "ok\r\n" + secret},
+		{"cache-control", WithCacheControl, "Cache-Control", "ok\r\n" + secret},
+		{"csp-control", WithContentSecurityPolicy, "Content-Security-Policy", "ok\r\n" + secret},
+		{"referrer-whitespace", WithReferrerPolicy, "Referrer-Policy", " " + secret},
+		{"csp-whitespace", WithContentSecurityPolicy, "Content-Security-Policy", secret + " "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				rec := recover()
+				if rec == nil {
+					t.Fatal("expected panic on invalid header value")
+				}
+				msg, ok := rec.(string)
+				if !ok {
+					t.Fatalf("panic = %T, want string", rec)
+				}
+				if !strings.Contains(msg, tt.header) {
+					t.Fatalf("panic message %q does not name the %s header", msg, tt.header)
+				}
+				if strings.Contains(msg, secret) {
+					t.Fatalf("panic leaked invalid header value: %q", msg)
+				}
+			}()
+			tt.fn(tt.value)
+		})
+	}
+}

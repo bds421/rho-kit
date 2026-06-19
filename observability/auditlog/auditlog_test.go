@@ -703,7 +703,7 @@ func TestAppend_BuildsHMACChain(t *testing.T) {
 			"event[%d].PrevHMAC must equal event[%d].HMAC", i, i-1,
 		)
 		// HMAC must be recomputable from content.
-		expected := computeHMAC(testChainKey, events[i].PrevHMAC, eventWithoutHMAC(events[i]))
+		expected := computeHMAC(testChainKey, eventWithoutHMAC(events[i]))
 		assert.Equal(t, expected, events[i].HMAC,
 			"event[%d].HMAC must be recomputable", i)
 	}
@@ -711,6 +711,44 @@ func TestAppend_BuildsHMACChain(t *testing.T) {
 	// And the canonical entry point validates the whole chain.
 	require.NoError(t, VerifyChain(events, testChainKey))
 	require.NoError(t, l.VerifyChain(ctx))
+}
+
+// TestCanonicalEvent_OnDiskFormatGolden pins the canonical HMAC encoding to a
+// hard-coded golden value. The encoding is part of the on-disk contract (see
+// canonicalEvent's doc): changing it silently invalidates every previously
+// written chain. This test is the trip-wire — if the byte layout, field
+// order, length-prefixing, timestamp width, or the (intentionally duplicated)
+// PrevHMAC placement ever changes, the golden HMAC will no longer match and
+// this test fails, forcing a deliberate decision plus a migration note.
+func TestCanonicalEvent_OnDiskFormatGolden(t *testing.T) {
+	ev := Event{
+		ID:        "01890000-0000-7000-8000-000000000001",
+		Timestamp: time.Unix(0, 1_700_000_000_000_000_123).UTC(),
+		Actor:     "alice",
+		Action:    "create",
+		Resource:  "orders/42",
+		Status:    "success",
+		IPAddress: "203.0.113.7",
+		TraceID:   "0af7651916cd43dd8448eb211c80319c",
+		Metadata:  json.RawMessage(`{"k":"v"}`),
+		PrevHMAC:  bytes.Repeat([]byte{0xAB}, hmacSize),
+	}
+
+	// Golden HMAC-SHA256 over canonicalEvent(ev) keyed by testChainKey.
+	const wantHex = "99d1af0020a42715ba0ab9988b1229cf1e0cb28b2fab335cd82b02a6fc4a6d8a"
+	got := fmt.Sprintf("%x", computeHMAC(testChainKey, ev))
+	assert.Equal(t, wantHex, got,
+		"canonical on-disk HMAC format changed; existing chains would no longer verify")
+
+	// The encoder must read PrevHMAC from the event field alone: mutating
+	// PrevHMAC must change the HMAC (proves the link is actually covered),
+	// and two events differing only by PrevHMAC must not collide.
+	other := ev
+	other.PrevHMAC = bytes.Repeat([]byte{0xCD}, hmacSize)
+	assert.NotEqual(t,
+		fmt.Sprintf("%x", computeHMAC(testChainKey, ev)),
+		fmt.Sprintf("%x", computeHMAC(testChainKey, other)),
+		"PrevHMAC must be covered by the canonical HMAC")
 }
 
 // TestAppend_TamperedRecordDetected makes the threat-model claim concrete:
@@ -768,7 +806,7 @@ func TestVerifyChain_RejectsPrependedRecord(t *testing.T) {
 	// Attacker even computes a "plausible" HMAC with their own key — but
 	// it cannot match the legitimate chain key.
 	attackerKey := bytes.Repeat([]byte("z"), MinChainKeyLen)
-	forged.HMAC = computeHMAC(attackerKey, nil, forged)
+	forged.HMAC = computeHMAC(attackerKey, forged)
 
 	prepended := append([]Event{forged}, original...)
 	err := VerifyChain(prepended, testChainKey)
@@ -800,6 +838,87 @@ func TestVerifyChain_RejectsTruncatedChain(t *testing.T) {
 	assert.ErrorIs(t, err, ErrChainBroken)
 	// The first survivor's PrevHMAC no longer matches its (now-) predecessor.
 	assert.Contains(t, err.Error(), "event[1]")
+}
+
+// TestVerifyChain_RetentionTruncatedHeadRejectedByGenesisCheck pins the
+// pre-fix behaviour: once RetentionJob deletes the oldest events the new
+// head carries a non-empty PrevHMAC, so the genesis-anchored VerifyChain
+// rejects an otherwise-intact chain. This is the bug RetentionJob causes:
+// retention and tamper-evidence are documented features yet mutually
+// exclusive under the plain VerifyChain entry points.
+func TestVerifyChain_RetentionTruncatedHeadRejectedByGenesisCheck(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+
+	for i := range 4 {
+		l.LogAction(ctx, "alice", "create", "orders/"+string(rune('a'+i)), "success")
+	}
+	events := store.Events()
+	require.Len(t, events, 4)
+
+	// Simulate a retention sweep deleting the two oldest events from the
+	// head. The surviving events still chain perfectly to one another;
+	// only the new head's PrevHMAC is non-empty.
+	deletedTailHMAC := events[1].HMAC
+	store.events = []Event{events[2], events[3]}
+
+	// The genesis-anchored entry points reject this otherwise-intact chain.
+	err := VerifyChain(store.Events(), testChainKey)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrChainBroken)
+	assert.Contains(t, err.Error(), "event[0]")
+
+	err = l.VerifyChain(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrChainBroken)
+
+	// The additive VerifyChainFrom entry points accept the truncated head
+	// when given the watermark (the HMAC of the last-deleted event).
+	require.NoError(t, VerifyChainFrom(store.Events(), testChainKey, deletedTailHMAC))
+	require.NoError(t, l.VerifyChainFrom(ctx, deletedTailHMAC))
+}
+
+// TestVerifyChainFrom_DetectsTamperAndWrongWatermark proves the additive
+// watermark path does not weaken tamper-evidence: an internal link break
+// is still caught, and a watermark that does not match the surviving
+// head's PrevHMAC is rejected (an attacker cannot truncate to an
+// arbitrary point and supply a matching watermark without forging HMACs).
+func TestVerifyChainFrom_DetectsTamperAndWrongWatermark(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+
+	for i := range 4 {
+		l.LogAction(ctx, "alice", "create", "orders/"+string(rune('a'+i)), "success")
+	}
+	events := store.Events()
+	require.Len(t, events, 4)
+
+	correctWatermark := events[1].HMAC
+	survivors := []Event{events[2], events[3]}
+
+	// A watermark that does not equal the surviving head's PrevHMAC is
+	// rejected at event[0].
+	wrongWatermark := bytes.Repeat([]byte("x"), hmacSize)
+	err := VerifyChainFrom(survivors, testChainKey, wrongWatermark)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrChainBroken)
+	assert.Contains(t, err.Error(), "event[0]")
+
+	// An internal tamper after a legitimate truncation is still caught.
+	tampered := []Event{cloneEvent(events[2]), cloneEvent(events[3])}
+	tampered[1].Resource = "orders/forged"
+	err = VerifyChainFrom(tampered, testChainKey, correctWatermark)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrChainBroken)
+	assert.Contains(t, err.Error(), "event[1]")
+
+	// An empty watermark is exactly the genesis contract: VerifyChainFrom
+	// with nil watermark behaves like VerifyChain. The full untruncated
+	// chain validates with a nil watermark.
+	require.NoError(t, VerifyChainFrom(events, testChainKey, nil))
+	require.NoError(t, l.VerifyChainFrom(ctx, nil))
 }
 
 // TestVerifyChain_DifferentKeyFails ensures the chain key is actually

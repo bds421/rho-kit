@@ -1,8 +1,8 @@
 package app
 
 import (
-	"crypto/tls"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -319,12 +319,14 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		}
 	}
 	allModules = append(allModules, builtinModules...)
+	allModules = append(allModules, deferredUserModules...)
 	// Resolve HTTP-server config from the first registered
 	// [HTTPConfigProvider] (typically app/http.Module). Zero value
 	// matches the kit's hardened defaults: TLS required, default
-	// stack on, internal ops loopback-only.
-	httpCfg := resolveHTTPConfig(append(allModules, deferredUserModules...))
-	allModules = append(allModules, deferredUserModules...)
+	// stack on, internal ops loopback-only. allModules is finalized
+	// above so resolveHTTPConfig sees the exact slice the rest of Run
+	// uses (no in-place append aliasing).
+	httpCfg := resolveHTTPConfig(allModules)
 
 	// 1. TLS -- server TLS is still needed here for the public server.
 	// Client TLS is now handled by the httpClientModule.

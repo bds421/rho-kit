@@ -13,8 +13,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/bds421/rho-kit/core/v2/contextutil"
 	grpcx "github.com/bds421/rho-kit/grpcx/v2"
 	"github.com/bds421/rho-kit/grpcx/v2/client"
 	"github.com/bds421/rho-kit/resilience/v2/retry"
@@ -37,10 +39,136 @@ func startTestServer(t *testing.T) (string, *grpc.Server) {
 	return lis.Addr().String(), srv
 }
 
-type fakeHealthSrv struct{ healthpb.UnimplementedHealthServer }
+type fakeHealthSrv struct {
+	healthpb.UnimplementedHealthServer
+}
 
 func (f *fakeHealthSrv) Check(_ context.Context, _ *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
 	return &healthpb.HealthCheckResponse{Status: healthpb.HealthCheckResponse_SERVING}, nil
+}
+
+// startCapturingServer registers a health service that records the
+// incoming metadata of the first Check call so a test can assert what
+// the client put on the wire.
+func startCapturingServer(t *testing.T) (string, *capturingHealthSrv) {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := grpcx.NewServer(grpcx.WithoutLogging(), grpcx.WithoutMetrics())
+	h := &capturingHealthSrv{done: make(chan struct{})}
+	healthpb.RegisterHealthServer(srv, h)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(func() { srv.GracefulStop() })
+	return lis.Addr().String(), h
+}
+
+type capturingHealthSrv struct {
+	healthpb.UnimplementedHealthServer
+	mu   sync.Mutex
+	md   metadata.MD
+	once sync.Once
+	done chan struct{}
+}
+
+func (s *capturingHealthSrv) Check(ctx context.Context, _ *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+	md, _ := metadata.FromIncomingContext(ctx)
+	s.mu.Lock()
+	s.md = md.Copy()
+	s.mu.Unlock()
+	s.once.Do(func() { close(s.done) })
+	return &healthpb.HealthCheckResponse{Status: healthpb.HealthCheckResponse_SERVING}, nil
+}
+
+func (s *capturingHealthSrv) incoming() metadata.MD {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.md
+}
+
+// TestNewClient_WithoutLogging_StillPropagatesIDs is the regression
+// test for the defect where injectIDs lived only inside the logging
+// interceptors: WithoutLogging() silently dropped end-to-end
+// correlation/request-ID propagation. With a dedicated always-on
+// propagation interceptor the IDs must reach the server even when
+// logging is disabled.
+func TestNewClient_WithoutLogging_StillPropagatesIDs(t *testing.T) {
+	addr, srv := startCapturingServer(t)
+
+	conn, err := client.NewClient(addr,
+		client.WithInsecure(),
+		client.WithoutLogging(),
+		client.WithoutMetrics(),
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ctx = contextutil.SetCorrelationID(ctx, "corr-abc")
+	ctx = contextutil.SetRequestID(ctx, "req-def")
+
+	c := healthpb.NewHealthClient(conn)
+	if _, err := c.Check(ctx, &healthpb.HealthCheckRequest{}); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	select {
+	case <-srv.done:
+	case <-ctx.Done():
+		t.Fatalf("server did not receive call: %v", ctx.Err())
+	}
+
+	got := srv.incoming()
+	if v := got.Get("x-correlation-id"); len(v) != 1 || v[0] != "corr-abc" {
+		t.Fatalf("server x-correlation-id = %v, want [corr-abc]; WithoutLogging dropped propagation", v)
+	}
+	if v := got.Get("x-request-id"); len(v) != 1 || v[0] != "req-def" {
+		t.Fatalf("server x-request-id = %v, want [req-def]; WithoutLogging dropped propagation", v)
+	}
+}
+
+// TestNewClient_WithLogging_PropagatesIDsExactlyOnce confirms that with
+// logging enabled the IDs are still propagated and not duplicated by
+// having both the propagation and logging interceptors inject them.
+func TestNewClient_WithLogging_PropagatesIDsExactlyOnce(t *testing.T) {
+	addr, srv := startCapturingServer(t)
+
+	conn, err := client.NewClient(addr,
+		client.WithInsecure(),
+		client.WithoutMetrics(),
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ctx = contextutil.SetCorrelationID(ctx, "corr-abc")
+	ctx = contextutil.SetRequestID(ctx, "req-def")
+
+	c := healthpb.NewHealthClient(conn)
+	if _, err := c.Check(ctx, &healthpb.HealthCheckRequest{}); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	select {
+	case <-srv.done:
+	case <-ctx.Done():
+		t.Fatalf("server did not receive call: %v", ctx.Err())
+	}
+
+	got := srv.incoming()
+	if v := got.Get("x-correlation-id"); len(v) != 1 {
+		t.Fatalf("server x-correlation-id = %v, want exactly one value (no double-injection)", v)
+	}
+	if v := got.Get("x-request-id"); len(v) != 1 {
+		t.Fatalf("server x-request-id = %v, want exactly one value (no double-injection)", v)
+	}
 }
 
 func TestNewClient_LoopbackInsecureDials(t *testing.T) {

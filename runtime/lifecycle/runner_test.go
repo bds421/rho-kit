@@ -64,10 +64,11 @@ func TestRunner_CleanShutdown(t *testing.T) {
 		done <- r.Run(ctx)
 	}()
 
-	// Wait for components to start
-	time.Sleep(50 * time.Millisecond)
-	assert.True(t, c1.started.Load())
-	assert.True(t, c2.started.Load())
+	// Wait for components to start (canary on the started atomics rather
+	// than a fixed sleep, so the cancel below cannot race ahead of Start).
+	require.Eventually(t, func() bool {
+		return c1.started.Load() && c2.started.Load()
+	}, time.Second, 5*time.Millisecond)
 
 	// Cancel triggers shutdown
 	cancel()
@@ -166,8 +167,7 @@ func TestRunner_AddFunc(t *testing.T) {
 		done <- r.Run(ctx)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
-	assert.True(t, started.Load())
+	require.Eventually(t, started.Load, time.Second, 5*time.Millisecond)
 
 	cancel()
 	err := <-done
@@ -186,10 +186,39 @@ func TestWithBeforeStop_PanicsOnNil(t *testing.T) {
 	})
 }
 
-func TestRunner_StopTimeout(t *testing.T) {
-	r := NewRunner(slog.Default(), WithStopTimeout(100*time.Millisecond))
+// ctxAwareStopComponent blocks in Stop until its context is cancelled,
+// recording whether it observed cancellation and how long Stop ran. It is
+// the inverse of testComponent (whose Stop returns instantly) and is the
+// only way to actually exercise the Runner's stop budget / salvage path.
+type ctxAwareStopComponent struct {
+	started        atomic.Bool
+	stopObservedCt atomic.Bool  // set true if Stop saw ctx.Done()
+	stopElapsed    atomic.Int64 // nanoseconds Stop blocked before returning
+}
 
-	c1 := newTestComponent()
+func (c *ctxAwareStopComponent) Start(ctx context.Context) error {
+	c.started.Store(true)
+	<-ctx.Done()
+	return nil
+}
+
+func (c *ctxAwareStopComponent) Stop(ctx context.Context) error {
+	start := time.Now()
+	<-ctx.Done()
+	c.stopObservedCt.Store(true)
+	c.stopElapsed.Store(int64(time.Since(start)))
+	return nil
+}
+
+// TestRunner_StopTimeout exercises the actual stop budget: a component whose
+// Stop blocks until its context is cancelled must observe that cancellation
+// once the stopTimeout budget is exhausted, and the whole shutdown must
+// complete within a bound close to that budget (NOT block forever).
+func TestRunner_StopTimeout(t *testing.T) {
+	const budget = 100 * time.Millisecond
+	r := NewRunner(slog.Default(), WithStopTimeout(budget))
+
+	c1 := &ctxAwareStopComponent{}
 	r.Add("slow-stop", c1)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -198,11 +227,72 @@ func TestRunner_StopTimeout(t *testing.T) {
 		done <- r.Run(ctx)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, c1.started.Load, time.Second, 5*time.Millisecond)
+
+	shutdownStart := time.Now()
 	cancel()
 
-	err := <-done
-	require.NoError(t, err)
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return within bound — stop budget not enforced")
+	}
+	elapsed := time.Since(shutdownStart)
+
+	assert.True(t, c1.stopObservedCt.Load(),
+		"Stop must observe ctx.Done() driven by the stop budget")
+	// The single component gets the full budget (perStepMinimum clamps it up
+	// to 1s; budget here is below that, so stepCtx is bounded by sharedCtx =
+	// budget). Allow generous slack for scheduling but assert it is bounded.
+	assert.Less(t, elapsed, time.Second,
+		"shutdown must be bounded by the stop budget, took %s", elapsed)
+}
+
+// TestRunner_SalvageHonorsHardCeiling pins the documented contract that
+// stopTimeout is a HARD ceiling: once the shared budget is exhausted by an
+// earlier component, the next component's Stop must observe ctx.Done()
+// IMMEDIATELY rather than being granted a fresh per-component salvage budget.
+// Before the fix the salvage context was derived from a non-cancelled parent
+// with a fresh 1s timer, so a ctx-respecting Stop blocked ~1s past the
+// ceiling — this test would have failed.
+func TestRunner_SalvageHonorsHardCeiling(t *testing.T) {
+	const budget = 80 * time.Millisecond
+	r := NewRunner(slog.Default(), WithStopTimeout(budget))
+
+	// hog is stopped FIRST (last registered) and consumes the whole budget.
+	hog := &ctxAwareStopComponent{}
+	// salvaged is stopped AFTER the budget is gone; its Stop respects ctx.
+	salvaged := &ctxAwareStopComponent{}
+
+	r.Add("salvaged", salvaged)
+	r.Add("hog", hog)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Run(ctx)
+	}()
+
+	require.Eventually(t, func() bool {
+		return hog.started.Load() && salvaged.started.Load()
+	}, time.Second, 5*time.Millisecond)
+
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return — salvage path may be blocking")
+	}
+
+	require.True(t, salvaged.stopObservedCt.Load(), "salvaged Stop must run")
+	// The salvaged component sees an already-cancelled context, so it must
+	// return essentially immediately — well under the old 1s salvage budget.
+	salvageWait := time.Duration(salvaged.stopElapsed.Load())
+	assert.Less(t, salvageWait, 200*time.Millisecond,
+		"salvaged Stop must observe ctx.Done() at once (hard ceiling), waited %s", salvageWait)
 }
 
 func TestWithStopTimeout_PanicsOnNonPositive(t *testing.T) {
@@ -352,12 +442,14 @@ type orderedComponent struct {
 	mu       *sync.Mutex
 	stopLog  *[]string
 	startErr error
+	started  atomic.Bool
 }
 
 func (c *orderedComponent) Start(ctx context.Context) error {
 	if c.startErr != nil {
 		return c.startErr
 	}
+	c.started.Store(true)
 	<-ctx.Done()
 	return nil
 }
@@ -391,8 +483,11 @@ func TestRunner_ReverseOrderShutdown(t *testing.T) {
 		done <- r.Run(ctx)
 	}()
 
-	// Allow components to reach their blocking <-ctx.Done() select.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for every component to reach its blocking <-ctx.Done() select
+	// before triggering shutdown (canary instead of a fixed sleep).
+	require.Eventually(t, func() bool {
+		return compA.started.Load() && compB.started.Load() && compC.started.Load()
+	}, time.Second, 5*time.Millisecond)
 
 	cancel()
 
@@ -501,6 +596,7 @@ func TestRunner_BeforeStopPanicReturnedAsError(t *testing.T) {
 // would emit "stopping component" and "component stopped" back-to-back
 // and the ordering assertion would be too tight to be useful.
 type observableStopComponent struct {
+	started       atomic.Bool
 	stopCalled    chan struct{}
 	releaseStop   chan struct{}
 	logAtStopOnce sync.Once
@@ -510,6 +606,7 @@ type observableStopComponent struct {
 }
 
 func (c *observableStopComponent) Start(ctx context.Context) error {
+	c.started.Store(true)
 	<-ctx.Done()
 	return nil
 }
@@ -553,8 +650,9 @@ func TestRunner_StopEmitsStoppingLogBeforeStop(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- r.Run(ctx) }()
 
-	// Wait for component to be in its Start blocking select, then trigger shutdown.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the component to be in its Start blocking select (canary on
+	// the started atomic), then trigger shutdown.
+	require.Eventually(t, c.started.Load, time.Second, 5*time.Millisecond)
 	cancel()
 
 	select {
@@ -623,7 +721,7 @@ func TestRunner_StopErrorLogIncludesElapsed(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- r.Run(ctx) }()
 
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, c.started.Load, time.Second, 5*time.Millisecond)
 	cancel()
 
 	err := <-done

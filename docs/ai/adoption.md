@@ -119,7 +119,7 @@ func main() {
             With(ratelimit.IP(100, time.Minute)).
             Router(func(infra app.Infrastructure) http.Handler {
                 mux := http.NewServeMux()
-                // Register routes using infra.DB, infra.Publisher, etc.
+                // Register routes using postgres.Pool(infra), amqp.Publisher(infra), etc.
                 return stack.Default(mux, infra.Logger)
             }).
             Run()

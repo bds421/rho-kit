@@ -101,6 +101,8 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 			return redact.WrapError("redisbackend: attach routing-key header", err)
 		}
 	}
-	_, err := p.producer.Publish(ctx, exchange, sm)
-	return err
+	if _, err := p.producer.Publish(ctx, exchange, sm); err != nil {
+		return redact.WrapError("redisbackend: publish", err)
+	}
+	return nil
 }

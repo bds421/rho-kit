@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"runtime"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 	"weak"
 
@@ -39,9 +41,14 @@ type MemoryCache struct {
 
 	// stopSweeper signals the background nxClaims-sweeper goroutine to
 	// exit. Closed by Close.
-	stopSweeper        chan struct{}
-	closeOnce          sync.Once
-	ristrettoCloseOnce sync.Once
+	stopSweeper chan struct{}
+	closeOnce   sync.Once
+
+	// closer owns the ristretto Close. It lives in its own heap object so a
+	// runtime.AddCleanup watchdog can drive shutdown without holding a
+	// reference back to the MemoryCache (which would pin it and defeat the
+	// cleanup). Both explicit Close and the watchdog funnel through its Once.
+	closer *ristrettoCloser
 
 	// nxClaims tracks keys that have been successfully claimed via SetNX.
 	// Ristretto buffers SetWithTTL writes AND its TinyLFU admission policy
@@ -58,6 +65,40 @@ type nxClaim struct {
 	expiresAt time.Time
 }
 
+// ristrettoCloser owns the teardown of the underlying ristretto store. It is a
+// standalone heap object (not embedded in MemoryCache) so the
+// runtime.AddCleanup watchdog registered in NewMemoryCache can close the store
+// when the MemoryCache becomes unreachable without holding a strong reference
+// back to the MemoryCache. ristretto's own processItems goroutine strongly
+// references the ristretto cache and only exits on cache.Close(), so without
+// this watchdog a forgotten MemoryCache.Close leaks that goroutine (and its
+// cleanup ticker) for the process lifetime — the weak-ref nxClaims sweeper
+// alone cannot reclaim it.
+type ristrettoCloser struct {
+	cache *ristretto.Cache[string, []byte]
+	once  sync.Once
+	// closed is set once the store has been torn down. It gives callers a
+	// race-free way to observe closure without poking the ristretto store
+	// itself (whose Set/Close are not safe to call concurrently).
+	closed atomic.Bool
+}
+
+// close stops the ristretto store exactly once. Safe to call from both the
+// explicit MemoryCache.Close path and the GC cleanup watchdog (which never run
+// concurrently: the watchdog only fires once the MemoryCache is unreachable,
+// at which point no caller can hold it to invoke Close).
+func (rc *ristrettoCloser) close() {
+	if rc == nil {
+		return
+	}
+	rc.once.Do(func() {
+		if rc.cache != nil {
+			rc.cache.Close()
+		}
+		rc.closed.Store(true)
+	})
+}
+
 // MemoryCacheOption configures a MemoryCache.
 type MemoryCacheOption func(*MemoryCache)
 
@@ -72,6 +113,11 @@ func WithMaxSize(n int) MemoryCacheOption {
 	return func(mc *MemoryCache) {
 		mc.maxSize = n
 		mc.entryCost = true
+		// Mirror WithEntryCost: clear any byte/custom cost function so the
+		// cache is bounded by entry count (cost=1), honoring the documented
+		// "Implies WithEntryCost" contract even when a prior WithByteCost /
+		// WithCostFunc set costFunc.
+		mc.costFunc = nil
 	}
 }
 
@@ -183,13 +229,12 @@ func WithLogger(l *slog.Logger) MemoryCacheOption {
 // or WithEntryCost to switch to entry-count accounting; use WithCostFunc
 // to plug in a custom cost (e.g. struct size including overhead).
 // NewMemoryCache constructs a [MemoryCache] and starts its background
-// sweeper goroutine. The Open* prefix marks this as a side-effecting
-// constructor; pair with [MemoryCache.Close] in shutdown wiring for
-// deterministic cleanup, though a forgotten Close is recoverable thanks
-// to the sweeper's weak.Pointer (see Close docs).
-//
-// Replaces the v1 NewMemoryCache spelling so the lifecycle obligation
-// is visible at the call site.
+// sweeper goroutine plus ristretto's own processItems goroutine. This is a
+// side-effecting constructor; pair it with [MemoryCache.Close] in shutdown
+// wiring for deterministic cleanup. A forgotten Close is only eventually
+// recoverable — a runtime.AddCleanup watchdog closes ristretto once the
+// cache is GC'd — so it must not be relied on as a steady-state strategy
+// (see Close docs).
 func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 	mc := &MemoryCache{metricsEnabled: true}
 	for _, o := range opts {
@@ -247,6 +292,7 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 		return nil, redact.WrapError("memory cache: init failed", err)
 	}
 	mc.cache = cache
+	mc.closer = &ristrettoCloser{cache: cache}
 	mc.stopSweeper = make(chan struct{})
 	// Weak-ref sweeper: if a caller forgets Close, the goroutine
 	// noticing weak.Value() == nil exits on its own — see
@@ -254,6 +300,17 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 	// The logger is captured by value, not via the weak ref, so a
 	// sweeper panic still emits even if mc has already been GC'd.
 	go runNXClaimsSweeper(weak.Make(mc), mc.stopSweeper, mc.logger)
+
+	// Watchdog for a forgotten Close: ristretto's processItems goroutine
+	// strongly references the ristretto cache and only exits on Close, so
+	// the weak-ref sweeper above cannot reclaim it. AddCleanup runs once the
+	// MemoryCache becomes unreachable and closes the ristretto store, which
+	// stops that goroutine and its cleanup ticker. The cleanup argument is
+	// the standalone closer — never mc — so registering it does not pin the
+	// MemoryCache. It funnels through closer.once, so an explicit Close that
+	// already ran makes this a no-op. The nxClaims sweeper needs no help
+	// here: it self-terminates on its next tick once weak.Value() is nil.
+	runtime.AddCleanup(mc, func(rc *ristrettoCloser) { rc.close() }, mc.closer)
 
 	return mc, nil
 }
@@ -321,9 +378,9 @@ func (mc *MemoryCache) stopBackgroundSweeper() {
 }
 
 // MustNewMemoryCache is like [NewMemoryCache] but panics on error.
-// Use in init() or main() where failure is unrecoverable. Replaces
-// the v1 MustNewMemoryCache spelling to match the Open* prefix used
-// for side-effecting constructors.
+// Use in init() or main() where failure is unrecoverable. Like
+// [NewMemoryCache], this is a side-effecting constructor that starts
+// background goroutines; pair it with [MemoryCache.Close].
 func MustNewMemoryCache(opts ...MemoryCacheOption) *MemoryCache {
 	mc, err := NewMemoryCache(opts...)
 	if err != nil {
@@ -458,6 +515,13 @@ func (mc *MemoryCache) SetNX(ctx context.Context, key string, value []byte, ttl 
 		}
 		mc.nxClaims.Delete(key)
 	}
+	// Flush Ristretto's write buffer before the existence check. A NEW-key
+	// SetWithTTL (plain Set) only enqueues to setBuf and is not yet visible
+	// via Get; without Wait a Set(k) immediately followed by SetNX(k) would
+	// miss the buffered value and overwrite it while returning ok=true,
+	// violating the in-process test-and-set contract. nxClaims only covers
+	// prior SetNX writes, not plain Set, so the flush is required here too.
+	mc.cache.Wait()
 	if _, ok := mc.cache.Get(key); ok {
 		return false, nil
 	}
@@ -521,16 +585,21 @@ func (mc *MemoryCache) Exists(ctx context.Context, key string) (bool, error) {
 	return ok, nil
 }
 
-// Close stops the underlying cache workers (including the TTL cleanup
-// goroutine started by WithCleanupInterval). Implements io.Closer.
+// Close stops the underlying cache workers (including ristretto's
+// processItems goroutine and the TTL cleanup ticker). Implements io.Closer.
 //
-// Call Close for deterministic shutdown — it releases the ristretto
-// store immediately and unblocks the nxClaims sweeper without waiting
-// for GC. If Close is forgotten, the sweeper goroutine holds only a
-// [weak.Pointer] to the cache and exits on its own once the cache
-// becomes unreachable, so it does not pin the cache or leak forever.
-// "Forgetting Close" is a deterministic-cleanup bug, not a goroutine
-// leak.
+// Call Close for deterministic shutdown — it releases the ristretto store
+// immediately and unblocks the nxClaims sweeper without waiting for GC.
+//
+// If Close is forgotten, a runtime.AddCleanup watchdog registered at
+// construction closes the ristretto store once the MemoryCache becomes
+// unreachable, and the nxClaims sweeper (which holds only a [weak.Pointer])
+// exits on its next tick. Recovery is therefore eventual, but it depends on
+// the garbage collector actually running and reclaiming the cache: until then
+// ristretto's processItems goroutine and cleanup ticker keep running. Treat a
+// forgotten Close as a real bug — pair every constructor with Close in
+// shutdown wiring rather than relying on the GC watchdog as a steady-state
+// strategy.
 //
 // Idempotent and safe for concurrent calls — the underlying ristretto
 // cache is Close()-d exactly once. MemoryCache is safe for concurrent use
@@ -540,9 +609,7 @@ func (mc *MemoryCache) Close() error {
 		return err
 	}
 	mc.stopBackgroundSweeper()
-	mc.ristrettoCloseOnce.Do(func() {
-		mc.cache.Close()
-	})
+	mc.closer.close()
 	return nil
 }
 

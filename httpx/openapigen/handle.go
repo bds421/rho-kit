@@ -36,8 +36,12 @@ var errNilSpec = errors.New("openapigen: spec must not be nil")
 //
 // Behaviour notes:
 //
-//   - The mux registration is performed via mux.Handle(method+" "+path)
-//     so the verb participates in the stdlib's routing match.
+//   - The mux registration is performed via mux.Handle on the
+//     NORMALISED "METHOD /path" pattern (matching the verb recorded in
+//     the spec) so the verb participates in the stdlib's routing match.
+//     The stdlib matches methods case-sensitively, so a caller passing
+//     a lowercase/mixed-case verb (accepted by [Spec.Register]) still
+//     yields a route real requests can reach.
 //   - The OpenAPI registration uses the same path; the verb is recorded
 //     on the operation rather than the path string.
 //   - If the spec registration fails (e.g. schema generation), the
@@ -66,7 +70,7 @@ func Handle[Req, Resp any](
 	if err := spec.Register(method, path, allOpts...); err != nil {
 		return err
 	}
-	mux.Handle(method+" "+path, httpx.JSON[Req, Resp](logger, fn))
+	mux.Handle(muxPattern(method, path), httpx.JSON[Req, Resp](logger, fn))
 	return nil
 }
 
@@ -99,7 +103,7 @@ func HandleStatus[Req, Resp any](
 	if err := spec.Register(method, path, allOpts...); err != nil {
 		return err
 	}
-	mux.Handle(method+" "+path, httpx.JSONStatus[Req, Resp](logger, fn))
+	mux.Handle(muxPattern(method, path), httpx.JSONStatus[Req, Resp](logger, fn))
 	return nil
 }
 
@@ -127,7 +131,7 @@ func HandleNoBody[Resp any](
 	if err := spec.Register(method, path, allOpts...); err != nil {
 		return err
 	}
-	mux.Handle(method+" "+path, httpx.JSONNoBody[Resp](logger, fn))
+	mux.Handle(muxPattern(method, path), httpx.JSONNoBody[Resp](logger, fn))
 	return nil
 }
 
@@ -155,7 +159,7 @@ func HandleNoBodyStatus[Resp any](
 	if err := spec.Register(method, path, allOpts...); err != nil {
 		return err
 	}
-	mux.Handle(method+" "+path, httpx.JSONNoBodyStatus[Resp](logger, fn))
+	mux.Handle(muxPattern(method, path), httpx.JSONNoBodyStatus[Resp](logger, fn))
 	return nil
 }
 
@@ -179,8 +183,21 @@ func HandleNoContent(
 	if err := spec.Register(method, path, allOpts...); err != nil {
 		return err
 	}
-	mux.Handle(method+" "+path, httpx.NoContent(logger, fn))
+	mux.Handle(muxPattern(method, path), httpx.NoContent(logger, fn))
 	return nil
+}
+
+// muxPattern builds the [net/http.ServeMux] pattern for a route using
+// the same verb normalisation that [Spec.Register] applies, so the mux
+// route always matches the operation the spec advertises. The method
+// has already been validated by Register by the time this runs; the raw
+// token is only used as a defensive fallback for an unrecognised verb
+// (which cannot happen on the success path).
+func muxPattern(method, path string) string {
+	if norm, ok := normaliseMethod(method); ok {
+		return norm + " " + path
+	}
+	return method + " " + path
 }
 
 // hasResponseOption inspects opts via a probe routeConfig to detect
@@ -203,5 +220,7 @@ func hasResponseOption(opts []RouteOption) bool {
 		}
 		_ = o(&probe)
 	}
-	return len(probe.responseSchemas) > 0 || len(probe.responseDescriptions) > 0
+	return len(probe.responseSchemas) > 0 ||
+		len(probe.responseExtraContent) > 0 ||
+		len(probe.responseDescriptions) > 0
 }

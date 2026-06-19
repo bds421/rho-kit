@@ -222,3 +222,16 @@ func callHasOption(call *ast.CallExpr, optName string) bool {
 	}
 	return false
 }
+
+// callOptionsUnverifiable reports whether the option arguments to call
+// cannot be inspected statically, so an option-presence rule must not
+// fire on it. This is true when the call spreads a slice
+// (e.g. `Module(url, opts...)`): the individual options live in `opts`
+// and callHasOption can never see them, so emitting a "missing option"
+// finding would be a false positive. Conditional option building behind
+// a variadic slice is common in real services, so option rules treat an
+// ellipsis spread as "cannot verify — stay silent" rather than risk
+// training operators to suppress noisy findings.
+func callOptionsUnverifiable(call *ast.CallExpr) bool {
+	return call != nil && call.Ellipsis.IsValid()
+}

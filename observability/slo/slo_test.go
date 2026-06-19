@@ -200,6 +200,80 @@ func TestChecker_Evaluate_ErrorRate_Breached(t *testing.T) {
 	assert.Greater(t, statuses[0].BurnRate, 1.0)
 }
 
+// TestChecker_Evaluate_ErrorRate_MissingLabel guards against a false-green
+// SLO: when the gathered counter exists with traffic but NONE of its series
+// carries the configured (default "status") error label, evaluateErrorRate
+// previously summed all series into total and matched nothing, reporting a
+// 0% error rate instead of "no data". An absent error label is a
+// misconfiguration / no-data condition and must surface as NaN, the same way
+// an empty registry does — not a misleading 100%-success / 0%-errors result.
+func TestChecker_Evaluate_ErrorRate_MissingLabel(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	total := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "http_requests_total",
+		Help: "Total requests.",
+	}, []string{"route"}) // no "status" label at all
+	reg.MustRegister(total)
+
+	// 1000 requests, but none carry the "status" label the default filter
+	// looks for. This must NOT be reported as 0% errors.
+	total.WithLabelValues("/api").Add(1000)
+
+	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
+	statuses := c.Evaluate()
+
+	require.Len(t, statuses, 1)
+	assert.True(t, math.IsNaN(statuses[0].Current),
+		"absent error label must surface as NaN, got %v", statuses[0].Current)
+	assert.False(t, statuses[0].Breached)
+}
+
+// TestChecker_Evaluate_SuccessRate_MissingLabel is the success-rate mirror of
+// the missing-label case: an absent error label must surface as NaN rather
+// than a misleading 100% success rate.
+func TestChecker_Evaluate_SuccessRate_MissingLabel(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	total := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "http_requests_total",
+		Help: "Total requests.",
+	}, []string{"route"}) // no "status" label at all
+	reg.MustRegister(total)
+
+	total.WithLabelValues("/api").Add(1000)
+
+	c := NewChecker(reg, SuccessRateSLO("avail", 0.999, time.Hour))
+	statuses := c.Evaluate()
+
+	require.Len(t, statuses, 1)
+	assert.True(t, math.IsNaN(statuses[0].Current),
+		"absent error label must surface as NaN, got %v", statuses[0].Current)
+	assert.False(t, statuses[0].Breached)
+}
+
+// TestChecker_Evaluate_ErrorRate_LabelPresentZeroMatches confirms the fix does
+// not over-correct: when the error label IS present but no series matches the
+// error pattern (e.g. all status=200/404), a genuine 0% error rate must still
+// be reported rather than masked as NaN.
+func TestChecker_Evaluate_ErrorRate_LabelPresentZeroMatches(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	total := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "http_requests_total",
+		Help: "Total requests.",
+	}, []string{"status"})
+	reg.MustRegister(total)
+
+	// Label present, but no 5xx series — a legitimate 0% error rate.
+	total.WithLabelValues("200").Add(900)
+	total.WithLabelValues("404").Add(100)
+
+	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
+	statuses := c.Evaluate()
+
+	require.Len(t, statuses, 1)
+	assert.InDelta(t, 0.0, statuses[0].Current, 1e-9)
+	assert.False(t, statuses[0].Breached)
+}
+
 func TestChecker_Evaluate_SuccessRate_NoBreach(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{

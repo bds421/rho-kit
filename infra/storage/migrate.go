@@ -19,11 +19,16 @@ type MigrateOptions struct {
 	Overwrite bool
 
 	// OnProgress is called after each object is processed.
-	// It receives the key, whether it was copied or skipped, and any error.
+	// It receives the key, whether it was (or, under DryRun, would be)
+	// copied, and any error. Objects skipped because they already exist in
+	// the destination report copied=false.
 	OnProgress func(key string, copied bool, err error)
 
 	// DryRun simulates the migration without actually copying objects.
-	// OnProgress will still be called with what would happen.
+	// OnProgress is still called with what would happen: objects that would
+	// be copied report copied=true (and count toward [MigrateResult.Copied]),
+	// while objects skipped for already existing report copied=false — so a
+	// dry run previews the exact copy set.
 	DryRun bool
 
 	// KeyTransform optionally transforms keys during migration.
@@ -141,9 +146,14 @@ func Migrate(ctx context.Context, src, dst Storage, opts MigrateOptions) (Migrat
 		}
 
 		if opts.DryRun {
-			result.Skipped++
+			// This object passed the existence check, so it WOULD be copied.
+			// Report it as a would-copy (copied=true) and count it toward
+			// Copied so a dry run previews the real copy set, distinct from
+			// objects skipped for already existing (handled above as Skipped
+			// with copied=false). The object is not actually transferred.
+			result.Copied++
 			if opts.OnProgress != nil {
-				opts.OnProgress(info.Key, false, nil)
+				opts.OnProgress(info.Key, true, nil)
 			}
 			continue
 		}

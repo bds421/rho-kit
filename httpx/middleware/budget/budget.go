@@ -201,7 +201,13 @@ func writeRejected(w http.ResponseWriter, scope string, remaining int64, retryAf
 	w.Header().Set(HeaderRetry, strconv.FormatInt(secs, 10))
 	// JSON body kept tiny on purpose — the meaningful information is
 	// in the headers, the body is human-readable companion text.
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	//
+	// Content-Type and Cache-Control match httpx.WriteError (the path
+	// every other error in this middleware takes): "application/json"
+	// without a charset suffix, plus "no-store" so the per-key
+	// X-Budget-Remaining/Retry-After data is never cached by a CDN.
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusTooManyRequests)
 	_, _ = fmt.Fprintf(w, `{"error":"budget exceeded","code":"BUDGET_EXCEEDED","remaining":%d}`, remaining)
 }

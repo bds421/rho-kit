@@ -98,15 +98,6 @@ func (b readErrorBody) Close() error {
 	return nil
 }
 
-type closeErrorBody struct {
-	*bytes.Reader
-	err error
-}
-
-func (b closeErrorBody) Close() error {
-	return b.err
-}
-
 func formatUnix(t int64) string { return strconv.FormatInt(t, 10) }
 
 func TestVerify_RoundTrip(t *testing.T) {
@@ -151,27 +142,22 @@ func TestVerify_ClosesOriginalBodyAfterRewind(t *testing.T) {
 	assert.Equal(t, "hello", string(downstreamBody))
 }
 
-func TestReadBodyErrorsAreStable(t *testing.T) {
+// TestReadSpooledBodyErrorsAreStable pins that a body-read failure surfaces
+// the stable, redacted "signedrequest: read body failed" message (via safeWrap)
+// while keeping the underlying error chain intact for errors.Is and never
+// leaking the raw reader-error text. This is the server-side verifier's body
+// path (readSpooledBody) — the previous offline streamBody/readBody helpers
+// were dead production code and have been removed.
+func TestReadSpooledBodyErrorsAreStable(t *testing.T) {
 	readErr := errors.New("reader failed for secret-token")
 	readReq := httptest.NewRequest(http.MethodPost, "/api/x", nil)
 	readReq.Body = readErrorBody{err: readErr}
 
-	body, err := readBody(readReq, 1024)
+	sb, _, err := readSpooledBody(readReq, 1024, 0)
 	require.Error(t, err)
-	assert.Nil(t, body)
+	assert.Nil(t, sb)
 	assert.Equal(t, "signedrequest: read body failed", err.Error())
 	assert.ErrorIs(t, err, readErr)
-	assert.NotContains(t, err.Error(), "secret-token")
-
-	closeErr := errors.New("close failed for secret-token")
-	closeReq := httptest.NewRequest(http.MethodPost, "/api/x", nil)
-	closeReq.Body = closeErrorBody{Reader: bytes.NewReader([]byte("body")), err: closeErr}
-
-	body, err = readBody(closeReq, 1024)
-	require.Error(t, err)
-	assert.Nil(t, body)
-	assert.Equal(t, "signedrequest: close body failed", err.Error())
-	assert.ErrorIs(t, err, closeErr)
 	assert.NotContains(t, err.Error(), "secret-token")
 }
 
@@ -241,6 +227,27 @@ func TestVerify_RejectsExtremeTimestampWithoutOverflow(t *testing.T) {
 			assert.Equal(t, http.StatusBadRequest, rr.Code)
 			assert.Zero(t, store.Len(), "stale/future timestamp must be rejected before nonce storage")
 		})
+	}
+}
+
+// TestClassifyTimestampSkew_ExtremeValuesHaveCorrectDirection pins that a
+// maximally-future timestamp is classified as future-skew (+1) and a
+// maximally-past one as expired (-1), rather than time.Unix overflow flipping
+// the direction. Rejection happens either way; this keeps the metrics label
+// honest.
+func TestClassifyTimestampSkew_ExtremeValuesHaveCorrectDirection(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	skew := time.Minute
+
+	if got := classifyTimestampSkew(math.MaxInt64, now, skew); got != 1 {
+		t.Fatalf("max future timestamp direction = %d, want 1 (clock_skew)", got)
+	}
+	if got := classifyTimestampSkew(math.MinInt64, now, skew); got != -1 {
+		t.Fatalf("min past timestamp direction = %d, want -1 (expired)", got)
+	}
+	// Within-skew still classifies as 0 (accepted window).
+	if got := classifyTimestampSkew(now.Unix(), now, skew); got != 0 {
+		t.Fatalf("in-window timestamp direction = %d, want 0", got)
 	}
 }
 
@@ -983,4 +990,80 @@ func TestMemoryNonceStore_PanicsOnNilOption(t *testing.T) {
 	assert.Panics(t, func() {
 		NewMemoryNonceStore(time.Minute, nil)
 	})
+}
+
+// TestVerify_SpooledBodyClosedWhenHandlerIgnoresIt guards the
+// resource-leak invariant: net/http closes only the ORIGINAL r.Body it
+// captured before the handler ran, not the spooled body the middleware
+// swaps in. A downstream handler that never reads or closes r.Body (a
+// common case: routes that don't need the payload) would otherwise
+// leave the spooled *os.File open until the GC finalizer runs —
+// fd-exhaustion under load on Unix, orphaned temp files on Windows. The
+// middleware must close the installed body itself once the handler
+// returns.
+func TestVerify_SpooledBodyClosedWhenHandlerIgnoresIt(t *testing.T) {
+	store := NewMemoryNonceStore(10 * time.Minute)
+	body := strings.Repeat("q", 4096) // well above inMemoryBodyMax -> spools to disk
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+
+	var installed io.ReadCloser
+	mw := Middleware(
+		newResolver(t),
+		store,
+		WithClock(func() time.Time { return now }),
+		WithInMemoryBodyMax(64),
+		WithBodyMaxSize(1<<20),
+	)
+	// Handler deliberately ignores the body: it does not read or close
+	// r.Body. It only records the installed reader so the test can prove
+	// the middleware closed it.
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		installed = r.Body
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := signRequest(t, "POST", "/ignore-body", body, now, makeNonce("leak-spill"), nil, nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.NotNil(t, installed)
+	sr, ok := installed.(*spooledReader)
+	require.True(t, ok, "expected a spooledReader to be installed for an over-threshold body")
+	assert.True(t, sr.closed, "middleware must close the spooled body the handler ignored")
+	assert.Nil(t, sr.file, "spooled temp file must be released on close")
+}
+
+// TestVerify_HandlerClosingBodyIsNotDoubleClosedHarmfully proves the
+// middleware's after-handler Close is idempotent: a well-behaved
+// handler that closes r.Body itself must not be harmed by the
+// middleware's own deferred Close.
+func TestVerify_HandlerClosingBodyIsNotDoubleClosedHarmfully(t *testing.T) {
+	store := NewMemoryNonceStore(10 * time.Minute)
+	body := strings.Repeat("w", 4096)
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+
+	mw := Middleware(
+		newResolver(t),
+		store,
+		WithClock(func() time.Time { return now }),
+		WithInMemoryBodyMax(64),
+		WithBodyMaxSize(1<<20),
+	)
+	var readErr, closeErr error
+	var observed []byte
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed, readErr = io.ReadAll(r.Body)
+		closeErr = r.Body.Close()
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := signRequest(t, "POST", "/read-body", body, now, makeNonce("double-close"), nil, nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.NoError(t, readErr)
+	require.NoError(t, closeErr)
+	require.Equal(t, body, string(observed), "handler must still observe the full body")
 }

@@ -33,10 +33,24 @@ type timeoutWriter struct {
 	h           http.Header
 	code        int
 	buf         []byte
+	wroteHeader bool
 	written     bool
 	flushWarned bool
 
-	maxBuffer int // per-instance cap; 0 falls back to defaultMaxBufferSize
+	maxBuffer int          // per-instance cap; 0 falls back to defaultMaxBufferSize
+	logger    *slog.Logger // configured logger; nil falls back to slog.Default
+}
+
+// warnLogger returns the configured logger, falling back to slog.Default so
+// the Flush misconfiguration signal is never silently dropped. This mirrors
+// the late-panic fallback in Timeout (cfg.logger / drainLateHandler): a
+// service that wires a structured non-default logger via WithLogger sees the
+// SSE/streaming warning on the same sink as its late-panic records.
+func (tw *timeoutWriter) warnLogger() *slog.Logger {
+	if tw.logger != nil {
+		return tw.logger
+	}
+	return slog.Default()
 }
 
 func (tw *timeoutWriter) bufferCap() int {
@@ -59,6 +73,13 @@ func (tw *timeoutWriter) Header() http.Header {
 }
 
 // WriteHeader buffers the status code for later flushing. No-op after timeout.
+//
+// This mirrors the http.ResponseWriter contract enforced by the stdlib: the
+// first WriteHeader latches the final status and later calls are superfluous
+// no-ops. 1xx informational codes do not latch a final status — the buffered
+// writer cannot send them early, so they are dropped, leaving a subsequent
+// Write/WriteHeader to set the real status (defaulting to 200). This keeps
+// handler behaviour identical inside and outside the middleware.
 func (tw *timeoutWriter) WriteHeader(code int) {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
@@ -66,8 +87,17 @@ func (tw *timeoutWriter) WriteHeader(code int) {
 		return
 	}
 	if code < 100 || code > 999 {
-		panic("middleware/timeout: WriteHeader writer WriteHeader received invalid status code")
+		panic("middleware/timeout: WriteHeader received invalid status code")
 	}
+	// 1xx informational responses are not the final status; ignore them so a
+	// later WriteHeader/Write can still set the real status code.
+	if code < 200 {
+		return
+	}
+	if tw.wroteHeader {
+		return
+	}
+	tw.wroteHeader = true
 	tw.code = code
 }
 
@@ -77,6 +107,14 @@ func (tw *timeoutWriter) Write(b []byte) (int, error) {
 	defer tw.mu.Unlock()
 	if tw.written {
 		return 0, http.ErrHandlerTimeout
+	}
+	// Mirror the stdlib: the first Write implies WriteHeader(StatusOK) and
+	// latches the final status, so any later WriteHeader call is a no-op.
+	if !tw.wroteHeader {
+		tw.wroteHeader = true
+		if tw.code == 0 {
+			tw.code = http.StatusOK
+		}
 	}
 	remaining := tw.bufferCap() - len(tw.buf)
 	if remaining <= 0 {
@@ -130,6 +168,15 @@ func (tw *timeoutWriter) writeToReal() {
 //
 // Returns nil after the timeout has fired or the response has already been
 // flushed, preventing writes that would corrupt the already-sent response.
+//
+// This is an intentional escape hatch: before the timeout fires it hands the
+// real ResponseWriter to http.ResponseController, so rc.Hijack() and
+// rc.SetWriteDeadline() reach the real connection and bypass the buffering and
+// write deadline this middleware enforces. After a successful hijack the
+// connection is owned by the caller and a subsequent writeTimeout 503 is
+// dropped by the stdlib. Routes that legitimately hijack (WebSocket, raw
+// streaming) should bypass the timeout via [WithWebSocketUpgradeBypass] or by
+// not wrapping the route, rather than relying on this Unwrap path.
 func (tw *timeoutWriter) Unwrap() http.ResponseWriter {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
@@ -149,8 +196,9 @@ func (tw *timeoutWriter) Flush() {
 	tw.mu.Lock()
 	if !tw.flushWarned {
 		tw.flushWarned = true
+		logger := tw.warnLogger()
 		tw.mu.Unlock()
-		slog.Warn("timeout middleware: Flush() called but is a no-op; SSE/streaming endpoints should bypass the timeout middleware")
+		logger.Warn("timeout middleware: Flush() called but is a no-op; SSE/streaming endpoints should bypass the timeout middleware")
 		return
 	}
 	tw.mu.Unlock()

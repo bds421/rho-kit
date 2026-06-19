@@ -504,6 +504,111 @@ func TestHandleCursorList_emptyResult(t *testing.T) {
 	}
 }
 
+func TestBuildResult_nilSliceSerialisesAsEmptyArray(t *testing.T) {
+	// A nil items slice (the idiomatic empty result) must produce "data":[]
+	// not "data":null so strictly-typed JSON clients see a stable shape.
+	result := BuildResult[testItem](nil, 10, func(i testItem) string { return i.ID })
+	if result.Data == nil {
+		t.Fatal("BuildResult Data is nil; want non-nil empty slice")
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := string(b); !strings.Contains(got, `"data":[]`) {
+		t.Fatalf("marshalled result = %s, want \"data\":[]", got)
+	}
+	if strings.Contains(string(b), `"data":null`) {
+		t.Fatalf("marshalled result contains data:null: %s", b)
+	}
+}
+
+func TestHandleCursorList_nilListResultSerialisesAsEmptyArray(t *testing.T) {
+	// ListFn returns a nil slice (common for empty DB results); the response
+	// envelope must still emit "data":[] rather than "data":null.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleCursorList(w, r, CursorListOpts[testItem]{
+			DefaultLimit: 10,
+			MaxLimit:     100,
+			ListFn: func(_ context.Context, _ string, _ int) ([]testItem, error) {
+				return nil, nil // nil, not []testItem{}
+			},
+			IDFn:   func(i testItem) string { return i.ID },
+			Logger: slog.Default(),
+		})
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if body := w.Body.String(); !strings.Contains(body, `"data":[]`) || strings.Contains(body, `"data":null`) {
+		t.Fatalf("body = %q, want data:[] not data:null", body)
+	}
+}
+
+func TestHandleCursorList_nilListFnReturns500WithoutPanic(t *testing.T) {
+	// A nil ListFn is a wiring bug; it must surface as a deliberate logged
+	// 500, the same failure mode as an invalid limit config, not a panic.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleCursorList(w, r, CursorListOpts[testItem]{
+			DefaultLimit: 10,
+			MaxLimit:     100,
+			ListFn:       nil,
+			IDFn:         func(i testItem) string { return i.ID },
+			Logger:       slog.Default(),
+		})
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	handler.ServeHTTP(w, r) // must not panic
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "internal error") {
+		t.Fatalf("body = %q, want internal error", body)
+	}
+}
+
+func TestHandleCursorList_nilIDFnReturns500WithoutPanic(t *testing.T) {
+	// A nil IDFn panics inside BuildResult once hasMore is true; it must
+	// instead be rejected up front with a logged 500. ListFn must not run.
+	listFnCalled := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleCursorList(w, r, CursorListOpts[testItem]{
+			DefaultLimit: 2,
+			MaxLimit:     100,
+			ListFn: func(_ context.Context, _ string, _ int) ([]testItem, error) {
+				listFnCalled = true
+				// Return limit+1 items so hasMore is true, which is the path
+				// that dereferences IDFn in BuildResult.
+				return []testItem{{ID: "1"}, {ID: "2"}, {ID: "3"}}, nil
+			},
+			IDFn:   nil,
+			Logger: slog.Default(),
+		})
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	handler.ServeHTTP(w, r) // must not panic
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if listFnCalled {
+		t.Fatal("ListFn should not be called when IDFn is nil")
+	}
+	if body := w.Body.String(); !strings.Contains(body, "internal error") {
+		t.Fatalf("body = %q, want internal error", body)
+	}
+}
+
 func TestHandleCursorList_limitParam(t *testing.T) {
 	var gotLimit int
 

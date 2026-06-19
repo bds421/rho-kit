@@ -14,8 +14,8 @@
 
 ## Key APIs
 
-- `NewPublisher(client, opts...)` — wraps asynq client.
-- `Enqueue(ctx, queue, msg)` — `queue` is the asynq queue name; subject to validation (no control bytes, reasonable length).
+- `NewQueue(client goredis.UniversalClient, opts ...Option) *Queue` — `client` is a go-redis client; the asynq client is created internally from it.
+- `(*Queue).Enqueue(ctx, queue string, msg Message) error` — `queue` is the asynq queue name; subject to validation (no control bytes, reasonable length).
 
 ## Common mistakes
 

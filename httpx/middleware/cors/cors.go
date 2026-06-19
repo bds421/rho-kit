@@ -117,7 +117,11 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 
 	mw, err := jcors.NewMiddleware(jcfg)
 	if err != nil {
-		panic("middleware/cors: New invalid configuration")
+		// Surface the underlying error: jub0bs/cors identifies the
+		// offending origin pattern/header, and origins are not secrets,
+		// so operators debugging a startup panic get an actionable hint
+		// about which config entry is invalid.
+		panic("middleware/cors: " + err.Error())
 	}
 
 	return func(next http.Handler) http.Handler {

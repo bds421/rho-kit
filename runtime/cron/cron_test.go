@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -100,6 +101,52 @@ func TestScheduler_ContextCancelledOnStop(t *testing.T) {
 	// The context derived from the scheduler should be cancelled.
 	stored := jobCtx.Load().(context.Context)
 	assert.Error(t, stored.Err())
+}
+
+func TestScheduler_StartDrainsCronOnParentCtxCancel(t *testing.T) {
+	// Start documents "blocks until ctx is cancelled". When a caller
+	// cancels the parent ctx directly — without calling Scheduler.Stop —
+	// the underlying robfig/cron run() goroutine and its timers must
+	// still be drained, otherwise Start leaks a goroutine that loops
+	// forever.
+	s := New(nil)
+	s.Add("leak-job", "@every 1h", func(_ context.Context) error { return nil })
+
+	baseline := stableGoroutineCount(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	startDone := make(chan error, 1)
+	go func() { startDone <- s.Start(ctx) }()
+	waitForSchedulerStarted(t, s)
+
+	// Terminate via the documented path: cancel the parent ctx only.
+	cancel()
+	require.NoError(t, <-startDone)
+
+	// The robfig run() goroutine must have exited; the goroutine count
+	// should settle back to (around) the pre-Start baseline.
+	require.Eventually(t, func() bool {
+		return runtime.NumGoroutine() <= baseline
+	}, 2*time.Second, 20*time.Millisecond,
+		"cron run() goroutine should be drained after parent ctx cancel (baseline=%d, got=%d)",
+		baseline, runtime.NumGoroutine())
+}
+
+// stableGoroutineCount returns a goroutine count that has stopped
+// changing, so transient runtime/test goroutines don't skew the
+// before/after comparison in leak tests.
+func stableGoroutineCount(t *testing.T) int {
+	t.Helper()
+	prev := runtime.NumGoroutine()
+	require.Eventually(t, func() bool {
+		cur := runtime.NumGoroutine()
+		if cur == prev {
+			return true
+		}
+		prev = cur
+		return false
+	}, time.Second, 20*time.Millisecond)
+	return prev
 }
 
 func TestScheduler_StartRejectsNilContext(t *testing.T) {

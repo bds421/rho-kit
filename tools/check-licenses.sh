@@ -120,7 +120,15 @@ fail=0
 seen_any=0
 while IFS=, read -r module url license; do
   module="${module%%[[:space:]]*}"
-  license="${license##[[:space:]]}"
+  # Trim leading AND trailing whitespace from the license field so the
+  # exact-match against the allowlist is robust. The previous
+  # `${license##[[:space:]]}` stripped at most ONE leading whitespace
+  # char (a single-character class, not a `*[[:space:]]` greedy prefix),
+  # which silently relied on go-licenses' comma-delimited CSV having no
+  # surrounding spaces; a format change would have spuriously failed the
+  # gate on an unmatched (but allowlisted) license string.
+  license="${license#"${license%%[![:space:]]*}"}"   # strip leading ws
+  license="${license%"${license##*[![:space:]]}"}"   # strip trailing ws
   [[ -z "$module" ]] && continue
   seen_any=1
 

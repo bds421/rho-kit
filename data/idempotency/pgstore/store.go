@@ -85,6 +85,37 @@ func New(db *sql.DB, opts ...Option) *Store {
 	return s
 }
 
+// maxCachedHeadersBytes bounds the on-disk size of the headers JSON column
+// that doGet will pull into Go memory and json.Unmarshal. The body column is
+// size-gated separately (Wave 66) via octet_length(response_body), but the
+// headers JSON column had no gate: a hostile or legacy row with a multi-MB
+// headers blob would be fully allocated and unmarshalled before
+// ValidateCachedResponse could reject it — the same allocation-before-cap
+// pattern the body gate closed.
+//
+// The bound is derived from the per-field caps that ValidateCachedResponse
+// enforces so it never rejects a legitimately stored row. The worst-case
+// JSON encoding of a maximal valid headers map is:
+//
+//	MaxCachedHeaders header entries, each with
+//	  a name up to MaxCachedHeaderNameBytes, and
+//	  up to MaxCachedHeaderValues values, each up to MaxCachedHeaderValueBytes,
+//
+// plus JSON structural overhead (quotes, colons, commas, brackets). We add a
+// generous fixed overhead per value/name to cover quoting and separators and
+// round up; the result is comfortably above any legitimate row while still a
+// hard stop short of the multi-MB blobs the gate exists to reject.
+const maxCachedHeadersBytes = int64(idempotency.MaxCachedHeaders) *
+	(int64(idempotency.MaxCachedHeaderNameBytes) + 8 +
+		int64(idempotency.MaxCachedHeaderValues)*(int64(idempotency.MaxCachedHeaderValueBytes)+8))
+
+// headersWithinBound reports whether a headers JSON column of n bytes is small
+// enough to materialise. Extracted as a pure helper so the size-gate threshold
+// can be unit-tested without a live database.
+func headersWithinBound(n int64) bool {
+	return n <= maxCachedHeadersBytes
+}
+
 // Get returns a cached response for the key, applying fingerprint comparison
 // when a non-nil fingerprint is supplied.
 //
@@ -100,9 +131,9 @@ func New(db *sql.DB, opts ...Option) *Store {
 func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
 	ctx, span := s.startSpan(ctx, "idempotency.Get")
 	defer span.End()
-	cached, ok, err := s.doGet(ctx, key, fingerprint)
+	cached, mismatch, err := s.doGet(ctx, key, fingerprint)
 	recordResult(span, err)
-	return cached, ok, err
+	return cached, mismatch, err
 }
 
 func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
@@ -112,22 +143,29 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 	if err := idempotency.ValidateKey(key); err != nil {
 		return nil, false, err
 	}
-	// Size-gate the response body BEFORE pulling its bytes into Go
-	// memory. Wave 66 closed a hostile-review finding that a hostile
-	// or legacy row with a multi-MB response_body would be fully
-	// scanned before ValidateCachedResponse caught the oversize.
-	// octet_length(response_body) lets Postgres serialise the size
-	// without sending the bytes. COALESCE handles legitimate cached
-	// responses with no body (e.g. 204 No Content, 200 with empty
-	// payload) where response_body is NULL — octet_length(NULL)
-	// returns NULL and would fail the int64 scan.
+	// Size-gate the response body AND headers BEFORE pulling their bytes
+	// into Go memory. Wave 66 closed a hostile-review finding that a
+	// hostile or legacy row with a multi-MB response_body would be fully
+	// scanned before ValidateCachedResponse caught the oversize; the same
+	// allocation-before-cap pattern applies to the headers JSON column,
+	// which the full SELECT json.Unmarshals. octet_length(...) lets
+	// Postgres serialise the sizes without sending the bytes. COALESCE
+	// handles legitimate cached responses with no body (e.g. 204 No
+	// Content, 200 with empty payload) where response_body is NULL, and
+	// rows with NULL headers — octet_length(NULL) returns NULL and would
+	// otherwise fail the int64 scan.
+	// headers is JSONB: octet_length has no jsonb overload (it errors
+	// "function octet_length(jsonb) does not exist"), so cast to text to
+	// measure the serialized size. response_body is BYTEA where
+	// octet_length applies directly.
 	sizeQuery := fmt.Sprintf(
-		`SELECT COALESCE(octet_length(response_body), 0) FROM %s
+		`SELECT COALESCE(octet_length(response_body), 0),
+		        COALESCE(octet_length(headers::text), 0) FROM %s
 		 WHERE key = $1 AND status_code IS NOT NULL AND expires_at > now()`,
 		s.table,
 	)
-	var bodyLen int64
-	if err := s.db.QueryRowContext(ctx, sizeQuery, key).Scan(&bodyLen); err != nil {
+	var bodyLen, headersLen int64
+	if err := s.db.QueryRowContext(ctx, sizeQuery, key).Scan(&bodyLen, &headersLen); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, false, nil
 		}
@@ -135,6 +173,9 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 	}
 	if bodyLen > int64(idempotency.MaxCachedBodyBytes) {
 		return nil, false, fmt.Errorf("pgstore: stored response body exceeds %d bytes", idempotency.MaxCachedBodyBytes)
+	}
+	if !headersWithinBound(headersLen) {
+		return nil, false, fmt.Errorf("pgstore: stored response headers exceed %d bytes", maxCachedHeadersBytes)
 	}
 
 	query := fmt.Sprintf(
@@ -252,9 +293,9 @@ func (s *Store) doSet(ctx context.Context, key, token string, resp idempotency.C
 func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
 	ctx, span := s.startSpan(ctx, "idempotency.TryLock")
 	defer span.End()
-	token, ok, fingerprintMatch, err := s.doTryLock(ctx, key, fingerprint, ttl)
+	token, mismatch, ok, err := s.doTryLock(ctx, key, fingerprint, ttl)
 	recordResult(span, err)
-	return token, ok, fingerprintMatch, err
+	return token, mismatch, ok, err
 }
 
 func (s *Store) doTryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {

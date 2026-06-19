@@ -477,7 +477,7 @@ func (l *Logger) LogE(ctx context.Context, event Event) error {
 				keyEmpty = true
 				return
 			}
-			mac = computeHMAC(k, event.PrevHMAC, event)
+			mac = computeHMAC(k, event)
 		})
 		if keyEmpty {
 			buildErr = ErrLoggerClosed
@@ -612,6 +612,31 @@ func (l *Logger) List(ctx context.Context, filter Filter, cursor string, limit i
 // return means every record's HMAC matches its content AND every
 // record's PrevHMAC links to the previous record's HMAC.
 func (l *Logger) VerifyChain(ctx context.Context) error {
+	return l.VerifyChainFrom(ctx, nil)
+}
+
+// VerifyChainFrom is the retention-aware sibling of [Logger.VerifyChain].
+// It streams the store and validates the same tamper-evident HMAC chain,
+// but anchors the head to a caller-supplied watermark instead of
+// requiring a genesis (empty/zero) PrevHMAC on the first (oldest) event.
+//
+// A watermark is the HMAC of the last event removed from the head of the
+// chain by a retention sweep (see [RetentionJob]). After the first
+// retention run the surviving oldest event's PrevHMAC points at a
+// now-deleted record, which [Logger.VerifyChain] rejects as
+// [ErrChainBroken] forever; passing that deleted record's HMAC here lets
+// verification accept the truncated head.
+//
+// Watermark semantics mirror the standalone [VerifyChainFrom]:
+//
+//   - An empty or nil watermark requires a genesis head — i.e.
+//     VerifyChainFrom(ctx, nil) is identical to [Logger.VerifyChain](ctx).
+//   - A non-empty watermark requires the first event's PrevHMAC to equal
+//     it (constant-time). Per-event HMAC recomputation and the internal
+//     link checks are unchanged, so tamper-evidence is not weakened.
+//
+// Returns [ErrLoggerClosed] if the logger has been closed.
+func (l *Logger) VerifyChainFrom(ctx context.Context, watermark []byte) error {
 	if l.closed.Load() {
 		return ErrLoggerClosed
 	}
@@ -625,12 +650,12 @@ func (l *Logger) VerifyChain(ctx context.Context) error {
 			verifyErr = fmt.Errorf("%w: chain key must be at least %d bytes", ErrChainBroken, MinChainKeyLen)
 			return
 		}
-		verifyErr = l.streamVerifyChain(ctx, k)
+		verifyErr = l.streamVerifyChain(ctx, k, watermark)
 	})
 	return verifyErr
 }
 
-func (l *Logger) streamVerifyChain(ctx context.Context, chainKey []byte) error {
+func (l *Logger) streamVerifyChain(ctx context.Context, chainKey []byte, watermark []byte) error {
 	var (
 		prevHMAC []byte // HMAC of the previously visited (older) event
 		seenAny  bool
@@ -638,15 +663,21 @@ func (l *Logger) streamVerifyChain(ctx context.Context, chainKey []byte) error {
 	)
 	err := l.store.RangeChain(ctx, func(event Event) error {
 		// 1. Self-consistency: recomputed HMAC must equal stored HMAC.
-		expected := computeHMAC(chainKey, event.PrevHMAC, eventWithoutHMAC(event))
+		expected := computeHMAC(chainKey, eventWithoutHMAC(event))
 		if !constantTimeEqualHMAC(event.HMAC, expected) {
 			return fmt.Errorf("%w: event[%d] HMAC does not match canonical content", ErrChainBroken, index)
 		}
-		// 2. Genesis / link: first event's PrevHMAC must be empty or
-		// zero; subsequent events must point at the previous event's HMAC.
+		// 2. Genesis / link: the first event's PrevHMAC must equal the
+		// retention watermark (or be empty/zero when no watermark is
+		// supplied); subsequent events must point at the previous event's
+		// HMAC.
 		if !seenAny {
-			if len(event.PrevHMAC) != 0 && !isZeroBytes(event.PrevHMAC) {
-				return fmt.Errorf("%w: event[0] PrevHMAC must be empty or zero", ErrChainBroken)
+			if len(watermark) == 0 {
+				if len(event.PrevHMAC) != 0 && !isZeroBytes(event.PrevHMAC) {
+					return fmt.Errorf("%w: event[0] PrevHMAC must be empty or zero", ErrChainBroken)
+				}
+			} else if !constantTimeEqualHMAC(event.PrevHMAC, watermark) {
+				return fmt.Errorf("%w: event[0] PrevHMAC does not match retention watermark", ErrChainBroken)
 			}
 		} else if !constantTimeEqualHMAC(event.PrevHMAC, prevHMAC) {
 			return fmt.Errorf("%w: event[%d] PrevHMAC does not match event[%d] HMAC", ErrChainBroken, index, index-1)

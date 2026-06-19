@@ -100,6 +100,13 @@ func WithLogger(logger *slog.Logger) Option {
 // goroutine to exit before returning. If your handler delegates to slow I/O,
 // ensure it selects on ctx.Done() or uses context-aware clients such as
 // database drivers or HTTP clients.
+//
+// Like http.TimeoutHandler, this middleware abandons a handler that ignores
+// cancellation: once the 503 is written (immediately with [WithHard], or after
+// the post-timeout grace otherwise) ServeHTTP returns while the handler
+// goroutine may still be running. A handler that keeps reading r.Body or r
+// after ctx.Done() races with net/http tearing down the request and reusing
+// the connection. Stop touching r and r.Body once ctx.Done() is observed.
 func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 	if d <= 0 {
 		panic("middleware/timeout: Timeout duration must be positive")
@@ -132,6 +139,7 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 				w:         w,
 				h:         make(http.Header),
 				maxBuffer: cfg.maxBuffer,
+				logger:    cfg.logger,
 			}
 
 			go func() {

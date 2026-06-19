@@ -165,7 +165,11 @@ type jwtModule struct {
 func (m *jwtModule) Name() string { return ModuleName }
 
 func (m *jwtModule) Init(_ context.Context, mc app.ModuleContext) error {
-	hcm, ok := mc.Module("httpclient").(app.HTTPClientProvider)
+	// LookupModule (not the panicking Module) so an absent httpclient
+	// surfaces as this actionable error rather than a panic — the
+	// builtin httpclient is always present in production, but callers
+	// driving Init via app.TestModuleContext may omit it.
+	hcm, ok := mc.LookupModule("httpclient").(app.HTTPClientProvider)
 	if !ok {
 		return errors.New("app/jwt: httpclient module not registered or unexpected type")
 	}
@@ -234,4 +238,3 @@ func Provider(infra app.Infrastructure) *jwtutil.Provider {
 	p, _ := v.(*jwtutil.Provider)
 	return p
 }
-

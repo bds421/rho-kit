@@ -18,6 +18,15 @@ var ErrInvalidPublisher = apperror.NewUnavailable("messaging: publisher is not i
 // context.Canceled).
 var ErrInvalidPublishContext = apperror.NewValidation("messaging: publish context is nil")
 
+// ErrBufferFull is returned by [BufferedPublisher.Publish] when the
+// in-memory buffer is at capacity and the message is dropped (load
+// shedding). Callers that want to react programmatically — back off,
+// retry later, or surface back-pressure — match on it with
+// errors.Is(err, ErrBufferFull). Typed as an [apperror.UnavailableError]
+// so HTTP/gRPC adapters surface it as 503/Unavailable rather than a
+// generic 500.
+var ErrBufferFull = apperror.NewUnavailable("messaging: buffered publisher buffer full, message dropped")
+
 // Publisher is the transport-agnostic interface for publishing messages.
 // Backend implementations (amqpbackend.Publisher, redisbackend.Publisher)
 // satisfy this interface. The BufferedPublisher also implements it,

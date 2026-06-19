@@ -601,3 +601,71 @@ func TestCopyBounded_RejectsAtCap(t *testing.T) {
 	// The reader read at most maxBytes+1 = 7 bytes; the assertion
 	// is on the error path.
 }
+
+// eofWithBytesReader yields its payload one byte per Read and returns the
+// final byte together with io.EOF (a legal io.Reader behaviour). It
+// simulates clamd flushing a complete verdict and then closing the socket
+// without the usual NUL/newline terminator.
+type eofWithBytesReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *eofWithBytesReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	p[0] = r.data[r.pos]
+	r.pos++
+	if r.pos == len(r.data) {
+		return 1, io.EOF
+	}
+	return 1, nil
+}
+
+// TestReadResponse_UnterminatedVerdictOnEOF guards readResponse against
+// discarding a complete-but-unterminated verdict when clamd closes the
+// connection (io.EOF) without a trailing NUL or newline. The accumulated
+// "stream: OK" must be returned, not dropped as a scanner error.
+func TestReadResponse_UnterminatedVerdictOnEOF(t *testing.T) {
+	// Sub-case 1: final byte and io.EOF arrive in the same Read call.
+	resp, err := readResponse(&eofWithBytesReader{data: []byte("stream: OK")})
+	require.NoError(t, err)
+	require.Equal(t, "stream: OK", resp)
+	require.NoError(t, parseResponse(resp))
+
+	// Sub-case 2: bytes arrive first, then a separate Read returns 0, io.EOF
+	// (the behaviour of strings.Reader and most net.Conn closes).
+	resp, err = readResponse(strings.NewReader("stream: OK"))
+	require.NoError(t, err)
+	require.Equal(t, "stream: OK", resp)
+	require.NoError(t, parseResponse(resp))
+}
+
+// TestReadResponse_EmptyEOFFailsClosed verifies that an immediate close with
+// no bytes is still treated as a scanner error (fails closed) — the EOF
+// recovery must only apply when a verdict was actually accumulated.
+func TestReadResponse_EmptyEOFFailsClosed(t *testing.T) {
+	resp, err := readResponse(strings.NewReader(""))
+	require.ErrorIs(t, err, io.EOF)
+	require.Empty(t, resp)
+}
+
+// TestReadResponse_TerminatedVerdict confirms the normal NUL-terminated path
+// still returns the verdict without the trailing terminator.
+func TestReadResponse_TerminatedVerdict(t *testing.T) {
+	resp, err := readResponse(strings.NewReader("stream: OK\x00"))
+	require.NoError(t, err)
+	require.Equal(t, "stream: OK", resp)
+}
+
+// TestReadResponse_NonEOFErrorPropagates verifies that a non-EOF read error
+// is still surfaced even when bytes were already accumulated — only a clean
+// io.EOF close is treated as a terminator.
+func TestReadResponse_NonEOFErrorPropagates(t *testing.T) {
+	r := io.MultiReader(strings.NewReader("stream: OK"), errReader{err: errors.New("boom")})
+	resp, err := readResponse(r)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, io.EOF)
+	require.Empty(t, resp)
+}

@@ -20,6 +20,7 @@ package labelguard
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -48,11 +49,14 @@ type AllowedLabels struct {
 	// to what the registrar declared) and the offending label name.
 	rejected *prometheus.CounterVec
 
-	// vecNameMu guards vecName lookups against the underlying
-	// CounterVec; CounterVec.WithLabelValues is goroutine-safe but we
-	// only need a write lock for the once-per-vec name resolution.
+	// vecNames caches the resolved name per vec as an immutable,
+	// copy-on-write map held behind an atomic pointer. The common case
+	// — an observation on an already-seen vec — reads the pointer and
+	// hits the map without taking any lock, keeping the hot path
+	// uncontended across all vecs sharing this guard. vecNameMu only
+	// serializes the rare first-time write for a new vec.
 	vecNameMu sync.Mutex
-	vecNames  map[prometheus.Collector]string
+	vecNames  atomic.Pointer[map[prometheus.Collector]string]
 }
 
 // Option configures an AllowedLabels.
@@ -105,7 +109,17 @@ func New(allowed map[string][]string, opts ...Option) *AllowedLabels {
 	// map after construction — important for long-lived guards.
 	idx := make(map[string]map[string]struct{}, len(allowed))
 	for label, vals := range allowed {
-		if err := promutil.ValidateStaticLabelValue("label name", label); err != nil {
+		// Label NAMES must be Prometheus identifiers
+		// ([a-zA-Z_][a-zA-Z0-9_]*), not arbitrary label VALUES. The
+		// value validator permits '.' and ':' which can never match a
+		// real Prometheus label name, silently masking a wiring bug.
+		// ValidateMetricNamePart allows the empty string (namespace
+		// fragments are optional), so reject empty names explicitly to
+		// preserve the "nil/empty allowlist is a bug" contract.
+		if label == "" {
+			panic("labelguard: New allowlist label name must not be empty")
+		}
+		if err := promutil.ValidateMetricNamePart("label name", label); err != nil {
 			panic("labelguard: New allowlist label is invalid")
 		}
 		set := make(map[string]struct{}, len(vals))
@@ -128,11 +142,13 @@ func New(allowed map[string][]string, opts ...Option) *AllowedLabels {
 	// metric, not N copies.
 	live := registerOrReuse(cfg.registerer, rejected)
 
-	return &AllowedLabels{
+	g := &AllowedLabels{
 		allowed:  idx,
 		rejected: live,
-		vecNames: make(map[prometheus.Collector]string),
 	}
+	empty := make(map[prometheus.Collector]string)
+	g.vecNames.Store(&empty)
+	return g
 }
 
 // registerOrReuse delegates to promutil so we get the kit's standard
@@ -210,14 +226,38 @@ func (g *AllowedLabels) permit(vec prometheus.Collector, labels prometheus.Label
 // vecName extracts a stable, low-cardinality name for the supplied
 // vec. We cache the result keyed by the collector pointer so the
 // O(scan) Describe call only happens once per vec.
+//
+// The fast path is lock-free: it loads the immutable cache map via the
+// atomic pointer and returns a hit without contending on vecNameMu.
+// Only a cache miss takes the lock, re-checks under it (a concurrent
+// writer may have populated the entry), resolves the name, and swaps in
+// a copy-on-write map with the new entry added.
 func (g *AllowedLabels) vecName(c prometheus.Collector) string {
+	if m := g.vecNames.Load(); m != nil {
+		if name, ok := (*m)[c]; ok {
+			return name
+		}
+	}
+
 	g.vecNameMu.Lock()
 	defer g.vecNameMu.Unlock()
-	if name, ok := g.vecNames[c]; ok {
-		return name
+
+	var prev map[prometheus.Collector]string
+	if cur := g.vecNames.Load(); cur != nil {
+		if name, ok := (*cur)[c]; ok {
+			return name
+		}
+		prev = *cur
 	}
+
 	name := describeName(c)
-	g.vecNames[c] = name
+
+	next := make(map[prometheus.Collector]string, len(prev)+1)
+	for k, v := range prev {
+		next[k] = v
+	}
+	next[c] = name
+	g.vecNames.Store(&next)
 	return name
 }
 

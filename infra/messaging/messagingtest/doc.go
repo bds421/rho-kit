@@ -11,17 +11,14 @@
 //
 //   - Publish with a nil context is rejected with
 //     ErrInvalidPublishContext.
-//   - Publish on a nil receiver returns ErrInvalidPublisher
-//     (callers MAY skip this if their Publisher cannot be
-//     constructed as nil).
-//   - Publish with a cancelled context returns context.Canceled.
-//   - Publish with empty exchange + routing key is the caller's
-//     decision — kit doesn't mandate; the suite asserts only
-//     that the call doesn't panic.
+//   - Publish with a cancelled context returns context.Canceled
+//     (or a wrapped ErrInvalidPublishContext).
 //   - Publish of N messages in sequence succeeds (the broker
 //     accepts them).
 //   - Publish is safe to call concurrently from multiple
 //     goroutines.
+//   - Message values published are not mutated in flight (the
+//     publish call accepts the canonical payload unchanged).
 //
 // # Consumer conformance
 //

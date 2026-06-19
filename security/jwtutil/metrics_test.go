@@ -163,10 +163,11 @@ func TestProvider_Fetch_RecordsHTTPFailures(t *testing.T) {
 	assert.Equal(t, uint64(0), p.fetchFailParse.Load())
 }
 
-// newFixtureProvider constructs a provider with no JWKS URL via
-// NewProviderWithKeySet — useful for tests that need a non-running provider
-// without dialing a fake server. The keyset is wiped so initial state
-// remains "not ready".
+// newFixtureProvider returns a hand-built Provider with a nil keyset and no
+// JWKS URL, deliberately bypassing the NewProvider / NewProviderWithKeySet
+// constructors (and their issuer/audience guardrails) so tests can exercise
+// the "not ready" / fetch-counter paths without dialing a fake server. The
+// keyset is left nil, so the initial state is "not ready".
 func newFixtureProvider(t *testing.T) *Provider {
 	t.Helper()
 	p := &Provider{clock: time.Now, maxStale: defaultMaxStale}

@@ -26,5 +26,5 @@
 
 ## Observability
 
-- `infra/outbox/postgres` exposes Prometheus metrics for retention cleanup (`outbox_retention_cleanup_seconds`, `outbox_entries_retained`).
+- `infra/outbox` (`metrics.go`) exposes the relay-side Prometheus metrics: `outbox_pending_count`, `outbox_relay_latency_seconds`, `outbox_published_total`, `outbox_errors_total`. `infra/outbox/postgres` itself has no Prometheus instrumentation.
 - Publish-side metrics come from the wrapped backend (AMQP / Kafka / NATS / Redis).

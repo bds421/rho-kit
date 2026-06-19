@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -86,9 +85,13 @@ func NewHTTPMetrics(opts ...MetricsOption) *HTTPMetrics {
 		}),
 	}
 
-	m.requestsTotal = tryRegister(reg, m.requestsTotal).(*prometheus.CounterVec)
-	m.requestDuration = tryRegister(reg, m.requestDuration).(*prometheus.HistogramVec)
-	m.requestsInFlight = tryRegister(reg, m.requestsInFlight).(prometheus.Gauge)
+	// MustRegisterOrGet (vs a local tryRegister) is type-safe via
+	// generics and preserves the registration error text on conflict —
+	// e.g. coexisting with redmetrics on the default registry, which
+	// doc.go warns about — instead of panicking with no diagnostic.
+	m.requestsTotal = promutil.MustRegisterOrGet(reg, m.requestsTotal)
+	m.requestDuration = promutil.MustRegisterOrGet(reg, m.requestDuration)
+	m.requestsInFlight = promutil.MustRegisterOrGet(reg, m.requestsInFlight)
 
 	return m
 }
@@ -165,18 +168,4 @@ func Metrics(next http.Handler) http.Handler {
 		defaultHTTPMetrics = NewHTTPMetrics()
 	})
 	return defaultHTTPMetrics.Middleware(next)
-}
-
-// tryRegister attempts to register a Prometheus collector. If it is already
-// registered, the existing collector is returned. This prevents panics when
-// the same metrics are created multiple times with the same registerer.
-func tryRegister(reg prometheus.Registerer, c prometheus.Collector) prometheus.Collector {
-	if err := reg.Register(c); err != nil {
-		var are prometheus.AlreadyRegisteredError
-		if errors.As(err, &are) {
-			return are.ExistingCollector
-		}
-		panic("httpx/metrics: metric registration failed")
-	}
-	return c
 }

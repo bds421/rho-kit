@@ -141,6 +141,9 @@ func TestPrometheusBufferedPublisherMetrics_StateWriteSuccess(t *testing.T) {
 }
 
 func TestPrometheusBufferedPublisherMetrics_StateWriteError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based failure injection is bypassed when running as root")
+	}
 	reg := prometheus.NewRegistry()
 	pm := NewBufferedPublisherMetrics("events", WithRegisterer(reg))
 

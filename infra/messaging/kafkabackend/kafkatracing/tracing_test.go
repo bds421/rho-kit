@@ -100,6 +100,26 @@ func TestStartPublisherSpan_InjectsHeaders(t *testing.T) {
 	assert.Equal(t, trace.SpanKindProducer, kindOf(t, span))
 }
 
+func TestStartPublisherSpan_NilHeadersStillCreatesProducerSpan(t *testing.T) {
+	installPropagator(t)
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	// Documented contract: nil headers is a no-op for injection (the
+	// trace context is silently dropped) but the producer span is
+	// still created and must not panic.
+	ctx, span := kafkatracing.StartPublisherSpan(context.Background(), nil, "publish", "orders", "user-42")
+	defer span.End()
+
+	require.True(t, span.IsRecording(), "span must be created even when headers is nil")
+	assert.Equal(t, trace.SpanKindProducer, kindOf(t, span))
+	// The returned ctx still carries the new span so callers can
+	// nest work under it even without header propagation.
+	assert.True(t, trace.SpanContextFromContext(ctx).IsValid(),
+		"returned ctx must carry the new producer span context")
+}
+
 // kindOf is a tiny helper that extracts the SpanKind. The SDK type
 // stores it on the read-only span snapshot; the public Span
 // interface only exposes IsRecording / TracerProvider so this test

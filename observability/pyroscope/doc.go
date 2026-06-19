@@ -34,9 +34,8 @@
 //	if err != nil { return err }
 //	runner.Add("pyroscope", cmp)  // any lifecycle.Runner
 //
-// As an app.Module:
-//
-//	app.New(name, ver, cfg).With(pyroscope.Module(pyroscope.Config{...})).Run()
+// [Component] returns a [Profiler], a lifecycle component whose
+// Start/Stop methods integrate with any lifecycle.Runner.
 //
 // # Operational cost
 //

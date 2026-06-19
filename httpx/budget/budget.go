@@ -68,6 +68,27 @@ var ErrBudgetExceeded = errors.New("httpx/budget: budget exceeded")
 // structurally invalid request.
 var ErrInvalidRequest = errors.New("httpx/budget: invalid request")
 
+// BudgetExceededError carries the backoff hint reported by the budget store
+// when a pre-charge is rejected. It wraps [ErrBudgetExceeded], so existing
+// callers using errors.Is(err, ErrBudgetExceeded) keep working, while callers
+// that want to schedule a retry can recover the hint:
+//
+//	var be *budget.BudgetExceededError
+//	if errors.As(err, &be) && be.RetryAfter > 0 { ... }
+//
+// RetryAfter is the duration until the next budget period begins; it is zero
+// when the store reported no hint.
+type BudgetExceededError struct {
+	// RetryAfter is the duration until the budget window resets, or 0 when
+	// the store provided no hint.
+	RetryAfter time.Duration
+}
+
+func (e *BudgetExceededError) Error() string { return ErrBudgetExceeded.Error() }
+
+// Unwrap returns [ErrBudgetExceeded] so errors.Is keeps matching the sentinel.
+func (e *BudgetExceededError) Unwrap() error { return ErrBudgetExceeded }
+
 // Logger is the minimal interface accepted by [WithLogger]. *slog.Logger
 // satisfies it.
 type Logger interface {
@@ -210,7 +231,7 @@ func Wrap(base http.RoundTripper, b budget.Budget, key string, opts ...Option) h
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("budget: Wrap option must not be nil")
+			panic("httpx/budget: Wrap option must not be nil")
 		}
 		o(&cfg)
 	}
@@ -233,13 +254,26 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	estimate := t.estimate(req)
 
-	allowed, _, _, err := t.b.Consume(req.Context(), t.key, estimate)
+	allowed, _, retryAfter, err := t.b.Consume(req.Context(), t.key, estimate)
 	if err != nil {
+		// The RoundTripper contract requires the body be closed on every
+		// path that does not delegate to base.RoundTrip, including errors.
+		closeRequestBody(req)
 		return nil, fmt.Errorf("httpx/budget: pre-charge: %w", err)
 	}
 	if !allowed {
-		return nil, ErrBudgetExceeded
+		closeRequestBody(req)
+		// Return a typed error carrying the store's backoff hint so callers
+		// can schedule a retry; it still unwraps to ErrBudgetExceeded for
+		// errors.Is compatibility.
+		return nil, &BudgetExceededError{RetryAfter: retryAfter}
 	}
+
+	// Strip the internal estimate header before forwarding so the per-request
+	// accounting hint is not transmitted to the third-party upstream. Clone
+	// the request (RoundTrippers must not mutate the caller's request) only
+	// when the header is actually present.
+	req = t.stripEstimateHeader(req)
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
@@ -259,22 +293,60 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // estimate reads the per-request estimate header if set, falling
-// back to the configured default. Negative or unparseable values
+// back to the configured default. Non-positive or unparseable values
 // fall back to the default; we don't propagate user-supplied junk
-// into the backend.
+// into the backend. A zero charge is a no-op probe the budget admits
+// even when exhausted, so an untrusted header value of "0" must not be
+// allowed to slip past the gate — it falls back to the default.
 func (t *transport) estimate(req *http.Request) int64 {
 	if t.cfg.estimateHeader == "" {
 		return t.cfg.defaultAmount
 	}
-	v, _, ok := singletonHeaderValue(req.Header, t.cfg.estimateHeader)
+	v, present, ok := singletonHeaderValue(req.Header, t.cfg.estimateHeader)
 	if !ok {
+		// Warn on ambiguous (duplicate/empty) estimate headers, mirroring
+		// reconcile's actual-header path. A proxy duplicating the header would
+		// otherwise silently mis-account every request's pre-charge.
+		if present {
+			t.cfg.logger.Warn("httpx/budget: ambiguous estimate header",
+				"header", t.cfg.estimateHeader)
+		}
 		return t.cfg.defaultAmount
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil || n < 0 {
+	if err != nil || n <= 0 {
+		t.cfg.logger.Warn("httpx/budget: malformed estimate header",
+			"header", t.cfg.estimateHeader, redact.String("value", v))
 		return t.cfg.defaultAmount
 	}
 	return n
+}
+
+// stripEstimateHeader returns a request with the configured estimate header
+// removed so the internal accounting hint is not forwarded to the upstream
+// provider. It clones the request (per the RoundTripper contract not to mutate
+// the caller's request) only when the header is configured and present; the
+// clone shares the original body, so the body-close contract is unaffected.
+func (t *transport) stripEstimateHeader(req *http.Request) *http.Request {
+	if t.cfg.estimateHeader == "" || req.Header.Get(t.cfg.estimateHeader) == "" {
+		return req
+	}
+	// Clone makes a shallow copy of Body (same io.ReadCloser), so the
+	// body-close contract is preserved whether the caller closes req or the
+	// transport closes the clone.
+	clone := req.Clone(req.Context())
+	clone.Header.Del(t.cfg.estimateHeader)
+	return clone
+}
+
+// closeRequestBody closes req.Body if present. The net/http
+// RoundTripper contract requires RoundTrip to always close the body,
+// including on errors; the early-return paths that never reach
+// base.RoundTrip must honour it so file/pipe-backed bodies do not leak.
+func closeRequestBody(req *http.Request) {
+	if req != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
 }
 
 // reconcile computes the delta between estimate and actual reported
@@ -333,6 +405,20 @@ func (t *transport) reconcile(reqCtx context.Context, resp *http.Response, estim
 	return nil
 }
 
+// singletonHeaderValue reads a single budget accounting header (estimate or
+// actual). It deliberately differs from internal/headerutil.SingletonToken,
+// which guards identity/trust-boundary headers:
+//
+//   - Contract: (value, present, ok). present reports whether the header was
+//     sent at all; ok reports whether it was an unambiguous, non-empty value.
+//     An ABSENT header is (\"\", false, true) — ok=true so callers fall back to
+//     the configured default without logging an anomaly. SingletonToken instead
+//     returns ok=false for absent because a missing identity is itself a signal.
+//   - It trims surrounding whitespace (proxies routinely pad numeric headers),
+//     whereas SingletonToken rejects padded identity tokens outright.
+//
+// These are numeric accounting hints, not identities, so the looser, fallback-
+// friendly contract is intentional and must not be unified with SingletonToken.
 func singletonHeaderValue(h http.Header, name string) (value string, present bool, ok bool) {
 	values := h.Values(name)
 	if len(values) == 0 {

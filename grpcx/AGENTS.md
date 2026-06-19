@@ -26,4 +26,4 @@
 ## Observability
 
 - Metrics: `grpc_server_handled_total{grpc_method,grpc_code}`, `grpc_server_handling_seconds{grpc_method}`. Stream-limit additions (wave 166): `grpc_server_active_streams`, `grpc_server_streams_rejected_total{reason}`, `grpc_server_streams_idle_closed_total`.
-- OTel: see `grpcx/tracing.go`. Per-call spans are emitted automatically by the metrics interceptor.
+- OTel: see `grpcx/tracing.go`. Per-call spans are NOT emitted by the metrics interceptor and are NOT on by default. Opt in with `WithTracingStatsHandler(...)`, which installs the `otelgrpc` stats handler (`otelgrpc.NewServerHandler`); it captures both unary and streaming RPCs.

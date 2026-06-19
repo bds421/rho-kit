@@ -23,6 +23,14 @@ import (
 // DefaultClientDeadline matches the server-side [grpcx.DefaultRPCDeadline]
 // so a kit client and kit server agree on the default unary-call timeout.
 // Override with [WithDefaultTimeout]; opt out with [WithoutDefaultDeadline].
+//
+// This is a PER-ATTEMPT deadline. When [WithRetry] is enabled, retry wraps
+// the deadline interceptor (see the chain order on [NewClient]), so each
+// retry attempt receives a fresh now+DefaultClientDeadline budget rather
+// than sharing one across the whole call. To cap the total wall-clock time
+// across all attempts, pass your own context.WithTimeout at the call site —
+// the deadline interceptor preserves a caller deadline that is tighter than
+// now+DefaultClientDeadline.
 const DefaultClientDeadline = 30 * time.Second
 
 // defaultKeepalive returns production-safe client keepalive: send a
@@ -184,6 +192,14 @@ func WithoutMetrics() Option {
 // Defaults to [interceptor.DefaultRetryableCodes] for which codes to
 // retry on. Override via [WithRetryableCodes]. Stream RPCs are not
 // auto-retried by this option.
+//
+// Retry wraps the deadline interceptor (see the chain order on
+// [NewClient]), so [DefaultClientDeadline] (or [WithDefaultTimeout]) is a
+// PER-ATTEMPT budget, not a total budget: each attempt gets a fresh now+d
+// deadline. With the default policy and no caller deadline, a fully
+// retried call can therefore run up to attempts*d plus the policy's
+// inter-attempt backoff. To bound total wall-clock time across all
+// attempts, pass your own context.WithTimeout at the call site.
 func WithRetry(policy retry.Policy) Option {
 	return func(c *clientConfig) {
 		c.enableRetry = true
@@ -215,13 +231,17 @@ func WithKeepaliveParams(p keepalive.ClientParameters) Option {
 
 // NewClient dials target with kit defaults: TLS-only by default (or
 // loopback insecure via [WithInsecure]), default per-RPC deadline,
-// keepalive, recovery + logging + metrics interceptors, optional retry
-// on UNAVAILABLE / RESOURCE_EXHAUSTED / ABORTED, plus the caller's
-// interceptor chain.
+// keepalive, recovery + correlation/request-ID propagation + logging +
+// metrics interceptors, optional retry on UNAVAILABLE /
+// RESOURCE_EXHAUSTED / ABORTED, plus the caller's interceptor chain.
+//
+// ID propagation is always on (independent of [WithoutLogging]) so
+// disabling logging never severs end-to-end correlation/request-ID
+// joins across services.
 //
 // Final interceptor chain (outermost first):
 //
-//	recovery -> logging -> metrics -> retry (optional) -> deadline -> caller -> RPC
+//	recovery -> propagation -> logging -> metrics -> retry (optional) -> deadline -> caller -> RPC
 //
 // Panics on misconfiguration (no credentials, insecure-on-non-loopback,
 // invalid target). Returns the connection without blocking; the first
@@ -281,6 +301,10 @@ func NewClient(target string, opts ...Option) (*grpc.ClientConn, error) {
 		unary = append([]grpc.UnaryClientInterceptor{cliint.LoggingUnary(l)}, unary...)
 		stream = append([]grpc.StreamClientInterceptor{cliint.LoggingStream(l)}, stream...)
 	}
+	// Correlation/request-ID propagation is always on and runs ahead of
+	// logging so disabling logging never severs end-to-end trace joins.
+	unary = append([]grpc.UnaryClientInterceptor{cliint.PropagationUnaryClientInterceptor()}, unary...)
+	stream = append([]grpc.StreamClientInterceptor{cliint.PropagationStreamClientInterceptor()}, stream...)
 	if !cfg.disableRecovery {
 		l := cfg.recoveryLogger
 		if l == nil {

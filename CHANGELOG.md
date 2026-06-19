@@ -4,6 +4,48 @@
 
 _(no entries yet)_
 
+## v2.1.0 — 2026-06-10
+
+Additive feature + fix release across the `/v2` module set (coordination tag
+`release/v2.1.0`).
+
+- **feat(apikey).** External / customer-facing API key support (issuance,
+  hashing, lookup) with the `data/apikey/postgres` store and `app/apikey`
+  Builder wiring.
+- **fix(saga).** `runtime/saga` durable executor now resumes in-flight sagas
+  concurrently with a bounded worker pool instead of serially.
+- **chore(deps).** Workspace-wide minor/patch dependency bumps via Dependabot.
+
+## v2.0.3 — 2026-06-08
+
+Per-module patch. The `runtime` module is tagged at `runtime/v2.0.3` carrying
+the saga concurrency fix ahead of the coordinated `v2.1.0` cut; not all modules
+ship a `v2.0.3` tag.
+
+## v2.0.2 — 2026-05-28
+
+Patch release (coordination tag `release/v2.0.2`).
+
+- **fix(resilience/bulkhead).** Decrement the in-flight counter before
+  releasing the semaphore so concurrency accounting stays correct under load.
+- **fix(data/cache).** `Delete` now calls `Wait()` like `Set` to drain the
+  Ristretto buffer, so deletes are observable immediately.
+- **chore(deps).** `golang.org/x/crypto` and `go-jose/v4` bumps; Dependabot
+  enabled for version + security updates.
+- **ci.** Dropped the CycloneDX SBOM workflow and `SUPPLY_CHAIN.md`; added a Go
+  build cache.
+
+## v2.0.1 — 2026-05-28
+
+Release-engineering patch (coordination tag `release/v2.0.1`); no functional
+code changes.
+
+- Fixed stale `go.mod` pseudo-version pins so dependent modules resolve the
+  versioned tags directly.
+- Added a `check-tidy` gate to catch stale `go.mod` require lines.
+- Allowlisted `go-jose/v4` (auth/oauth2 tests) and `gcpsm` / `gcpkms` for the
+  `google.golang.org/api` boundary.
+
 ## v2.0.0 — 2026-05-12
 
 The agentic-AI service backend release. Every `go.work` module is tagged at

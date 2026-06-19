@@ -41,7 +41,7 @@ import (
 	"github.com/bds421/rho-kit/data/v2/ratelimit"
 )
 
-// gcraScript is the atomic GCRA evaluation.
+// gcraScriptSrc is the atomic GCRA evaluation source.
 //
 //	KEYS[1] = per-key state ("<prefix>:<key>")
 //	ARGV[1] = now in microseconds (caller's clock)
@@ -50,7 +50,13 @@ import (
 //	ARGV[4] = key TTL in seconds (>=1)
 //
 // Returns: {allowed (0|1), retryAfter microseconds when denied}.
-var gcraScript = goredis.NewScript(`
+//
+// The TAT is written with string.format("%.0f", ...) rather than as a raw Lua
+// number. Redis serialises a Lua number argument with %.14g; current
+// Unix-microsecond timestamps have 16 significant digits, so a raw number would
+// be rounded to roughly a 100µs grid and sub-100µs rate increments would be
+// lost. Formatting to a decimal string in Lua passes the exact integer to SET.
+const gcraScriptSrc = `
 local now    = tonumber(ARGV[1])
 local rate   = tonumber(ARGV[2])
 local burst  = tonumber(ARGV[3])
@@ -65,9 +71,12 @@ if now < allowAt then
   return {0, allowAt - now + 1}
 end
 local newTat = tat + rate
-redis.call("SET", KEYS[1], newTat, "EX", ttl)
+redis.call("SET", KEYS[1], string.format("%.0f", newTat), "EX", ttl)
 return {1, 0}
-`)
+`
+
+// gcraScript is the atomic GCRA evaluation.
+var gcraScript = goredis.NewScript(gcraScriptSrc)
 
 // Limiter is a per-key Redis-backed GCRA [ratelimit.Limiter].
 // Safe for concurrent use — all per-call state lives in Redis; the
@@ -246,16 +255,35 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 	if err != nil {
 		return false, 0, redact.WrapError("ratelimit/redis: script", err)
 	}
+	allowed, retryUS, err := parseScriptResult(res)
+	if err != nil {
+		return false, 0, err
+	}
+	if allowed {
+		return true, 0, nil
+	}
+	return false, durationFromMicros(retryUS), nil
+}
+
+// parseScriptResult decodes the GCRA Lua script's reply, which is expected to
+// be a 2-element array of int64 {allowed (0|1), retryAfter microseconds}. Any
+// other shape — wrong length OR non-int64 members — is reported as an explicit
+// error rather than coerced into a silent deny, so a malformed reply is never
+// indistinguishable from a legitimate rate-limit rejection.
+func parseScriptResult(res any) (allowed bool, retryUS int64, err error) {
 	pair, ok := res.([]any)
 	if !ok || len(pair) != 2 {
 		return false, 0, errors.New("ratelimit/redis: unexpected script result shape")
 	}
-	allowed, _ := pair[0].(int64)
-	retryUS, _ := pair[1].(int64)
-	if allowed == 1 {
-		return true, 0, nil
+	allowedRaw, ok := pair[0].(int64)
+	if !ok {
+		return false, 0, errors.New("ratelimit/redis: unexpected script result shape")
 	}
-	return false, durationFromMicros(retryUS), nil
+	retryUS, ok = pair[1].(int64)
+	if !ok {
+		return false, 0, errors.New("ratelimit/redis: unexpected script result shape")
+	}
+	return allowedRaw == 1, retryUS, nil
 }
 
 const maxDurationValue = time.Duration(1<<63 - 1)

@@ -17,9 +17,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
+	kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
 )
 
 func amqpTestName(t *testing.T, suffix string) string {
@@ -39,11 +39,11 @@ func setupConsumerTest(t *testing.T) (*amqpbackend.Connection, *amqpbackend.Publ
 	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	db, err := amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
-		Exchange:     amqpTestName(t, ".exchange"),
-		ExchangeType: messaging.ExchangeDirect,
-		ConsumerGroup:        amqpTestName(t, ".queue"),
-		RoutingKey:   amqpTestName(t, ".key"),
-		WithoutRetry: true,
+		Exchange:      amqpTestName(t, ".exchange"),
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: amqpTestName(t, ".queue"),
+		RoutingKey:    amqpTestName(t, ".key"),
+		WithoutRetry:  true,
 	})
 	require.NoError(t, err)
 
@@ -130,15 +130,23 @@ func TestConsumeOnce_AckOnSuccess(t *testing.T) {
 		t.Fatal("timed out waiting for ack handler")
 	}
 	cancel()
-	time.Sleep(100 * time.Millisecond) // allow ack to complete
 
-	ch, err := conn.Channel()
-	require.NoError(t, err)
-	defer ch.Close()
+	// Poll the queue until empty rather than sleeping a fixed duration: under
+	// CI load the ack may not reach the broker within a fixed window, which
+	// would otherwise produce a false "queue not empty" failure.
+	require.Eventually(t, func() bool {
+		ch, err := conn.Channel()
+		if err != nil {
+			return false
+		}
+		defer ch.Close()
 
-	_, ok, err := ch.Get(db.ConsumerGroup, true)
-	require.NoError(t, err)
-	assert.False(t, ok, "expected queue to be empty after successful ack")
+		_, ok, err := ch.Get(db.ConsumerGroup, true)
+		if err != nil {
+			return false
+		}
+		return !ok
+	}, 5*time.Second, 50*time.Millisecond, "expected queue to be empty after successful ack")
 }
 
 func TestConsumeOnce_DLXRetryFlow(t *testing.T) {
@@ -148,10 +156,10 @@ func TestConsumeOnce_DLXRetryFlow(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	spec := messaging.BindingSpec{
-		Exchange:     "test.retry",
-		ExchangeType: messaging.ExchangeDirect,
-		ConsumerGroup:        "test.retry.queue",
-		RoutingKey:   "test.retry.key",
+		Exchange:      "test.retry",
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: "test.retry.queue",
+		RoutingKey:    "test.retry.key",
 		Retry: &messaging.RetryPolicy{
 			MaxRetries: 2,
 			Delay:      100 * time.Millisecond,
@@ -200,10 +208,10 @@ func TestConsumeOnce_MaxRetriesExceeded_GoesToDeadQueue(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	spec := messaging.BindingSpec{
-		Exchange:     "test.maxretry",
-		ExchangeType: messaging.ExchangeDirect,
-		ConsumerGroup:        "test.maxretry.queue",
-		RoutingKey:   "test.maxretry.key",
+		Exchange:      "test.maxretry",
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: "test.maxretry.queue",
+		RoutingKey:    "test.maxretry.key",
 		Retry: &messaging.RetryPolicy{
 			MaxRetries: 1,
 			Delay:      100 * time.Millisecond,
@@ -403,11 +411,11 @@ func TestConsumeOnce_RequiresPublisher(t *testing.T) {
 
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			Exchange:     "test.pub-required",
-			ExchangeType: messaging.ExchangeDirect,
-			ConsumerGroup:        "test.pub-required.queue",
-			RoutingKey:   "test.key",
-			Retry:        &messaging.RetryPolicy{MaxRetries: 1, Delay: time.Second},
+			Exchange:      "test.pub-required",
+			ExchangeType:  messaging.ExchangeDirect,
+			ConsumerGroup: "test.pub-required.queue",
+			RoutingKey:    "test.key",
+			Retry:         &messaging.RetryPolicy{MaxRetries: 1, Delay: time.Second},
 		},
 		DeadExchange: "test.pub-required.dead",
 	}

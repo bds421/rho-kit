@@ -141,6 +141,55 @@ func TestHasScope_WhitespaceOnly(t *testing.T) {
 	}
 }
 
+// TestHasScope_SpaceSeparated is the regression test for the HTTP/gRPC scope
+// grammar mismatch. Identity.Scopes is documented as "OAuth2-style
+// space-separated" (strategy.go), the gRPC interceptor parses scopes with
+// strings.Fields, and signed JWTs carry the raw scopes claim verbatim. A
+// multi-scope token like "read write" must therefore be accepted by the HTTP
+// scope check just as it is by gRPC RequireScopeUnary.
+func TestHasScope_SpaceSeparated(t *testing.T) {
+	if !hasScope("read write", "read") {
+		t.Error("expected hasScope(\"read write\", \"read\") to be true")
+	}
+
+	if !hasScope("read write", "write") {
+		t.Error("expected hasScope(\"read write\", \"write\") to be true")
+	}
+
+	if hasScope("read write", "admin") {
+		t.Error("expected hasScope(\"read write\", \"admin\") to be false")
+	}
+}
+
+// TestHasScope_MixedSeparators covers tokens that combine commas and
+// whitespace (e.g. tabs, multiple spaces, comma plus space) so the predicate
+// stays robust regardless of the producer's exact serialization.
+func TestHasScope_MixedSeparators(t *testing.T) {
+	if !hasScope("read, write", "write") {
+		t.Error("expected hasScope(\"read, write\", \"write\") to be true")
+	}
+
+	if !hasScope("read\twrite", "write") {
+		t.Error("expected hasScope(\"read\\twrite\", \"write\") to be true")
+	}
+
+	if !hasScope("read   write", "read") {
+		t.Error("expected hasScope(\"read   write\", \"read\") to be true")
+	}
+}
+
+func TestRequireScope_SpaceSeparatedScopes(t *testing.T) {
+	handler := RequireScope("write")(okHandler())
+
+	req := withScopes(httptest.NewRequest(http.MethodGet, "/", nil), "read write")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for space-separated scope match, got %d", rec.Code)
+	}
+}
+
 func TestRequireScope_PanicsOnEmpty(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {

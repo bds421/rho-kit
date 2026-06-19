@@ -67,6 +67,132 @@ func TestFileWatcher_DetectsChange(t *testing.T) {
 	assert.NoError(t, <-done)
 }
 
+func TestFileWatcher_DetectsMultipleSequentialChanges(t *testing.T) {
+	// Regression: the debounce timer must be re-armed after each reload.
+	// A prior bug left debounceTimer non-nil after firing while debounceCh
+	// was nil, so every change after the first was silently ignored.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.txt")
+	writeFile(t, cfgPath, "v1")
+
+	w := NewWatchable("v1")
+
+	loadFn := func(path string) (string, error) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+
+	fw := NewFileWatcher(cfgPath, loadFn, w,
+		WithDebounce(20*time.Millisecond),
+		WithWatchLogger(slog.Default()),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- fw.Start(ctx)
+	}()
+	<-started
+
+	// Allow watcher to initialise.
+	time.Sleep(50 * time.Millisecond)
+
+	// Drive several sequential change->reload cycles. Each must take effect.
+	for _, want := range []string{"v2", "v3", "v4"} {
+		writeFile(t, cfgPath, want)
+		assert.Eventually(t, func() bool {
+			return w.Get() == want
+		}, 2*time.Second, 20*time.Millisecond, "watcher must reload on change %q after a prior reload", want)
+	}
+
+	cancel()
+	assert.NoError(t, <-done)
+}
+
+func TestFileWatcher_DetectsKubernetesSymlinkSwap(t *testing.T) {
+	// Kubernetes mounts ConfigMaps/Secrets and updates them via an atomic
+	// `..data` symlink swap: events fire for `..data`, `..data_tmp`, and a
+	// timestamped data dir — NEVER for the logical config file, which is a
+	// symlink chain config.yaml -> ..data/config.yaml. A base-name filter on
+	// the config file would miss the update entirely. The watcher must detect
+	// that the resolved real path changed and reload.
+	dir := t.TempDir()
+
+	// Build the initial k8s layout:
+	//   <dir>/..2026_data_v1/config.yaml  (real file, "v1")
+	//   <dir>/..data        -> ..2026_data_v1
+	//   <dir>/config.yaml   -> ..data/config.yaml
+	dataV1 := filepath.Join(dir, "..2026_data_v1")
+	require.NoError(t, os.Mkdir(dataV1, 0o755))
+	writeFile(t, filepath.Join(dataV1, "config.yaml"), "v1")
+
+	dataLink := filepath.Join(dir, "..data")
+	require.NoError(t, os.Symlink("..2026_data_v1", dataLink))
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.Symlink(filepath.Join("..data", "config.yaml"), cfgPath))
+
+	w := NewWatchable("v1")
+
+	loadFn := func(path string) (string, error) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+
+	fw := NewFileWatcher(cfgPath, loadFn, w,
+		WithDebounce(20*time.Millisecond),
+		// Short poll so the k8s `..data` swap is detected deterministically:
+		// fsnotify does not reliably deliver the symlink-swap event (kqueue
+		// drops it on macOS), so the resolved-path poll is the real backstop.
+		WithPollInterval(20*time.Millisecond),
+		WithWatchLogger(slog.Default()),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- fw.Start(ctx)
+	}()
+	<-started
+
+	// Allow watcher to initialise.
+	time.Sleep(50 * time.Millisecond)
+
+	// Perform the atomic k8s update: stage a new data dir, point a temp
+	// symlink at it, then rename it over `..data` atomically. No event ever
+	// fires for `config.yaml` itself.
+	dataV2 := filepath.Join(dir, "..2026_data_v2")
+	require.NoError(t, os.Mkdir(dataV2, 0o755))
+	writeFile(t, filepath.Join(dataV2, "config.yaml"), "v2")
+
+	dataTmp := filepath.Join(dir, "..data_tmp")
+	require.NoError(t, os.Symlink("..2026_data_v2", dataTmp))
+	require.NoError(t, os.Rename(dataTmp, dataLink))
+
+	// Wait for reload triggered by the resolved-path change.
+	assert.Eventually(t, func() bool {
+		return w.Get() == "v2"
+	}, 2*time.Second, 20*time.Millisecond,
+		"watcher must reload after a Kubernetes-style ..data symlink swap")
+
+	cancel()
+	assert.NoError(t, <-done)
+}
+
 func TestFileWatcher_DebouncesRapidWrites(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.txt")

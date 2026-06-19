@@ -13,12 +13,18 @@ import (
 // the documented dashboard contract together so operators do not see
 // silently-dropped categories.
 const (
-	verifyReasonExpired           = "expired"
-	verifyReasonClockSkew         = "clock_skew"
-	verifyReasonBadSignature      = "bad_signature"
-	verifyReasonMissingHeader     = "missing_header"
+	verifyReasonExpired            = "expired"
+	verifyReasonClockSkew          = "clock_skew"
+	verifyReasonBadSignature       = "bad_signature"
+	verifyReasonMissingHeader      = "missing_header"
 	verifyReasonMalformedSignature = "malformed_signature"
-	verifyReasonReplayNonce       = "replay_nonce"
+	verifyReasonReplayNonce        = "replay_nonce"
+	// verifyReasonStoreError covers NonceStore backend failures (e.g. a
+	// Redis outage). These are server-side dependency faults, not
+	// client-attributable rejections, so they get a dedicated label
+	// rather than being lumped under bad_signature where an infra outage
+	// would masquerade as a forged-signature attack spike.
+	verifyReasonStoreError = "store_error"
 )
 
 // Metrics holds Prometheus collectors for signed-request verification.
@@ -64,7 +70,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 		verifyFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "signing",
 			Name:      "verify_failures_total",
-			Help:      "Total signed-request verification failures by reason. Reasons are a closed set: expired, clock_skew, bad_signature, missing_header, malformed_signature, replay_nonce.",
+			Help:      "Total signed-request verification failures by reason. Reasons are a closed set: expired, clock_skew, bad_signature, missing_header, malformed_signature, replay_nonce, store_error.",
 		}, []string{"reason"}),
 	}
 	m.verifyFailures = promutil.MustRegisterOrGet(cfg.registerer, m.verifyFailures)
@@ -109,6 +115,11 @@ func classifyVerifyFailure(err error) string {
 		return verifyReasonMissingHeader
 	case errors.Is(err, ErrNonceReplayed):
 		return verifyReasonReplayNonce
+	case errors.Is(err, ErrNonceStore):
+		// NonceStore backend failure (e.g. Redis outage) — a server-side
+		// dependency fault, not a client-attributable rejection. Keep it
+		// out of bad_signature so an outage is not misread as an attack.
+		return verifyReasonStoreError
 	case errors.Is(err, ErrNonceInvalid),
 		errors.Is(err, ErrTimestampInvalid),
 		errors.Is(err, ErrInvalidRequest),

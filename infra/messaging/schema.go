@@ -178,5 +178,8 @@ func validatePayload(schema *jsonschema.Schema, payload json.RawMessage) error {
 		return nil
 	}
 
-	return fmt.Errorf("schema validation failed")
+	// Preserve the jsonschema failure cause in the chain (errors.Is/As)
+	// so operators get triage signal, while redact.WrapError renders the
+	// message text safely (the cause can echo payload field values).
+	return redact.WrapError("schema validation failed", err)
 }

@@ -259,7 +259,10 @@ func TestSubscriber_PermanentErrorAdvancesOffset(t *testing.T) {
 				sawFollow = true
 			}
 		case <-ctx.Done():
-			t.Fatalf("timeout waiting for follow-up after poison pill (saw poison=%v follow=%v attempts=%d)", sawPoison, sawFollow, attempts)
+			mu.Lock()
+			gotAttempts := attempts
+			mu.Unlock()
+			t.Fatalf("timeout waiting for follow-up after poison pill (saw poison=%v follow=%v attempts=%d)", sawPoison, sawFollow, gotAttempts)
 		}
 	}
 

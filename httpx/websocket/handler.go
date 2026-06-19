@@ -32,6 +32,14 @@ func Handle(opts ...Option) http.HandlerFunc {
 	if cfg.handler == nil {
 		panic("httpx/websocket: Handle requires WithHandler")
 	}
+	// WithPongTimeout only takes effect when a heartbeat is running, and
+	// the heartbeat is spawned solely when WithPingInterval is set.
+	// Configuring a pong timeout without a ping interval is therefore an
+	// inert, silently-dropped setting — exactly the misconfiguration the
+	// package's other options fail fast on, so reject it at startup.
+	if cfg.pongTimeout > 0 && cfg.pingInterval <= 0 {
+		panic("httpx/websocket: WithPongTimeout requires WithPingInterval (the pong timeout is inert without a heartbeat)")
+	}
 	logger := cfg.logger
 	if logger == nil {
 		logger = slog.Default()
@@ -54,6 +62,7 @@ func Handle(opts ...Option) http.HandlerFunc {
 	writeTimeout := cfg.writeTimeout
 	pingInterval := cfg.pingInterval
 	pongTimeout := cfg.pongTimeout
+	readDrain := cfg.readDrain
 	limiter := newConnLimiter(cfg.maxConnections)
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +101,7 @@ func Handle(opts ...Option) http.HandlerFunc {
 		conn := &Conn{
 			inner:        raw,
 			ctx:          ctx,
+			cancel:       cancel,
 			logger:       logger,
 			metrics:      metrics,
 			writeTimeout: writeTimeout,
@@ -102,6 +112,16 @@ func Handle(opts ...Option) http.HandlerFunc {
 		// Closes the connection if the peer stops responding to pings,
 		// which causes the read loop below to unblock with an error.
 		if pingInterval > 0 {
+			// WithReadDrain: own the read side so the heartbeat's Pong
+			// is pumped for push-only handlers that never read. Driving
+			// the internal reader also cancels the per-connection
+			// context when the peer goes away, even with no handler
+			// read in flight. coder/websocket's CloseRead is idempotent
+			// and a no-op for handlers that do read (they simply do not
+			// opt in).
+			if readDrain {
+				raw.CloseRead(ctx)
+			}
 			go runHeartbeat(ctx, conn, pingInterval, pongTimeout, logger, metrics)
 		}
 
@@ -123,11 +143,21 @@ func Handle(opts ...Option) http.HandlerFunc {
 				}
 			}()
 			if err := handler(ctx, conn); err != nil {
-				closeCode = coderws.StatusInternalError
-				closeReason = "handler error"
-				logger.WarnContext(ctx, "websocket: handler returned error",
-					redact.Error(err),
-				)
+				// A handler that surfaces the read error on a routine
+				// peer disconnect (the natural read-loop pattern) must
+				// not have that normal close escalated into a
+				// StatusInternalError / WARN. Treat a normal (1000) or
+				// going-away (1001) close as the graceful shutdown it
+				// is; everything else is a genuine handler error.
+				if IsNormalClosure(err) {
+					closeCode = coderws.CloseStatus(err)
+				} else {
+					closeCode = coderws.StatusInternalError
+					closeReason = "handler error"
+					logger.WarnContext(ctx, "websocket: handler returned error",
+						redact.Error(err),
+					)
+				}
 			}
 		}()
 

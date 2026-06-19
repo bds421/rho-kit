@@ -296,13 +296,13 @@ parts cannot smuggle extra path levels.
 
 ## Request ID
 
-The `httpx/middleware/requestid` package sets a unique request ID on every request (from `X-Request-Id` header or auto-generated). Extract it in handler code via `httpx`:
+The `httpx/middleware/requestid` package sets a unique request ID on every request (from `X-Request-Id` header or auto-generated). Extract it in handler code via `core/contextutil`:
 
 ```go
-reqID := httpx.RequestID(r.Context()) // lives in httpx, not middleware/requestid
+reqID := contextutil.RequestID(r.Context()) // core/contextutil
 ```
 
-The middleware stores the ID using `httpx.SetRequestID(ctx, id)`, so retrieval is always via `httpx.RequestID(ctx)`.
+The middleware stores the ID using `contextutil.SetRequestID(ctx, id)`, so retrieval is always via `contextutil.RequestID(ctx)`.
 
 ## Other Middleware
 

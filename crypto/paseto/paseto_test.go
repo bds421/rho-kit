@@ -866,3 +866,238 @@ func TestV4PublicSigner_Close_NilReceiverIsSafe(t *testing.T) {
 		t.Fatalf("nil Close: %v", err)
 	}
 }
+
+// TestV4Local_AcceptsTokenWithoutExpWhenOptedOut mirrors the v4.public
+// behaviour: WithoutExpiration must let the kit's validate() own exp
+// handling. The bug was that NewV4Local seeded the upstream parser with
+// NewParser(), whose preloaded NotExpired rule errors when exp is missing,
+// so WithoutExpiration tokens were always rejected at parse time before
+// validate() ran.
+func TestV4Local_AcceptsTokenWithoutExpWhenOptedOut(t *testing.T) {
+	key := randomV4LocalKey(t)
+	v, err := NewV4Local(key,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+		WithoutExpiration(),
+	)
+	require.NoError(t, err)
+
+	tok, err := v.Seal(Claims{Issuer: "svc-A", Audience: []string{"svc-B"}})
+	require.NoError(t, err)
+
+	claims, err := v.Verify(tok, time.Now())
+	require.NoError(t, err)
+	assert.True(t, claims.ExpiresAt.IsZero())
+}
+
+// TestV4Local_ClockSkewWithinTolerance asserts the kit's clock-skew
+// tolerance governs v4.local exp checks. The upstream NotExpired rule
+// compares exp to time.Now() with no tolerance and ignores the caller's
+// now, so a token just inside the skew window was wrongly rejected.
+func TestV4Local_ClockSkewWithinTolerance(t *testing.T) {
+	key := randomV4LocalKey(t)
+	v, err := NewV4Local(key,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+		WithClockSkewTolerance(30*time.Second),
+	)
+	require.NoError(t, err)
+
+	now := time.Now()
+	tok, err := v.Seal(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: now.Add(-10 * time.Second),
+	})
+	require.NoError(t, err)
+
+	// Inside the 30s skew window: accepted.
+	_, err = v.Verify(tok, now)
+	require.NoError(t, err)
+
+	// Outside the window: rejected as expired (not as ErrTokenInvalid).
+	_, err = v.Verify(tok, now.Add(time.Minute))
+	assert.ErrorIs(t, err, ErrTokenExpired)
+}
+
+// TestV4Local_ExpiredReturnsErrTokenExpired ensures expired v4.local
+// tokens surface the typed ErrTokenExpired (from validate) rather than
+// the generic ErrTokenInvalid that the upstream NotExpired rule produced
+// at parse time.
+func TestV4Local_ExpiredReturnsErrTokenExpired(t *testing.T) {
+	key := randomV4LocalKey(t)
+	v, err := NewV4Local(key,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	now := time.Now()
+	tok, err := v.Seal(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: now.Add(-time.Minute),
+	})
+	require.NoError(t, err)
+
+	_, err = v.Verify(tok, now)
+	assert.ErrorIs(t, err, ErrTokenExpired)
+}
+
+// TestV4Local_UsesCallerSuppliedNow confirms the caller's now drives the
+// exp comparison: a token expired against the wall clock but still valid
+// against an earlier caller-supplied now must verify. The upstream
+// NotExpired rule ignored now entirely and used time.Now().
+func TestV4Local_UsesCallerSuppliedNow(t *testing.T) {
+	key := randomV4LocalKey(t)
+	v, err := NewV4Local(key,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	issued := time.Now().Add(-time.Hour)
+	tok, err := v.Seal(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: issued.Add(time.Minute), // expired vs wall clock
+	})
+	require.NoError(t, err)
+
+	// Verifying as-of a time when the token was still live succeeds.
+	_, err = v.Verify(tok, issued.Add(30*time.Second))
+	require.NoError(t, err)
+}
+
+// TestV4Local_Close_ZeroesKeyMaterialAndFailsClosed pins the V4Local.Close
+// contract: after Close, the kit-owned key copy is zeroed AND the wrapped
+// upstream key's exported bytes are zeroed, and Seal/Verify fail closed
+// with ErrV4LocalClosed. The doc previously claimed in-place wiping of the
+// upstream material "covered by a tripwire test" — no such test existed.
+func TestV4Local_Close_ZeroesKeyMaterialAndFailsClosed(t *testing.T) {
+	key := randomV4LocalKey(t)
+	v, err := NewV4Local(key,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	// Sanity: seal works before Close.
+	tok, err := v.Seal(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, v.Close())
+
+	// Kit-owned copy is zeroed.
+	for _, b := range v.keyBytes {
+		assert.Zero(t, b, "kit-owned key bytes not zeroed after Close")
+	}
+	// The wrapped upstream key's exported view is zeroed.
+	raw := v.key.ExportBytes()
+	for _, b := range raw {
+		assert.Zero(t, b, "wrapped key bytes not zeroed after Close")
+	}
+
+	// Seal/Verify fail closed.
+	_, err = v.Seal(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+	})
+	assert.ErrorIs(t, err, ErrV4LocalClosed)
+
+	_, err = v.Verify(tok, time.Now())
+	assert.ErrorIs(t, err, ErrV4LocalClosed)
+
+	// Idempotent.
+	require.NoError(t, v.Close())
+}
+
+func TestV4Local_Close_NilReceiverIsSafe(t *testing.T) {
+	var v *V4Local
+	if err := v.Close(); err != nil {
+		t.Fatalf("nil Close: %v", err)
+	}
+}
+
+// TestV4PublicSigner_CloseConcurrentWithSign exercises the documented
+// "safe for concurrent use" contract: Close zeroes the live Ed25519
+// private-key bytes that an in-flight Sign reads inside ed25519.Sign.
+// Without synchronisation this is a data race (and can emit a token
+// signed with partially zeroed material). Run with -race to catch it.
+// Any token Sign returns successfully must verify against the public key;
+// once Close has completed, Sign must return ErrSignerClosed.
+func TestV4PublicSigner_CloseConcurrentWithSign(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	signer, err := NewV4PublicSigner(priv,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	verifier, err := NewV4PublicVerifier([]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	const signers = 8
+	start := make(chan struct{})
+	done := make(chan struct{})
+
+	for i := 0; i < signers; i++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			<-start
+			for {
+				tok, serr := signer.Sign(Claims{
+					Issuer:    "svc-A",
+					Audience:  []string{"svc-B"},
+					ExpiresAt: time.Now().Add(time.Hour),
+				})
+				if errors.Is(serr, ErrSignerClosed) {
+					return
+				}
+				if serr != nil {
+					// No other error is expected from a valid signer.
+					t.Errorf("Sign: %v", serr)
+					return
+				}
+				// Any successfully signed token must verify: a token
+				// produced from partially zeroed key material would fail
+				// authentication here.
+				if _, verr := verifier.Verify(tok, time.Now()); verr != nil {
+					t.Errorf("token from concurrent Sign failed Verify: %v", verr)
+					return
+				}
+			}
+		}()
+	}
+
+	// Close concurrently with the in-flight signers (not after them) so
+	// the zero-write overlaps an active Sign reading the same key bytes.
+	closeDone := make(chan error, 1)
+	go func() {
+		<-start
+		closeDone <- signer.Close()
+	}()
+
+	close(start)
+	require.NoError(t, <-closeDone)
+
+	for i := 0; i < signers; i++ {
+		<-done
+	}
+
+	// After Close, signing fails closed.
+	_, err = signer.Sign(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+	})
+	assert.ErrorIs(t, err, ErrSignerClosed)
+}

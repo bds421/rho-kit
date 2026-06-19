@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -117,6 +119,55 @@ func TestWriteServiceProblem_DoesNotLeakUnavailableDetails(t *testing.T) {
 	assert.Equal(t, "service unavailable", p["detail"])
 	assert.NotContains(t, p["detail"], "10.0.0.5")
 	assert.NotContains(t, p["detail"], "secret")
+}
+
+func TestWriteServiceProblem_SetsRetryAfterHeaderForUnavailable(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+	err := apperror.NewUnavailableWithRetryAfter("db unavailable", 3*time.Second, nil)
+	WriteServiceProblem(rec, req, logger, err)
+
+	resp := rec.Result()
+	// The RFC-compliant Retry-After header must be set, mirroring
+	// WriteServiceError — not only the retry_after_seconds body extension.
+	assert.Equal(t, "3", resp.Header.Get("Retry-After"))
+
+	var p map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&p))
+	assert.Equal(t, float64(3), p["retry_after_seconds"])
+}
+
+func TestWriteServiceProblem_SetsRetryAfterHeaderForRateLimit(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+	err := apperror.NewRateLimitWithRetryAfter("too many", 2500*time.Millisecond)
+	WriteServiceProblem(rec, req, logger, err)
+
+	// 2.5s rounds up to 3 per math.Ceil.
+	assert.Equal(t, "3", rec.Result().Header.Get("Retry-After"))
+}
+
+func TestWriteServiceProblem_NilLogger_LogsServerError(t *testing.T) {
+	// With a nil logger, WriteServiceProblem must still log 5xx errors by
+	// falling back to the request-scoped logger / slog.Default, rather than
+	// dropping them silently.
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	WriteServiceProblem(rec, req, nil, apperror.NewOperationFailed("boom"))
+
+	if buf.Len() == 0 {
+		t.Fatal("expected operation-failed error to be logged with a nil logger")
+	}
+	assert.Contains(t, buf.String(), "operation failed")
 }
 
 func TestWriteServiceProblem_DoesNotLeakGenericErrors(t *testing.T) {

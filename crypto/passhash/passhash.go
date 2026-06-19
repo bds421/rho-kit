@@ -38,6 +38,12 @@ var (
 	ErrUnsupportedFormat = errors.New("passhash: unsupported encoded format (only argon2id v=19)")
 	ErrParamsOutOfBounds = errors.New("passhash: stored argon2 params exceed the verifier's accepted bounds")
 	ErrInvalidParams     = errors.New("passhash: argon2 params must be positive")
+	// ErrHashParamsOutOfBounds is returned by Hash when the supplied
+	// Params exceed the configured HashLimits along any dimension. It
+	// mirrors ErrParamsOutOfBounds on the Verify side so callers can
+	// errors.Is-branch on a config-typo rejection. The wrapped message
+	// never echoes the offending value.
+	ErrHashParamsOutOfBounds = errors.New("passhash: argon2 params exceed the configured hash limits")
 )
 
 // MaxPasswordLen caps the password length both Hash and Verify will
@@ -284,19 +290,19 @@ func Hash(password string, p Params, opts ...HashOption) (string, error) {
 	}
 	cfg.limits = cfg.limits.withDefaults()
 	if p.Memory > cfg.limits.MaxMemory {
-		return "", fmt.Errorf("passhash: Memory exceeds limit")
+		return "", fmt.Errorf("%w: Memory", ErrHashParamsOutOfBounds)
 	}
 	if p.Iterations > cfg.limits.MaxIterations {
-		return "", fmt.Errorf("passhash: Iterations exceeds limit")
+		return "", fmt.Errorf("%w: Iterations", ErrHashParamsOutOfBounds)
 	}
 	if p.Parallelism > cfg.limits.MaxParallelism {
-		return "", fmt.Errorf("passhash: Parallelism exceeds limit")
+		return "", fmt.Errorf("%w: Parallelism", ErrHashParamsOutOfBounds)
 	}
 	if p.SaltLen > cfg.limits.MaxSaltLen {
-		return "", fmt.Errorf("passhash: SaltLen exceeds limit")
+		return "", fmt.Errorf("%w: SaltLen", ErrHashParamsOutOfBounds)
 	}
 	if p.KeyLen > cfg.limits.MaxKeyLen {
-		return "", fmt.Errorf("passhash: KeyLen exceeds limit")
+		return "", fmt.Errorf("%w: KeyLen", ErrHashParamsOutOfBounds)
 	}
 
 	salt := make([]byte, p.SaltLen)
@@ -412,6 +418,14 @@ func parsePHC(s string) (Params, []byte, []byte, error) {
 	}
 	var version int
 	if _, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil {
+		return Params{}, nil, nil, ErrMalformed
+	}
+	// Sscanf tolerates trailing garbage and non-canonical forms
+	// ("v=19junk", "v=019", "v= 19"). Round-trip the parsed value
+	// through the same format string and reject any input whose
+	// re-encoded form does not match exactly, mirroring the params
+	// segment check below.
+	if expected := fmt.Sprintf("v=%d", version); expected != parts[2] {
 		return Params{}, nil, nil, ErrMalformed
 	}
 	if version != argon2.Version {

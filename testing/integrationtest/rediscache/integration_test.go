@@ -31,6 +31,7 @@ func redisClient(t *testing.T) goredis.UniversalClient {
 	conn, err := redis.Connect(opts)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { redistest.FlushDB(t) })
 	return conn.Client()
 }
 

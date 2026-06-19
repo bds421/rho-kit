@@ -197,13 +197,21 @@ func NewProducer(client goredis.UniversalClient, opts ...ProducerOption) *Produc
 		client:         client,
 		logger:         slog.Default(),
 		maxPayloadSize: defaultStreamMaxPayloadSize,
-		metrics:        defaultProducerMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
 			panic("redisstream: NewProducer option must not be nil")
 		}
 		o(p)
+	}
+	// Materialise the default metrics only if no option supplied a registerer.
+	// Doing this eagerly before the option loop would register the
+	// redis_stream_* collector on prometheus.DefaultRegisterer even when the
+	// caller opted out via WithProducerRegisterer, and could panic at
+	// MustRegisterOrGet if the caller had already registered an incompatible
+	// same-name collector there.
+	if p.metrics == nil {
+		p.metrics = defaultProducerMetrics()
 	}
 	// FR-063 [MED]: WithProducerLogger silently ignored a nil
 	// argument. Normalise here so a caller passing nil (or omitting
@@ -253,6 +261,12 @@ func WithUnboundedStream() ProducerOption {
 //	payload  → JSON bytes
 //	ts       → RFC3339Nano timestamp
 //	headers  → JSON-encoded headers map
+//
+// When msg.ID is empty the producer fills it with a generated UUID v7 (the
+// idempotency key persisted to the stream). Publish returns only the
+// server-assigned Redis stream ID, not this idempotency ID — callers that need
+// to know the persisted idempotency ID up front (e.g. for producer-side dedup)
+// should pre-build the message with [NewMessage] so they control msg.ID.
 func (p *Producer) Publish(ctx context.Context, stream string, msg Message) (string, error) {
 	if err := p.ready(); err != nil {
 		return "", err
@@ -260,7 +274,7 @@ func (p *Producer) Publish(ctx context.Context, stream string, msg Message) (str
 	if err := redis.ValidateName(stream, "stream"); err != nil {
 		return "", err
 	}
-	args, err := p.buildXAddArgs(stream, msg)
+	args, msgID, err := p.buildXAddArgs(stream, msg)
 	if err != nil {
 		return "", err
 	}
@@ -275,7 +289,7 @@ func (p *Producer) Publish(ctx context.Context, stream string, msg Message) (str
 	p.logger.Debug("message published to stream",
 		redact.String("stream", stream),
 		redact.String("redis_id", result),
-		redact.String("msg_id", msg.ID),
+		redact.String("msg_id", msgID),
 		redact.String("type", msg.Type),
 	)
 
@@ -314,40 +328,63 @@ func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Messa
 	cmds := make([]*goredis.StringCmd, len(msgs))
 
 	for i, msg := range msgs {
-		args, err := p.buildXAddArgs(stream, msg)
+		args, _, err := p.buildXAddArgs(stream, msg)
 		if err != nil {
 			return nil, redact.WrapError(fmt.Sprintf("message [%d]", i), err)
 		}
 		cmds[i] = pipe.XAdd(ctx, args)
 	}
 
+	execErr := error(nil)
 	if _, err := pipe.Exec(ctx); err != nil {
-		return nil, redact.WrapError("pipeline exec", err)
+		// A pipeline exec error does NOT mean every command failed —
+		// pipelines are not atomic, so some XADDs may have committed on the
+		// server. Defer returning until after inspecting per-command results
+		// so the produced counter reflects every server-side success.
+		execErr = redact.WrapError("pipeline exec", err)
 	}
 
+	// Inspect every command result. Pipelines are not atomic, so commands
+	// after the first failure may still have succeeded on the server; count
+	// each cmd.Err()==nil so the metric observes the true number of writes
+	// in exactly the partial-failure scenario it exists to monitor.
 	ids := make([]string, len(cmds))
 	var succeeded int
+	var firstErr error
+	var firstErrIdx int
 	for i, cmd := range cmds {
 		id, err := cmd.Result()
 		if err != nil {
-			// Record the messages that did succeed before the failure.
-			if succeeded > 0 {
-				p.metrics.messagesProduced.WithLabelValues(streamMetricLabel(stream)).Add(float64(succeeded))
+			if firstErr == nil {
+				firstErr = err
+				firstErrIdx = i
 			}
-			return nil, redact.WrapError(fmt.Sprintf("xadd result [%d]", i), err)
+			continue
 		}
 		ids[i] = id
 		succeeded++
 	}
 
-	p.metrics.messagesProduced.WithLabelValues(streamMetricLabel(stream)).Add(float64(succeeded))
+	if succeeded > 0 {
+		p.metrics.messagesProduced.WithLabelValues(streamMetricLabel(stream)).Add(float64(succeeded))
+	}
+
+	if firstErr != nil {
+		return nil, redact.WrapError(fmt.Sprintf("xadd result [%d]", firstErrIdx), firstErr)
+	}
+	if execErr != nil {
+		return nil, execErr
+	}
 
 	return ids, nil
 }
 
 // buildXAddArgs prepares a message for XADD, filling in defaults for
-// missing ID and timestamp, and marshalling headers.
-func (p *Producer) buildXAddArgs(stream string, msg Message) (*goredis.XAddArgs, error) {
+// missing ID and timestamp, and marshalling headers. It also returns the
+// resolved idempotency ID (the caller-supplied ID, or the generated UUID v7
+// when the caller left ID empty) so callers can log/observe the value that is
+// actually persisted rather than the original empty string.
+func (p *Producer) buildXAddArgs(stream string, msg Message) (*goredis.XAddArgs, string, error) {
 	if msg.ID == "" {
 		msg.ID = id.New()
 	}
@@ -355,7 +392,7 @@ func (p *Producer) buildXAddArgs(stream string, msg Message) (*goredis.XAddArgs,
 		msg.Timestamp = time.Now().UTC()
 	}
 	if err := ValidateMessage(msg, p.maxPayloadSize); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	values := map[string]any{
@@ -368,7 +405,7 @@ func (p *Producer) buildXAddArgs(stream string, msg Message) (*goredis.XAddArgs,
 	if len(msg.Headers) > 0 {
 		headerBytes, err := json.Marshal(msg.Headers)
 		if err != nil {
-			return nil, redact.WrapError("marshal headers", err)
+			return nil, "", redact.WrapError("marshal headers", err)
 		}
 		values["headers"] = string(headerBytes)
 	}
@@ -391,5 +428,5 @@ func (p *Producer) buildXAddArgs(stream string, msg Message) (*goredis.XAddArgs,
 		args.Approx = true
 	}
 
-	return args, nil
+	return args, msg.ID, nil
 }

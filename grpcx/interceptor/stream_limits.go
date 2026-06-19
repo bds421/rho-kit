@@ -138,6 +138,20 @@ func MaxConcurrentStreamsServer(max int, metrics *StreamLimitMetrics) grpc.Strea
 // exits as soon as the handler returns to keep the per-stream
 // goroutine footprint at 1.
 //
+// Cooperative-cancellation contract (IMPORTANT): the watchdog cancels
+// a context DERIVED from ss.Context(); it does not abort the
+// underlying HTTP/2 stream. grpc-go's transport-level RecvMsg blocks
+// on the real (parent) stream context, so cancelling the derived
+// child does NOT unblock a handler parked in stream.Recv(). The
+// canonical `for { stream.Recv() }` loop against a paused client will
+// therefore stay blocked until the client speaks or the connection
+// dies. Only handlers that explicitly select on Context().Done()
+// (or otherwise observe the wrapped context) are reaped by this
+// watchdog. For hard bounds against unresponsive peers, pair this
+// interceptor with server-side [keepalive.ServerParameters] (notably
+// MaxConnectionAge / MaxConnectionAgeGrace) and
+// [keepalive.EnforcementPolicy].
+//
 // Panics on d <= 0.
 func StreamIdleTimeout(d time.Duration, metrics *StreamLimitMetrics) grpc.StreamServerInterceptor {
 	if d <= 0 {
@@ -156,8 +170,14 @@ func StreamIdleTimeout(d time.Duration, metrics *StreamLimitMetrics) grpc.Stream
 
 		// Watchdog: poll at 1/4 the idle timeout so the worst-case
 		// detection latency is +25%. Exits as soon as the handler
-		// returns.
+		// returns (done) or the context is cancelled (ctx.Done) — the
+		// latter also covers a handler panic unwinding past the close
+		// below, where only the deferred cancel runs.
 		done := make(chan struct{})
+		// Deferred so a handler panic still tears the watchdog down
+		// promptly instead of leaving the goroutine and ticker lingering
+		// until the idle window elapses.
+		defer close(done)
 		go func() {
 			tick := d / 4
 			if tick < 10*time.Millisecond {
@@ -168,6 +188,8 @@ func StreamIdleTimeout(d time.Duration, metrics *StreamLimitMetrics) grpc.Stream
 			for {
 				select {
 				case <-done:
+					return
+				case <-ctx.Done():
 					return
 				case <-t.C:
 					last := wrapped.lastActive.Load()
@@ -183,13 +205,16 @@ func StreamIdleTimeout(d time.Duration, metrics *StreamLimitMetrics) grpc.Stream
 		}()
 
 		err := handler(srv, wrapped)
-		close(done)
 		// If our watchdog cancelled the ctx (vs the caller cancelling
-		// upstream), surface a gRPC-friendly DeadlineExceeded. The
-		// handler may have returned context.Canceled as a result of
-		// our cancel — translate it; or it may have returned cleanly
-		// and we still want to flag the idle close.
-		if ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
+		// upstream), surface a gRPC-friendly DeadlineExceeded — but only
+		// when the handler actually failed because of that cancellation.
+		// A handler that ignored ctx and still returned cleanly (e.g. a
+		// client-streaming RPC already replied via SendAndClose) or with
+		// a business error must keep its own result; overwriting it would
+		// report a delivered response as failed and invite duplicate
+		// client retries.
+		if err != nil && errors.Is(err, context.Canceled) &&
+			ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
 			// Distinguish "we cancelled" from "caller cancelled". The
 			// wrapper's ctx is derived from ss.Context(); if the
 			// underlying stream is also cancelled, the caller did

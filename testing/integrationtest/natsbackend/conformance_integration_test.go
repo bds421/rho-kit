@@ -19,9 +19,9 @@ import (
 // NATS JetStream requires the publisher's subject to map to an
 // existing stream. The kit's EnsureStream only succeeds on the
 // first call per (url, name) — subsequent calls with a non-
-// matching shape error out. The factory therefore shares ONE
-// stream across all conformance subtests by setting it up
-// ONCE at the TestMain layer and handing the same Publisher
+// matching shape error out. This test therefore shares ONE
+// stream across all conformance subtests by setting it up ONCE
+// at the top of this function and handing the same Publisher
 // pointer back from the factory.
 //
 // Each subtest publishes to the same broker, but since the suite

@@ -80,10 +80,9 @@ func postgresURL(c sqldb.Config) string {
 
 ```go
 app.New("my-service", version, cfg.BaseConfig).
-    With(postgres.Module(cfg.Postgres)).
-    WithMigrations(migrationsFS).
+    With(postgres.Module(cfg.Postgres, postgres.WithMigrations(migrationsFS))).
     Router(func(infra app.Infrastructure) http.Handler {
-        repo := NewUserRepository(infra.DB.Pool())
+        repo := NewUserRepository(postgres.Pool(infra))
         return buildRouter(repo)
     }).
     Run()
@@ -118,15 +117,14 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (User, error) 
 
 ## Migrations
 
-`WithMigrations(dir)` runs goose migrations through the pgx pool during startup. Migrations run in every environment so development, staging, and production use the same schema path.
+`postgres.WithMigrations(fs)` runs goose migrations through the pgx pool during startup. Migrations run in every environment so development, staging, and production use the same schema path.
 
 ```go
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
 app.New("my-service", version, cfg.BaseConfig).
-    With(postgres.Module(cfg.Postgres)).
-    WithMigrations(migrationsFS).
+    With(postgres.Module(cfg.Postgres, postgres.WithMigrations(migrationsFS))).
     Router(routerFn).
     Run()
 ```

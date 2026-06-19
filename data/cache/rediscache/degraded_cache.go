@@ -8,8 +8,14 @@ import (
 	"github.com/bds421/rho-kit/infra/redis/v2"
 )
 
-// Compile-time interface compliance check.
-var _ sharedcache.Cache = (*DegradedCache)(nil)
+// Compile-time interface compliance checks. DegradedCache implements
+// the bulk/CAS fast paths too so cache.SetNX keeps cross-process
+// compute-once and cache.MGet/MSet keep pipelining instead of silently
+// downgrading to the per-key fallbacks of the free functions.
+var (
+	_ sharedcache.Cache     = (*DegradedCache)(nil)
+	_ sharedcache.BulkCache = (*DegradedCache)(nil)
+)
 
 // DegradedCache wraps a primary Cache and a fallback Cache. When the
 // Redis connection is healthy, all operations go to the primary. When
@@ -168,6 +174,73 @@ func (dc *DegradedCache) Exists(ctx context.Context, key string) (bool, error) {
 		return dc.fallback.Exists(ctx, key)
 	}
 	return false, nil
+}
+
+// MGet retrieves multiple values. When healthy, forwards to the
+// primary's pipelined MGet. When degraded, delegates to the fallback
+// (preserving its bulk fast path via [sharedcache.MGet]) or returns an
+// empty map after the policy permits it.
+func (dc *DegradedCache) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
+	if err := dc.ready(); err != nil {
+		return nil, err
+	}
+	if dc.conn.Healthy() {
+		return dc.primary.MGet(ctx, keys)
+	}
+	if err := dc.policy.OnUnavailable(ctx); err != nil {
+		return nil, err
+	}
+	if dc.fallback != nil {
+		return sharedcache.MGet(ctx, dc.fallback, keys)
+	}
+	if err := sharedcache.ValidateBulkKeys(keys); err != nil {
+		return nil, err
+	}
+	return map[string][]byte{}, nil
+}
+
+// MSet stores multiple values. When healthy, forwards to the primary's
+// pipelined MSet. When degraded, delegates to the fallback (preserving
+// its bulk fast path via [sharedcache.MSet]) or is a no-op after the
+// policy permits it.
+func (dc *DegradedCache) MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
+	if err := dc.ready(); err != nil {
+		return err
+	}
+	if dc.conn.Healthy() {
+		return dc.primary.MSet(ctx, items, ttl)
+	}
+	if err := dc.policy.OnUnavailable(ctx); err != nil {
+		return err
+	}
+	if dc.fallback != nil {
+		return sharedcache.MSet(ctx, dc.fallback, items, ttl)
+	}
+	return nil
+}
+
+// SetNX stores a value only if the key does not already exist. When
+// healthy, forwards to the primary's atomic, cross-process SetNX. When
+// degraded, delegates to the fallback (preserving its native SetNX via
+// [sharedcache.SetNX]); with no fallback it mirrors [DegradedCache.Set],
+// reporting success without persisting.
+func (dc *DegradedCache) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+	if err := dc.ready(); err != nil {
+		return false, err
+	}
+	if err := sharedcache.ValidateKey(key); err != nil {
+		return false, err
+	}
+	if dc.conn.Healthy() {
+		return dc.primary.SetNX(ctx, key, value, ttl)
+	}
+	if err := dc.policy.OnUnavailable(ctx); err != nil {
+		return false, err
+	}
+	if dc.fallback != nil {
+		return sharedcache.SetNX(ctx, dc.fallback, key, value, ttl)
+	}
+	return true, nil
 }
 
 func (dc *DegradedCache) ready() error {

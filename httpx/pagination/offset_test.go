@@ -180,3 +180,76 @@ func TestParseOffset_rejectsAmbiguousQueryParams(t *testing.T) {
 		})
 	}
 }
+
+func TestParseOffsetWithMax_clampsOffsetToMax(t *testing.T) {
+	// A huge client offset (the deep-offset scan vector) must be capped to
+	// maxOffset, mirroring how limit is clamped to maxLimit.
+	r := httptest.NewRequest(http.MethodGet, "/items?offset=9223372036854775807", nil)
+	_, offset, err := ParseOffsetWithMax(r, 25, 0, 100, 1000)
+	if err != nil {
+		t.Fatalf("ParseOffsetWithMax returned error: %v", err)
+	}
+	if offset != 1000 {
+		t.Errorf("offset = %d, want 1000 (clamped to maxOffset)", offset)
+	}
+}
+
+func TestParseOffsetWithMax_belowMaxPassesThrough(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/items?offset=40", nil)
+	_, offset, err := ParseOffsetWithMax(r, 25, 0, 100, 1000)
+	if err != nil {
+		t.Fatalf("ParseOffsetWithMax returned error: %v", err)
+	}
+	if offset != 40 {
+		t.Errorf("offset = %d, want 40 (under cap, unchanged)", offset)
+	}
+}
+
+func TestParseOffsetWithMax_zeroMaxDisablesCap(t *testing.T) {
+	// maxOffset <= 0 disables the cap, preserving ParseOffset semantics.
+	r := httptest.NewRequest(http.MethodGet, "/items?offset=9223372036854775807", nil)
+	for _, maxOffset := range []int{0, -1} {
+		_, offset, err := ParseOffsetWithMax(r, 25, 0, 100, maxOffset)
+		if err != nil {
+			t.Fatalf("maxOffset=%d: error: %v", maxOffset, err)
+		}
+		if offset != 9223372036854775807 {
+			t.Errorf("maxOffset=%d: offset = %d, want unbounded value", maxOffset, offset)
+		}
+	}
+}
+
+func TestParseOffsetWithMax_rejectsDefaultOffsetAboveMax(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	_, _, err := ParseOffsetWithMax(r, 25, 200, 100, 100)
+	if !errors.Is(err, ErrInvalidOffsetConfig) {
+		t.Fatalf("error = %v, want ErrInvalidOffsetConfig", err)
+	}
+}
+
+func TestParseOffsetWithMax_negativeOffsetClampsToZero(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/items?offset=-5", nil)
+	_, offset, err := ParseOffsetWithMax(r, 25, 0, 100, 1000)
+	if err != nil {
+		t.Fatalf("ParseOffsetWithMax returned error: %v", err)
+	}
+	if offset != 0 {
+		t.Errorf("offset = %d, want 0 (clamped)", offset)
+	}
+}
+
+func TestParseOffset_matchesParseOffsetWithMaxUncapped(t *testing.T) {
+	// ParseOffset must remain an uncapped alias of ParseOffsetWithMax.
+	r := httptest.NewRequest(http.MethodGet, "/items?offset=9999999&limit=10", nil)
+	l1, o1, err1 := ParseOffset(r, 25, 0, 100)
+	l2, o2, err2 := ParseOffsetWithMax(r, 25, 0, 100, 0)
+	if err1 != nil || err2 != nil {
+		t.Fatalf("errors: %v / %v", err1, err2)
+	}
+	if l1 != l2 || o1 != o2 {
+		t.Fatalf("ParseOffset (%d,%d) != ParseOffsetWithMax uncapped (%d,%d)", l1, o1, l2, o2)
+	}
+	if o1 != 9999999 {
+		t.Errorf("offset = %d, want 9999999 (uncapped)", o1)
+	}
+}

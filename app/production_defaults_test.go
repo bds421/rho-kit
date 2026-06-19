@@ -68,7 +68,7 @@ func TestBuilder_Validates_RejectsExposedInternal(t *testing.T) {
 	err := b.Validate()
 	require.Error(t, err, "exposed internal port must fail validation")
 	assert.Contains(t, err.Error(), "Internal.Host")
-	assert.Contains(t, err.Error(), "AllowInternalNonLoopback")
+	assert.Contains(t, err.Error(), "WithInternalNonLoopback")
 }
 
 func TestWithInternalNonLoopback_AcceptsOptIn(t *testing.T) {
@@ -103,7 +103,7 @@ func TestBuilder_Validates_RejectsSpecificNonLoopbackInternal(t *testing.T) {
 			err := b.Validate()
 			require.Errorf(t, err, "Internal.Host=%q must be rejected without AllowInternalNonLoopback", host)
 			assert.Contains(t, err.Error(), "not loopback")
-			assert.Contains(t, err.Error(), "AllowInternalNonLoopback")
+			assert.Contains(t, err.Error(), "WithInternalNonLoopback")
 			assert.NotContains(t, err.Error(), host)
 			assert.NotContains(t, err.Error(), "secret-token")
 		})

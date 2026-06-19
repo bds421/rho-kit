@@ -73,14 +73,24 @@ var waveRefRE = regexp.MustCompile(`(?i)\bwave\s+(\d+)\b`)
 // "follow-up wave" or "tracked for ... wave" phrase WITHOUT a
 // specific wave number. Wave 158 was exactly this — a "future wave"
 // promise that had silently shipped.
-var futureWaveRE = regexp.MustCompile(`(?i)(future wave|follow[- ]up wave|tracked.{1,30}for.{1,30}wave[^0-9]|post[- ]2\.0\.0)`)
+var futureWaveRE = regexp.MustCompile(`(?i)(future wave|follow[- ]up wave|tracked.{1,30}for.{1,30}wave(?:[^0-9]|$)|post[- ]2\.0\.0)`)
 
 // allowOptOutRE matches the line-level opt-out marker.
 var allowOptOutRE = regexp.MustCompile(`<!--\s*kit:ok-doc-rot\s*-->`)
 
-// commitWaveRE extracts a wave number from a commit subject. Used
-// to build the set of wave numbers that genuinely shipped.
-var commitWaveRE = regexp.MustCompile(`(?i)wave\s+(\d+)\b`)
+// commitPrefixRE anchors a commit subject to the documented
+// conventional-commit shape `^(feat|fix|refactor|chore|docs|test|
+// perf)\(v2\)` before any "wave N" reference is trusted as shipped.
+// Without this anchor any subject casually mentioning "wave N"
+// (e.g. `fix(kit-doctor): … wave 5`, `style(v2): … wave 5`, a merge
+// or revert) would falsely mark wave N as shipped, defeating the
+// anti-rot guarantee a stale doc claim is supposed to trip on.
+var commitPrefixRE = regexp.MustCompile(`(?i)^(?:feat|fix|refactor|chore|docs|test|perf)\(v2\)`)
+
+// commitWaveRE extracts wave numbers from a commit subject that has
+// already passed commitPrefixRE. Multiple numbers in a single
+// subject are supported (e.g. `docs(v2): record wave 4+5`).
+var commitWaveRE = regexp.MustCompile(`(?i)\bwave\s+(\d+(?:\s*\+\s*\d+)*)\b`)
 
 type finding struct {
 	file string
@@ -124,6 +134,7 @@ func main() {
 
 	docsRoot := filepath.Join(root, docsGlob)
 	var findings []finding
+	var scanErrs []string
 	err = filepath.WalkDir(docsRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -134,15 +145,32 @@ func main() {
 		if !strings.HasSuffix(path, ".md") {
 			return nil
 		}
-		f, openErr := scanFile(path, shippedWaves, verbose)
-		if openErr != nil {
-			return openErr
+		f, scanErr := scanFile(path, shippedWaves, verbose)
+		if scanErr != nil {
+			// A single unreadable/transient-failure doc must not abort the
+			// whole scan: report it and keep walking so every other doc is
+			// still checked. The accumulated errors still fail the gate
+			// loudly (exit 2) below, so a skipped doc can never hide rot.
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				rel = path
+			}
+			scanErrs = append(scanErrs, fmt.Sprintf("%s: %v", rel, scanErr))
+			fmt.Fprintf(os.Stderr, "doc-rot: skipped unreadable file %s: %v\n", rel, scanErr)
+			return nil
 		}
 		findings = append(findings, f...)
 		return nil
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "doc-rot: walk %s: %v\n", docsRoot, err)
+		os.Exit(2)
+	}
+	if len(scanErrs) > 0 {
+		fmt.Fprintf(os.Stderr, "doc-rot: %d file(s) could not be read and were skipped:\n", len(scanErrs))
+		for _, e := range scanErrs {
+			fmt.Fprintf(os.Stderr, "  %s\n", e)
+		}
 		os.Exit(2)
 	}
 
@@ -181,18 +209,35 @@ func loadShippedWaves(repoRoot string) (map[int]bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("git log: %w", err)
 	}
+	return parseShippedWaves(string(out)), nil
+}
+
+// parseShippedWaves parses raw `git log --format=%s` output into the
+// set of wave numbers that genuinely shipped. Only subjects matching
+// the documented conventional-commit shape
+// `^(feat|fix|refactor|chore|docs|test|perf)\(v2\).*wave N` are
+// trusted; any other "wave N" mention is ignored so a stale doc
+// claim cannot be validated by an incidental commit subject.
+func parseShippedWaves(gitLog string) map[int]bool {
 	waves := map[int]bool{}
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(gitLog, "\n") {
+		if !commitPrefixRE.MatchString(line) {
+			continue
+		}
 		matches := commitWaveRE.FindAllStringSubmatch(line, -1)
 		for _, m := range matches {
-			n, perr := strconv.Atoi(m[1])
-			if perr != nil {
-				continue
+			// m[1] may be a single number ("140") or a "+"-joined
+			// group ("4+5"); split and record every number.
+			for _, part := range strings.Split(m[1], "+") {
+				n, perr := strconv.Atoi(strings.TrimSpace(part))
+				if perr != nil {
+					continue
+				}
+				waves[n] = true
 			}
-			waves[n] = true
 		}
 	}
-	return waves, nil
+	return waves
 }
 
 // scanFile walks a Markdown file looking for "wave N" references

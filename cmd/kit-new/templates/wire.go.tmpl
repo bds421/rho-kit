@@ -13,11 +13,13 @@ import (
 	"net/http"
 	"time"
 
-	kitapp "github.com/bds421/rho-kit/app/v2"
 	kitratelimit "github.com/bds421/rho-kit/app/ratelimit/v2"
 {{- if .Tenant}}
 	kitredisadapter "github.com/bds421/rho-kit/app/redis/v2"
 	kittenant "github.com/bds421/rho-kit/app/tenant/v2"
+{{- end}}
+	kitapp "github.com/bds421/rho-kit/app/v2"
+{{- if .Tenant}}
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	rediscache "github.com/bds421/rho-kit/data/cache/rediscache/v2"
 	redisstore "github.com/bds421/rho-kit/data/idempotency/redisstore/v2"
@@ -140,7 +142,7 @@ func tenantIDForIdempotency(r *http.Request) string {
 // composes the middleware chain so adding modules does not change
 // router code.
 {{- end}}
-func Run(_ *slog.Logger) error {
+func Run(_ *slog.Logger, version string) error {
 	cfg, err := kitapp.LoadBaseConfig(8080)
 	if err != nil {
 		return err
@@ -163,7 +165,7 @@ func Run(_ *slog.Logger) error {
 	// bounded by mTLS / an upstream gateway. The baseline below is
 	// intentionally conservative — tune for the expected QPS once
 	// the service ships.
-	b := kitapp.New("{{.ServiceName}}", "", cfg).
+	b := kitapp.New("{{.ServiceName}}", version, cfg).
 		With(kitratelimit.IP(100, time.Minute))
 {{- if .Postgres}}
 

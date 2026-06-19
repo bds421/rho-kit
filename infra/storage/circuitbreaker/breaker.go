@@ -130,9 +130,16 @@ func New(backend storage.Storage, opts ...Option) Stater {
 		Threshold:    5,
 		ResetTimeout: 30 * time.Second,
 		ShouldTrip: func(err error) bool {
+			// context.Canceled is excluded so a flood of caller-driven
+			// cancellations (slow clients navigating away) cannot trip the
+			// circuit and block traffic to an otherwise healthy backend.
+			// This matches resilience/circuitbreaker's documented default
+			// (defaultIsSuccessful). Server-side timeouts
+			// (context.DeadlineExceeded) remain trippable failures.
 			return err != nil &&
 				!errors.Is(err, storage.ErrObjectNotFound) &&
-				!errors.Is(err, storage.ErrValidation)
+				!errors.Is(err, storage.ErrValidation) &&
+				!errors.Is(err, context.Canceled)
 		},
 	}
 	for _, o := range opts {
@@ -272,21 +279,56 @@ func (cb *CircuitBreaker) listImpl(ctx context.Context, prefix string, opts stor
 			yield(storage.ObjectInfo{}, fmt.Errorf("storage/circuitbreaker: underlying backend does not implement storage.Lister"))
 		}
 	}
-	// Gate the initial dispatch on the breaker. Mid-iteration breaker
-	// state is not re-checked because a partial stream cannot be
-	// resumed; the caller observing an error during iteration will
-	// surface that to its own retry/backoff.
+	// Gate the operation on the breaker by driving the first iteration
+	// step inside Execute. List returns a lazy iterator, so wrapping only
+	// the dispatch (seq = lister.List(...)) records a phantom success on
+	// every call regardless of backend health: a dead backend would never
+	// trip, and a half-open probe would close the circuit without ever
+	// touching the backend. Pulling the first element forces the breaker
+	// to observe the real outcome (the first error, or the first item).
+	//
+	// Mid-iteration breaker state is not re-checked because a partial
+	// stream cannot be resumed; the caller observing an error during
+	// iteration surfaces it to its own retry/backoff.
 	return func(yield func(storage.ObjectInfo, error) bool) {
-		var seq iter.Seq2[storage.ObjectInfo, error]
+		var (
+			next func() (storage.ObjectInfo, error, bool)
+			stop func()
+		)
+		var (
+			firstInfo  storage.ObjectInfo
+			firstErr   error
+			firstValid bool
+		)
 		execErr := cb.cb.Execute(func() error {
-			seq = lister.List(ctx, prefix, opts)
-			return nil
+			next, stop = iter.Pull2(lister.List(ctx, prefix, opts))
+			firstInfo, firstErr, firstValid = next()
+			// A stream that errors on its first step counts as a failure;
+			// returning the iteration error feeds it back to the breaker.
+			return firstErr
 		})
 		if execErr != nil {
+			// Open-circuit rejection has no iterator to stop. A backend
+			// error captured by Execute is surfaced via firstErr/execErr.
+			if stop != nil {
+				stop()
+			}
 			yield(storage.ObjectInfo{}, execErr)
 			return
 		}
-		for info, err := range seq {
+		defer stop()
+		if !firstValid {
+			// Empty stream that succeeded — nothing to yield.
+			return
+		}
+		if !yield(firstInfo, firstErr) {
+			return
+		}
+		for {
+			info, err, ok := next()
+			if !ok {
+				return
+			}
 			if !yield(info, err) {
 				return
 			}

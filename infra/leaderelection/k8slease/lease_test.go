@@ -64,16 +64,16 @@ func TestNew_PanicsOnNilOption(t *testing.T) {
 
 func TestOptions_PanicOnInvalidDurations(t *testing.T) {
 	for name, fn := range map[string]func(){
-		"WithLeaseDuration zero":              func() { WithLeaseDuration(0) },
-		"WithLeaseDuration negative":          func() { WithLeaseDuration(-time.Second) },
-		"WithRenewDeadline zero":              func() { WithRenewDeadline(0) },
-		"WithRenewDeadline negative":          func() { WithRenewDeadline(-time.Second) },
-		"WithRetryPeriod zero":                func() { WithRetryPeriod(0) },
-		"WithRetryPeriod negative":            func() { WithRetryPeriod(-time.Second) },
-		"WithCallbackDrainWarn zero":          func() { WithCallbackDrainWarnInterval(0) },
-		"WithCallbackDrainWarn negative":      func() { WithCallbackDrainWarnInterval(-time.Second) },
-		"WithCallbackDrainTimeout zero":       func() { WithCallbackDrainTimeout(0) },
-		"WithCallbackDrainTimeout negative":   func() { WithCallbackDrainTimeout(-time.Second) },
+		"WithLeaseDuration zero":            func() { WithLeaseDuration(0) },
+		"WithLeaseDuration negative":        func() { WithLeaseDuration(-time.Second) },
+		"WithRenewDeadline zero":            func() { WithRenewDeadline(0) },
+		"WithRenewDeadline negative":        func() { WithRenewDeadline(-time.Second) },
+		"WithRetryPeriod zero":              func() { WithRetryPeriod(0) },
+		"WithRetryPeriod negative":          func() { WithRetryPeriod(-time.Second) },
+		"WithCallbackDrainWarn zero":        func() { WithCallbackDrainWarnInterval(0) },
+		"WithCallbackDrainWarn negative":    func() { WithCallbackDrainWarnInterval(-time.Second) },
+		"WithCallbackDrainTimeout zero":     func() { WithCallbackDrainTimeout(0) },
+		"WithCallbackDrainTimeout negative": func() { WithCallbackDrainTimeout(-time.Second) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			require.Panics(t, fn)
@@ -319,28 +319,271 @@ func TestRun_DoubleInvocationRejected(t *testing.T) {
 	require.ErrorContains(t, err, "Run already invoked")
 }
 
+func TestRun_ResetsStartedSoDocumentedRetryLoopWorks(t *testing.T) {
+	// The package docs tell callers to "wrap Run in their own retry
+	// loop". That only works if `started` is cleared once Run returns;
+	// otherwise the second invocation permanently fails with "Run
+	// already invoked" and a transient API-server blip silently removes
+	// the replica from the election forever.
+	e := &Elector{
+		client:        newFakeClient(),
+		namespace:     "ns",
+		name:          "name",
+		identity:      "id",
+		leaseDuration: defaultLeaseDuration,
+		renewDeadline: defaultRenewDeadline,
+		retryPeriod:   defaultRetryPeriod,
+		drainWarnTick: defaultDrainWarnTick,
+		logger:        slog.Default(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // never acquires; client-go Run returns promptly
+
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx, leaderelection.Callbacks{}) }()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("first Run did not return")
+	}
+
+	require.False(t, e.started.Load(), "started must be cleared after Run returns so a retry loop can call Run again")
+
+	// A second Run must be accepted (not rejected with "already invoked").
+	done2 := make(chan error, 1)
+	go func() { done2 <- e.Run(ctx, leaderelection.Callbacks{}) }()
+	select {
+	case err := <-done2:
+		require.NotContains(t, err.Error(), "Run already invoked")
+	case <-time.After(3 * time.Second):
+		t.Fatal("second Run did not return")
+	}
+}
+
+func TestComputeRunResult_LeadershipLostReturnsSentinel(t *testing.T) {
+	// Leadership lost via renew failure (no ctx cancellation, no OnLost
+	// error) must surface a distinct error, not nil — callers read nil
+	// as a clean shutdown and would stop retrying, contradicting the
+	// Elector contract ("returns when ctx cancels or unrecoverable
+	// backend error").
+	got := computeRunResult(nil, nil)
+	require.ErrorIs(t, got, ErrLeadershipLost)
+}
+
+func TestComputeRunResult_CtxCancelTakesPrecedence(t *testing.T) {
+	got := computeRunResult(nil, context.Canceled)
+	require.ErrorIs(t, got, context.Canceled)
+	require.NotErrorIs(t, got, ErrLeadershipLost, "a clean ctx-cancel shutdown is not a leadership-loss error")
+}
+
+func TestComputeRunResult_LostErrJoinedWithCtx(t *testing.T) {
+	lost := errors.New("onlost boom")
+	got := computeRunResult(lost, context.Canceled)
+	require.ErrorIs(t, got, context.Canceled)
+	require.ErrorIs(t, got, lost)
+}
+
+func TestComputeRunResult_LostErrWithoutCtx(t *testing.T) {
+	lost := errors.New("onlost boom")
+	got := computeRunResult(lost, nil)
+	require.ErrorIs(t, got, lost)
+	require.NotErrorIs(t, got, ErrLeadershipLost, "a captured OnStoppedLeading error already describes the loss")
+}
+
+func TestOnStartedLeading_SkipsLeadershipWhenLeaderCtxAlreadyCancelled(t *testing.T) {
+	// Race guard: client-go launches OnStartedLeading in its own
+	// goroutine (go OnStartedLeading(ctx); le.renew(ctx)). If renew
+	// returns before that goroutine is scheduled, OnStoppedLeading can
+	// store leader=false first; the goroutine must NOT then store
+	// leader=true (which would leave IsLeader() stuck true forever) or
+	// invoke OnAcquired after leadership ended.
+	e := &Elector{
+		namespace: "ns",
+		name:      "name",
+		identity:  "id",
+		logger:    slog.Default(),
+	}
+	tm := newTerm()
+
+	leaderCtx, cancel := context.WithCancel(context.Background())
+	cancel() // leadership already over before the goroutine runs
+
+	acquiredCalled := atomic.Bool{}
+	e.onStartedLeading(leaderCtx, tm, leaderelection.Callbacks{
+		OnAcquired: func(context.Context) { acquiredCalled.Store(true) },
+	})
+
+	require.False(t, e.IsLeader(), "must not claim leadership when leaderCtx is already cancelled")
+	require.False(t, tm.didAcquire(), "term must not be marked acquired so OnStoppedLeading skips OnLost")
+	require.False(t, acquiredCalled.Load(), "OnAcquired must not run after leadership ended")
+
+	// The defer must still signal completion so awaitCallbackDrain (if
+	// it were waiting) never blocks.
+	select {
+	case <-tm.cbDone:
+	default:
+		t.Fatal("onStartedLeading must always signal cbDone")
+	}
+}
+
+func TestOnStartedLeading_ClaimsLeadershipWhenCtxLive(t *testing.T) {
+	e := &Elector{
+		namespace: "ns",
+		name:      "name",
+		identity:  "id",
+		logger:    slog.Default(),
+	}
+	tm := newTerm()
+
+	leaderCtx := context.Background()
+	acquiredCalled := atomic.Bool{}
+	e.onStartedLeading(leaderCtx, tm, leaderelection.Callbacks{
+		OnAcquired: func(context.Context) { acquiredCalled.Store(true) },
+	})
+
+	require.True(t, e.IsLeader())
+	require.True(t, tm.didAcquire())
+	require.True(t, acquiredCalled.Load())
+	select {
+	case <-tm.cbDone:
+	default:
+		t.Fatal("onStartedLeading must signal cbDone")
+	}
+}
+
+func TestTerm_StopBeforeStartNeutralizesLateOnStartedLeading(t *testing.T) {
+	// THE CORE RACE (TOCTOU between OnStartedLeading's ctx check and its
+	// leader claim). client-go's Run is:
+	//
+	//	defer OnStoppedLeading()
+	//	...
+	//	go OnStartedLeading(leaderCtx); le.renew(leaderCtx)
+	//
+	// Interleaving that the leaderCtx.Err() guard alone does NOT close:
+	//
+	//	1. OnStartedLeading goroutine starts, checks leaderCtx.Err() ==
+	//	   nil (term still live) and passes the guard.
+	//	2. The goroutine is preempted before it marks the term acquired.
+	//	3. renew returns, leaderCtx is cancelled, OnStoppedLeading runs:
+	//	   it sees the term NOT acquired, so it stores leader=false and
+	//	   returns (skips drain + OnLost), then Run returns.
+	//	4. The goroutine resumes and stores leader=true + runs OnAcquired
+	//	   AFTER Run already returned.
+	//
+	// Result without the term coordinator: IsLeader() stuck true forever
+	// and OnAcquired firing after the elector stopped, with no matching
+	// OnLost.
+	//
+	// This test reproduces that exact ordering deterministically by
+	// driving OnStoppedLeading to completion BEFORE OnStartedLeading is
+	// allowed to claim, and asserting the late claim is neutralized.
+	e := &Elector{
+		namespace: "ns",
+		name:      "name",
+		identity:  "id",
+		logger:    slog.Default(),
+	}
+	tm := newTerm()
+
+	// Step 3: OnStoppedLeading wins the coordinator first. The term was
+	// never acquired, so it must report "no acquired term" (acquired ==
+	// false) and leader must be false.
+	require.False(t, e.onStoppedLeading(tm, leaderelection.Callbacks{
+		OnLost: func() { t.Fatal("OnLost must not run for a never-acquired term") },
+	}), "onStoppedLeading must report no acquired term when started never claimed")
+	require.False(t, e.IsLeader(), "leader must be false after OnStoppedLeading")
+
+	// Step 4: the late OnStartedLeading goroutine resumes with a still
+	// live leaderCtx (the ctx check would pass) but MUST observe the
+	// stopped term and refuse to claim leadership or run OnAcquired.
+	acquiredCalled := atomic.Bool{}
+	leaderCtx := context.Background() // live ctx: only the term gate can stop it
+	e.onStartedLeading(leaderCtx, tm, leaderelection.Callbacks{
+		OnAcquired: func(context.Context) { acquiredCalled.Store(true) },
+	})
+
+	require.False(t, e.IsLeader(), "late OnStartedLeading must not resurrect leadership after the term stopped")
+	require.False(t, acquiredCalled.Load(), "OnAcquired must not run after the term stopped")
+	require.False(t, tm.didAcquire(), "a stopped term must never flip to acquired")
+}
+
+func TestTerm_AcquireBeforeStopDrainsAndRunsOnLost(t *testing.T) {
+	// The complementary ordering: OnStartedLeading wins the coordinator
+	// first (claims + runs OnAcquired), then OnStoppedLeading runs and
+	// must drain the callback and invoke OnLost exactly once.
+	e := &Elector{
+		namespace:     "ns",
+		name:          "name",
+		identity:      "id",
+		drainWarnTick: time.Hour,
+		logger:        slog.Default(),
+	}
+	tm := newTerm()
+
+	acquiredCalled := atomic.Bool{}
+	e.onStartedLeading(context.Background(), tm, leaderelection.Callbacks{
+		OnAcquired: func(context.Context) { acquiredCalled.Store(true) },
+	})
+	require.True(t, e.IsLeader())
+	require.True(t, acquiredCalled.Load())
+	require.True(t, tm.didAcquire())
+
+	onLostCalls := atomic.Int32{}
+	cb := leaderelection.Callbacks{OnLost: func() { onLostCalls.Add(1) }}
+
+	// onStoppedLeading reports the acquired term; Run's closure then
+	// drains the callback and runs OnLost. Exercise that same sequence.
+	require.True(t, e.onStoppedLeading(tm, cb),
+		"onStoppedLeading must report an acquired term so Run drains + runs OnLost")
+	require.False(t, e.IsLeader(), "leader must be false after OnStoppedLeading")
+
+	drainResult := e.awaitCallbackDrain(tm.cbDone)
+	require.False(t, drainResult.timedOut)
+	require.Nil(t, drainResult.panicValue)
+	require.NoError(t, e.runOnLost(cb))
+	require.Equal(t, int32(1), onLostCalls.Load(), "OnLost must run exactly once for an acquired term")
+}
+
 func TestRun_DoesNotCallOnLostWithoutAcquired(t *testing.T) {
 	// A cancelled context never lets the LeaderElector acquire; the
 	// adapter must NOT call OnLost in that case (the kit contract
 	// states OnLost describes an acquired term, not a never-started
 	// one). We cannot drive LeaderElector.Run without a real or fake
-	// clientset, so we exercise the gating directly: with
-	// onAcquiredStarted=false the OnStoppedLeading branch returns
-	// before invoking the user callback.
+	// clientset, so we exercise the *production* gate directly:
+	// onStoppedLeading reports "no acquired term" and Run's
+	// OnStoppedLeading closure (`if !e.onStoppedLeading(...) { return }`)
+	// returns before draining or running OnLost.
 	//
-	// This test pins the behaviour by reading the same atomic flag
-	// the production code uses; the integration test covers the
-	// end-to-end client-go scenario.
-	var onAcquiredStarted atomic.Bool
-	called := atomic.Bool{}
-
-	// Inline the gate so the test exercises the same predicate.
-	stopFn := func() {
-		if !onAcquiredStarted.Load() {
-			return
-		}
-		called.Store(true)
+	// This drives the real onStoppedLeading rather than a test-local
+	// reimplementation, so deleting the production gate breaks it; the
+	// integration test covers the end-to-end client-go scenario.
+	e := &Elector{
+		namespace: "ns",
+		name:      "name",
+		identity:  "id",
+		logger:    slog.Default(),
 	}
-	stopFn()
-	require.False(t, called.Load(), "OnLost must not run when leadership was never acquired")
+	tm := newTerm() // fresh term: never claimed by OnStartedLeading
+
+	onLostCalled := atomic.Bool{}
+	cb := leaderelection.Callbacks{
+		OnLost: func() { onLostCalled.Store(true) },
+	}
+
+	// Mirror Run's OnStoppedLeading closure exactly: the gate is the
+	// boolean returned by the real onStoppedLeading. A never-acquired
+	// term must short-circuit before drain + OnLost.
+	acquired := e.onStoppedLeading(tm, cb)
+	require.False(t, acquired,
+		"onStoppedLeading must report no acquired term when OnStartedLeading never claimed")
+	if acquired {
+		// Unreachable for a never-acquired term; present so the test
+		// fails (rather than silently passing) if the gate ever flips.
+		_ = e.runOnLost(cb)
+	}
+
+	require.False(t, onLostCalled.Load(), "OnLost must not run when leadership was never acquired")
+	require.False(t, e.IsLeader(), "leader must remain false for a never-acquired term")
 }

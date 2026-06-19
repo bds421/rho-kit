@@ -151,6 +151,42 @@ func TestExecuteCtx_NilReceiverPassesThrough(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestExecuteCtx_NilCtxRejected pins the contract that ExecuteCtx with a
+// nil context returns an error rather than panicking on ctx.Err(),
+// mirroring the sibling bulkhead.ExecuteCtx behavior.
+func TestExecuteCtx_NilCtxRejected(t *testing.T) {
+	cb := NewCircuitBreaker(2, time.Minute)
+
+	called := false
+	var err error
+	assert.NotPanics(t, func() {
+		err = cb.ExecuteCtx(nil, func(_ context.Context) error { //nolint:staticcheck // intentional nil-ctx contract test
+			called = true
+			return nil
+		})
+	})
+	assert.False(t, called, "fn must not be invoked when ctx is nil")
+	assert.Error(t, err)
+}
+
+// TestExecuteCtx_NilReceiverNilCtxRejected ensures the nil-ctx guard
+// fires before the nil-receiver passthrough, so a nil breaker with a nil
+// ctx still returns an error rather than panicking inside fn's call site.
+func TestExecuteCtx_NilReceiverNilCtxRejected(t *testing.T) {
+	var cb *CircuitBreaker
+
+	called := false
+	var err error
+	assert.NotPanics(t, func() {
+		err = cb.ExecuteCtx(nil, func(_ context.Context) error { //nolint:staticcheck // intentional nil-ctx contract test
+			called = true
+			return nil
+		})
+	})
+	assert.False(t, called, "fn must not be invoked when ctx is nil")
+	assert.Error(t, err)
+}
+
 func TestNewCircuitBreaker_PanicsOnNilOption(t *testing.T) {
 	assert.Panics(t, func() {
 		NewCircuitBreaker(1, time.Second, nil)
@@ -165,9 +201,9 @@ func TestNewCircuitBreaker_PanicsOnNilOption(t *testing.T) {
 // (tenant id, customer id) must be rejected at startup.
 func TestWithName_RejectsUnboundedValues(t *testing.T) {
 	for _, name := range []string{
-		"",                       // empty
-		"has whitespace",         // space rune
-		"control\x00rune",        // control rune
+		"",                // empty
+		"has whitespace",  // space rune
+		"control\x00rune", // control rune
 	} {
 		t.Run(name, func(t *testing.T) {
 			assert.Panics(t, func() {

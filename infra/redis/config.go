@@ -106,7 +106,14 @@ func (c Config) checkFR077(resolved string) error {
 	if u.Scheme == "redis" {
 		return fmt.Errorf("REDIS_URL uses plaintext scheme \"redis://\"; set REDIS_ALLOW_PLAINTEXT=true to permit (FR-077)")
 	}
-	if !redisURLHasCredentials(u) && c.Password == "" {
+	// When URL is set, RedisURL() returns it verbatim and Options() builds
+	// the dialer solely from ParseURL(URL) — the Config.Password field is
+	// silently ignored. Only URL userinfo can carry a credential in that
+	// case, so counting c.Password here would let a credentialless URL
+	// connect anonymously while passing the FR-077 guard. When URL is empty,
+	// RedisURL() embeds c.Password into the assembled URL, so the parsed
+	// userinfo already reflects it.
+	if !redisURLHasCredentials(u) {
 		return fmt.Errorf("REDIS_URL has no credentials and REDIS_PASSWORD is empty; set REDIS_ALLOW_PLAINTEXT=true to permit anonymous Redis (FR-077)")
 	}
 	return nil
@@ -217,7 +224,12 @@ func (f Fields) ValidateRedis(environment string) error {
 	if err := f.Redis.checkFR077(resolved); err != nil {
 		return err
 	}
-	if f.Redis.Password == "" && f.Redis.URL == "" {
+	// AllowPlaintext is the explicit opt-out for trusted local-dev fixtures;
+	// checkFR077 already honored it above. Enforcing a password here too would
+	// make the fields path (REDIS_HOST without a password) reject configs that
+	// Config.Options() accepts, so the two paths would disagree. Skip the
+	// password requirement when the opt-out is set so both paths stay in sync.
+	if !f.Redis.AllowPlaintext && f.Redis.Password == "" && f.Redis.URL == "" {
 		return fmt.Errorf("REDIS_PASSWORD is required (or pass it via REDIS_URL)")
 	}
 	return nil

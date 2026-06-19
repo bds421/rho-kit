@@ -190,18 +190,21 @@ func Run(ctx context.Context, def *Definition, state any) error {
 // returned error joins the originating ForwardError with a
 // CompensateError so callers can match either via errors.As.
 func rollBack(ctx context.Context, steps []Step, failedIndex int, state any, fe *ForwardError) error {
+	// Use a detached context (values preserved, cancellation/deadline
+	// dropped) so that a cancelled parent doesn't abort the rollback
+	// midway — rollback is best-effort completion, and Run's own
+	// cancellation path triggers this rollback, so the parent ctx is
+	// frequently already cancelled here. Callers needing a hard cap on
+	// rollback time should apply context.WithTimeout to compCtx inside
+	// their Compensate, not via the Run-call ctx.
+	compCtx := context.WithoutCancel(ctx)
 	var compErrors []CompensateStepError
 	for i := failedIndex - 1; i >= 0; i-- {
 		step := steps[i]
 		if step.Compensate == nil {
 			continue
 		}
-		// Use a fresh detached context inside ctx.Done so that a
-		// cancelled parent doesn't abort the rollback midway —
-		// rollback is best-effort completion. Callers needing a
-		// hard cap on rollback time should use context.WithTimeout
-		// in the Run-call ctx.
-		if err := step.Compensate(ctx, state); err != nil {
+		if err := step.Compensate(compCtx, state); err != nil {
 			compErrors = append(compErrors, CompensateStepError{Index: i, Name: step.Name, Cause: err})
 		}
 	}

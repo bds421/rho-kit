@@ -22,6 +22,15 @@
 // Keeping object-storage backends in this bridge module keeps the
 // AWS / GCP / Azure / SFTP SDK closures out of services that do not
 // need them (FR-067).
+//
+// # Backend ownership
+//
+// All backends passed to [Module] (the default backend and any
+// [WithNamed] backend) are caller-owned. The module never closes them on
+// shutdown — [storageModule.Stop] is a no-op — so callers retain
+// responsibility for closing buffered/pooled backends (e.g. SFTP or
+// encryption decorators). This differs from the postgres/nats/redis
+// bridges, which own and close the handles they construct internally.
 package storage
 
 import (
@@ -144,6 +153,16 @@ func (m *storageModule) Populate(infra *app.Infrastructure) {
 	}
 }
 
+// Stop is a no-op: backend lifecycle stays with the caller. Unlike the
+// postgres/nats/redis bridges (which own the handle they construct), the
+// default backend and every [WithNamed] backend here are caller-supplied
+// — the caller may share a single backend across modules or close it on
+// its own schedule, so this module must not close them. The internal
+// *storage.Manager built in [storageModule.Init] only indexes those
+// caller-owned backends; closing it would close resources this module
+// does not own, so it is deliberately left to the caller too. Callers
+// that want reverse-order [storage.Manager.Close] semantics on shutdown
+// can register a closer for the value returned by [Manager] themselves.
 func (m *storageModule) Stop(_ context.Context) error { return nil }
 
 func (m *storageModule) HealthChecks() []health.DependencyCheck {

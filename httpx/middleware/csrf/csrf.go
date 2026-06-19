@@ -37,6 +37,14 @@ const (
 	// tokenLength is the number of random bytes in a CSRF token (256 bits).
 	tokenLength = 32
 
+	// maxSignedTokenLen caps the length of a double-submit token before any
+	// HMAC is computed. A well-formed token is exactly
+	// hex(tokenLength) + "." + hex(sha256) = 64 + 1 + 64 = 129 chars; we allow
+	// a small margin (256) and reject longer inputs up front so an attacker
+	// cannot force the server to HMAC multi-MB cookie/header values on every
+	// request, mirroring securitycsrf's MaxTokenLen guard.
+	maxSignedTokenLen = 256
+
 	// bearerPrefixLen is the length of the "Bearer " prefix (scheme + space).
 	bearerPrefixLen = 7
 )
@@ -70,6 +78,15 @@ type config struct {
 }
 
 // WithCookieName sets the CSRF cookie name. Default: "__csrf".
+//
+// Production recommendation: pass "__Host-csrf". The default config
+// (Secure=true, Path="/", no Domain) already satisfies the __Host- prefix
+// requirements, so a __Host- name makes browsers reject any cookie a sibling
+// subdomain tries to plant — a stronger, browser-enforced defense than the
+// origin allowlist alone. The default name carries no prefix semantics and
+// cannot be renamed without invalidating already-deployed cookies (a v3
+// candidate). When SameSite=None or Secure is disabled for local HTTP, the
+// __Host- prefix will be rejected by browsers; use the plain default there.
 func WithCookieName(name string) Option {
 	if !httpguts.ValidHeaderFieldName(name) {
 		panic("csrf: WithCookieName requires a valid cookie name")
@@ -264,9 +281,17 @@ func WithAllowedOrigins(origins ...string) Option {
 // disabled when this option is set.
 //
 // The extractor must return a non-empty string for every authenticated
-// state-changing request; an empty result causes the middleware to 403
-// rather than fall back to per-process pinning (which would defeat the
-// purpose of session binding).
+// state-changing request; an empty result on a state-changing request
+// causes the middleware to 403 rather than fall back to per-process
+// pinning (which would defeat the purpose of session binding).
+//
+// An empty result on a safe method (GET/HEAD/OPTIONS) — an anonymous
+// page load — passes through without a cookie, so a globally-mounted
+// middleware does not 403 every unauthenticated request. An empty result
+// on a state-changing request that is matched by [WithSkipCheck] (a
+// bearer/API-key client with no browser session) is likewise allowed,
+// honouring the skip contract. A non-empty but malformed session value is
+// rejected for every method.
 func WithSessionExtractor(fn func(*http.Request) string) Option {
 	if fn == nil {
 		panic("csrf: WithSessionExtractor requires a non-nil extractor")
@@ -298,6 +323,14 @@ func WithSessionTTL(d time.Duration) Option {
 // Common use: skip CSRF for requests authenticated via Bearer tokens or API keys,
 // since these auth mechanisms are not vulnerable to CSRF attacks (browsers don't
 // auto-attach them in cross-origin requests).
+//
+// Interaction with [WithAllowedOrigins]: the origin allowlist runs BEFORE the
+// skip predicate (defense-in-depth). When both options are set, a
+// header-authenticated client (curl, mobile, server-to-server) that sends
+// neither Origin nor Referer is still 403'd with "untrusted origin" — the very
+// traffic this option is meant to admit. Such clients must send an
+// allow-listed Origin or Referer, or you must not configure WithAllowedOrigins
+// for those routes.
 func WithSkipCheck(skip func(r *http.Request) bool) Option {
 	if skip == nil {
 		panic("csrf: WithSkipCheck requires a non-nil predicate")
@@ -501,10 +534,12 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 				httpx.WriteError(w, http.StatusForbidden, "CSRF cookie was reissued; retry with the new cookie")
 				return
 			}
-			if cookie == nil {
-				cookie, err = r.Cookie(cfg.cookieName)
-			}
-			if err != nil || cookie.Value == "" {
+			// Invariant: cookieRegenerated is false here, so the regeneration
+			// branch at the top of the handler (cookie missing OR token
+			// invalid) was NOT taken — cookie is therefore non-nil, err is
+			// nil, and the token already passed isValidSignedTokenAny. Only
+			// the degenerate empty value needs a defensive reject.
+			if cookie.Value == "" {
 				httpx.WriteError(w, http.StatusForbidden, "missing CSRF cookie")
 				return
 			}
@@ -540,10 +575,40 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 // and verified by [securitycsrf.Issuer] so cross-session replay is
 // rejected even when the cookie itself is intact.
 func sessionBoundMiddleware(cfg *config, issuer, currentIssuer *securitycsrf.Issuer) func(http.Handler) http.Handler {
+	// Align the cookie lifetime with the session token's validity window so a
+	// browser does not hold a dead cookie long after the token expires (which
+	// would force a deterministic 403+reissue+retry on the first request after
+	// an idle period). Derive MaxAge from the effective TTL (configured or the
+	// security/csrf default) rather than a hardcoded 24h.
+	effectiveTTL := cfg.sessionTTL
+	if effectiveTTL <= 0 {
+		effectiveTTL = securitycsrf.DefaultTTL
+	}
+	cookieMaxAge := int(effectiveTTL.Seconds())
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			session, ok := safeSessionExtractor(cfg.sessionExtractor, r)
-			if !ok || securitycsrf.ValidateSessionID(session) != nil {
+			if !ok {
+				// The extractor panicked — fail closed rather than guess
+				// at an anonymous-vs-authenticated state.
+				httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
+				return
+			}
+			if session == "" {
+				// Anonymous request: there is no session to bind a token
+				// to, so no cookie is issued. The session requirement is
+				// scoped (per WithSessionExtractor docs) to authenticated
+				// state-changing requests; safe methods and skip-matched
+				// requests must still pass so a globally-mounted middleware
+				// does not 403 every anonymous page load or break the
+				// documented WithSkipCheck bearer/API-key contract.
+				handleAnonymousSessionBound(cfg, next, w, r)
+				return
+			}
+			if securitycsrf.ValidateSessionID(session) != nil {
+				// A session value is present but malformed (control chars,
+				// over-length, …): treat as a security signal and reject
+				// before issuing a cookie, for every method.
 				httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
 				return
 			}
@@ -563,7 +628,7 @@ func sessionBoundMiddleware(cfg *config, issuer, currentIssuer *securitycsrf.Iss
 					Name:     cfg.cookieName,
 					Value:    string(token),
 					Path:     cfg.path,
-					MaxAge:   86400,
+					MaxAge:   cookieMaxAge,
 					HttpOnly: false,
 					Secure:   cfg.secure,
 					SameSite: cfg.sameSite,
@@ -580,7 +645,7 @@ func sessionBoundMiddleware(cfg *config, issuer, currentIssuer *securitycsrf.Iss
 					Name:     cfg.cookieName,
 					Value:    string(token),
 					Path:     cfg.path,
-					MaxAge:   86400,
+					MaxAge:   cookieMaxAge,
 					HttpOnly: false,
 					Secure:   cfg.secure,
 					SameSite: cfg.sameSite,
@@ -632,6 +697,37 @@ func sessionBoundMiddleware(cfg *config, issuer, currentIssuer *securitycsrf.Iss
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// handleAnonymousSessionBound serves a request whose session extractor
+// returned the empty string (an unauthenticated caller). No token cookie
+// can be bound without a session, so none is issued. Safe methods pass
+// through, and state-changing requests honour the origin allowlist and the
+// skip predicate (same ordering as the authenticated path) before the
+// session-required gate finally rejects mutating requests.
+func handleAnonymousSessionBound(cfg *config, next http.Handler, w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	// Origin allowlist runs BEFORE the skip-check predicate for the same
+	// defense-in-depth reasoning as the authenticated path above.
+	if len(cfg.allowedOrigins) > 0 && !originAllowed(r, cfg.allowedOrigins) {
+		httpx.WriteError(w, http.StatusForbidden, "untrusted origin")
+		return
+	}
+
+	if cfg.skipCheck != nil && safeSkipCheck(cfg.skipCheck, r) {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	// A state-changing request without a session is rejected rather than
+	// falling back to per-process pinning, which would defeat the purpose
+	// of session binding.
+	httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
 }
 
 func safeSkipCheck(skip func(*http.Request) bool, r *http.Request) (matched bool) {
@@ -772,6 +868,12 @@ func mintSignedToken(s *secret.String) (string, error) {
 
 // isValidSignedToken verifies that the token was signed by the server.
 func isValidSignedToken(token string, s *secret.String) bool {
+	// Reject over-length tokens before computing any HMAC so a hostile
+	// multi-MB cookie/header value cannot turn every request into an
+	// attacker-controlled SHA-256 over megabytes of input.
+	if len(token) > maxSignedTokenLen {
+		return false
+	}
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return false

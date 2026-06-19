@@ -55,7 +55,8 @@ func New(api API, opts ...Option) *Loader {
 // Get resolves the secret. Returns:
 //   - (Secret, nil)                          on success
 //   - (zero, secrets.ErrSecretNotFound)      when AWS reports ResourceNotFound
-//   - (zero, wrapped ErrLoaderUnavailable)   on any transport / auth / quota error
+//   - (zero, wrapped ErrLoaderUnavailable)   on any transport / auth / quota
+//     error, or when AWS returns neither SecretString nor SecretBinary
 func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 	out, err := l.api.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
 		SecretId:     awsStringPtr(key),
@@ -76,7 +77,11 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 	case len(out.SecretBinary) > 0:
 		raw = append([]byte(nil), out.SecretBinary...)
 	default:
-		return secrets.Secret{}, fmt.Errorf("awssm: %s has no SecretString or SecretBinary", key)
+		// Malformed secret (e.g. a bad rotation that wrote neither
+		// field). The Loader contract requires any non-NotFound error
+		// to wrap ErrLoaderUnavailable so CachedLoader can serve a
+		// stale value within MaxStale instead of failing hard.
+		return secrets.Secret{}, fmt.Errorf("awssm: %s has no SecretString or SecretBinary: %w", key, secrets.ErrLoaderUnavailable)
 	}
 	version := ""
 	if out.VersionId != nil {

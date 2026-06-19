@@ -176,6 +176,99 @@ func TestConn_Close_IsIdempotent(t *testing.T) {
 	assert.NoError(t, secondErr)
 }
 
+// TestConn_Context_CancelledOnClose asserts the documented contract
+// that the per-connection context is cancelled when the connection
+// closes — here via an explicit [Conn.Close] from inside the handler.
+// A push-only handler that blocks on <-ctx.Done() (e.g. waiting to
+// detect a teardown so it can stop streaming) must unblock when the
+// connection is closed, not hang until it has already returned.
+func TestConn_Context_CancelledOnClose(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	cancelled := make(chan struct{}, 1)
+
+	handler := websocket.Handle(
+		websocket.WithHandler(func(ctx context.Context, c *websocket.Conn) error {
+			// Close from a separate goroutine so the handler itself is
+			// parked on ctx.Done() — exactly the push-only shape the
+			// doc promises to support.
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				_ = c.Close(websocket.StatusNormalClosure, "server done")
+			}()
+			select {
+			case <-ctx.Done():
+				cancelled <- struct{}{}
+			case <-time.After(2 * time.Second):
+			}
+			return nil
+		}),
+		websocket.WithMetrics(reg),
+	)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(coderws.StatusNormalClosure, "") }()
+
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("per-connection context was not cancelled when the connection closed")
+	}
+}
+
+// TestConn_Context_CancelledOnPeerDisconnect asserts that the
+// per-connection context is cancelled once the kit observes a peer
+// disconnect through a read error. A handler reading in one goroutine
+// and parking on ctx in another must learn about the teardown.
+func TestConn_Context_CancelledOnPeerDisconnect(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	cancelled := make(chan struct{}, 1)
+
+	handler := websocket.Handle(
+		websocket.WithHandler(func(ctx context.Context, c *websocket.Conn) error {
+			waiter := make(chan struct{})
+			go func() {
+				select {
+				case <-ctx.Done():
+					cancelled <- struct{}{}
+				case <-time.After(2 * time.Second):
+				}
+				close(waiter)
+			}()
+			// A read that observes the peer's abrupt close must
+			// propagate cancellation to ctx so the waiter above wakes.
+			_, _, _ = c.ReadMessage()
+			<-waiter
+			return nil
+		}),
+		websocket.WithMetrics(reg),
+	)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	require.NoError(t, err)
+
+	// Abrupt close so the server-side read returns an error.
+	require.NoError(t, conn.Close(coderws.StatusGoingAway, "client gone"))
+
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("per-connection context was not cancelled after the peer disconnected")
+	}
+}
+
 func TestConn_Metrics_AreEmitted(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	metrics := websocket.NewMetrics(websocket.WithRegisterer(reg))
@@ -223,6 +316,56 @@ func TestConn_Metrics_AreEmitted(t *testing.T) {
 	assert.True(t, names["httpx_websocket_messages_total"], "messages counter must be registered")
 	assert.True(t, names["httpx_websocket_message_bytes"], "message bytes histogram must be registered")
 	assert.True(t, names["httpx_websocket_close_total"], "close counter must be registered")
+}
+
+// TestCloseStatus_ExtractsCodeThroughKitWrap asserts that the exported
+// classifier reads the RFC 6455 close code out of a kit-redacted read
+// error — i.e. callers do not have to import coder/websocket to switch
+// on close codes (the same rationale the StatusCode aliases exist for).
+func TestCloseStatus_ExtractsCodeThroughKitWrap(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	got := make(chan error, 1)
+
+	handler := websocket.Handle(
+		websocket.WithHandler(func(_ context.Context, c *websocket.Conn) error {
+			_, _, err := c.ReadMessage()
+			got <- err
+			return err
+		}),
+		websocket.WithMetrics(reg),
+	)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	require.NoError(t, err)
+
+	require.NoError(t, conn.Close(coderws.StatusGoingAway, "client navigating away"))
+
+	select {
+	case err := <-got:
+		require.Error(t, err)
+		assert.Equal(t, websocket.StatusGoingAway, websocket.CloseStatus(err),
+			"CloseStatus must extract the peer close code through the kit wrap")
+		assert.True(t, websocket.IsNormalClosure(err),
+			"a 1001 going-away close is a normal, expected disconnect")
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not report a read error")
+	}
+}
+
+func TestCloseStatus_NonCloseError(t *testing.T) {
+	// A nil or non-close error must report the upstream sentinel (-1)
+	// and must not be classified as a normal closure.
+	assert.EqualValues(t, -1, websocket.CloseStatus(nil))
+	assert.False(t, websocket.IsNormalClosure(nil))
+
+	assert.EqualValues(t, -1, websocket.CloseStatus(errors.New("boom")))
+	assert.False(t, websocket.IsNormalClosure(errors.New("boom")))
 }
 
 func TestMessageType_AliasesMatchCoder(t *testing.T) {

@@ -32,11 +32,21 @@ func DeadlineUnary(d time.Duration) grpc.UnaryClientInterceptor {
 	}
 }
 
-// DeadlineStream returns a stream client interceptor that bounds stream
-// setup time (the streamer call) with d. Stream RPCs after setup are
-// not deadline-bounded by this interceptor — long-lived bidirectional
-// streams must manage their own ctx cancellation. Mirrors server-side
-// DeadlineStream's "bound the setup, not the body" semantics.
+// DeadlineStream returns a stream client interceptor that bounds the
+// ENTIRE stream — both setup and body — with d, unless the caller's ctx
+// already carries a tighter deadline (which is preserved). The bounded
+// ctx is the context the stream runs on, so once d elapses gRPC aborts
+// the stream with DeadlineExceeded; this applies to server-streaming,
+// client-streaming, and bidirectional RPCs alike. Mirrors the
+// server-side [grpcx/interceptor.DeadlineStream], which likewise bounds
+// the whole handler.
+//
+// IMPORTANT: long-lived streams (watches, bidi pub/sub) WILL be killed
+// after d. [github.com/bds421/rho-kit/grpcx/v2/client.NewClient]
+// installs this with the default deadline by default, so callers running
+// long-lived streams must either set a wide enough deadline via
+// [client.WithDefaultTimeout] or opt out with
+// [client.WithoutDefaultDeadline].
 func DeadlineStream(d time.Duration) grpc.StreamClientInterceptor {
 	if d <= 0 {
 		panic("client/interceptor: DeadlineStream requires positive duration")
@@ -49,10 +59,10 @@ func DeadlineStream(d time.Duration) grpc.StreamClientInterceptor {
 		streamer grpc.Streamer,
 		opts ...grpc.CallOption,
 	) (grpc.ClientStream, error) {
-		// For server-streaming RPCs we keep the bounded ctx (it bounds
-		// the whole stream). For bidi / client-streaming we still bound
-		// setup, but the kit's pattern is to apply the deadline at the
-		// outer call site; document loudly in the package doc.
+		// boundedCtx is the ctx the stream runs on, so for every stream
+		// kind (server / client / bidi) this deadline bounds the whole
+		// stream, not just setup. The wrapped stream's RecvMsg fires
+		// cancel on terminal error to release the timer early.
 		ctx, cancel := boundedCtx(ctx, d)
 		cs, err := streamer(ctx, desc, cc, method, opts...)
 		if err != nil {

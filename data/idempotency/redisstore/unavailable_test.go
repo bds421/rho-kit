@@ -3,6 +3,7 @@ package redisstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -51,6 +52,13 @@ func TestTranslateUnavailable(t *testing.T) {
 		{"pool exhausted", goredis.ErrPoolExhausted, true},
 		{"pool timeout", goredis.ErrPoolTimeout, true},
 		{"net dial error", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true},
+		// Context errors are caller-driven cancellation, not a dependency
+		// outage. They must pass through unchanged even though
+		// context.DeadlineExceeded itself satisfies the net.Error interface.
+		{"context deadline exceeded", context.DeadlineExceeded, false},
+		{"context canceled", context.Canceled, false},
+		{"wrapped context deadline", fmt.Errorf("redis: %w", context.DeadlineExceeded), false},
+		{"wrapped context canceled", fmt.Errorf("redis: %w", context.Canceled), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

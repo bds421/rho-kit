@@ -18,7 +18,8 @@ import (
 // The conformance suite's ConcurrentAcquire test exercises
 // up to 16 simultaneous Acquire calls — the test DB's
 // MaxOpenConns must therefore be >= 16 to avoid pool
-// deadlock. newTestDB allocates a generous pool.
+// deadlock, which is why this factory calls
+// SetMaxOpenConns(32) on the DB returned by newTestDB.
 func TestPgAdvisory_Conformance(t *testing.T) {
 	locktest.Run(t, func(t *testing.T) lock.Locker {
 		db := newTestDB(t)

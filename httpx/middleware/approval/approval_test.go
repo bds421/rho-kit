@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -566,4 +567,69 @@ func TestEnsureBodyBuffered_DetachesCallerSlice(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []byte(`{"replayed":true}`), got)
 	assert.Equal(t, int64(len(got)), r2.ContentLength)
+}
+
+// TestEnsureBodyBuffered_GetBodyReplaysPayload guards against the stale-GetBody
+// trap: r.Clone copies GetBody from the source request, so an executor that
+// replays via http.Client.Do (which prefers GetBody on retry/redirect) would
+// otherwise resurrect the ORIGINAL body instead of the buffered payload.
+func TestEnsureBodyBuffered_GetBodyReplaysPayload(t *testing.T) {
+	r, err := http.NewRequest(http.MethodPost, "/v1/x", strings.NewReader("ORIGINAL"))
+	require.NoError(t, err)
+	require.NotNil(t, r.GetBody, "http.NewRequest sets GetBody for a string body")
+
+	r2 := EnsureBodyBuffered(r, []byte(`{"replayed":true}`))
+	require.NotNil(t, r2.GetBody)
+
+	// GetBody must yield the buffered payload, not the original body, and must
+	// be replayable more than once.
+	for i := 0; i < 2; i++ {
+		rc, err := r2.GetBody()
+		require.NoError(t, err)
+		got, err := io.ReadAll(rc)
+		require.NoError(t, err)
+		require.NoError(t, rc.Close())
+		assert.Equal(t, `{"replayed":true}`, string(got))
+	}
+}
+
+// TestEnsureBodyBuffered_OverwritesStaleContentLengthHeader guards against the
+// cloned Content-Length header disagreeing with the new payload length when an
+// executor replays the request through an HTTP client.
+func TestEnsureBodyBuffered_OverwritesStaleContentLengthHeader(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/x", nil)
+	r.Header.Set("Content-Length", "9999")
+
+	payload := []byte(`{"replayed":true}`)
+	r2 := EnsureBodyBuffered(r, payload)
+
+	assert.Equal(t, strconv.Itoa(len(payload)), r2.Header.Get("Content-Length"))
+	assert.Equal(t, int64(len(payload)), r2.ContentLength)
+}
+
+// TestMiddleware_ErrorEnvelopeMatchesHTTPXShape pins the consistency fix: error
+// responses now use httpx.WriteError, so the body carries both a human "error"
+// message and a machine-readable "code" — matching sibling kit middleware
+// (apikey) instead of the bare {"error": msg} the package used to emit.
+func TestMiddleware_ErrorEnvelopeMatchesHTTPXShape(t *testing.T) {
+	store := newApprovalStore(t)
+	mw := Middleware(store, headerActor())
+	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	// Missing tenant context → 400 via the error path.
+	r := httptest.NewRequest(http.MethodDelete, "/v1/users/42", nil)
+	r.Header.Set("X-Actor", testActor)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var env struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &env))
+	assert.Equal(t, "tenant id missing", env.Error)
+	assert.NotEmpty(t, env.Code, "httpx.WriteError must emit a machine-readable code")
 }

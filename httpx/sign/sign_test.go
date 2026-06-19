@@ -578,6 +578,58 @@ func TestSign_ZeroesPerRequestKeyCopy(t *testing.T) {
 	require.Equal(t, expected, secret, "store-owned secret must not be zeroed; only the per-request copy")
 }
 
+// TestSign_KeyStoreFreshCopyContract documents and guards the
+// load-bearing KeyStore contract: CurrentKeyID must return a FRESH
+// secret copy per call. RoundTrip zeroes the returned slice once the
+// signature is computed (see TestSign_ZeroesPerRequestKeyCopy), so a
+// store that hands back a fresh copy each call keeps an intact
+// source-of-truth secret and signs every subsequent request correctly.
+//
+// This is the positive side of the contract noted in the KeyStore
+// doc: stores returning a shared/cached slice would see it zeroed
+// after the first request and corrupt later signatures. We exercise
+// the compliant path end-to-end across multiple requests to prove the
+// transport never corrupts a contract-abiding store's key.
+func TestSign_KeyStoreFreshCopyContract(t *testing.T) {
+	source := bytes.Repeat([]byte("ABCDEF12"), 4)
+	require.Equal(t, 32, len(source))
+
+	nonceStore := signedrequest.NewMemoryNonceStore(10 * time.Minute)
+	resolver := func(_ context.Context, id string) ([]byte, error) {
+		assert.Equal(t, keyID, id)
+		return append([]byte(nil), source...), nil
+	}
+	mw := signedrequest.Middleware(resolver, nonceStore)
+	srv := httptest.NewServer(mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})))
+	defer srv.Close()
+
+	var calls int
+	store := keyStoreFn(func(context.Context) (string, []byte, error) {
+		calls++
+		// Contract: return a fresh copy each call. The transport
+		// zeroes the returned slice, so the store's source secret
+		// must stay independent of it.
+		return keyID, append([]byte(nil), source...), nil
+	})
+
+	client := &http.Client{Transport: WrapKeyStore(http.DefaultTransport, store)}
+
+	for i := 0; i < 3; i++ {
+		resp, err := client.Post(srv.URL+"/api/x", "application/json", strings.NewReader("payload"))
+		require.NoError(t, err, "request %d failed — a contract-abiding store must sign every request", i)
+		require.NoError(t, resp.Body.Close())
+		require.Equal(t, http.StatusNoContent, resp.StatusCode, "request %d failed verification", i)
+	}
+
+	require.Equal(t, 3, calls)
+	// The store's source-of-truth secret must remain untouched by the
+	// transport's per-request zeroize.
+	require.Equal(t, bytes.Repeat([]byte("ABCDEF12"), 4), source,
+		"store-owned secret was corrupted; per-call fresh-copy contract violated by the transport")
+}
+
 // keyStoreFn is a tiny adapter for the KeyStore interface that lets
 // tests drive CurrentKeyID with arbitrary behaviour.
 type keyStoreFn func(ctx context.Context) (string, []byte, error)

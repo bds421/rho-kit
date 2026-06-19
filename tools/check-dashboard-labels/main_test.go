@@ -234,6 +234,35 @@ func TestExtractFromJSON_PullsEveryExprField(t *testing.T) {
 	}
 }
 
+func TestExtractFromJSON_PullsTemplatingQueryField(t *testing.T) {
+	// Grafana templating variables carry their PromQL in a "query"
+	// field (e.g. label_values(metric{label="x"}, l)), not "expr".
+	// Label drift inside those selectors must be visible too.
+	dir := t.TempDir()
+	src := `{
+        "templating": {
+          "list": [{"query": "label_values(c{env=\"prod\"}, instance)"}]
+        }
+    }`
+	path := filepath.Join(dir, "x.json")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := extractFromJSON(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range refs {
+		if r.metric == "c" && r.label == "env" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected metric c with label env from templating query; got %v", refs)
+	}
+}
+
 func TestExtractFromYAML_ExtractsExprLines(t *testing.T) {
 	dir := t.TempDir()
 	src := `groups:

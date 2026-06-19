@@ -50,13 +50,13 @@ func TestPoolStatsCollector_EmitsAllDescriptors(t *testing.T) {
 	require.NoError(t, err)
 
 	wantFamilies := map[string]bool{
-		"pgx_pool_acquired_conns":                false,
-		"pgx_pool_total_conns":                   false,
-		"pgx_pool_idle_conns":                    false,
-		"pgx_pool_max_conns":                     false,
-		"pgx_pool_acquire_wait_seconds_total":    false,
-		"pgx_pool_acquire_count_total":           false,
-		"pgx_pool_canceled_acquire_count_total":  false,
+		"pgx_pool_acquired_conns":               false,
+		"pgx_pool_total_conns":                  false,
+		"pgx_pool_idle_conns":                   false,
+		"pgx_pool_max_conns":                    false,
+		"pgx_pool_acquire_wait_seconds_total":   false,
+		"pgx_pool_acquire_count_total":          false,
+		"pgx_pool_canceled_acquire_count_total": false,
 	}
 	for _, mf := range families {
 		if _, ok := wantFamilies[mf.GetName()]; ok {
@@ -64,7 +64,7 @@ func TestPoolStatsCollector_EmitsAllDescriptors(t *testing.T) {
 			require.NotEmpty(t, mf.GetMetric(), "no samples for %s", mf.GetName())
 			labels := mf.GetMetric()[0].GetLabel()
 			require.Len(t, labels, 1)
-			assert.Equal(t, "instance", labels[0].GetName())
+			assert.Equal(t, "pgx_instance", labels[0].GetName())
 			assert.Equal(t, "primary", labels[0].GetValue())
 		}
 	}

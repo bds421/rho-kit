@@ -189,6 +189,112 @@ func TestFieldEncryptor_EncryptIfPlainWithContext_PassesThroughAADBoundCiphertex
 	}
 }
 
+func TestFieldEncryptor_EncryptIfPlain_UpgradesLegacyPrefixesToV3(t *testing.T) {
+	// The documented v3 migration path (encrypt.go: "Operators completing
+	// the v3 migration may drop legacy reads in a future release once
+	// their stored data is fully re-encrypted") relies on idempotent
+	// re-save flows actually rewriting legacy rows to the v3 prefix.
+	// If EncryptIfPlain passes legacy v1/v2-prefixed ciphertext through
+	// unchanged, those rows never advance to v3 — an operator who later
+	// drops legacy reads loses access to data they believed was upgraded.
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+
+	original := "alice@example.com"
+	v3Ciphertext, err := enc.Encrypt(original)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	body := v3Ciphertext[len(encryptedV3Prefix):]
+
+	cases := []struct {
+		name   string
+		legacy string
+	}{
+		{name: "v1", legacy: legacyEncryptedV1Prefix + body},
+		{name: "v2", legacy: legacyEncryptedV2Prefix + body},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upgraded, err := enc.EncryptIfPlain(tc.legacy)
+			if err != nil {
+				t.Fatalf("encrypt-if-plain: %v", err)
+			}
+			if upgraded == tc.legacy {
+				t.Fatal("EncryptIfPlain must upgrade legacy-prefixed ciphertext to v3, not pass it through unchanged")
+			}
+			if !strings.HasPrefix(upgraded, encryptedV3Prefix) {
+				t.Fatalf("upgraded ciphertext must carry the v3 prefix, got %q", upgraded)
+			}
+			// The upgraded value must still decrypt to the original plaintext.
+			got, err := enc.Decrypt(upgraded)
+			if err != nil {
+				t.Fatalf("decrypt upgraded: %v", err)
+			}
+			if got != original {
+				t.Fatalf("upgrade changed plaintext: got %q, want %q", got, original)
+			}
+		})
+	}
+}
+
+func TestFieldEncryptor_EncryptIfPlainWithContext_UpgradesLegacyPrefixesToV3(t *testing.T) {
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+
+	aad := []byte("users:42:email")
+	original := "alice@example.com"
+	v3Ciphertext, err := enc.EncryptWithContext(original, aad)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	body := v3Ciphertext[len(encryptedV3Prefix):]
+	legacy := legacyEncryptedV1Prefix + body
+
+	upgraded, err := enc.EncryptIfPlainWithContext(legacy, aad)
+	if err != nil {
+		t.Fatalf("encrypt-if-plain with matching AAD: %v", err)
+	}
+	if upgraded == legacy {
+		t.Fatal("EncryptIfPlainWithContext must upgrade legacy AAD-bound ciphertext to v3")
+	}
+	if !strings.HasPrefix(upgraded, encryptedV3Prefix) {
+		t.Fatalf("upgraded ciphertext must carry the v3 prefix, got %q", upgraded)
+	}
+	got, err := enc.DecryptWithContext(upgraded, aad)
+	if err != nil {
+		t.Fatalf("decrypt upgraded: %v", err)
+	}
+	if got != original {
+		t.Fatalf("upgrade changed plaintext: got %q, want %q", got, original)
+	}
+}
+
+func TestFieldEncryptor_EncryptIfPlain_PassesThroughV3Unchanged(t *testing.T) {
+	// Sanity: already-v3 ciphertext must still be returned byte-for-byte
+	// (no needless re-encryption / IV churn for rows already migrated).
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+	v3Ciphertext, err := enc.Encrypt("hello")
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	again, err := enc.EncryptIfPlain(v3Ciphertext)
+	if err != nil {
+		t.Fatalf("encrypt-if-plain: %v", err)
+	}
+	if again != v3Ciphertext {
+		t.Fatal("EncryptIfPlain must pass through already-v3 ciphertext unchanged")
+	}
+}
+
 func TestFieldEncryptor_EncryptWithContext_AADBindsCiphertextToRow(t *testing.T) {
 	enc, err := NewFieldEncryptor(testKey(t))
 	if err != nil {
@@ -387,75 +493,6 @@ func TestFieldEncryptor_CiphertextIsPostgresTextSafe(t *testing.T) {
 				t.Fatalf("ciphertext[%d] = 0x%02x; expected printable ASCII for safe text-column storage", i, b)
 			}
 		}
-	}
-}
-
-func TestEncryptOptional_NilEncryptor(t *testing.T) {
-	got, err := encryptOptional(nil, "plaintext")
-	if !errors.Is(err, ErrInvalidEncryptor) {
-		t.Fatalf("expected ErrInvalidEncryptor, got %v", err)
-	}
-	if got != "" {
-		t.Fatalf("expected empty output on error, got %q", got)
-	}
-}
-
-func TestEncryptOptional_BindsAAD(t *testing.T) {
-	enc, err := NewFieldEncryptor(testKey(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	aad := []byte("tenant:acme:users:42:ssn")
-	got, err := encryptOptionalWithContext(enc, "secret-value", aad)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got == "secret-value" {
-		t.Fatal("expected encrypted value to differ from plaintext")
-	}
-	if _, err := enc.DecryptWithContext(got, []byte("tenant:evil:users:42:ssn")); err == nil {
-		t.Fatal("DecryptWithContext must reject optional ciphertext under different AAD")
-	}
-	plain, err := enc.DecryptWithContext(got, aad)
-	if err != nil {
-		t.Fatalf("decrypt with matching AAD: %v", err)
-	}
-	if plain != "secret-value" {
-		t.Fatalf("got %q, want secret-value", plain)
-	}
-}
-
-func TestEncryptOptional_EmptyValue(t *testing.T) {
-	enc, err := NewFieldEncryptor(testKey(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := encryptOptional(enc, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "" {
-		t.Fatalf("expected empty string, got %q", got)
-	}
-}
-
-func TestEncryptOptional_WithEncryptor(t *testing.T) {
-	enc, err := NewFieldEncryptor(testKey(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := encryptOptional(enc, "secret-value")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got == "secret-value" {
-		t.Fatal("expected encrypted value to differ from plaintext")
-	}
-	if len(got) < len(encryptedV3Prefix) || got[:len(encryptedV3Prefix)] != encryptedV3Prefix {
-		t.Fatalf("expected current prefix, got %q", got)
 	}
 }
 

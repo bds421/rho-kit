@@ -143,8 +143,8 @@ func ValidateBindingSpecs(specs []BindingSpec) error {
 		if err := ValidateExchangeName(b.Exchange); err != nil {
 			return err
 		}
-		if b.ConsumerGroup == "" {
-			return errors.New("consumer group must not be empty")
+		if err := validateConsumerGroup(b.ConsumerGroup, b.Retry != nil); err != nil {
+			return err
 		}
 		switch b.ExchangeType {
 		case ExchangeDirect, ExchangeFanout, ExchangeTopic, ExchangeHeaders:
@@ -177,6 +177,40 @@ func ValidateBindingSpecs(specs []BindingSpec) error {
 	return nil
 }
 
+// retryQueueSuffix is the longest suffix ComputeBindings appends to a
+// ConsumerGroup when retry topology is declared (".retry" is 6 bytes,
+// longer than ".dead"). The derived queue name must stay within the
+// portable route-name cap, so a consumer group is allowed at most
+// MaxRouteNameBytes-len(retryQueueSuffix) bytes when retry is set.
+const retryQueueSuffix = ".retry"
+
+// validateConsumerGroup holds the ConsumerGroup to the same portable
+// token rules as exchange names (non-empty, <= MaxRouteNameBytes, valid
+// UTF-8, no control or whitespace bytes) so a non-portable value fails
+// fast here rather than at broker-declaration time. ConsumerGroup is
+// used verbatim as AMQP queue names and dead-letter routing keys, and
+// when retry is configured it is also the stem for the ".retry"/".dead"
+// queue names — so the effective length budget shrinks by the longest
+// derived suffix when withRetry is true.
+//
+// Error messages intentionally do not echo the consumer-group value,
+// matching the redaction posture of the route validators.
+func validateConsumerGroup(consumerGroup string, withRetry bool) error {
+	if err := ValidateRoutingKey(consumerGroup); err != nil {
+		// Reuse the routing-key token rules (length, UTF-8, control,
+		// whitespace) but re-label the field and keep the non-empty
+		// message wording stable for existing callers/tests.
+		return fmt.Errorf("consumer group invalid: %w", ErrInvalidRoute)
+	}
+	if consumerGroup == "" {
+		return errors.New("consumer group must not be empty")
+	}
+	if withRetry && len(consumerGroup) > MaxRouteNameBytes-len(retryQueueSuffix) {
+		return errors.New("consumer group too long: derived retry/dead queue name would exceed the portable route-name limit")
+	}
+	return nil
+}
+
 // ComputeBindings converts BindingSpecs into Bindings by computing the
 // retry/dead exchange and queue names. Unlike backend-specific DeclareAll,
 // it requires no broker connection — it is a pure function. Consumer services
@@ -184,11 +218,26 @@ func ValidateBindingSpecs(specs []BindingSpec) error {
 //
 // The returned bindings own detached retry-policy copies so caller mutation
 // after setup cannot alter consumer retry decisions.
+//
+// Defaults applied by [NormalizeBindingSpecs] (e.g. DefaultRetryPolicy) are
+// silently applied here. Use [ComputeBindingsWithWarnings] to surface those
+// defaults in the consumer's startup log.
 func ComputeBindings(specs ...BindingSpec) ([]Binding, error) {
+	bindings, _, err := ComputeBindingsWithWarnings(specs...)
+	return bindings, err
+}
+
+// ComputeBindingsWithWarnings is [ComputeBindings] that additionally returns
+// the [NormalizeBindingSpecs] warnings describing any kit defaults applied to
+// the specs (e.g. DefaultRetryPolicy filled in for a Retry-less, non-
+// WithoutRetry binding). Callers should log the warnings so operators can see
+// that the kit picked a default for them — the silent default-application in
+// ComputeBindings was the gap this method closes.
+func ComputeBindingsWithWarnings(specs ...BindingSpec) ([]Binding, []string, error) {
 	specs = CloneBindingSpecs(specs)
-	_ = NormalizeBindingSpecs(specs)
+	warnings := NormalizeBindingSpecs(specs)
 	if err := ValidateBindingSpecs(specs); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	result := make([]Binding, 0, len(specs))
@@ -202,7 +251,7 @@ func ComputeBindings(specs ...BindingSpec) ([]Binding, error) {
 		}
 		result = append(result, db)
 	}
-	return result, nil
+	return result, warnings, nil
 }
 
 // FindBinding returns the first Binding whose RoutingKey matches the given key.

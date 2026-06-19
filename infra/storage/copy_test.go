@@ -110,6 +110,39 @@ func TestMove(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestMove_SameSourceAndDestinationPreservesObject(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend := newTestBackend(t)
+
+	require.NoError(t, backend.Put(ctx, "same.txt", bytes.NewReader([]byte("keepme")), storage.ObjectMeta{}))
+
+	// Move onto the same key must be a no-op, not Copy-then-Delete the only
+	// copy (which would destroy the object).
+	err := storage.Move(ctx, backend, "same.txt", "same.txt")
+	require.NoError(t, err)
+
+	rc, _, err := backend.Get(ctx, "same.txt")
+	require.NoError(t, err)
+	got, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	assert.Equal(t, []byte("keepme"), got)
+
+	ok, err := backend.Exists(ctx, "same.txt")
+	require.NoError(t, err)
+	assert.True(t, ok, "object must survive a Move onto itself")
+}
+
+func TestMove_RejectsInvalidIdenticalKeys(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend := newTestBackend(t)
+
+	// Identical keys still must pass key validation before the no-op shortcut.
+	err := storage.Move(ctx, backend, "", "")
+	require.Error(t, err)
+}
+
 func TestCopyAcross(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -78,6 +78,15 @@ func WithInstance(name string) Option {
 
 // WithConfig overrides the stored Config. This is primarily useful in tests
 // via NewWithClient where no config is loaded from environment.
+//
+// WARNING: WithConfig only replaces the kit-side Config used for URL()
+// generation and the SSE policy applied to Put/Copy/PresignPut. When passed to
+// New/NewContext it does NOT rebuild the underlying AWS SDK client, which was
+// already constructed from the original cfg, and it does NOT re-run
+// [Config.Validate]. Changing Endpoint, Region, or credentials via WithConfig
+// therefore affects URL()/SSE only — actual S3 requests still target the
+// client built at construction. Pass the desired Endpoint/Region/credentials
+// to New/NewContext directly; reserve WithConfig for tests with a mock Client.
 func WithConfig(cfg Config) Option {
 	return func(b *Backend) {
 		b.cfg = cfg
@@ -157,13 +166,19 @@ func NewContext(ctx context.Context, cfg Config, opts ...Option) (*Backend, erro
 		bucket:    cfg.Bucket,
 		cfg:       cfg,
 		instance:  "default",
-		metrics:   defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
 			panic("s3backend: NewContext option must not be nil")
 		}
 		o(b)
+	}
+	// Fall back to the shared default metrics only when no option supplied a
+	// registerer. Doing this after options run avoids touching
+	// prometheus.DefaultRegisterer (a global side effect) when the caller
+	// passed WithMetricsRegisterer.
+	if b.metrics == nil {
+		b.metrics = defaultMetrics()
 	}
 	return b, nil
 }
@@ -185,13 +200,17 @@ func NewWithClient(client Client, presigner Presigner, bucket string, opts ...Op
 		presigner: presigner,
 		bucket:    bucket,
 		instance:  "default",
-		metrics:   defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
 			panic("s3backend: NewWithClient option must not be nil")
 		}
 		o(b)
+	}
+	// Fall back to the shared default metrics only when no option supplied a
+	// registerer (see NewContext).
+	if b.metrics == nil {
+		b.metrics = defaultMetrics()
 	}
 	return b
 }
@@ -358,8 +377,7 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 	b.metrics.observeOp(b.instance, "get", start, s3MetricErr(err))
 
 	if err != nil {
-		var noSuchKey *types.NoSuchKey
-		if errors.As(err, &noSuchKey) {
+		if isS3NotFound(err) {
 			// NotFound is expected control flow, not an error — don't pollute traces.
 			return nil, storage.ObjectMeta{}, fmt.Errorf("s3backend: get: %w", storage.ErrObjectNotFound)
 		}
@@ -457,7 +475,22 @@ func isS3NotFound(err error) bool {
 		return true
 	}
 	var noSuchKey *types.NoSuchKey
-	return errors.As(err, &noSuchKey)
+	if errors.As(err, &noSuchKey) {
+		return true
+	}
+	// S3-compatible endpoints or intermediary proxies may return a bodyless
+	// 404 that the SDK deserializes to a generic smithy.APIError (code
+	// "NoSuchKey" or "NotFound") rather than a typed NoSuchKey/NotFound. Match
+	// those codes too so missing objects are treated as control flow, not a
+	// generic operation error, consistently across Get/Delete/Exists.
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "NoSuchKey", "NotFound":
+			return true
+		}
+	}
+	return false
 }
 
 // applySSE sets the ServerSideEncryption (and SSEKMSKeyId when applicable)

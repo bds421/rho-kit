@@ -191,6 +191,67 @@ func TestHTTPMetrics_PanicAfterHeaderRecordsWrittenStatus(t *testing.T) {
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/created-then-panic", nil))
 }
 
+func TestNewHTTPMetrics_RepeatedConstructionReusesCollectors(t *testing.T) {
+	reg := prometheus.NewRegistry()
+
+	first := NewHTTPMetrics(WithRegisterer(reg))
+	// A second construction on the same registry must not panic and must
+	// reuse the already-registered collectors so observations from both
+	// handles aggregate into one series rather than vanishing into an
+	// unregistered local copy.
+	second := NewHTTPMetrics(WithRegisterer(reg))
+
+	require.Same(t, first.requestsTotal, second.requestsTotal,
+		"second construction should reuse the registered counter")
+	require.Same(t, first.requestDuration, second.requestDuration,
+		"second construction should reuse the registered histogram")
+	require.Same(t, first.requestsInFlight, second.requestsInFlight,
+		"second construction should reuse the registered gauge")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /reuse", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handlerFirst := first.Middleware(mux)
+	handlerSecond := second.Middleware(mux)
+	handlerFirst.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/reuse", nil))
+	handlerSecond.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/reuse", nil))
+
+	var metric dto.Metric
+	require.NoError(t, second.requestsTotal.WithLabelValues("GET", "/reuse", "200").Write(&metric))
+	assert.Equal(t, float64(2), metric.GetCounter().GetValue(),
+		"observations from both reused handles should aggregate into one series")
+}
+
+func TestNewHTTPMetrics_ConflictingRegistrationPanicsWithErrorText(t *testing.T) {
+	reg := prometheus.NewRegistry()
+
+	// Pre-register an http_requests_total collector with a different shape
+	// (different help text) so the kit's registration hits a genuine
+	// conflict rather than the benign already-registered path. The panic
+	// must carry the underlying error text, not a bare opaque message.
+	conflicting := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "http",
+		Name:      "requests_total",
+		Help:      "conflicting collector",
+	})
+	require.NoError(t, reg.Register(conflicting))
+
+	defer func() {
+		got := recover()
+		require.NotNil(t, got, "conflicting registration must panic")
+		msg, ok := got.(string)
+		require.True(t, ok, "panic value should be a string, got %T", got)
+		assert.Contains(t, msg, "registration failed",
+			"panic should describe the registration failure")
+		assert.NotEqual(t, "httpx/metrics: metric registration failed", msg,
+			"panic must preserve the underlying error text, not a bare opaque message")
+	}()
+
+	NewHTTPMetrics(WithRegisterer(reg))
+}
+
 func TestHTTPMetrics_InFlightReturnsToZero(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewHTTPMetrics(WithRegisterer(reg))

@@ -1,6 +1,6 @@
 # Storage — File Storage & Serving
 
-Packages: `infra/storage`, `storage/s3backend`, `storage/azurebackend`, `storage/gcsbackend`, `storage/sftpbackend`, `storage/localbackend`, `storage/membackend`, `storage/encryption`, `storage/retry`, `storage/circuitbreaker`, `storage/storagehttp`, `storage/storagehttp/uploadsec`, `storage/storagehttp/uploadsec/clamav`
+Packages: `infra/storage`, `infra/storage/s3backend`, `infra/storage/azurebackend`, `infra/storage/gcsbackend`, `infra/storage/sftpbackend`, `infra/storage/localbackend`, `infra/storage/membackend`, `infra/storage/encryption`, `infra/storage/retry`, `infra/storage/circuitbreaker`, `infra/storage/storagehttp`, `infra/storage/storagehttp/uploadsec`, `infra/storage/storagehttp/uploadsec/clamav`
 
 Snippet status: Go blocks in this recipe are illustrative fragments unless
 explicitly introduced as generated or executable code. Buildable golden-path
@@ -22,8 +22,9 @@ Use the `infra/storage` package whenever a service needs to store, retrieve, or 
 | Unit tests | `membackend` |
 
 S3, GCS, Azure Blob Storage, and SFTP backends expose matching Prometheus
-operation-duration and operation-error metrics with `instance` and `operation`
-labels. Use `WithRegisterer(reg)` for test isolation or custom registries; the
+operation-duration and operation-error metrics with `storage_instance` and
+`operation` labels. (`storage_instance` avoids colliding with Prometheus's
+reserved `instance` scrape-target label.) Use `WithRegisterer(reg)` for test isolation or custom registries; the
 production dashboards live under `observability/dashboards/grafana/` as the
 storage overview plus one provider dashboard per backend.
 
@@ -45,7 +46,7 @@ Credential rotation:
 ## Quick Start (S3)
 
 ```go
-cfg, err := s3backend.LoadS3Config("MYAPP", cfg.Environment)
+cfg, err := s3backend.LoadConfig("MYAPP", cfg.Environment)
 if err != nil { return err }
 
 backend, err := s3backend.New(cfg)

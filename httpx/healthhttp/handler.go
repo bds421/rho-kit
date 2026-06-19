@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -17,6 +18,12 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
+
+// drainLimit caps how many bytes of a dependency's response body the probe
+// reads before closing. Draining enables connection reuse, but a misbehaving
+// or malicious dependency could otherwise stream for the full probe timeout;
+// the body content is irrelevant to the health verdict.
+const drainLimit = 4 << 10 // 4 KiB
 
 // Handler wraps a [health.Checker] as an [http.Handler].
 // It calls Evaluate and maps the health status to an HTTP status code:
@@ -113,6 +120,11 @@ func noStoreHandler(h http.Handler) http.Handler {
 //
 // The check applies a 5-second timeout and blocks redirects unless the
 // supplied client has an explicit redirect policy.
+//
+// HTTPCheck panics if name is not a valid dependency-check name (see
+// [health.ValidateCheckName]) or if url is empty or unparseable, surfacing
+// misconfiguration at mount time rather than as a perpetually-unhealthy
+// dependency at probe time.
 func HTTPCheck(name, url string, client *http.Client) health.DependencyCheck {
 	return httpCheck(name, url, client, false)
 }
@@ -120,18 +132,32 @@ func HTTPCheck(name, url string, client *http.Client) health.DependencyCheck {
 // CriticalHTTPCheck is [HTTPCheck] with Critical=true — a failure flips
 // the service's /ready response to unhealthy. Use only for dependencies
 // without which the service cannot serve correctly.
+//
+// Like [HTTPCheck], it panics on an invalid name or empty/unparseable url.
 func CriticalHTTPCheck(name, url string, client *http.Client) health.DependencyCheck {
 	return httpCheck(name, url, client, true)
 }
 
-func httpCheck(name, url string, client *http.Client, critical bool) health.DependencyCheck {
+func httpCheck(name, rawURL string, client *http.Client, critical bool) health.DependencyCheck {
+	// Fail fast on misconfiguration at construction (mount) time, per kit
+	// convention, rather than surfacing it later as a perpetually-unhealthy
+	// dependency at probe time.
+	if err := health.ValidateCheckName(name); err != nil {
+		panic("healthhttp: HTTPCheck requires a valid dependency name: " + err.Error())
+	}
+	if rawURL == "" {
+		panic("healthhttp: HTTPCheck requires a non-empty URL")
+	}
+	if _, err := url.Parse(rawURL); err != nil {
+		panic("healthhttp: HTTPCheck requires a parseable URL: " + err.Error())
+	}
 	client = dependencyHTTPClient(client)
 	return health.DependencyCheck{
 		Name: name,
 		Check: func(ctx context.Context) string {
 			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
-			req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, url, nil)
+			req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, rawURL, nil)
 			if err != nil {
 				return health.StatusUnhealthy
 			}
@@ -139,7 +165,9 @@ func httpCheck(name, url string, client *http.Client, critical bool) health.Depe
 			if err != nil {
 				return health.StatusUnhealthy
 			}
-			_, _ = io.Copy(io.Discard, resp.Body)
+			// Drain a bounded prefix to enable connection reuse without
+			// letting a misbehaving dependency stream unbounded data.
+			_, _ = io.CopyN(io.Discard, resp.Body, drainLimit)
 			_ = resp.Body.Close()
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				return health.StatusUnhealthy

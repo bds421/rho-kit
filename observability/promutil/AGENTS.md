@@ -12,10 +12,10 @@
 
 ## Key APIs
 
-- `OpaqueLabelValue(name, value)` — projects an arbitrary caller-controlled value through a bounded hash + length cap so it cannot inflate Prometheus cardinality beyond a small bucket count.
+- `OpaqueLabelValue(prefix, parts...)` — projects one or more arbitrary caller-controlled values (joined) through a bounded hash + length cap so they cannot inflate Prometheus cardinality beyond a small bucket count.
 - `ValidateStaticLabelValue(name, value)` — returns nil iff `value` is a static-label-safe string (no control bytes, length cap, character set). Call at CONSTRUCTION time so misconfiguration surfaces at startup.
 - `MustRegisterOrGet(reg, collector)` — registers, OR returns the already-registered collector if a peer wave registered it first. Fixes the "two NewMetrics calls in tests, second fails" footgun.
-- `labelguard.Guard` — drops + counts disallowed label values when a collector is being used WRONG by a downstream service. Wave 173's `kit-doctor` extensions detect missing labelguard wiring.
+- `labelguard.New(allowed, opts...) *labelguard.AllowedLabels` — its `ObserveCounter` / `ObserveHistogram` methods drop + count disallowed label values when a collector is being used WRONG by a downstream service. Wave 173's `kit-doctor` extensions detect missing labelguard wiring.
 
 ## Common mistakes
 

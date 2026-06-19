@@ -112,7 +112,11 @@ func AllowFromHeader(name, expected string) Authenticator {
 	if !validHeaderValue(expected) {
 		panic("debughttp: AllowFromHeader requires a valid non-empty expected value")
 	}
-	want := []byte(expected)
+	// Hash both sides to a fixed 32 bytes before the constant-time compare
+	// (mirrors BasicAuth above): comparing raw tokens of differing length
+	// lets ConstantTimeCompare short-circuit on the length mismatch, leaking
+	// the expected token's length via timing.
+	want := sha256.Sum256([]byte(expected))
 	return func(r *http.Request) bool {
 		values := r.Header.Values(headerName)
 		if len(values) != 1 {
@@ -121,8 +125,8 @@ func AllowFromHeader(name, expected string) Authenticator {
 		if !validHeaderValue(values[0]) {
 			return false
 		}
-		got := []byte(values[0])
-		return subtle.ConstantTimeCompare(got, want) == 1
+		got := sha256.Sum256([]byte(values[0]))
+		return subtle.ConstantTimeCompare(got[:], want[:]) == 1
 	}
 }
 

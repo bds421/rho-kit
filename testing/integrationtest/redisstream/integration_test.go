@@ -145,7 +145,7 @@ func TestConsumer_LiveRedis_ConsumeAndAck(t *testing.T) {
 	assert.Equal(t, "consume.test", received.Type)
 
 	var payload map[string]string
-	json.Unmarshal(received.Payload, &payload)
+	require.NoError(t, json.Unmarshal(received.Payload, &payload))
 	assert.Equal(t, "hello", payload["data"])
 }
 

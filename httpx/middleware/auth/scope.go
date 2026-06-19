@@ -2,7 +2,6 @@ package auth
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/bds421/rho-kit/httpx/v2"
 )
@@ -77,16 +76,33 @@ func scopesFromRequest(r *http.Request) string {
 	return Scopes(r.Context())
 }
 
-// hasScope checks whether the comma-separated scopes string contains the given scope.
+// hasScope checks whether the scopes string contains the given scope as a
+// whole token. Tokens may be separated by commas and/or any ASCII whitespace,
+// so both the OAuth2-style space-separated grammar (the documented shape of
+// [Identity.Scopes], also parsed by the gRPC interceptor via strings.Fields)
+// and the historical comma-separated form are accepted. Empty segments are
+// ignored.
 func hasScope(scopes, scope string) bool {
 	for i, start := 0, 0; i <= len(scopes); i++ {
-		if i == len(scopes) || scopes[i] == ',' {
-			s := strings.TrimSpace(scopes[start:i])
-			if s == scope {
+		if i == len(scopes) || isScopeSeparator(scopes[i]) {
+			if scopes[start:i] == scope {
 				return true
 			}
 			start = i + 1
 		}
 	}
 	return false
+}
+
+// isScopeSeparator reports whether b delimits scope tokens. Commas keep the
+// historical HTTP grammar working; ASCII whitespace covers the OAuth2
+// space-separated grammar (and tab/newline variants) parsed elsewhere in the
+// kit.
+func isScopeSeparator(b byte) bool {
+	switch b {
+	case ',', ' ', '\t', '\n', '\v', '\f', '\r':
+		return true
+	default:
+		return false
+	}
 }

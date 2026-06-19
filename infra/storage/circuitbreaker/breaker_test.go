@@ -258,13 +258,15 @@ func TestCircuitBreaker_New_PanicsOnZeroThreshold(t *testing.T) {
 	})
 }
 
-// presignedListerCBBackend implements the four optional interfaces with
-// hooks so we can verify circuit breaker forwards capabilities and that
-// open circuits block them.
+// presignedListerCBBackend implements the four optional interfaces (Lister via
+// the embedded membackend, plus Copier, PresignedStore, PublicURLer) with hooks
+// so we can verify the circuit breaker forwards capabilities and that open
+// circuits block them.
 type presignedListerCBBackend struct {
 	*membackend.Backend
 	failPresign func() error
 	failURL     func() error
+	failCopy    func() error
 }
 
 func (b *presignedListerCBBackend) PresignGetURL(_ context.Context, key string, _ time.Duration) (string, error) {
@@ -292,6 +294,15 @@ func (b *presignedListerCBBackend) URL(_ context.Context, key string) (string, e
 		}
 	}
 	return "https://public/" + key, nil
+}
+
+func (b *presignedListerCBBackend) Copy(_ context.Context, _, _ string) error {
+	if b.failCopy != nil {
+		if err := b.failCopy(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func TestAsPresigned_ReachesUnderlyingThroughCircuitBreaker(t *testing.T) {
@@ -335,21 +346,15 @@ func TestAsLister_CircuitBreakerBlocksOpenCircuit(t *testing.T) {
 	assert.False(t, ok, "underlying lacks Lister so CB should not claim it")
 
 	// Now wrap a Lister-capable backend and re-test that an open circuit
-	// blocks List dispatch.
-	backend := &presignedListerCBBackend{Backend: membackend.New()}
-	cb2 := New(backend, WithThreshold(1), WithResetTimeout(time.Hour))
-
-	// Trip the breaker on cb2.
-	_, _, _ = cb2.Get(ctx, "missing")
-	// MemBackend.Get returns ErrObjectNotFound which the default
-	// ShouldTrip filters out — so we must use a different trip path.
-	// Force a trip with a custom backend instead.
+	// blocks List dispatch. MemBackend.Get returns ErrObjectNotFound, which
+	// the default ShouldTrip filters out, so trip via a backend whose every
+	// op fails with a trippable error.
 	tripping := &alwaysFailListerBackend{err: errors.New("down")}
-	cb3 := New(tripping, WithThreshold(1), WithResetTimeout(time.Hour))
-	_, _, _ = cb3.Get(ctx, "key") // trips
-	assert.Equal(t, StateOpen, cb3.State())
+	cb2 := New(tripping, WithThreshold(1), WithResetTimeout(time.Hour))
+	_, _, _ = cb2.Get(ctx, "key") // trips
+	assert.Equal(t, StateOpen, cb2.State())
 
-	lister, ok := storage.AsLister(cb3)
+	lister, ok := storage.AsLister(cb2)
 	require.True(t, ok)
 
 	// Iterating the list should yield ErrCircuitOpen.
@@ -362,6 +367,292 @@ func TestAsLister_CircuitBreakerBlocksOpenCircuit(t *testing.T) {
 	}
 	require.Error(t, seenErr)
 	assert.ErrorIs(t, seenErr, ErrCircuitOpen, "list must be blocked by open circuit")
+}
+
+func TestCircuitBreaker_PresignGetBlockedByOpenCircuit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var callCount atomic.Int32
+	backend := &presignedListerCBBackend{
+		Backend: membackend.New(),
+		failPresign: func() error {
+			callCount.Add(1)
+			return errors.New("down")
+		},
+	}
+	cb := New(backend, WithThreshold(1), WithResetTimeout(time.Hour))
+
+	ps, ok := storage.AsPresigned(cb)
+	require.True(t, ok)
+
+	// First call hits the backend, fails, and trips the breaker.
+	_, err := ps.PresignGetURL(ctx, "key", time.Minute)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrCircuitOpen)
+	require.Equal(t, StateOpen, cb.State())
+	require.Equal(t, int32(1), callCount.Load())
+
+	// Subsequent call must fast-fail with ErrCircuitOpen without touching
+	// the backend.
+	_, err = ps.PresignGetURL(ctx, "key", time.Minute)
+	assert.ErrorIs(t, err, ErrCircuitOpen, "PresignGetURL must be blocked by open circuit")
+	assert.Equal(t, int32(1), callCount.Load(), "open circuit must not reach the backend")
+}
+
+func TestCircuitBreaker_PresignPutBlockedByOpenCircuit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var callCount atomic.Int32
+	backend := &presignedListerCBBackend{
+		Backend: membackend.New(),
+		failPresign: func() error {
+			callCount.Add(1)
+			return errors.New("down")
+		},
+	}
+	cb := New(backend, WithThreshold(1), WithResetTimeout(time.Hour))
+
+	ps, ok := storage.AsPresigned(cb)
+	require.True(t, ok)
+
+	// First call hits the backend, fails, and trips the breaker.
+	_, err := ps.PresignPutURL(ctx, "key", time.Minute, storage.ObjectMeta{})
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrCircuitOpen)
+	require.Equal(t, StateOpen, cb.State())
+	require.Equal(t, int32(1), callCount.Load())
+
+	// Subsequent call must fast-fail with ErrCircuitOpen without touching
+	// the backend.
+	_, err = ps.PresignPutURL(ctx, "key", time.Minute, storage.ObjectMeta{})
+	assert.ErrorIs(t, err, ErrCircuitOpen, "PresignPutURL must be blocked by open circuit")
+	assert.Equal(t, int32(1), callCount.Load(), "open circuit must not reach the backend")
+}
+
+func TestCircuitBreaker_URLBlockedByOpenCircuit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var callCount atomic.Int32
+	backend := &presignedListerCBBackend{
+		Backend: membackend.New(),
+		failURL: func() error {
+			callCount.Add(1)
+			return errors.New("down")
+		},
+	}
+	cb := New(backend, WithThreshold(1), WithResetTimeout(time.Hour))
+
+	urler, ok := storage.AsPublicURLer(cb)
+	require.True(t, ok)
+
+	// First call hits the backend, fails, and trips the breaker.
+	_, err := urler.URL(ctx, "key")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrCircuitOpen)
+	require.Equal(t, StateOpen, cb.State())
+	require.Equal(t, int32(1), callCount.Load())
+
+	// Subsequent call must fast-fail with ErrCircuitOpen without touching
+	// the backend.
+	_, err = urler.URL(ctx, "key")
+	assert.ErrorIs(t, err, ErrCircuitOpen, "URL must be blocked by open circuit")
+	assert.Equal(t, int32(1), callCount.Load(), "open circuit must not reach the backend")
+}
+
+func TestCircuitBreaker_CopyBlockedByOpenCircuit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var callCount atomic.Int32
+	backend := &presignedListerCBBackend{
+		Backend: membackend.New(),
+		failCopy: func() error {
+			callCount.Add(1)
+			return errors.New("down")
+		},
+	}
+	cb := New(backend, WithThreshold(1), WithResetTimeout(time.Hour))
+
+	copier, ok := storage.AsCopier(cb)
+	require.True(t, ok)
+
+	// First call hits the backend, fails, and trips the breaker.
+	err := copier.Copy(ctx, "src", "dst")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrCircuitOpen)
+	require.Equal(t, StateOpen, cb.State())
+	require.Equal(t, int32(1), callCount.Load())
+
+	// Subsequent call must fast-fail with ErrCircuitOpen without touching
+	// the backend.
+	err = copier.Copy(ctx, "src", "dst")
+	assert.ErrorIs(t, err, ErrCircuitOpen, "Copy must be blocked by open circuit")
+	assert.Equal(t, int32(1), callCount.Load(), "open circuit must not reach the backend")
+}
+
+func TestCircuitBreaker_ListIterationFailuresTripBreaker(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// The backend yields an error during iteration of List (the common case
+	// for a streaming List against a dead backend). These iteration errors
+	// must be counted by the breaker, otherwise a dead backend never trips.
+	tripping := &alwaysFailListerBackend{err: errors.New("down")}
+	cb := New(tripping, WithThreshold(3), WithResetTimeout(time.Hour))
+	lister, ok := storage.AsLister(cb)
+	require.True(t, ok)
+
+	drain := func() error {
+		var seen error
+		for _, err := range lister.List(ctx, "", storage.ListOptions{}) {
+			if err != nil {
+				seen = err
+				break
+			}
+		}
+		return seen
+	}
+
+	// First 3 List drains fail with the backend error.
+	for range 3 {
+		err := drain()
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, ErrCircuitOpen)
+	}
+
+	// The breaker must now be open: iteration failures counted toward the
+	// consecutive-failure threshold.
+	assert.Equal(t, StateOpen, cb.State())
+
+	// A subsequent drain fails fast with ErrCircuitOpen.
+	err := drain()
+	assert.ErrorIs(t, err, ErrCircuitOpen)
+}
+
+func TestCircuitBreaker_ListProbeDoesNotPhantomCloseHalfOpen(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tripping := &alwaysFailListerBackend{err: errors.New("down")}
+	cb := New(tripping, WithThreshold(1), WithResetTimeout(time.Millisecond))
+
+	// Trip the breaker via a Get failure.
+	_, _, _ = cb.Get(ctx, "key")
+	require.Equal(t, StateOpen, cb.State())
+
+	// Wait for the reset timeout so the breaker enters half-open.
+	time.Sleep(5 * time.Millisecond)
+	require.Equal(t, StateHalfOpen, cb.State())
+
+	lister, ok := storage.AsLister(cb)
+	require.True(t, ok)
+
+	// A List probe whose stream errors during iteration must NOT close the
+	// circuit. A bare lazy dispatch would otherwise be recorded as a phantom
+	// success and re-close the breaker against a still-dead backend.
+	var seen error
+	for _, err := range lister.List(ctx, "", storage.ListOptions{}) {
+		if err != nil {
+			seen = err
+			break
+		}
+	}
+	require.Error(t, seen)
+	assert.NotEqual(t, StateClosed, cb.State(), "failed List probe must not close the circuit")
+}
+
+func TestCircuitBreaker_ListSuccessfulIterationClosesHalfOpen(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Seed a healthy backend so a Lister probe iterates successfully and
+	// closes the circuit in half-open.
+	healthy := membackend.New()
+	require.NoError(t, healthy.Put(ctx, "file.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{}))
+
+	switchable := &switchableListerBackend{
+		failFirstGet: true,
+		err:          errors.New("down"),
+		backend:      healthy,
+	}
+	cb := New(switchable, WithThreshold(1), WithResetTimeout(time.Millisecond))
+
+	// Trip the breaker.
+	_, _, _ = cb.Get(ctx, "file.txt")
+	require.Equal(t, StateOpen, cb.State())
+
+	time.Sleep(5 * time.Millisecond)
+	require.Equal(t, StateHalfOpen, cb.State())
+
+	lister, ok := storage.AsLister(cb)
+	require.True(t, ok)
+
+	var count int
+	var seenErr error
+	for _, err := range lister.List(ctx, "", storage.ListOptions{}) {
+		if err != nil {
+			seenErr = err
+			break
+		}
+		count++
+	}
+	require.NoError(t, seenErr)
+	assert.Equal(t, 1, count)
+	assert.Equal(t, StateClosed, cb.State(), "successful List probe must close the circuit")
+}
+
+func TestCircuitBreaker_DefaultDoesNotTripOnContextCanceled(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	failing := &alwaysFailBackend{err: context.Canceled}
+	cb := New(failing, WithThreshold(1), WithResetTimeout(time.Hour))
+
+	// Many consecutive client cancellations must not trip the circuit: a
+	// caller aborting is not evidence the backend is unhealthy.
+	for range 5 {
+		_, _, err := cb.Get(ctx, "key")
+		require.ErrorIs(t, err, context.Canceled)
+		assert.NotErrorIs(t, err, ErrCircuitOpen)
+	}
+	assert.Equal(t, StateClosed, cb.State())
+}
+
+// switchableListerBackend fails the first Get, then delegates to a real
+// backend (including List) so half-open probes can succeed.
+type switchableListerBackend struct {
+	failFirstGet bool
+	err          error
+	backend      storage.Storage
+	gotFirst     bool
+}
+
+func (b *switchableListerBackend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+	return b.backend.Put(ctx, key, r, meta)
+}
+
+func (b *switchableListerBackend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	if b.failFirstGet && !b.gotFirst {
+		b.gotFirst = true
+		return nil, storage.ObjectMeta{}, b.err
+	}
+	return b.backend.Get(ctx, key)
+}
+
+func (b *switchableListerBackend) Delete(ctx context.Context, key string) error {
+	return b.backend.Delete(ctx, key)
+}
+
+func (b *switchableListerBackend) Exists(ctx context.Context, key string) (bool, error) {
+	return b.backend.Exists(ctx, key)
+}
+
+func (b *switchableListerBackend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	lister, _ := storage.AsLister(b.backend)
+	return lister.List(ctx, prefix, opts)
 }
 
 // alwaysFailListerBackend is alwaysFailBackend that ALSO implements Lister.

@@ -19,10 +19,16 @@
 package tenant
 
 import (
+	"context"
+	"errors"
+	"log/slog"
 	"math"
 	"net/http"
+	"runtime/debug"
 	"strconv"
+	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/bds421/rho-kit/data/v2/ratelimit"
 	"github.com/bds421/rho-kit/httpx/v2"
@@ -37,6 +43,11 @@ const scopeHeader = "X-RateLimit-Scope"
 // scopeValue is what we set scopeHeader to when our cap fires.
 const scopeValue = "tenant"
 
+// errLimiterPanic is the sentinel returned by safeAllow when the
+// caller-supplied limiter panics, routed through the same 500 path as a
+// limiter back-end error so a buggy limiter fails closed.
+var errLimiterPanic = errors.New("ratelimit/tenant: limiter panicked")
+
 // New returns an HTTP middleware that gates requests on lim, keyed
 // by the tenant ID on the request context.
 //
@@ -50,6 +61,10 @@ const scopeValue = "tenant"
 //   - lim.Allow returns an error ⇒ 500 ("rate limit check failed").
 //     Limiter back-end errors must surface so a degraded backend
 //     doesn't silently fail-open.
+//   - lim.Allow panics ⇒ 500 ("rate limit check failed"). A buggy
+//     caller-supplied limiter is contained here (mirroring the
+//     KeyedMiddleware keyFunc guard) rather than propagating and
+//     relying on an outer recover middleware being installed.
 //   - lim.Allow returns true ⇒ next handler runs.
 //
 // New panics on a nil lim — a nil limiter would be a fail-open silent
@@ -66,7 +81,7 @@ func New(lim ratelimit.Limiter) func(http.Handler) http.Handler {
 				return
 			}
 
-			allowed, retryAfter, err := lim.Allow(r.Context(), string(id))
+			allowed, retryAfter, err := safeAllow(r.Context(), lim, string(id))
 			if err != nil {
 				httpx.WriteError(w, http.StatusInternalServerError, "rate limit check failed")
 				return
@@ -86,4 +101,23 @@ func New(lim ratelimit.Limiter) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// safeAllow invokes the caller-supplied limiter and converts a panic
+// into a synthetic error so the middleware can render a contained 500
+// instead of unwinding the request. This mirrors the safeRateLimitKey
+// guard around the caller-supplied keyFunc in the sibling
+// KeyedMiddleware: both treat a panicking caller-supplied extension
+// point as a degraded backend (fail-closed) rather than fail-open.
+func safeAllow(ctx context.Context, lim ratelimit.Limiter, key string) (allowed bool, retryAfter time.Duration, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Default().Error("ratelimit/tenant: limiter panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			allowed, retryAfter, err = false, 0, errLimiterPanic
+		}
+	}()
+	return lim.Allow(ctx, key)
 }

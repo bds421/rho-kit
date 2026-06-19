@@ -55,6 +55,13 @@ func (w *Watchable[T]) Get() T {
 // Subscribers may safely call OnChange (re-entrant) — the per-Set lock
 // (setMu) is distinct from the subscriber-map lock (mu).
 //
+// Subscribers must NOT call Set on the same Watchable from within their
+// callback. Set holds setMu for the entire synchronous notification pass,
+// and setMu is not reentrant, so a re-entrant Set self-deadlocks the calling
+// goroutine permanently and blocks all future Set callers. To normalise or
+// clamp a freshly-set value, do it in the loadFn / before calling Set, not
+// from a subscriber.
+//
 // A panicking subscriber is recovered and logged so that remaining
 // subscribers are still notified.
 func (w *Watchable[T]) Set(val T) {

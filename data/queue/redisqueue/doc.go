@@ -20,8 +20,8 @@
 //   - `redis_queue_dlq_depth{queue}` — entries in the asynq archive
 //     (dead-letter), polled on the same cadence as queue_depth.
 //
-// All three gauges are updated by the same depth poller (running on the
-// `WithHealthCheckInterval` cadence; default 30s). A growing dlq_depth
+// All three gauges are updated by the same depth poller, which runs on a
+// fixed 30s cadence (not operator-configurable). A growing dlq_depth
 // without an operator-driven drain is a strong signal of a poison
 // message in the pipeline.
 //

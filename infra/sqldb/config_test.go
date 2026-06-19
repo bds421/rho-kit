@@ -127,6 +127,45 @@ func TestFieldsValidate_SSLModeErrorsDoNotEchoValue(t *testing.T) {
 	}
 }
 
+// TestValidateDatabaseHost_AllowlistRejectsDSNKeywordInjection guards against a
+// consumer hand-building a libpq keyword DSN from Config.Host: values that smuggle
+// whitespace, '=' or ':' could inject extra connection keywords (e.g. flipping
+// sslmode off). The validator must accept ordinary hostnames/IPs and reject
+// anything outside the RFC 1123 hostname character set.
+func TestValidateDatabaseHost_AllowlistRejectsDSNKeywordInjection(t *testing.T) {
+	t.Run("accepts ordinary hostnames and IPs", func(t *testing.T) {
+		valid := []string{
+			"db.example.com",
+			"tenant-db.internal",
+			"localhost",
+			"db_primary.internal",
+			"db.example.com.", // FQDN trailing dot
+			"127.0.0.1",
+			"::1",
+			"2001:db8::1",
+		}
+		for _, host := range valid {
+			assert.NoErrorf(t, validateDatabaseHost(host), "host %q should be accepted", host)
+		}
+	})
+
+	t.Run("rejects keyword-injection hosts", func(t *testing.T) {
+		invalid := []string{
+			"localhost sslmode=disable", // whitespace + '='
+			"h=1 x=2",                   // bare keyword/value pairs
+			"host:5432",                 // ':' embeds a port/keyword
+			"db.example.com\tsslmode=disable",
+		}
+		for _, host := range invalid {
+			err := validateDatabaseHost(host)
+			require.Errorf(t, err, "host %q should be rejected", host)
+			assert.Contains(t, err.Error(), "DB_HOST contains invalid character")
+			// The error must not echo the (potentially secret) host value.
+			assert.NotContains(t, err.Error(), "sslmode")
+		}
+	})
+}
+
 func TestFieldsValidate_DBHostInvalidCharacterDoesNotEchoValue(t *testing.T) {
 	fields := Fields{
 		Database: Config{

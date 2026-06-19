@@ -1,7 +1,6 @@
 package circuitbreaker
 
 import (
-	"context"
 	"errors"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -91,18 +90,29 @@ const (
 // label. ErrCircuitOpen has its own bucket so dashboards can separate
 // "downstream is broken and the breaker is protecting us" from
 // "downstream returned an error this attempt".
-func callOutcome(err error) string {
+//
+// success/fail labeling defers to isSuccessful — the same predicate the
+// embedded breaker uses to decide whether the call counted as a failure
+// (the package default, or a caller's WithIsSuccessful /
+// WithPermanentSuccess). This keeps the metric in lockstep with the
+// breaker's own accounting under any predicate, not just the default.
+// ErrCircuitOpen is its own bucket because the breaker rejected the call
+// without ever running the predicate.
+func callOutcome(err error, isSuccessful func(error) bool) string {
 	switch {
 	case err == nil:
 		return outcomeSuccess
 	case errors.Is(err, ErrCircuitOpen):
 		return outcomeRejectedOpen
-	case errors.Is(err, context.Canceled):
-		// The default success predicate already excludes caller-driven
-		// cancellation from the breaker's failure count; surface it
-		// as success here too so the metric matches breaker accounting.
-		return outcomeSuccess
 	default:
+		if isSuccessful == nil {
+			// Fall back to the package default so the label is never
+			// arbitrary if the predicate was not captured.
+			isSuccessful = defaultIsSuccessful
+		}
+		if isSuccessful(err) {
+			return outcomeSuccess
+		}
 		return outcomeFail
 	}
 }

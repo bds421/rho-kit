@@ -254,9 +254,13 @@ func TestString_RedactsAcrossAllRenderVerbs(t *testing.T) {
 	logger.Info("event", "secret", s)
 	logOut := buf.String()
 	assert.NotContains(t, logOut, literal, "slog leaked plaintext: %s", logOut)
-	assert.True(t,
-		strings.Contains(logOut, redactedValue) ||
-			strings.Contains(logOut, `<redacted>`),
+	// slog's JSON handler emits the redaction marker verbatim ("<redacted>");
+	// it does not HTML-escape "<"/">". Assert the marker is present so this
+	// arm fails if a future change drops or mangles redaction in the JSON
+	// log path. (Previously this ORed two identical literals, so the
+	// second arm was dead and the assertion could never distinguish the
+	// escaped-vs-unescaped forms.)
+	assert.Contains(t, logOut, redactedValue,
 		"slog output missing redaction marker: %s", logOut)
 
 	// encoding.TextMarshaler — yaml.v3 / TOML / similar serialisers
@@ -386,4 +390,76 @@ func TestConstantTimeEqual_EqualAndDiffer(t *testing.T) {
 	if constantTimeEqual([]byte("aa"), []byte("ab")) {
 		t.Fatal("different inputs of same length must not compare equal")
 	}
+}
+
+// TestEqual covers the exported String.Equal contract end-to-end: equal and
+// differing secrets, self-comparison, the documented nil/uninitialised/zeroed
+// "empty" cases, and that two distinct Strings holding the same plaintext are
+// compared by value (not identity).
+func TestEqual(t *testing.T) {
+	t.Run("equal content", func(t *testing.T) {
+		a := NewFromString(plain)
+		b := NewFromString(plain)
+		assert.True(t, a.Equal(b))
+		assert.True(t, b.Equal(a), "Equal must be symmetric")
+	})
+
+	t.Run("different content", func(t *testing.T) {
+		a := NewFromString(plain)
+		b := NewFromString("other-secret-token")
+		assert.False(t, a.Equal(b))
+		assert.False(t, b.Equal(a), "Equal must be symmetric")
+	})
+
+	t.Run("self comparison", func(t *testing.T) {
+		a := NewFromString(plain)
+		assert.True(t, a.Equal(a), "a secret must compare equal to itself")
+	})
+
+	t.Run("differing length is unequal", func(t *testing.T) {
+		a := NewFromString("abc")
+		b := NewFromString("abcd")
+		assert.False(t, a.Equal(b))
+	})
+
+	t.Run("nil receiver equals nil argument", func(t *testing.T) {
+		var a, b *String
+		assert.True(t, a.Equal(b), "two nil receivers are both empty and equal")
+	})
+
+	t.Run("nil receiver equals empty secret", func(t *testing.T) {
+		var a *String
+		b := NewFromString("")
+		assert.True(t, a.Equal(b), "nil and empty are both treated as empty")
+		assert.True(t, b.Equal(a), "empty and nil are both treated as empty")
+	})
+
+	t.Run("uninitialised (zero value) equals empty", func(t *testing.T) {
+		var a String // never went through New: inner is nil
+		b := NewFromString("")
+		assert.True(t, a.Equal(b), "an uninitialised String is treated as empty")
+	})
+
+	t.Run("nil receiver differs from non-empty", func(t *testing.T) {
+		var a *String
+		b := NewFromString(plain)
+		assert.False(t, a.Equal(b))
+		assert.False(t, b.Equal(a))
+	})
+
+	t.Run("zeroed secret equals empty", func(t *testing.T) {
+		a := NewFromString(plain)
+		a.Zero()
+		b := NewFromString("")
+		assert.True(t, a.Equal(b), "a zeroed secret is empty")
+	})
+
+	t.Run("comparison does not mutate operands", func(t *testing.T) {
+		a := NewFromString(plain)
+		b := NewFromString(plain)
+		_ = a.Equal(b)
+		// Equal wipes its temporary copies, not the wrapped secrets.
+		assert.Equal(t, plain, a.RevealString(), "Equal must not zero the wrapped secret")
+		assert.Equal(t, plain, b.RevealString(), "Equal must not zero the wrapped secret")
+	})
 }

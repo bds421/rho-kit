@@ -32,6 +32,16 @@ type builtSchema struct {
 	requiredNonEmpty  map[string]struct{}
 	parametricFormats []string
 	fieldOrder        map[string]int
+	// collections maps a schema-side dotted path that describes a JSON
+	// array or object-with-additionalProperties (slice/array or map
+	// fields) to the number of element levels nested directly under it.
+	// The instance paths santhosh-tekuri reports interpose one element
+	// segment per level (a numeric index for arrays, a key for maps)
+	// after the path — a slice-of-slice keyed at "items" interposes two
+	// ("items.0.1.name"). normalizeInstancePath strips exactly that many
+	// segments so a required-non-empty / field-order lookup keyed by the
+	// schema path still matches a violation inside a collection element.
+	collections map[string]int
 }
 
 // ErrCyclicSchema is returned when a struct field recursively
@@ -52,6 +62,7 @@ func buildSchema(t reflect.Type) (*builtSchema, error) {
 		requiredNonEmpty: map[string]struct{}{},
 		parametric:       map[string]struct{}{},
 		fieldOrder:       map[string]int{},
+		collections:      map[string]int{},
 	}
 	s, err := schemaForReflect(ctx, t, "", "")
 	if err != nil {
@@ -61,6 +72,7 @@ func buildSchema(t reflect.Type) (*builtSchema, error) {
 		schema:           s,
 		requiredNonEmpty: ctx.requiredNonEmpty,
 		fieldOrder:       ctx.fieldOrder,
+		collections:      ctx.collections,
 	}
 	for name := range ctx.parametric {
 		out.parametricFormats = append(out.parametricFormats, name)
@@ -77,6 +89,7 @@ type buildCtx struct {
 	requiredNonEmpty map[string]struct{}
 	parametric       map[string]struct{}
 	fieldOrder       map[string]int
+	collections      map[string]int
 }
 
 // schemaForReflect is the main recursive walker. constraintTag carries
@@ -114,15 +127,35 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path 
 		applyNumericConstraints(ctx, s, constraintTag)
 		return s, nil
 	case reflect.Slice, reflect.Array:
-		if t.Elem().Kind() == reflect.Uint8 {
-			// []byte marshals as a base64 string.
-			return &jsonschemago.Schema{Type: "string"}, nil
+		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+			// []byte marshals as a base64 string. encoding/json only
+			// base64-encodes byte *slices*; a byte *array* ([16]byte
+			// UUID, [32]byte hash) marshals as a JSON array of numbers,
+			// so it falls through to the array-of-integer schema below.
+			//
+			// String constraints (min/max/len/pattern/format) apply to
+			// the base64-encoded text the field marshals to, NOT the raw
+			// byte count: a 3-byte slice encodes to a 4-character base64
+			// string, so `min=`/`max=` count base64 characters. Run them
+			// here so a constraint on a []byte field is honoured instead
+			// of silently dropped.
+			s := &jsonschemago.Schema{Type: "string"}
+			applyStringConstraints(ctx, s, constraintTag)
+			return s, nil
 		}
 		if ctx.visiting[t] {
 			return nil, fmt.Errorf("%w: recursive array or slice type", ErrCyclicSchema)
 		}
 		ctx.visiting[t] = true
 		defer delete(ctx.visiting, t)
+		// Record this path as a collection so the error renderer can
+		// strip the per-element index segment santhosh-tekuri injects
+		// ("items.0.name" -> "items.name") before a requiredNonEmpty /
+		// fieldOrder lookup. A slice-of-slice keyed at the same path
+		// nests two element levels, so the count is incremented.
+		if path != "" {
+			ctx.collections[path]++
+		}
 		items, err := schemaForReflect(ctx, t.Elem(), "", path)
 		if err != nil {
 			return nil, err
@@ -139,6 +172,15 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path 
 		}
 		ctx.visiting[t] = true
 		defer delete(ctx.visiting, t)
+		// Record this path as a collection so the error renderer can
+		// strip the per-entry key segment santhosh-tekuri injects
+		// ("m.somekey.label" -> "m.label") before a requiredNonEmpty /
+		// fieldOrder lookup. A map-of-slice (or slice-of-map) keyed at
+		// the same path nests more than one element level, so the count
+		// is incremented rather than set.
+		if path != "" {
+			ctx.collections[path]++
+		}
 		val, err := schemaForReflect(ctx, t.Elem(), "", path)
 		if err != nil {
 			return nil, err
@@ -172,6 +214,40 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 
 	var required []string
 	var order []string
+	// seenRequired dedupes the required list so a name promoted from two
+	// embedded structs (or an embedded plus a direct field) is listed
+	// once.
+	seenRequired := map[string]struct{}{}
+	addRequired := func(name string) {
+		if _, ok := seenRequired[name]; ok {
+			return
+		}
+		seenRequired[name] = struct{}{}
+		required = append(required, name)
+	}
+
+	// directNames is the set of JSON names declared directly on this
+	// struct (depth 0). encoding/json's shadowing rule gives a shallower
+	// field precedence over an embedded (deeper) field with the same
+	// name regardless of declaration order, so a direct field always
+	// wins. Precomputing the set lets the embedded merge below skip a
+	// shadowed sibling — including the case where the embedded struct is
+	// declared *before* the parent field, which would otherwise leave a
+	// duplicate PropertyOrder entry plus a stale required marker from
+	// the losing embedded field.
+	directNames := map[string]struct{}{}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Anonymous && f.Tag.Get("json") == "" {
+			continue
+		}
+		if !f.IsExported() {
+			continue
+		}
+		if name, _, skip := jsonFieldName(f); !skip {
+			directNames[name] = struct{}{}
+		}
+	}
 
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
@@ -195,20 +271,37 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 				return nil, err
 			}
 			for _, name := range emb.PropertyOrder {
+				// A direct field of this struct shadows the embedded
+				// sibling: drop the embedded property, its order slot,
+				// and any required/required-non-empty marker it left so
+				// the shallower (winning) field's optionality stands.
+				if _, shadowed := directNames[name]; shadowed {
+					childPath := name
+					if path != "" {
+						childPath = path + "." + name
+					}
+					delete(ctx.requiredNonEmpty, childPath)
+					continue
+				}
 				if _, ok := out.Properties[name]; ok {
 					continue
 				}
 				out.Properties[name] = emb.Properties[name]
 				order = append(order, name)
 			}
-			required = append(required, emb.Required...)
+			for _, name := range emb.Required {
+				if _, shadowed := directNames[name]; shadowed {
+					continue
+				}
+				addRequired(name)
+			}
 			continue
 		}
 		if !f.IsExported() {
 			continue
 		}
 
-		name, _, skip := jsonFieldName(f)
+		name, omitEmpty, skip := jsonFieldName(f)
 		if skip {
 			continue
 		}
@@ -232,8 +325,9 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 		if d := descriptionFromJSONSchemaTag(jsTag); d != "" {
 			field.Description = d
 		}
-		if jsonschemaTagHasRequired(jsTag) {
-			required = append(required, name)
+		isRequired := jsonschemaTagHasRequired(jsTag)
+		if isRequired {
+			addRequired(name)
 			// For string/array required fields, also enforce non-
 			// empty. The error renderer maps a minLength / minItems
 			// violation on a path in requiredNonEmpty back to
@@ -241,6 +335,18 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 			// the empty value was rejected by a stricter min rule
 			// (e.g. `required,min=2`).
 			markRequiredNonEmpty(ctx, field, childPath)
+		}
+		// A nil pointer/slice/map field marshals as JSON `null` when the
+		// json tag has no omitempty, so the inferred schema must admit
+		// null for those fields — otherwise an absent optional value is
+		// rejected with "must be array/object/string". Required fields
+		// keep the strict single type so null (the zero value) still
+		// fails; omitempty fields never emit null, so they need no
+		// widening either. A field that declares a positive lower bound
+		// (min/len → minItems/minLength) is treated as wanting a present,
+		// non-empty value, so null stays rejected there too.
+		if !isRequired && !omitEmpty && marshalsAsJSONNull(f.Type) && !hasPositiveLowerBound(field) {
+			admitNull(field)
 		}
 		out.Properties[name] = field
 		order = append(order, name)
@@ -254,6 +360,60 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 		out.PropertyOrder = order
 	}
 	return out, nil
+}
+
+// marshalsAsJSONNull reports whether a nil value of type t encodes to
+// JSON `null` under encoding/json. Pointers, slices, and maps all
+// marshal their nil value as null; fixed-size arrays cannot be nil and
+// always marshal as a JSON array, so they are excluded. Interfaces are
+// not considered here: the walker already emits the permissive empty
+// schema for them, which admits null.
+func marshalsAsJSONNull(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Map:
+		return true
+	default:
+		return false
+	}
+}
+
+// hasPositiveLowerBound reports whether a schema declares a presence
+// constraint (minItems / minLength) greater than zero. Such a field is
+// treated as wanting a non-empty value, so a nil (null) instance must
+// still fail rather than be admitted by null-widening.
+func hasPositiveLowerBound(s *jsonschemago.Schema) bool {
+	if s.MinItems != nil && *s.MinItems > 0 {
+		return true
+	}
+	if s.MinLength != nil && *s.MinLength > 0 {
+		return true
+	}
+	return false
+}
+
+// admitNull widens a property schema so a JSON `null` is accepted in
+// addition to the field's inferred type. The type-specific keywords
+// (minLength, minItems, properties, ...) only apply to instances of
+// their own type under JSON Schema, so adding "null" to the type list
+// does not relax the constraints that guard a non-null value. A schema
+// with no declared type already admits any value (including null) and
+// is left untouched.
+func admitNull(s *jsonschemago.Schema) {
+	switch {
+	case s.Type != "":
+		if s.Type == "null" {
+			return
+		}
+		s.Types = []string{s.Type, "null"}
+		s.Type = ""
+	case len(s.Types) > 0:
+		for _, t := range s.Types {
+			if t == "null" {
+				return
+			}
+		}
+		s.Types = append(s.Types, "null")
+	}
 }
 
 // markRequiredNonEmpty records the field's path so the error renderer
@@ -321,7 +481,7 @@ func jsonschemaTagHasRequired(tag string) bool {
 	if tag == "" {
 		return false
 	}
-	for _, part := range strings.Split(tag, ",") {
+	for _, part := range splitTagFields(tag) {
 		if strings.TrimSpace(part) == "required" {
 			return true
 		}
@@ -377,7 +537,7 @@ func descriptionFromJSONSchemaTag(tag string) string {
 	if tag == "" {
 		return ""
 	}
-	parts := strings.Split(tag, ",")
+	parts := splitTagFields(tag)
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		key, _ := splitRule(strings.TrimSpace(p))
@@ -398,7 +558,7 @@ func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) {
 	if tag == "" {
 		return
 	}
-	for _, raw := range strings.Split(tag, ",") {
+	for _, raw := range splitTagFields(tag) {
 		rule := strings.TrimSpace(raw)
 		if rule == "" || rule == "required" {
 			continue
@@ -449,7 +609,7 @@ func applyNumericConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) 
 	if tag == "" {
 		return
 	}
-	for _, raw := range strings.Split(tag, ",") {
+	for _, raw := range splitTagFields(tag) {
 		rule := strings.TrimSpace(raw)
 		if rule == "" || rule == "required" {
 			continue
@@ -507,7 +667,7 @@ func applyArrayConstraints(s *jsonschemago.Schema, tag string) {
 	if tag == "" {
 		return
 	}
-	for _, raw := range strings.Split(tag, ",") {
+	for _, raw := range splitTagFields(tag) {
 		rule := strings.TrimSpace(raw)
 		if rule == "" || rule == "required" {
 			continue
@@ -543,13 +703,14 @@ func canonicalFormatName(key string) string {
 	switch key {
 	case "url":
 		return "uri"
-	case "uuid4":
-		return "uuid"
 	case "ip":
 		return "ipv4-or-ipv6"
 	case "datetime":
 		return "date-time"
 	}
+	// `uuid4` maps to its own version-enforcing format (registered in
+	// builtinFormats) rather than collapsing to the generic `uuid`, so a
+	// migrated v1 `uuid4` tag keeps the version-4 constraint.
 	return key
 }
 
@@ -569,6 +730,62 @@ func parametricName(key, value string) string {
 		return "excludes-all:" + value
 	}
 	return key + ":" + value
+}
+
+// splitTagFields splits a `jsonschema:"..."` tag into its
+// comma-separated segments, mirroring strings.Split(tag, ",") for the
+// common case while preserving commas that belong to a single value.
+//
+// Two kinds of comma are NOT treated as segment separators:
+//
+//   - a comma nested inside a `{...}`, `[...]`, or `(...)` group, so a
+//     bounded regex quantifier (`pattern=^[a-z]{2,5}$`) or character
+//     class (`pattern=[a,b]`) survives intact instead of being
+//     truncated into an invalid pattern plus a stray description token;
+//   - a backslash-escaped comma (`\,`), for callers that need a literal
+//     comma at the top level of a value. The escaping backslash is
+//     dropped from the emitted segment.
+//
+// Backslashes that do not precede a comma are preserved verbatim so
+// regex escapes such as `\d` and `\,` outside-of-value text are
+// unaffected.
+func splitTagFields(tag string) []string {
+	var out []string
+	var b strings.Builder
+	depth := 0
+	for i := 0; i < len(tag); i++ {
+		c := tag[i]
+		switch c {
+		case '\\':
+			// Drop the backslash only when it escapes a comma; otherwise
+			// keep it so regex escapes pass through unchanged.
+			if i+1 < len(tag) && tag[i+1] == ',' {
+				b.WriteByte(',')
+				i++
+				continue
+			}
+			b.WriteByte(c)
+		case '{', '[', '(':
+			depth++
+			b.WriteByte(c)
+		case '}', ']', ')':
+			if depth > 0 {
+				depth--
+			}
+			b.WriteByte(c)
+		case ',':
+			if depth > 0 {
+				b.WriteByte(c)
+				continue
+			}
+			out = append(out, b.String())
+			b.Reset()
+		default:
+			b.WriteByte(c)
+		}
+	}
+	out = append(out, b.String())
+	return out
 }
 
 // splitRule splits a `key=value` rule into its parts. Bare rules

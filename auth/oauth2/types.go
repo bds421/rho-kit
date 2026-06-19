@@ -74,10 +74,10 @@ type StateStore interface {
 // code verifier (which is needed at code-exchange time and MUST stay
 // on the server — the client only sends the SHA-256 code_challenge).
 type StateEntry struct {
-	Nonce           string
-	CodeVerifier    string
-	RedirectTo      string // optional post-login deep link
-	CreatedAt       time.Time
+	Nonce        string
+	CodeVerifier string
+	RedirectTo   string // optional post-login deep link
+	CreatedAt    time.Time
 }
 
 // Sentinel errors.
@@ -99,6 +99,12 @@ var (
 	ErrNonceMismatch = errors.New("oauth2: id_token nonce mismatch")
 	// ErrCodeExchange wraps token-endpoint exchange failures.
 	ErrCodeExchange = errors.New("oauth2: code exchange failed")
+	// ErrProviderError is returned by the callback handler when the
+	// issuer redirects back with an OAuth2 `error` parameter (RFC 6749
+	// §4.1.2.1). The opaque, attacker-influenced `error`/`error_description`
+	// query values are logged server-side rather than reflected to the
+	// caller.
+	ErrProviderError = errors.New("oauth2: provider returned an error")
 )
 
 // Handlers is the interface returned by [Client.Handlers]. The login

@@ -16,7 +16,7 @@ sql:
       go:
         package: "sqlc"
         out: "db/sqlc"
-        # pgx/v5 driver — matches what app.Builder.WithPostgres opens.
+        # pgx/v5 driver — matches the pool postgres.Module opens via pgxbackend.
         sql_package: "pgx/v5"
         emit_json_tags: true
         emit_prepared_queries: false

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -167,9 +168,8 @@ func TestJWKSEndpoint_ExposesPublicKey(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	body := make([]byte, 4096)
-	n, _ := resp.Body.Read(body)
-	body = body[:n]
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
 
 	// Verify the served JWKS round-trips through ParseKeySet.
 	ks, err := jwtutil.ParseKeySet(body)
@@ -206,7 +206,8 @@ func TestTokenEndpoint_DefaultsSubWhenMissing(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	body, _ := readAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
 	require.True(t, strings.Contains(string(body), `"token"`))
 
 	var decoded struct {
@@ -217,22 +218,4 @@ func TestTokenEndpoint_DefaultsSubWhenMissing(t *testing.T) {
 	claims, err := verifier.VerifyContext(context.Background(), decoded.Token, time.Now())
 	require.NoError(t, err)
 	assert.Equal(t, "demo-user", claims.Subject, "missing ?sub= must default to demo-user")
-}
-
-// readAll is a small helper to bound the test's io.ReadAll usage.
-func readAll(r interface{ Read([]byte) (int, error) }) ([]byte, error) {
-	var out []byte
-	buf := make([]byte, 1024)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			out = append(out, buf[:n]...)
-		}
-		if err != nil {
-			if err.Error() == "EOF" {
-				return out, nil
-			}
-			return out, err
-		}
-	}
 }

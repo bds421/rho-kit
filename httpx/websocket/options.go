@@ -55,6 +55,7 @@ type config struct {
 	writeTimeout   time.Duration
 	pingInterval   time.Duration
 	pongTimeout    time.Duration
+	readDrain      bool
 	logger         *slog.Logger
 	metrics        *Metrics
 	originPatterns []string
@@ -156,6 +157,15 @@ func WithMaxConnections(n int) Option {
 // are 30 s for browser-facing services and 5–10 s when peers are
 // other backend processes.
 //
+// Read requirement: the underlying [coder/websocket] Ping does not
+// itself read from the connection — it waits for a concurrent read to
+// pump the peer's Pong. A handler that reads in a loop (the request/
+// response shape) satisfies this automatically. A push-only handler
+// that only writes never reads the Pong, so every ping would time out
+// and the heartbeat would close the connection with
+// [StatusPolicyViolation]; pair [WithReadDrain] with this option for
+// push-only handlers.
+//
 // Pass zero (the default) to disable heartbeats. Non-positive values
 // other than zero panic so misconfiguration surfaces at startup.
 func WithPingInterval(d time.Duration) Option {
@@ -167,8 +177,12 @@ func WithPingInterval(d time.Duration) Option {
 
 // WithPongTimeout bounds how long the heartbeat waits for the peer's
 // Pong reply before declaring the connection dead and closing with
-// [StatusPolicyViolation]. Must be positive when [WithPingInterval]
-// is set; non-positive values panic.
+// [StatusPolicyViolation]. Non-positive values panic.
+//
+// The pong timeout is only meaningful alongside a heartbeat, so it must
+// be paired with [WithPingInterval]: [Handle] panics if a pong timeout
+// is configured without a ping interval, since the setting would
+// otherwise be silently dropped.
 //
 // When unset the heartbeat uses the ping interval as the pong
 // deadline, which is a safe default for almost all deployments.
@@ -177,6 +191,33 @@ func WithPongTimeout(d time.Duration) Option {
 		panic("httpx/websocket: WithPongTimeout requires a positive duration")
 	}
 	return func(c *config) { c.pongTimeout = d }
+}
+
+// WithReadDrain makes the kit drive an internal reader for the
+// lifetime of the connection so control frames — Pong replies in
+// particular — are pumped even when the application handler never
+// reads. It exists for the server-push pattern, where the handler only
+// writes and would otherwise be killed by its own [WithPingInterval]
+// heartbeat because nothing reads the peer's Pong (see the read
+// requirement noted on [WithPingInterval]).
+//
+// Semantics when enabled (these mirror coder/websocket's CloseRead,
+// which backs this option):
+//
+//   - The handler MUST NOT call [Conn.ReadMessage] or [Conn.ReadJSON];
+//     the read side is owned by the kit and a handler read would race
+//     the internal reader. Use this only for write-only handlers.
+//   - If the peer sends a data message, the connection is closed with
+//     [StatusPolicyViolation] — a push-only endpoint does not expect
+//     inbound application data.
+//   - The per-connection [Conn.Context] is still cancelled when the
+//     connection closes for any reason, so a push loop should select on
+//     ctx.Done() to exit.
+//
+// This option is a no-op unless [WithPingInterval] is also set; without
+// a heartbeat there is no Pong to pump.
+func WithReadDrain() Option {
+	return func(c *config) { c.readDrain = true }
 }
 
 // WithWriteTimeout bounds the duration of a single [Conn.WriteMessage]

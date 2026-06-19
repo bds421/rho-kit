@@ -157,23 +157,33 @@ func TestGateway_BulkheadFullReturns503(t *testing.T) {
 		srv.Close()
 	}()
 
-	send := func() int {
+	// send issues one request and returns its status alongside the
+	// transport error. It returns rather than asserting so callers on
+	// worker goroutines never invoke require.* — t.FailNow only exits
+	// the calling goroutine and would leave the test in a confusing
+	// half-failed state. The caller decides how to assert.
+	send := func() (int, error) {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/api/orders", nil)
 		req.Header.Set("Authorization", "Bearer demo-token-1234567890")
 		req.Header.Set("X-Tenant-Id", "acme")
 		resp, err := srv.Client().Do(req)
-		require.NoError(t, err)
+		if err != nil {
+			return 0, err
+		}
 		defer func() { _ = resp.Body.Close() }()
-		return resp.StatusCode
+		return resp.StatusCode, nil
 	}
 
 	// Fill the bulkhead with bulkheadMaxInFlight concurrent calls.
-	// They block on `release` so the bulkhead stays saturated.
+	// They block on `release` so the bulkhead stays saturated. Worker
+	// goroutines use assert.* (t.Error, goroutine-safe) so a transport
+	// failure records the failure without aborting the goroutine.
 	for i := 0; i < bulkheadMaxInFlight; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			send()
+			_, err := send()
+			assert.NoError(t, err, "saturating request must not fail at the transport layer")
 		}()
 	}
 
@@ -188,8 +198,10 @@ func TestGateway_BulkheadFullReturns503(t *testing.T) {
 	}
 
 	// The bulkhead is now full. The next caller will wait up to
-	// bulkheadQueueWait (100ms) before being rejected with 503.
-	status := send()
+	// bulkheadQueueWait (100ms) before being rejected with 503. This
+	// runs on the main test goroutine, so require.* is safe here.
+	status, err := send()
+	require.NoError(t, err)
 	assert.Equal(t, http.StatusServiceUnavailable, status,
 		"caller arriving while bulkhead is full must be rejected with 503")
 }

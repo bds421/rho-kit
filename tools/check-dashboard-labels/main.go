@@ -24,8 +24,9 @@
 // "unrecognised metric" branch and the dashboard reference is
 // allowed by default.
 //
-// Dashboard scan: pulls every string field from the dashboard JSON
-// and every `expr:` value from the recording-rule YAMLs, then
+// Dashboard scan: pulls every PromQL-bearing string field from the
+// dashboard JSON (panel `expr` and templating-variable `query`
+// fields) and every `expr:` value from the recording-rule YAMLs, then
 // extracts metric+label tokens with a regex (`metric{lbl="..."}`).
 //
 // # Allowlist
@@ -34,9 +35,10 @@
 // allowed against every metric.
 //
 // Exit codes:
-//   0  no drift
-//   1  drift detected
-//   2  CLI / discovery failure
+//
+//	0  no drift
+//	1  drift detected
+//	2  CLI / discovery failure
 package main
 
 import (
@@ -312,7 +314,13 @@ func extractFromJSON(path string) ([]reference, error) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parse JSON: %w", err)
 	}
-	exprs := collectStrings(doc, "expr")
+	// Grafana carries PromQL in panel "expr" fields and in templating
+	// variable "query" fields (e.g. label_values(metric{l="x"}, l)).
+	// Both can drift, so harvest both keys.
+	var exprs []string
+	for _, key := range promqlJSONKeys {
+		exprs = append(exprs, collectStrings(doc, key)...)
+	}
 	var refs []reference
 	for _, e := range exprs {
 		for _, r := range parsePromQL(e) {
@@ -322,6 +330,11 @@ func extractFromJSON(path string) ([]reference, error) {
 	}
 	return refs, nil
 }
+
+// promqlJSONKeys are the dashboard JSON keys whose string values may
+// contain PromQL selectors: panel targets use "expr", templating
+// variables use "query".
+var promqlJSONKeys = []string{"expr", "query"}
 
 func extractFromYAML(path string) ([]reference, error) {
 	// Minimal YAML expr: lines of the form `expr: "..."` or

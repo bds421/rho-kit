@@ -23,13 +23,20 @@ func RequestPath(r *http.Request) string {
 // ParsePathID extracts a path parameter and validates it as a UUID.
 // Returns the ID string and true on success, or writes a structured
 // validation error and returns false if the value is not a valid UUID.
+//
+// Only the canonical UUID form (lowercase, hyphenated, 36 characters) is
+// accepted. Non-canonical variants that uuid.Parse otherwise tolerates —
+// "urn:uuid:" prefixes, braced "{...}", raw 32-hex, and uppercase — are
+// rejected so that distinct path strings cannot address the same logical
+// resource (which would split caches, audit logs, and string-keyed lookups).
 func ParsePathID(w http.ResponseWriter, r *http.Request, param string) (string, bool) {
 	if r == nil {
 		writePathIDValidationError(w, param)
 		return "", false
 	}
 	raw := r.PathValue(param)
-	if _, err := uuid.Parse(raw); err != nil {
+	parsed, err := uuid.Parse(raw)
+	if err != nil || parsed.String() != raw {
 		writePathIDValidationError(w, param)
 		return "", false
 	}

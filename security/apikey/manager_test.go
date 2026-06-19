@@ -13,6 +13,12 @@ func fixedClock(at time.Time) func() time.Time {
 	return func() time.Time { return at }
 }
 
+// mutableClock is a clock whose current time can be advanced between calls,
+// letting a single Manager observe issuance and rotation at different instants.
+type mutableClock struct{ at time.Time }
+
+func (c *mutableClock) now() time.Time { return c.at }
+
 func TestNewManager_PanicsOnNilRepo(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -144,4 +150,68 @@ func TestManager_RotatePreservesPrefix(t *testing.T) {
 	newKey, _, err := m.Rotate(ctx, oldKey.ID, time.Hour)
 	require.NoError(t, err)
 	assert.Equal(t, "acme", prefixOf(newKey))
+}
+
+func TestManager_RotateExpiry(t *testing.T) {
+	ctx := context.Background()
+	issuedAt := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	ttl := 24 * time.Hour
+
+	tests := []struct {
+		name        string
+		issueExpiry time.Time // zero means the old key never expires
+		rotateAt    time.Time
+		overlap     time.Duration
+	}{
+		{
+			name:        "near expiry",
+			issueExpiry: issuedAt.Add(ttl),
+			rotateAt:    issuedAt.Add(ttl - time.Minute),
+			overlap:     time.Hour,
+		},
+		{
+			name:        "after expiry",
+			issueExpiry: issuedAt.Add(ttl),
+			rotateAt:    issuedAt.Add(ttl + time.Hour),
+			overlap:     time.Hour,
+		},
+		{
+			name:        "no expiry stays unbounded",
+			issueExpiry: time.Time{},
+			rotateAt:    issuedAt.Add(ttl),
+			overlap:     time.Hour,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clk := &mutableClock{at: issuedAt}
+			repo := NewMemoryRepository()
+			m := NewManager(repo, WithClock(clk.now))
+
+			oldKey, _, err := m.Issue(ctx, IssueOptions{Owner: "o", ExpiresAt: tc.issueExpiry})
+			require.NoError(t, err)
+
+			clk.at = tc.rotateAt
+			newKey, newToken, err := m.Rotate(ctx, oldKey.ID, tc.overlap)
+			require.NoError(t, err)
+
+			_, newSecret, _ := Parse(newToken.RevealString(), DefaultPrefix)
+			storedNew, err := repo.FindByID(ctx, newKey.ID)
+			require.NoError(t, err)
+
+			// The freshly minted replacement must be usable at rotation time and
+			// must outlive the old key's overlap window — otherwise rotation
+			// produces a dead or near-dead key, defeating the overlap.
+			require.NoError(t, storedNew.Verify(newSecret, tc.rotateAt),
+				"new key must verify at rotation time")
+			assert.NoError(t, storedNew.Verify(newSecret, tc.rotateAt.Add(tc.overlap+time.Minute)),
+				"new key must still verify after the old key's overlap window closes")
+
+			if tc.issueExpiry.IsZero() {
+				assert.True(t, storedNew.ExpiresAt.IsZero(),
+					"a non-expiring source key must rotate to a non-expiring key")
+			}
+		})
+	}
 }

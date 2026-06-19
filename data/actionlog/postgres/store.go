@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,17 @@ const defaultLimit = 100
 // constraint is violated. Used to translate (tenant_id, seq) collisions
 // from concurrent appends back into a typed error the caller can retry.
 const uniqueViolation = "23505"
+
+// ErrSeqCollision is returned by [Store.AppendChained] when a concurrent
+// append wins the race to a (tenant_id, seq) pair and the losing insert
+// trips the Postgres unique constraint (SQLSTATE 23505). It mirrors
+// memory.ErrDuplicateID: a package-local sentinel callers can match with
+// errors.Is without importing pgconn and inspecting SQLSTATE themselves.
+// The advisory lock makes this collision rare, but it stays observable
+// under lock-bypassing failure modes, so it signals retryable contention
+// rather than corruption — callers should re-run the append, which
+// rebuilds the chain off the now-committed latest row.
+var ErrSeqCollision = errors.New("actionlog/postgres: concurrent seq collision")
 
 // Store is a pgx-backed [actionlog.Store]. The append path holds a
 // per-tenant advisory lock (pg_advisory_xact_lock) plus SELECT FOR
@@ -294,7 +306,16 @@ func scanEntry(s scannable) (actionlog.Entry, error) {
 	e.OccurredAt = e.OccurredAt.UTC()
 	if len(metaRaw) > 0 {
 		var meta map[string]any
-		if err := json.Unmarshal(metaRaw, &meta); err != nil {
+		// UseNumber so JSON numbers decode as json.Number (their exact
+		// decimal text) instead of float64. validMetadata accepts int64/
+		// uint64 of any magnitude and the signature is computed over their
+		// exact decimal form, so a plain Unmarshal — which rounds every
+		// integer above 2^53 through float64 (Snowflake IDs, unix-nano
+		// timestamps) — would change the recomputed canonical bytes and
+		// fail signature verification permanently for that row.
+		dec := json.NewDecoder(bytes.NewReader(metaRaw))
+		dec.UseNumber()
+		if err := dec.Decode(&meta); err != nil {
 			return actionlog.Entry{}, redact.WrapError("actionlog/postgres: unmarshal metadata", err)
 		}
 		e.Metadata = meta
@@ -340,13 +361,25 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`
 		e.ID, e.TenantID, e.Actor, e.Action, e.Resource, string(e.Outcome), e.Reason, metaRaw,
 		e.OccurredAt.UTC(), e.SignatureKeyID, e.Seq, e.PrevHash, e.Signature,
 	); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
-			return redact.WrapError("actionlog/postgres: append: concurrent seq collision", err)
-		}
-		return redact.WrapError("actionlog/postgres: append", err)
+		return classifyInsertError(err)
 	}
 	return nil
+}
+
+// classifyInsertError maps a failed INSERT into the package's error
+// contract: a unique-constraint violation (SQLSTATE 23505) is wrapped via
+// redact.WrapSentinel so callers can errors.Is it against [ErrSeqCollision]
+// while the driver text stays redacted; every other failure keeps the
+// opaque "append" wrap. Returns nil when err is nil.
+func classifyInsertError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
+		return redact.WrapSentinel(ErrSeqCollision, err)
+	}
+	return redact.WrapError("actionlog/postgres: append", err)
 }
 
 func joinAnd(parts []string) string {

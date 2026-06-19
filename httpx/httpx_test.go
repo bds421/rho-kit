@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -61,6 +62,24 @@ func TestWriteJSON_MarshalError(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "internal error") {
 		t.Fatalf("expected internal error in body, got: %s", rec.Body.String())
+	}
+}
+
+func TestWriteJSON_MarshalError_LogsViaRequestLogger(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req = req.WithContext(SetLogger(req.Context(), logger))
+
+	rec := httptest.NewRecorder()
+	// Channels cannot be marshaled to JSON.
+	err := WriteJSON(rec, req, http.StatusOK, make(chan int))
+	if err == nil {
+		t.Fatal("expected marshal error, got nil")
+	}
+	if !strings.Contains(buf.String(), "httpx: response marshal failed") {
+		t.Fatalf("expected marshal failure to be logged, got: %q", buf.String())
 	}
 }
 
@@ -158,6 +177,53 @@ func TestParsePathID_InvalidUUID(t *testing.T) {
 	}
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+// ParsePathID must reject non-canonical UUID forms (urn:uuid: prefixes, braces,
+// raw 32-hex, and uppercase). Accepting them lets many distinct path strings
+// address one logical resource, splitting caches/audit logs/DB lookups.
+func TestParsePathID_RejectsNonCanonicalForms(t *testing.T) {
+	canonical := "01961234-5678-7abc-8def-0123456789ab"
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "uppercase", raw: "01961234-5678-7ABC-8DEF-0123456789AB"},
+		{name: "urn prefix", raw: "urn:uuid:" + canonical},
+		{name: "braced", raw: "{" + canonical + "}"},
+		{name: "raw 32 hex", raw: "019612345678" + "7abc8def0123456789ab"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/test/id", nil)
+			req.SetPathValue("id", tt.raw)
+			rec := httptest.NewRecorder()
+
+			_, ok := ParsePathID(rec, req, "id")
+			if ok {
+				t.Fatalf("expected ok=false for non-canonical form %q", tt.raw)
+			}
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for %q, got %d", tt.raw, rec.Code)
+			}
+		})
+	}
+}
+
+// The canonical form must still be accepted and returned verbatim.
+func TestParsePathID_AcceptsCanonicalForm(t *testing.T) {
+	canonical := "01961234-5678-7abc-8def-0123456789ab"
+	req := httptest.NewRequest(http.MethodGet, "/test/id", nil)
+	req.SetPathValue("id", canonical)
+	rec := httptest.NewRecorder()
+
+	id, ok := ParsePathID(rec, req, "id")
+	if !ok {
+		t.Fatal("expected ok=true for canonical UUID")
+	}
+	if id != canonical {
+		t.Fatalf("id = %q, want %q", id, canonical)
 	}
 }
 
@@ -755,6 +821,31 @@ func TestNewServer_AllDefaults(t *testing.T) {
 	}
 }
 
+// The default ErrorLog routes through whatever slog.Default() resolves to at
+// log time, so a slog.SetDefault performed after NewServer redirects
+// connection-level error logs to the new handler instead of pinning the
+// bootstrap one.
+func TestNewServer_ErrorLogFollowsSetDefaultAfterConstruction(t *testing.T) {
+	prev := slog.Default()
+	defer slog.SetDefault(prev)
+
+	// Construct with one default, then swap to a capturing default afterwards.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	srv := NewServer(":0", http.NewServeMux())
+
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	srv.ErrorLog.Print("connection reset by peer 203.0.113.7")
+
+	if buf.Len() == 0 {
+		t.Fatal("ErrorLog did not follow slog.SetDefault performed after NewServer")
+	}
+	if !strings.Contains(buf.String(), "connection reset by peer") {
+		t.Fatalf("ErrorLog output missing message: %s", buf.String())
+	}
+}
+
 func TestNewServer_HTTP2HardeningRegistered(t *testing.T) {
 	// `http2.ConfigureServer` registers the h2 ALPN handler in
 	// TLSNextProto. Without the kit's call, srv.TLSNextProto is nil and
@@ -779,17 +870,18 @@ func TestNewServer_HTTP2HardeningSkippedWithoutTLS(t *testing.T) {
 	}
 }
 
-func TestNewServer_HTTP2FrameSizeViolationClosesConnection(t *testing.T) {
-	// Spin up the kit-hardened server over h2c (cleartext HTTP/2 so the
-	// test does not need a real TLS cert), connect with an http2
-	// Transport, and send a request that the server-side framer will
-	// reject because the SETTINGS frame caps MaxFrameSize at 1 MiB.
+func TestNewServer_HTTP2HandshakeSucceedsOverH2C(t *testing.T) {
+	// This test verifies that an h2 client completes a handshake and
+	// negotiates HTTP/2 against the kit-constructed server, confirming the
+	// kit's server config is a valid BaseConfig for an http2.Server.
 	//
-	// We can't easily craft a raw oversized frame from outside
-	// `golang.org/x/net/http2`, but we CAN assert the server advertised
-	// the pinned MaxFrameSize via SETTINGS by reading from the
-	// connection. That confirms `http2.ConfigureServer` honoured our
-	// override — the only way a peer would even know the kit's limit.
+	// NOTE: This does NOT exercise the kit's HTTP/2 frame-size /
+	// MaxConcurrentStreams pins. Those are attached by http2.ConfigureServer
+	// to srv.TLSNextProto, which ServeConn bypasses; only handler/timeouts
+	// from BaseConfig are honored here. Crafting a raw oversized frame from
+	// outside golang.org/x/net/http2 to assert the SETTINGS MaxFrameSize cap
+	// is not feasible in-package, so the frame-size enforcement claimed by
+	// docs/THREAT_MODEL (G-03) is not covered by this test.
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
@@ -833,12 +925,11 @@ func TestNewServer_HTTP2FrameSizeViolationClosesConnection(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	// The kit pin survives a real handshake: the client successfully
-	// negotiated h2 against the kit-hardened server, exercising the
-	// http2.Server's SETTINGS round-trip. If `ConfigureServer` had been
-	// skipped the handshake would have fallen back to HTTP/1.1.
+	// The client successfully negotiated h2 against the kit-constructed
+	// server over an h2c handshake. This only asserts protocol negotiation;
+	// see the note above on why the frame-size pin is not covered here.
 	if resp.ProtoMajor != 2 {
-		t.Fatalf("ProtoMajor = %d, want 2 (HTTP/2) — h2 ALPN handler missing", resp.ProtoMajor)
+		t.Fatalf("ProtoMajor = %d, want 2 (HTTP/2)", resp.ProtoMajor)
 	}
 }
 
@@ -987,6 +1078,65 @@ func TestDecodeJSON_AcceptsStructuredJSONContentType(t *testing.T) {
 	ok := DecodeJSON(rec, req, &dst)
 	if !ok {
 		t.Fatal("expected ok=true for +json Content-Type")
+	}
+	if dst.Name != "test" {
+		t.Fatalf("expected name=test, got %s", dst.Name)
+	}
+}
+
+// TestDecodeJSON_RejectsUnknownFields verifies the DisallowUnknownFields
+// strictness guarantee: a body carrying a field absent from the destination
+// type is a 400, not a silent drop. This is a security-relevant parser
+// differential guard (clients cannot smuggle ignored fields).
+func TestDecodeJSON_RejectsUnknownFields(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"test","extra":"smuggled"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	var dst struct {
+		Name string `json:"name"`
+	}
+	if DecodeJSON(rec, req, &dst) {
+		t.Fatal("expected ok=false for unknown field")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown field, got %d", rec.Code)
+	}
+}
+
+// TestDecodeJSON_RejectsTrailingData verifies the second-decode io.EOF guard
+// that rejects bodies with a trailing top-level JSON value (e.g.
+// `{"a":1} {"b":2}`), which dec.More() would not catch. Without this guard a
+// caller could smuggle a second document past the parser.
+func TestDecodeJSON_RejectsTrailingData(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"first"} {"name":"second"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	var dst struct {
+		Name string `json:"name"`
+	}
+	if DecodeJSON(rec, req, &dst) {
+		t.Fatal("expected ok=false for trailing JSON value")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for trailing data, got %d", rec.Code)
+	}
+}
+
+// TestDecodeJSON_AllowsTrailingWhitespace confirms the trailing-data guard
+// does not over-reject: whitespace after the first value is fine because the
+// second decode still returns io.EOF.
+func TestDecodeJSON_AllowsTrailingWhitespace(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{\"name\":\"test\"}\n\t  "))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	var dst struct {
+		Name string `json:"name"`
+	}
+	if !DecodeJSON(rec, req, &dst) {
+		t.Fatalf("expected ok=true for trailing whitespace, got status %d", rec.Code)
 	}
 	if dst.Name != "test" {
 		t.Fatalf("expected name=test, got %s", dst.Name)

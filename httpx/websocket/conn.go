@@ -54,6 +54,45 @@ const (
 	StatusBadGateway              StatusCode = StatusCode(coderws.StatusBadGateway)
 )
 
+// CloseStatus extracts the RFC 6455 close status code from err, or
+// returns -1 when err is nil or does not carry a close status. It is
+// the kit-native equivalent of coder/websocket's CloseStatus and works
+// through the [redact.WrapError] wrapping applied to read/write errors,
+// so callers can switch on close codes without importing the upstream
+// package (the same reason the [StatusCode] constants are mirrored
+// here).
+//
+// Typical use is to distinguish a routine peer disconnect from a real
+// failure in a handler's read loop:
+//
+//	for {
+//		_, _, err := c.ReadMessage()
+//		if err != nil {
+//			if websocket.IsNormalClosure(err) {
+//				return nil // peer went away; not an error
+//			}
+//			return err
+//		}
+//		// ... handle message ...
+//	}
+func CloseStatus(err error) StatusCode {
+	return StatusCode(coderws.CloseStatus(err))
+}
+
+// IsNormalClosure reports whether err carries a close status that
+// represents a routine, expected peer disconnect — StatusNormalClosure
+// (1000) or StatusGoingAway (1001, sent by browsers on navigation/tab
+// close). It returns false for nil, non-close errors, and abnormal
+// close codes.
+func IsNormalClosure(err error) bool {
+	switch CloseStatus(err) {
+	case StatusNormalClosure, StatusGoingAway:
+		return true
+	default:
+		return false
+	}
+}
+
 // Conn is the kit wrapper around a coder/websocket Conn. It adds
 // Prometheus metric emission on every read/write, idempotent close,
 // and redacted error returns so backend error text never crosses a
@@ -65,6 +104,7 @@ const (
 type Conn struct {
 	inner        *coderws.Conn
 	ctx          context.Context
+	cancel       context.CancelFunc // cancels ctx when the connection dies
 	logger       *slog.Logger
 	metrics      *Metrics
 	writeTimeout time.Duration
@@ -72,6 +112,18 @@ type Conn struct {
 	closeOnce sync.Once
 	closed    atomic.Bool
 	closeCode atomic.Int64 // last close code observed (peer or local), for metrics
+}
+
+// cancelCtx cancels the per-connection context if a cancel func is
+// wired. It is safe to call repeatedly and from any goroutine: the
+// stdlib CancelFunc is idempotent. This is what makes [Conn.Context]
+// honour its documented contract — the context is cancelled when the
+// connection closes for any reason (explicit Close, peer disconnect
+// observed on a read/write, or heartbeat-driven close).
+func (c *Conn) cancelCtx() {
+	if c.cancel != nil {
+		c.cancel()
+	}
 }
 
 // writeCtx returns the context to use for a single outbound write. When
@@ -202,6 +254,12 @@ func (c *Conn) Close(code StatusCode, reason string) error {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
 		c.closeCode.CompareAndSwap(0, int64(code))
+		// Cancel the per-connection context first so any handler parked
+		// on <-ctx.Done() wakes immediately, rather than after the
+		// (potentially multi-second) close handshake. This honours the
+		// documented Context() contract: the context is cancelled when
+		// the connection closes.
+		c.cancelCtx()
 		err := c.inner.Close(coderws.StatusCode(code), reason)
 		if err != nil {
 			closeErr = redact.WrapError("httpx/websocket: close", err)
@@ -213,14 +271,20 @@ func (c *Conn) Close(code StatusCode, reason string) error {
 
 // recordCloseFromError records the close code observed on a peer
 // disconnect so the metric label reflects the real close reason
-// rather than always reporting StatusAbnormalClosure.
+// rather than always reporting StatusAbnormalClosure, and cancels the
+// per-connection context.
+//
+// A non-nil error from a read or write means the connection is no
+// longer usable (peer close, abnormal closure, network error), so the
+// context is cancelled regardless of whether a close code could be
+// parsed — this is what lets a concurrently-parked <-ctx.Done()
+// observe the disconnect, per the [Conn.Context] contract.
 func (c *Conn) recordCloseFromError(err error) {
 	if err == nil {
 		return
 	}
-	code := coderws.CloseStatus(err)
-	if code == -1 {
-		return
+	if code := coderws.CloseStatus(err); code != -1 {
+		c.closeCode.CompareAndSwap(0, int64(code))
 	}
-	c.closeCode.CompareAndSwap(0, int64(code))
+	c.cancelCtx()
 }

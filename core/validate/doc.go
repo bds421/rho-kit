@@ -46,15 +46,21 @@
 // The reflection walker handles the encoding/json shape of struct
 // composition: anonymous embedded structs are flattened into the
 // parent, exported fields of an embedded unexported-named struct are
-// promoted in the schema, and `json:"-"` fields are skipped. The
-// known corner case the walker does NOT reproduce is shadowing — if a
+// promoted in the schema, and `json:"-"` fields are skipped. When a
 // parent field and an embedded field share the same JSON name, the
-// schema emits the parent's declaration once and silently drops the
-// embedded sibling. encoding/json picks the shallower field at
-// marshal/unmarshal time, so the runtime behaviour aligns; the schema
-// just doesn't reflect that the embedded path "would have been there"
-// without the shadow. Contrived enough to leave as a known
-// limitation; see [structSchema] in `schema.go` for the implementation.
+// schema emits the shallower (parent) field's declaration once — its
+// requiredness and constraints win and the embedded sibling is dropped
+// — matching encoding/json, which picks the shallower field at
+// marshal/unmarshal time. The schema just doesn't reflect that the
+// embedded path "would have been there" without the shadow. See
+// [structSchema] in `schema.go` for the implementation.
+//
+// A []byte field marshals to a base64 string, so length and pattern
+// constraints (`min`, `max`, `len`, `pattern`) on it are evaluated
+// against the base64-encoded text, not the raw byte count (a 3-byte
+// slice encodes to a 4-character base64 string). A byte *array*
+// ([16]byte, [32]byte) instead marshals as a JSON array of integers
+// and takes array constraints.
 //
 // See also: [github.com/bds421/rho-kit/core/v2/apperror] for the
 // kit's error taxonomy and [github.com/bds421/rho-kit/httpx/v2/openapigen]

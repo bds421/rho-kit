@@ -28,7 +28,25 @@ func scan(root string, ruleSet []rules.Rule) ([]rules.Finding, error) {
 
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			// A genuinely unreadable root is a tool error (exit 2):
+			// there is nothing to scan. But a single unreadable
+			// subdirectory or file must not abort the whole scan —
+			// mirror the per-file lenience and surface it as a Warning,
+			// then keep walking the rest of the tree.
+			if filepath.Clean(path) == filepath.Clean(root) {
+				return err
+			}
+			findings = append(findings, rules.Finding{
+				Rule:     "io-error",
+				Severity: rules.Warning,
+				File:     path,
+				Line:     0,
+				Message:  fmt.Sprintf("walk failed: %v", err),
+			})
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() {
 			if filepath.Clean(path) == filepath.Clean(root) {

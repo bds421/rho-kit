@@ -33,6 +33,7 @@ type Broker struct {
 	nextPublishID uint64
 	published     []publishedMessage
 	sizeLimiter   messaging.MessageSizeLimiter
+	drainMu       sync.Mutex
 }
 
 type publishedMessage struct {
@@ -195,6 +196,12 @@ func (b *Broker) Drain(ctx context.Context) error {
 	if err := messaging.ValidatePublishContext(ctx); err != nil {
 		return err
 	}
+	// Serialize Drain so concurrent callers (e.g. parallel PublishAndDrain)
+	// cannot peek the same head entry before either removes it, which would
+	// dispatch the same message to subscribers more than once. b.mu is still
+	// released during handler dispatch so handlers may publish or subscribe.
+	b.drainMu.Lock()
+	defer b.drainMu.Unlock()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err

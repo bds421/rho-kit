@@ -61,6 +61,16 @@ func TestLoader_OtherErrorMapsToUnavailable(t *testing.T) {
 	require.ErrorIs(t, err, secrets.ErrLoaderUnavailable)
 }
 
+func TestLoader_NoPayloadMapsToUnavailable(t *testing.T) {
+	api := &fakeAPI{out: &secretsmanager.GetSecretValueOutput{
+		VersionId: strPtr("v1"),
+	}}
+	l := awssm.New(api)
+	_, err := l.Get(context.Background(), "k")
+	require.Error(t, err)
+	require.ErrorIs(t, err, secrets.ErrLoaderUnavailable)
+}
+
 func TestNew_PanicsOnNilAPI(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {

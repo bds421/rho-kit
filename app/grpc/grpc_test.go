@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
@@ -125,6 +126,27 @@ func TestModule_ServeListenErrorDoesNotReflectAddress(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "gRPC listen failed")
 	assert.NotContains(t, err.Error(), "secret-token")
+}
+
+func TestModule_ServeListenErrorLogsRedactedCause(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	m := &grpcModule{
+		addr:   "secret-token.invalid:-1",
+		server: googrpc.NewServer(),
+		logger: logger,
+	}
+
+	err := m.serve()
+	require.Error(t, err)
+
+	logged := buf.String()
+	// The underlying net.Listen cause must be logged so a port conflict is
+	// diagnosable, but the log line must not leak the listen address.
+	assert.Contains(t, logged, "level=ERROR")
+	assert.Contains(t, logged, "gRPC listen failed")
+	assert.Contains(t, logged, "redacted error")
+	assert.NotContains(t, logged, "secret-token")
 }
 
 func TestModule_ImplementsCapabilityHooks(t *testing.T) {

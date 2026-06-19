@@ -34,7 +34,7 @@ const (
 	// defaultBrokerLabel is used when a connection observes reconnect
 	// metrics without an explicit broker name. The label value is bounded
 	// and static so Prometheus cardinality stays predictable; pass an
-	// explicit broker name via WithReconnectMetrics for services that
+	// explicit broker name via WithConnectionMetrics for services that
 	// dial more than one broker.
 	defaultBrokerLabel = "default"
 )

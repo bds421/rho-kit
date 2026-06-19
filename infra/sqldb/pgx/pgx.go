@@ -559,6 +559,15 @@ func requireTLSOnParsedConfig(pcfg *pgxpool.Config, dsn string, allowRequire boo
 // the scanner after a hostile-review finding flagged that the prior
 // implementation could misclassify a quoted "require" as `'require'`
 // (not matching the policy switch) and bypass FR-079.
+//
+// The scanner only accepts `sslmode=` tokens that sit at a real key
+// boundary — the start of the DSN or immediately after a key
+// delimiter (`?`, `&`, or whitespace). A bare substring scan was
+// fooled by an sslmode-like token embedded in another field's value,
+// e.g. `?sslmode=require&application_name=sslmode=verify-full`: pgx
+// dials with sslmode=require, but the old scanner saw the trailing
+// `sslmode=verify-full` substring (last-wins) and skipped the FR-079
+// require check. Anchoring on the preceding byte closes that bypass.
 func lastSSLMode(dsn string) string {
 	const key = "sslmode="
 	last := ""
@@ -567,6 +576,16 @@ func lastSSLMode(dsn string) string {
 		i := strings.Index(rest, key)
 		if i < 0 {
 			break
+		}
+		// Absolute offset of this match within the original DSN, so the
+		// byte preceding the key can be inspected for a real boundary.
+		abs := len(dsn) - len(rest) + i
+		if !isSSLModeKeyBoundary(dsn, abs) {
+			// `sslmode=` here is embedded in another field's value (or is
+			// an identifier suffix like `xsslmode=`), not a real key.
+			// Advance past it and keep scanning.
+			rest = rest[i+len(key):]
+			continue
 		}
 		v := rest[i+len(key):]
 		// Handle single-quoted values (libpq keyword form):
@@ -602,4 +621,25 @@ func lastSSLMode(dsn string) string {
 		rest = v[end:]
 	}
 	return last
+}
+
+// isSSLModeKeyBoundary reports whether the `sslmode=` token starting at
+// dsn[at] is a real connection key rather than a substring embedded in
+// another field's value. A real key sits at the start of the DSN or
+// immediately after a key delimiter that pgx recognises: `?` or `&`
+// (URL form) or whitespace (keyword form). A preceding `=` means the
+// token is part of another field's value (e.g.
+// `application_name=sslmode=verify-full`); any other preceding byte
+// (e.g. `xsslmode=`) means it is an identifier suffix. Both are
+// rejected so the kit's policy check matches what pgx actually dials.
+func isSSLModeKeyBoundary(dsn string, at int) bool {
+	if at == 0 {
+		return true
+	}
+	switch dsn[at-1] {
+	case '?', '&', ' ', '\t', '\n', '\r':
+		return true
+	default:
+		return false
+	}
 }

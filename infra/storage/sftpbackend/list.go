@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"iter"
 	"path"
+	"sort"
 	"strings"
 
 	"go.opentelemetry.io/otel"
@@ -26,6 +27,12 @@ var _ storage.Lister = (*Backend)(nil)
 
 // List returns an iterator over objects on the remote server whose keys start
 // with prefix. Directories are walked recursively.
+//
+// Matching keys are collected across the directory walk, sorted lexicographically,
+// and yielded in that order so keyset pagination via [storage.ListPage]
+// (StartAfter) never skips objects — the remote pkg/sftp ReadDir returns entries
+// in an arbitrary order, so the StartAfter cursor and MaxKeys truncation are only
+// meaningful against a sorted result. This matches localbackend and membackend.
 func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
 		if err := storage.ValidatePrefix(prefix); err != nil {
@@ -59,8 +66,7 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 		}
 
 		start := now()
-		count := 0
-		walkErr := b.walkDir(ctx, client, b.cfg.RootPath, prefix, opts, &count, yield, 0)
+		objects, walkErr := b.collectObjects(ctx, client, b.cfg.RootPath, prefix, yield, 0)
 
 		// Don't report the sentinel as a real error.
 		if errors.Is(walkErr, errIterStopped) {
@@ -70,6 +76,27 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 
 		if walkErr != nil {
 			span.SetStatus(codes.Error, storage.SpanErrorDescription(walkErr))
+			return
+		}
+
+		// Sort so StartAfter pagination is deterministic and never skips keys.
+		sort.Slice(objects, func(i, j int) bool { return objects[i].Key < objects[j].Key })
+
+		count := 0
+		for _, info := range objects {
+			if ctx.Err() != nil {
+				return
+			}
+			if opts.StartAfter != "" && info.Key <= opts.StartAfter {
+				continue
+			}
+			count++
+			if !yield(info, nil) {
+				return
+			}
+			if opts.MaxKeys > 0 && count >= opts.MaxKeys {
+				return
+			}
 		}
 	}
 }
@@ -82,19 +109,36 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 // hierarchy while a hard stop short of stack exhaustion.
 const maxWalkDepth = 32
 
-// walkDir recursively walks a remote directory, yielding ObjectInfo for files
-// matching the prefix. Returns an error if iteration was aborted due to error.
-// depth tracks recursion level so an attacker-controlled tree cannot
-// exhaust the goroutine stack.
+// collectObjects recursively walks a remote directory, appending ObjectInfo for
+// files matching the prefix to out. It does not apply StartAfter/MaxKeys —
+// those are applied by List after the collected keys are sorted, because the
+// remote ReadDir order is arbitrary and an inline cursor/limit would skip keys.
+// Walk-level errors (symlink objects, readdir failures, depth overflow) are
+// surfaced via yield and abort the walk. Returns an error if the walk was
+// aborted; [errIterStopped] signals the consumer stopped iteration. depth tracks
+// recursion level so an attacker-controlled tree cannot exhaust the goroutine
+// stack.
+func (b *Backend) collectObjects(
+	ctx context.Context,
+	client Client,
+	dir string,
+	prefix string,
+	yield func(storage.ObjectInfo, error) bool,
+	depth int,
+) ([]storage.ObjectInfo, error) {
+	var out []storage.ObjectInfo
+	err := b.walkDir(ctx, client, dir, prefix, yield, depth, &out)
+	return out, err
+}
+
 func (b *Backend) walkDir(
 	ctx context.Context,
 	client Client,
 	dir string,
 	prefix string,
-	opts storage.ListOptions,
-	count *int,
 	yield func(storage.ObjectInfo, error) bool,
 	depth int,
+	out *[]storage.ObjectInfo,
 ) error {
 	if ctx.Err() != nil {
 		return nil
@@ -115,6 +159,16 @@ func (b *Backend) walkDir(
 		return opErr
 	}
 
+	// pkg/sftp's client.ReadDir yields entries in server (protocol) order,
+	// which is not guaranteed to be sorted. Sort by name so keys are yielded
+	// in lexicographic order; storage.ListOptions.StartAfter and
+	// storage.ListPage's NextStartAfter cursor are documented as lexicographic
+	// and silently skip or duplicate objects across pages otherwise. Sorting by
+	// entry name (rather than full key) is sufficient here because all keys in a
+	// directory share the same parent prefix, and the depth-first recursion
+	// descends into a subdirectory before processing later siblings.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+
 	for _, entry := range entries {
 		entryPath := path.Join(dir, entry.Name())
 		if entry.Mode()&fs.ModeSymlink != 0 {
@@ -131,7 +185,7 @@ func (b *Backend) walkDir(
 			if prefix != "" && !strings.HasPrefix(dirKey, prefix) && !strings.HasPrefix(prefix, dirKey) {
 				continue
 			}
-			if err := b.walkDir(ctx, client, entryPath, prefix, opts, count, yield, depth+1); err != nil {
+			if err := b.walkDir(ctx, client, entryPath, prefix, yield, depth+1, out); err != nil {
 				return err
 			}
 			continue
@@ -144,25 +198,11 @@ func (b *Backend) walkDir(
 			continue
 		}
 
-		// Apply StartAfter cursor.
-		if opts.StartAfter != "" && key <= opts.StartAfter {
-			continue
-		}
-
-		info := storage.ObjectInfo{
+		*out = append(*out, storage.ObjectInfo{
 			Key:     key,
 			Size:    entry.Size(),
 			ModTime: entry.ModTime(),
-		}
-
-		*count++
-		if !yield(info, nil) {
-			return errIterStopped
-		}
-
-		if opts.MaxKeys > 0 && *count >= opts.MaxKeys {
-			return errIterStopped
-		}
+		})
 	}
 
 	return nil

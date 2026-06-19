@@ -323,6 +323,24 @@ func tinyGIF(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+// animatedGIF encodes a multi-frame GIF. gif.EncodeAll emits a graphic
+// control extension (0x21 0xF9) before each frame, exercising the
+// extension-block path of the structural GIF walker.
+func animatedGIF(t *testing.T) []byte {
+	t.Helper()
+	pal := color.Palette{color.Black, color.White, color.RGBA{R: 255, A: 255}}
+	g := &gif.GIF{}
+	for i := 0; i < 3; i++ {
+		img := image.NewPaletted(image.Rect(0, 0, 4, 4), pal)
+		img.SetColorIndex(i, i, 2)
+		g.Image = append(g.Image, img)
+		g.Delay = append(g.Delay, 10)
+	}
+	var buf bytes.Buffer
+	require.NoError(t, gif.EncodeAll(&buf, g))
+	return buf.Bytes()
+}
+
 // tinyWebP returns a hand-built minimal lossy WebP (VP8) carrying a 1×1
 // dummy frame. It is just enough for the polyglot end-of-stream check
 // to verify; stdlib has no WebP encoder so we synthesise the bytes.
@@ -434,6 +452,45 @@ func TestAllowMIMETypes_RejectsWebPWithAppendedPayload(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidImage)
 }
 
+// TestAllowMIMETypes_RejectsJPEGPolyglotWithSecondEOI builds the
+// append-style polyglot the package doc claims to defend against: a
+// valid JPEG (ending in FFD9) followed by a script payload and a
+// *second* FFD9 marker so the body still ends in FFD9. jpeg.Decode
+// stops at the first EOI and ignores the trailing bytes, so the payload
+// survives unless validateJPEGEnd rejects the bytes between the first
+// EOI and the end of the body.
+func TestAllowMIMETypes_RejectsJPEGPolyglotWithSecondEOI(t *testing.T) {
+	v := AllowMIMETypes("image/jpeg")
+	payload := append([]byte(nil), tinyJPEG(t)...)
+	payload = append(payload, []byte("<?php system($_GET['c']); ?>")...)
+	payload = append(payload, 0xFF, 0xD9) // second EOI so the body still ends in FFD9
+
+	body := bytes.NewReader(payload)
+	_, err := v.Validate(context.Background(), body, Meta{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidImage)
+	assert.NotContains(t, err.Error(), "system")
+	drainAndRewind(t, body)
+}
+
+// TestAllowMIMETypes_RejectsGIFPolyglotWithSecondTrailer is the GIF
+// analogue: a valid GIF (ending in 0x3B) followed by a script payload
+// and a second 0x3B trailer so the body still ends in 0x3B. gif.Decode
+// returns at the first trailer and ignores trailing bytes.
+func TestAllowMIMETypes_RejectsGIFPolyglotWithSecondTrailer(t *testing.T) {
+	v := AllowMIMETypes("image/gif")
+	payload := append([]byte(nil), tinyGIF(t)...)
+	payload = append(payload, []byte("<script>fetch('/admin')</script>")...)
+	payload = append(payload, 0x3B) // second trailer so the body still ends in 0x3B
+
+	body := bytes.NewReader(payload)
+	_, err := v.Validate(context.Background(), body, Meta{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidImage)
+	assert.NotContains(t, err.Error(), "fetch")
+	drainAndRewind(t, body)
+}
+
 func TestAllowMIMETypes_AcceptsCleanPNG(t *testing.T) {
 	v := AllowMIMETypes("image/png")
 	body := bytes.NewReader(tinyPNG(t))
@@ -459,12 +516,48 @@ func TestAllowMIMETypes_AcceptsCleanGIF(t *testing.T) {
 	assert.Equal(t, "image/gif", meta.ContentType)
 }
 
+func TestValidateGIFEnd_SignatureVersion(t *testing.T) {
+	clean := tinyGIF(t)
+
+	t.Run("accepts GIF89a", func(t *testing.T) {
+		require.NoError(t, validateGIFEnd(clean))
+	})
+
+	t.Run("accepts GIF87a", func(t *testing.T) {
+		// gif.Encode emits GIF89a; rewrite the version bytes to the
+		// other documented version, keeping the rest of the stream intact.
+		body := append([]byte(nil), clean...)
+		copy(body[:6], []byte("GIF87a"))
+		require.NoError(t, validateGIFEnd(body))
+	})
+
+	t.Run("rejects unknown version", func(t *testing.T) {
+		// Same magic "GIF" prefix but an out-of-spec version. The old
+		// 3-byte-only check accepted this; the documented contract does not.
+		body := append([]byte(nil), clean...)
+		copy(body[:6], []byte("GIF8?a"))
+		require.ErrorIs(t, validateGIFEnd(body), ErrInvalidImage)
+	})
+}
+
 func TestAllowMIMETypes_AcceptsCleanWebP(t *testing.T) {
 	v := AllowMIMETypes("image/webp")
 	body := bytes.NewReader(tinyWebP(t))
 	meta, err := v.Validate(context.Background(), body, Meta{})
 	require.NoError(t, err)
 	assert.Equal(t, "image/webp", meta.ContentType)
+}
+
+// TestAllowMIMETypes_AcceptsAnimatedGIF proves the structural GIF block
+// walker (which the second-trailer polyglot fix relies on) does not
+// false-reject legitimate multi-frame GIFs whose stream carries graphic
+// control extensions between image descriptors.
+func TestAllowMIMETypes_AcceptsAnimatedGIF(t *testing.T) {
+	v := AllowMIMETypes("image/gif")
+	body := bytes.NewReader(animatedGIF(t))
+	meta, err := v.Validate(context.Background(), body, Meta{})
+	require.NoError(t, err)
+	assert.Equal(t, "image/gif", meta.ContentType)
 }
 
 func TestAllowMIMETypes_RejectsCorruptedIDAT(t *testing.T) {
@@ -596,8 +689,20 @@ func TestValidateImageBody_PerFormat(t *testing.T) {
 		err := validateImageBody("image/gif", bytes.NewReader(tinyGIF(t)), true)
 		assert.NoError(t, err)
 	})
+	t.Run("jpeg polyglot with second EOI", func(t *testing.T) {
+		payload := append(append([]byte(nil), tinyJPEG(t)...), []byte("<?php ?>")...)
+		payload = append(payload, 0xFF, 0xD9) // duplicate EOI so the body ends in FFD9
+		err := validateImageBody("image/jpeg", bytes.NewReader(payload), true)
+		assert.ErrorIs(t, err, ErrInvalidImage)
+	})
 	t.Run("gif appended payload", func(t *testing.T) {
 		payload := append(append([]byte(nil), tinyGIF(t)...), []byte("<?php ?>")...)
+		err := validateImageBody("image/gif", bytes.NewReader(payload), true)
+		assert.ErrorIs(t, err, ErrInvalidImage)
+	})
+	t.Run("gif polyglot with second trailer", func(t *testing.T) {
+		payload := append(append([]byte(nil), tinyGIF(t)...), []byte("<?php ?>")...)
+		payload = append(payload, 0x3B) // duplicate trailer so the body ends in 0x3B
 		err := validateImageBody("image/gif", bytes.NewReader(payload), true)
 		assert.ErrorIs(t, err, ErrInvalidImage)
 	})

@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -70,6 +71,19 @@ const (
 // orchestrator MUST treat this as a fatal signal and restart the
 // process rather than retrying the elector in-place.
 var ErrCallbackDrainTimeout = errors.New("leaderelection/k8slease: OnAcquired callback drain timed out")
+
+// ErrLeadershipLost is returned by Run when client-go's one-shot
+// LeaderElector.Run stops holding the Lease for a reason OTHER than
+// caller ctx cancellation (renew failure: network blip, API-server
+// failover, lease forcibly taken by a peer) and no OnStoppedLeading
+// error was captured. Returning nil there would read to callers as a
+// clean shutdown and they would stop retrying — contradicting the
+// [leaderelection.Elector] contract ("returns when ctx cancels or an
+// unrecoverable backend error occurs"). A retry loop (the kit's
+// lifecycle.Runner restart policy, or a hand-rolled loop) should treat
+// this as a recoverable signal to re-enter Run; a clean ctx-cancel
+// shutdown returns ctx.Err() instead.
+var ErrLeadershipLost = errors.New("leaderelection/k8slease: leadership lost (renew failure); Run should be retried")
 
 // Elector is a [leaderelection.Elector] backed by a Kubernetes Lease.
 //
@@ -290,8 +304,16 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		return errors.New("leader-election: Run requires a non-nil context")
 	}
 	if !e.started.CompareAndSwap(false, true) {
-		return errors.New("leader-election: Run already invoked on this Elector — a second Run would race the leader flag and call OnAcquired / OnLost out of order")
+		return errors.New("leader-election: Run already invoked concurrently on this Elector — a second concurrent Run would race the leader flag and call OnAcquired / OnLost out of order")
 	}
+	// Clear started on every return path once this goroutine owns the
+	// CAS. client-go's LeaderElector.Run is one-shot; the package docs
+	// tell callers to wrap Run in a retry loop (lifecycle.Runner does
+	// this via its restart policy), so a transient API-server blip that
+	// ends a term must NOT permanently poison the Elector with a stuck
+	// started flag. Single-goroutine-Run is still enforced: a *second
+	// concurrent* Run loses the CAS above and is rejected.
+	defer e.started.Store(false)
 
 	lock := &resourcelock.LeaseLock{
 		LeaseMeta: metav1.ObjectMeta{
@@ -304,15 +326,16 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		},
 	}
 
-	// cbDone funnels OnAcquired completion (panic-aware) so OnLost can
-	// only run after the user callback has actually returned. This
-	// mirrors the explicit drain enforcement in pgadvisory / redislock,
-	// even though client-go cancels the leader ctx before invoking
-	// OnStoppedLeading — we still need the drain seam to satisfy the
-	// kit's "OnLost runs after OnAcquired returns" contract under panics
-	// and the [WithCallbackDrainTimeout] timeout path.
-	cbDone := make(chan callbackResult, 1)
-	var onAcquiredStarted atomic.Bool
+	// tm coordinates the two halves of a single client-go leadership
+	// term — OnStartedLeading (its own goroutine) and OnStoppedLeading
+	// (Run's goroutine, deferred) — so the claim/skip decision is
+	// serialized under one lock. This closes the TOCTOU race between
+	// OnStartedLeading checking leaderCtx and actually claiming the term
+	// (see [term] and [Elector.onStartedLeading]). Its cbDone channel
+	// also funnels OnAcquired completion (panic-aware) so OnLost can only
+	// run after the user callback returned, mirroring the explicit drain
+	// enforcement in pgadvisory / redislock.
+	tm := newTerm()
 	var lostErrSlot atomic.Pointer[error]
 
 	config := clientgoleaderelection.LeaderElectionConfig{
@@ -327,48 +350,16 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		Name:            fmt.Sprintf("%s/%s", e.namespace, e.name),
 		Callbacks: clientgoleaderelection.LeaderCallbacks{
 			OnStartedLeading: func(leaderCtx context.Context) {
-				// Set up the panic-recover defer FIRST so any panic
-				// between here and cb.OnAcquired (including a
-				// hypothetical panic inside slog.Info) still funnels
-				// completion onto cbDone. Without this, a panic before
-				// the defer ran would leave OnStoppedLeading's
-				// awaitCallbackDrain blocked until drainTimeout (or
-				// forever).
-				var result callbackResult
-				defer func() {
-					if rec := recover(); rec != nil {
-						result.panicValue = rec
-					}
-					cbDone <- result
-				}()
-				onAcquiredStarted.Store(true)
-				e.leader.Store(true)
-				e.logger.Info("leader-election: acquired",
-					redact.String("namespace", e.namespace),
-					redact.String("name", e.name),
-					redact.String("identity", e.identity),
-				)
-				if cb.OnAcquired != nil {
-					cb.OnAcquired(leaderCtx)
-				}
+				e.onStartedLeading(leaderCtx, tm, cb)
 			},
 			OnStoppedLeading: func() {
-				e.leader.Store(false)
-				e.logger.Info("leader-election: lost",
-					redact.String("namespace", e.namespace),
-					redact.String("name", e.name),
-					redact.String("identity", e.identity),
-				)
-				// Only run OnLost if OnAcquired actually started: the
-				// kit's contract states OnLost describes an acquired
-				// term, never a never-started one.
-				if !onAcquiredStarted.Load() {
+				if !e.onStoppedLeading(tm, cb) {
 					return
 				}
 				// Wait for the OnAcquired goroutine to drain, then call
 				// OnLost synchronously. awaitCallbackDrain handles warn
 				// ticks, optional drain-timeout, and terminal metrics.
-				drainResult := e.awaitCallbackDrain(cbDone)
+				drainResult := e.awaitCallbackDrain(tm.cbDone)
 				lostErr := e.runOnLost(cb)
 				if perr := joinStoppedLeadingErrors(lostErr, drainResult); perr != nil {
 					lostErrSlot.Store(&perr)
@@ -389,10 +380,9 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 
 	le, err := clientgoleaderelection.NewLeaderElector(config)
 	if err != nil {
-		// Drain bookkeeping is not yet primed (Run never started) so
-		// just clear the started flag for the unit-test surface that
-		// asserts a fresh Elector after a construction-time error.
-		e.started.Store(false)
+		// The deferred started reset (above) restores a fresh Elector
+		// for the unit-test surface that asserts retry after a
+		// construction-time error.
 		return redact.WrapError("leader-election: NewLeaderElector", err)
 	}
 
@@ -404,20 +394,252 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 	// lifecycle.Runner handles this naturally via its restart policy).
 	le.Run(ctx)
 
-	// At this point LeaderElector.Run has returned: either ctx
-	// cancelled, or leadership was lost and OnStoppedLeading drained.
+	// Guard (b): LeaderElector.Run has returned, which means its deferred
+	// OnStoppedLeading already ran (and, when the term was acquired,
+	// drained the OnAcquired goroutine via awaitCallbackDrain). The one
+	// half client-go does NOT join is the `go OnStartedLeading` goroutine
+	// when OnStoppedLeading skipped the drain (term never acquired). That
+	// goroutine may still be pending; the term coordinator already makes
+	// it refuse to claim leadership (it observes term.stopped), but we
+	// also wait for it to settle here so the invariant is total: when Run
+	// returns, OnAcquired is never still about to fire. settleStarted is
+	// a no-op when OnStoppedLeading already consumed cbDone.
+	e.settleStarted(tm)
+
 	// Surface any error captured during OnStoppedLeading.
-	var finalErr error
+	var lostErr error
 	if errPtr := lostErrSlot.Load(); errPtr != nil {
-		finalErr = *errPtr
+		lostErr = *errPtr
 	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		if finalErr != nil {
-			return errors.Join(ctxErr, finalErr)
+	return computeRunResult(lostErr, ctx.Err())
+}
+
+// computeRunResult turns the two independent termination signals — the
+// error captured in OnStoppedLeading (OnLost failure / OnAcquired panic
+// / drain timeout) and the caller ctx error — into Run's return value.
+//
+//   - ctx cancelled, no captured error: clean caller-initiated shutdown,
+//     return ctx.Err().
+//   - ctx cancelled AND a captured error: join both so callers see every
+//     relevant signal via errors.Is.
+//   - ctx live, captured error present: leadership ended with a concrete
+//     failure; return it as-is (it already describes the loss).
+//   - ctx live, no captured error: client-go's one-shot Run stopped
+//     holding the Lease for a renew-failure reason. Return
+//     [ErrLeadershipLost] rather than nil so a retry loop does not read
+//     the loss as a clean shutdown and stop re-electing.
+func computeRunResult(lostErr, ctxErr error) error {
+	if ctxErr != nil {
+		if lostErr != nil {
+			return errors.Join(ctxErr, lostErr)
 		}
 		return ctxErr
 	}
-	return finalErr
+	if lostErr != nil {
+		return lostErr
+	}
+	return ErrLeadershipLost
+}
+
+// term coordinates the two halves of a single client-go leadership term
+// so the OnAcquired/OnLost balance and the IsLeader()==false-on-return
+// invariant survive every scheduling order. client-go's Run is roughly:
+//
+//	defer OnStoppedLeading()
+//	...
+//	go OnStartedLeading(leaderCtx); le.renew(leaderCtx)
+//
+// OnStartedLeading runs in its own goroutine while OnStoppedLeading runs
+// (deferred) in Run's goroutine after renew returns and leaderCtx is
+// cancelled. Without a shared lock there is a TOCTOU window: the started
+// goroutine can pass a leaderCtx.Err()==nil check, get preempted, let
+// OnStoppedLeading observe "never acquired" and skip drain+OnLost, then
+// resume and store leader=true / call OnAcquired after Run returned.
+//
+// The mutex makes the claim (onStartedLeading) and the stop (onStopped-
+// Leading) mutually exclusive on the acquired/stopped flags so exactly
+// one of two consistent outcomes happens:
+//
+//   - claim wins first: acquired=true; stop then sees acquired and
+//     drains the callback + runs OnLost.
+//   - stop wins first: stopped=true; the late claim sees stopped and
+//     refuses (leader stays false, OnAcquired never runs).
+//
+// cbDone (buffered, size 1) funnels OnAcquired completion (panic-aware)
+// to awaitCallbackDrain; it is always sent exactly once by
+// onStartedLeading even on the skip path.
+type term struct {
+	mu       sync.Mutex
+	launched bool
+	acquired bool
+	stopped  bool
+	cbDone   chan callbackResult
+}
+
+func newTerm() *term {
+	return &term{cbDone: make(chan callbackResult, 1)}
+}
+
+// claim attempts to mark the term acquired. It records that the started
+// goroutine was launched (so Run's settle path knows cbDone will be
+// signalled) and returns false — refusing the claim — when the term has
+// already stopped, which is the late-OnStartedLeading case that must not
+// resurrect leadership.
+func (t *term) claim() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.launched = true
+	if t.stopped {
+		return false
+	}
+	t.acquired = true
+	return true
+}
+
+// markLaunched records that the started goroutine ran far enough to
+// guarantee its deferred cbDone send will happen, even on the fast
+// leaderCtx-already-cancelled skip path that returns before claim().
+func (t *term) markLaunched() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.launched = true
+}
+
+// settleState snapshots, under the lock, whether the started goroutine
+// was launched and whether the term was acquired, so Run can decide if
+// it must wait for a pending cbDone send without risking a deadlock when
+// the goroutine was never launched (acquire failed before scheduling it).
+func (t *term) settleState() (launched, acquired bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.launched, t.acquired
+}
+
+// stop marks the term stopped and reports whether OnStartedLeading had
+// already claimed it. A true result means there is an acquired term to
+// drain and an OnLost to run; false means leadership was never truly
+// taken and OnStoppedLeading must skip both.
+func (t *term) stop() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.stopped = true
+	return t.acquired
+}
+
+// didAcquire reports whether the term was claimed by OnStartedLeading.
+// Used by Run's settle path and by tests.
+func (t *term) didAcquire() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.acquired
+}
+
+// onStartedLeading runs the OnAcquired half of a leadership term. It is
+// invoked by client-go inside its own goroutine
+// (go OnStartedLeading(ctx); le.renew(ctx)), so it can be scheduled
+// AFTER le.renew has already returned and OnStoppedLeading has run — for
+// example when the caller ctx was already cancelled at the instant
+// acquire succeeded, or on an immediate renew failure.
+//
+// Two guards keep IsLeader() from sticking true forever and keep
+// OnAcquired from running for an already-over term:
+//
+//   - A fast leaderCtx.Err() check skips the obvious case where the term
+//     was cancelled before this goroutine was scheduled.
+//   - term.claim() closes the TOCTOU window: if OnStoppedLeading already
+//     stopped the term (even after the ctx check passed), claim returns
+//     false and this goroutine makes no observable claim — leader stays
+//     false, the term stays not-acquired (so OnStoppedLeading correctly
+//     skips OnLost), and OnAcquired is not called.
+//
+// cbDone is always signalled (via defer) so a concurrent
+// awaitCallbackDrain never blocks.
+func (e *Elector) onStartedLeading(
+	leaderCtx context.Context,
+	tm *term,
+	cb leaderelection.Callbacks,
+) {
+	// Set up the panic-recover defer FIRST so any panic between here and
+	// cb.OnAcquired (including a hypothetical panic inside slog.Info)
+	// still funnels completion onto cbDone. Without this, a panic before
+	// the defer ran would leave OnStoppedLeading's awaitCallbackDrain
+	// blocked until drainTimeout (or forever).
+	var result callbackResult
+	defer func() {
+		if rec := recover(); rec != nil {
+			result.panicValue = rec
+		}
+		tm.cbDone <- result
+	}()
+	// Leadership already ended before this goroutine was scheduled — do
+	// not claim a term that is over. (Fast path; claim() below is the
+	// authoritative guard against the TOCTOU window.) markLaunched keeps
+	// Run's settle path correct: this goroutine WILL send on cbDone via
+	// the defer above, so settleStarted may safely wait for it.
+	if leaderCtx.Err() != nil {
+		tm.markLaunched()
+		return
+	}
+	// Authoritative guard: refuse to claim if OnStoppedLeading already
+	// stopped the term. claim() and stop() are serialized under the term
+	// lock, so the late goroutine can never resurrect leadership.
+	if !tm.claim() {
+		return
+	}
+	e.leader.Store(true)
+	e.logger.Info("leader-election: acquired",
+		redact.String("namespace", e.namespace),
+		redact.String("name", e.name),
+		redact.String("identity", e.identity),
+	)
+	if cb.OnAcquired != nil {
+		cb.OnAcquired(leaderCtx)
+	}
+}
+
+// onStoppedLeading runs the stop half of a leadership term in Run's
+// goroutine (client-go invokes it via a deferred OnStoppedLeading). It
+// stores leader=false under the term lock — ordering the write with
+// onStartedLeading's leader=true store so a late claim cannot leave
+// IsLeader() stuck true — logs the loss, and reports whether the term
+// had actually been acquired.
+//
+// A true return tells Run's OnStoppedLeading closure that there is an
+// acquired term: it must drain the OnAcquired callback and run OnLost. A
+// false return means leadership was never truly taken (the started
+// goroutine never claimed, or will refuse to because the term is now
+// stopped), so OnLost is skipped per the kit contract.
+func (e *Elector) onStoppedLeading(tm *term, _ leaderelection.Callbacks) bool {
+	acquired := tm.stop()
+	e.leader.Store(false)
+	e.logger.Info("leader-election: lost",
+		redact.String("namespace", e.namespace),
+		redact.String("name", e.name),
+		redact.String("identity", e.identity),
+	)
+	return acquired
+}
+
+// settleStarted waits for a late OnStartedLeading goroutine to finish
+// after LeaderElector.Run returned, but only when OnStoppedLeading did
+// not already drain it (term not acquired) AND the goroutine was in fact
+// launched. The started goroutine, if still pending, observes
+// term.stopped and refuses to claim (leader stays false), then sends on
+// cbDone via its defer; receiving that send guarantees no OnAcquired is
+// still about to fire once Run returns.
+//
+// The launched check avoids a deadlock: client-go only does
+// `go OnStartedLeading` when acquire succeeds, so a ctx-cancelled-before-
+// acquire shutdown never schedules the goroutine and nothing would ever
+// send on cbDone. When the term was acquired, OnStoppedLeading's
+// awaitCallbackDrain already consumed cbDone, so there is nothing to
+// settle and this returns immediately.
+func (e *Elector) settleStarted(tm *term) {
+	launched, acquired := tm.settleState()
+	if acquired || !launched {
+		return
+	}
+	<-tm.cbDone
 }
 
 // runOnLost invokes the user's OnLost callback under a panic guard so

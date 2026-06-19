@@ -3,6 +3,7 @@ package tenant
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -161,6 +162,26 @@ func TestMustNewID_PanicsOnInvalid(t *testing.T) {
 	assert.Panics(t, func() { MustNewID("a:b") })
 }
 
+func TestMustNewID_PanicCarriesValidationReason(t *testing.T) {
+	// The panic value must surface the underlying ValidateID reason so a
+	// startup crash names the failed rule rather than a generic message.
+	// The wrapped messages are redaction-safe (no input content), so the
+	// offending value must not appear in the panic.
+	r := func() (msg string) {
+		defer func() {
+			rec := recover()
+			require.NotNil(t, rec, "MustNewID must panic on invalid input")
+			msg = fmt.Sprintf("%v", rec)
+		}()
+		MustNewID("a:b")
+		return ""
+	}()
+
+	assert.Contains(t, r, "MustNewID")
+	assert.Contains(t, r, "forbidden byte")
+	assert.NotContains(t, r, "a:b")
+}
+
 func TestFromContext_AbsentReturnsFalse(t *testing.T) {
 	_, ok := FromContext(context.Background())
 	assert.False(t, ok)
@@ -285,6 +306,46 @@ func TestKeyFor_RejectsInvalidParts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestKeyFor_RejectsTooManyParts(t *testing.T) {
+	// Each part is individually valid; only the part-count cap should
+	// reject the call. Boundary: MaxKeyParts is accepted, +1 rejected.
+	atMax := make([]string, MaxKeyParts)
+	for i := range atMax {
+		atMax[i] = "p"
+	}
+	_, err := KeyFor(ID("acme"), atMax...)
+	require.NoError(t, err, "exactly MaxKeyParts parts must be accepted")
+
+	overMax := make([]string, MaxKeyParts+1)
+	for i := range overMax {
+		overMax[i] = "p"
+	}
+	key, err := KeyFor(ID("acme"), overMax...)
+	assert.Empty(t, key)
+	assert.ErrorIs(t, err, ErrKeyInvalid)
+	// Distinguish the part-count guard from the per-part / total-length
+	// guards so a regression dropping it can't pass on a different reason.
+	assert.Contains(t, err.Error(), "part count")
+}
+
+func TestKeyFor_RejectsAssembledKeyExceedingTotalLen(t *testing.T) {
+	// Every part passes the per-part cap (MaxKeyPartLen) and the call
+	// stays within MaxKeyParts, so only the assembled-length guard can
+	// reject this. 16 maxed parts produce >16 KiB once length prefixes
+	// are added, exceeding MaxKeyTotalLen.
+	const numParts = 16
+	require.LessOrEqual(t, numParts, MaxKeyParts, "test must not trip the part-count cap")
+	maxPart := strings.Repeat("a", MaxKeyPartLen)
+	parts := make([]string, numParts)
+	for i := range parts {
+		parts[i] = maxPart
+	}
+	key, err := KeyFor(ID("acme"), parts...)
+	assert.Empty(t, key)
+	assert.ErrorIs(t, err, ErrKeyInvalid)
+	assert.Contains(t, err.Error(), "total length")
 }
 
 func TestKeyFor_RejectsInvalidUncheckedTenantID(t *testing.T) {

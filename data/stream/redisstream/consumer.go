@@ -53,6 +53,14 @@ const (
 //
 // Returning an apperror.PermanentError causes the message to be immediately
 // dead-lettered without further retries.
+//
+// Handlers MUST be idempotent: a message can be delivered more than once
+// (e.g. a crash in the window between the dead-letter write and the XACK
+// leaves it pending and re-delivered, and stale pending entries are
+// re-claimed). Handlers MUST also be safe for concurrent invocation: a
+// single Consumer dispatches from two goroutines — the claim loop for stale
+// pending messages runs alongside the new-message read loop — so the same
+// Handler value may be running in parallel.
 type Handler func(ctx context.Context, msg Message) error
 
 // ConsumerMetrics holds Prometheus collectors for stream consumer monitoring.
@@ -177,6 +185,11 @@ type Consumer struct {
 	maxRetries     int64
 	maxPayloadSize int
 
+	// handlerTimeout bounds how long a single handler invocation may run.
+	// Defaults to handlerShutdownTimeout. Configure via [WithHandlerTimeout]
+	// for long-running (e.g. agentic/LLM) workloads.
+	handlerTimeout time.Duration
+
 	// deadLetterStream is the stream where failed messages are sent.
 	// Defaults to "{stream}.dead".
 	deadLetterStream string
@@ -242,6 +255,13 @@ func WithBlockDuration(d time.Duration) ConsumerOption {
 
 // WithClaimMinIdle sets the minimum idle time before claiming pending messages.
 // The duration must be positive.
+//
+// For safety, keep claimMinIdle larger than the handler+ack execution window
+// (the handler shutdown timeout of 30s plus the 10s ack window). A value below
+// that lets XAUTOCLAIM transfer a message whose handler is still running on the
+// original consumer, producing concurrent duplicate processing and competing
+// ACK/dead-letter writes. At-least-once duplication is inherent, but a too-small
+// claimMinIdle makes it routine rather than crash-only.
 func WithClaimMinIdle(d time.Duration) ConsumerOption {
 	if d <= 0 {
 		panic("redisstream: WithClaimMinIdle requires a positive duration")
@@ -285,6 +305,21 @@ func WithMaxRetries(n int64) ConsumerOption {
 	}
 	return func(c *Consumer) {
 		c.maxRetries = n
+	}
+}
+
+// WithHandlerTimeout sets the maximum time a single handler invocation may
+// run before its context is cancelled. The default is 30s
+// (handlerShutdownTimeout). Increase it for legitimately long-running
+// handlers (e.g. agentic/LLM workloads) that would otherwise hit the deadline,
+// fail, be retried, and eventually be dead-lettered. The duration must be
+// positive.
+func WithHandlerTimeout(d time.Duration) ConsumerOption {
+	if d <= 0 {
+		panic("redisstream: WithHandlerTimeout requires a positive duration")
+	}
+	return func(c *Consumer) {
+		c.handlerTimeout = d
 	}
 }
 
@@ -360,14 +395,23 @@ func NewConsumer(client goredis.UniversalClient, group string, opts ...ConsumerO
 		batchSize:        defaultBatchSize,
 		maxRetries:       defaultMaxRetries,
 		maxPayloadSize:   defaultStreamMaxPayloadSize,
+		handlerTimeout:   handlerShutdownTimeout,
 		deadLetterMaxLen: defaultDeadLetterMaxLen,
-		metrics:          defaultConsumerMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
 			panic("redisstream: NewConsumer option must not be nil")
 		}
 		o(c)
+	}
+	// Materialise the default metrics only if no option supplied a registerer.
+	// Doing this eagerly before the option loop would register all
+	// redis_stream_* collectors on prometheus.DefaultRegisterer even when the
+	// caller opted out via WithConsumerRegisterer, and could panic at
+	// MustRegisterOrGet if the caller had already registered an incompatible
+	// same-name collector there.
+	if c.metrics == nil {
+		c.metrics = defaultConsumerMetrics()
 	}
 	return c, nil
 }
@@ -382,6 +426,7 @@ func (c *Consumer) ready() error {
 		c.batchSize <= 0 ||
 		c.maxRetries < 0 ||
 		c.maxPayloadSize < 0 ||
+		c.handlerTimeout <= 0 ||
 		c.deadLetterMaxLen < 0 ||
 		c.metrics == nil {
 		return kitstream.ErrInvalidStream
@@ -403,6 +448,16 @@ func (c *Consumer) ready() error {
 // Consume starts reading from the stream and dispatching to handler.
 // It automatically restarts with exponential backoff on errors.
 // Blocks until ctx is cancelled.
+//
+// Each handler invocation receives a context bounded by the consumer's
+// handler timeout (default 30s); a handler that exceeds it has its context
+// cancelled, the message fails, and is retried/dead-lettered. Configure the
+// bound with [WithHandlerTimeout] for legitimately long-running handlers.
+//
+// The handler must be idempotent and safe for concurrent invocation: a
+// single Consume dispatches from two goroutines (the stale-pending claim
+// loop and the new-message read loop) and a message may be delivered more
+// than once. See [Handler] for the full contract.
 //
 // A single Consumer instance must be used for exactly one stream — see
 // the [Consumer] doc. Panics if stream name is empty, handler is nil
@@ -445,6 +500,7 @@ func (c *Consumer) cloneForStream() (*Consumer, error) {
 		batchSize:        c.batchSize,
 		maxRetries:       c.maxRetries,
 		maxPayloadSize:   c.maxPayloadSize,
+		handlerTimeout:   c.handlerTimeout,
 		deadLetterStream: c.deadLetterStream,
 		deadLetterMaxLen: c.deadLetterMaxLen,
 		metrics:          c.metrics,
@@ -644,9 +700,13 @@ const (
 	// the parent context.
 	ackTimeout = 10 * time.Second
 
-	// handlerShutdownTimeout is the grace period given to a handler that is
-	// still running when the parent context is cancelled. This prevents message
-	// loss by allowing in-flight handlers to complete their work.
+	// handlerShutdownTimeout is the default bound on a single handler
+	// invocation. It doubles as the grace period given to a handler that is
+	// still running when the parent context is cancelled: the handler context
+	// is detached from parent cancellation so an in-flight handler can keep
+	// working (up to this timeout) instead of being killed immediately,
+	// preventing avoidable mid-work aborts and duplicate processing on
+	// shutdown. Override per-consumer with [WithHandlerTimeout].
 	handlerShutdownTimeout = 30 * time.Second
 )
 
@@ -674,17 +734,13 @@ func (c *Consumer) handleMessage(ctx context.Context, stream, dlStream string, r
 		return
 	}
 
-	// Give the handler a shutdown-aware context: derive from the parent
-	// context with a grace period so in-flight handlers can complete when
-	// shutdown is signaled, rather than being killed immediately.
-	var handlerCtx context.Context
-	var handlerCancel context.CancelFunc
-	if ctx.Err() != nil {
-		// Parent already cancelled — detach cancellation but retain context values.
-		handlerCtx, handlerCancel = streamDetachedTimeout(ctx, handlerShutdownTimeout)
-	} else {
-		handlerCtx, handlerCancel = context.WithTimeout(ctx, handlerShutdownTimeout)
-	}
+	// Give the handler a shutdown-aware context: detach from parent
+	// cancellation (retaining context values) and bound it by the configured
+	// handler timeout. This grace period lets an in-flight handler complete
+	// its work when shutdown is signaled mid-dispatch, rather than being
+	// killed immediately — whether the parent is cancelled before or during
+	// the call. The timeout still guarantees the handler cannot run forever.
+	handlerCtx, handlerCancel := streamDetachedTimeout(ctx, c.handlerTimeout)
 	defer handlerCancel()
 
 	start := time.Now()
@@ -701,7 +757,8 @@ func (c *Consumer) handleMessage(ctx context.Context, stream, dlStream string, r
 	// Note: there is a small crash window between XADD (dead-letter write)
 	// and XACK. If the process crashes in that window, the message will exist
 	// in both the source stream (pending) and the dead-letter stream. This is
-	// why handlers MUST be idempotent (see Consume godoc and doc.go).
+	// why handlers MUST be idempotent (see the [Handler] and [Consumer.Consume]
+	// godoc).
 	ackCtx, ackCancel := streamDetachedTimeout(ctx, ackTimeout)
 	defer ackCancel()
 

@@ -11,16 +11,25 @@
 //
 //  2. Implement the generated StrictServerInterface.
 //
-//  3. Wire it through openapi.Mount with the kit's middleware:
+//  3. Translate strict-server errors into Problem Details responses by
+//     passing [StrictErrorHandler] to the generated constructor, then
+//     wire the handler through openapi.Mount with the kit's middleware:
 //
+//     opts := api.StrictHTTPServerOptions{
+//     ResponseErrorHandlerFunc: openapi.StrictErrorHandler(nil),
+//     }
+//     handler := api.NewStrictHandlerWithOptions(impl, nil, opts)
 //     mux := http.NewServeMux()
-//     openapi.Mount(mux, api.NewStrictHandler(impl, nil), openapi.Options{
+//     mux.Handle("/api/v1/", openapi.Mount(handler, openapi.Options{
 //     Logger: slog.Default(),
-//     })
+//     }))
 //
-// The Mount call applies the kit's error-translation middleware
-// (apperror → RFC 7807 Problem Details), correlation ID propagation,
-// and request logging in the recommended order.
+// The Mount call adds correlation ID propagation, request logging, and
+// panic recovery in the recommended order. Error translation
+// (apperror → RFC 7807 Problem Details) happens at the strict-handler
+// boundary via [StrictErrorHandler]; oapi-codegen converts a returned
+// error into a response before it reaches an outer http.Handler, so
+// Mount itself cannot intercept it.
 //
 // The adapter does NOT install auth or rate-limiting — those are
 // app.Builder's responsibility because they apply uniformly across
@@ -56,17 +65,41 @@ type Options struct {
 	// implementation into a [problemdetails.Problem]. The kit ships
 	// a default [DefaultErrorMapper] that handles apperror types;
 	// override only when the service has custom error categories.
+	//
+	// Mount does NOT consume this field: oapi-codegen converts a
+	// strict-server error into a response inside the generated handler,
+	// before it reaches Mount's outer middleware chain. Pass the mapper
+	// to [StrictErrorHandler] and wire the result through the generated
+	// constructor's ResponseErrorHandlerFunc instead. ErrorMapper is
+	// retained only so existing call sites keep compiling.
+	//
+	// Deprecated: Mount ignores ErrorMapper. Use [StrictErrorHandler]
+	// at the strict-handler boundary.
 	ErrorMapper func(error) problemdetails.Problem
 }
 
 // Mount wraps handler with the kit's standard OpenAPI-handler
-// decoration: panic recovery, request ID, correlation ID, structured
-// access log, and problem-details error translation.
+// decoration: panic recovery, request ID, correlation ID, and a
+// structured access log.
 //
 // The order matters: recovery is outermost so a panic anywhere
-// downstream becomes a 500 Problem Details body; correlation ID
-// is inside recovery so panic logs carry the correlation ID;
-// logging is inside correlation so log lines include it.
+// downstream becomes a 500 response; request ID is next, then
+// correlation ID, then logging innermost so access-log lines carry both
+// IDs.
+//
+// Because recovery is outermost, it runs against the original request
+// whose context predates the request-ID and correlation-ID middleware
+// (both inject their IDs via r.WithContext into the downstream copy).
+// Recovery's panic log line and the 500 JSON body therefore do NOT carry
+// a request ID or correlation ID — only the inner access log does. The
+// X-Request-Id / X-Correlation-Id response headers are still set, since
+// those middleware write them onto the shared ResponseWriter.
+//
+// Mount does not translate strict-server errors into Problem Details:
+// oapi-codegen converts a returned error into a response inside the
+// generated handler, before it reaches this middleware chain. Wire
+// [StrictErrorHandler] through the generated constructor's
+// ResponseErrorHandlerFunc to get apperror → RFC 7807 translation.
 //
 // Returns a [http.Handler] ready to mount under any route prefix.
 // Most consumers `mux.Handle("/api/v1/", openapi.Mount(...))`.
@@ -74,12 +107,8 @@ func Mount(handler http.Handler, opts Options) http.Handler {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	if opts.ErrorMapper == nil {
-		opts.ErrorMapper = DefaultErrorMapper
-	}
 
 	wrapped := handler
-	wrapped = errorMapperMiddleware(opts.ErrorMapper)(wrapped)
 	wrapped = logging.Logger(opts.Logger, opts.QuietPaths)(wrapped)
 	wrapped = correlationid.WithCorrelationID(wrapped)
 	wrapped = requestid.WithRequestID(wrapped)
@@ -101,13 +130,32 @@ func DefaultErrorMapper(err error) problemdetails.Problem {
 	return problemdetails.FromError(err)
 }
 
-// errorMapperMiddleware is a placeholder for translating
-// strict-server-returned errors into Problem Details responses.
-// oapi-codegen's StrictServer pattern handles HTTP status codes via
-// generated response types, so the per-error translation happens
-// inside the strict handler itself; this middleware exists to give
-// callers a hook for cross-cutting behaviour (e.g. metric increment
-// on 5xx) without modifying the generated code.
-func errorMapperMiddleware(_ func(error) problemdetails.Problem) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler { return next }
+// StrictErrorHandler returns a response error handler that translates an
+// error returned by a strict-server implementation into an RFC 7807
+// Problem Details response.
+//
+// It is the wiring point for the [Options.ErrorMapper] policy: pass the
+// result as the ResponseErrorHandlerFunc on oapi-codegen's
+// StrictHTTPServerOptions, e.g.
+//
+//	opts := api.StrictHTTPServerOptions{
+//	    ResponseErrorHandlerFunc: openapi.StrictErrorHandler(nil),
+//	}
+//	handler := api.NewStrictHandlerWithOptions(impl, nil, opts)
+//
+// The returned function's signature matches oapi-codegen's
+// ResponseErrorHandlerFunc, so it is assignable without importing the
+// generated package here.
+//
+// When mapper is nil, [DefaultErrorMapper] is used. The mapped Problem is
+// written via [problemdetails.Write], which sets the problem+json media
+// type and a 500 status when the mapper leaves [problemdetails.Problem.Status]
+// unset.
+func StrictErrorHandler(mapper func(error) problemdetails.Problem) func(http.ResponseWriter, *http.Request, error) {
+	if mapper == nil {
+		mapper = DefaultErrorMapper
+	}
+	return func(w http.ResponseWriter, _ *http.Request, err error) {
+		problemdetails.Write(w, mapper(err))
+	}
 }

@@ -1,7 +1,9 @@
 package tenant
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 // headerOpt rebuilds the v1-style header-default middleware so tests
@@ -174,6 +177,39 @@ func TestNew_ExtractorPanicReturns500(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.False(t, called)
+}
+
+func TestNew_ExtractorPanicLogsViaRequestScopedLogger(t *testing.T) {
+	// Panic diagnostics must flow through the request-scoped logger the
+	// stack middleware installs (httpx.SetLogger), not slog.Default(),
+	// so they reach the service's configured handler/sink. A request
+	// carrying its own logger must capture the panic; slog.Default()
+	// must not see it.
+	buf := &bytes.Buffer{}
+	reqLogger := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	defaultBuf := &bytes.Buffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(defaultBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	mw := New(WithExtractor(func(*http.Request) (coretenant.ID, error) {
+		panic("extract failed")
+	}))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	ctx := httpx.SetLogger(context.Background(), reqLogger)
+	req := httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Contains(t, buf.String(), "tenant: extractor panicked",
+		"panic must be logged through the request-scoped logger")
+	assert.Empty(t, defaultBuf.String(),
+		"panic must not bypass the request-scoped logger to slog.Default()")
 }
 
 func TestNew_CustomExtractorMustReturnValidatedTenantID(t *testing.T) {

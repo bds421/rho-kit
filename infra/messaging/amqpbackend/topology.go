@@ -158,15 +158,11 @@ func declareRetryTopology(ch *amqp.Channel, b messaging.BindingSpec, db messagin
 	}
 
 	// Retry queue — holds messages for the TTL delay, then dead-letters
-	// back to the original exchange with the original routing key.
+	// straight back to the originating queue (see retryQueueArgs).
 	_, err := ch.QueueDeclare(
 		db.RetryQueue,
 		true, false, false, false,
-		amqp.Table{
-			"x-message-ttl":             int64(b.Retry.Delay / time.Millisecond),
-			"x-dead-letter-exchange":    b.Exchange,
-			"x-dead-letter-routing-key": b.RoutingKey,
-		},
+		retryQueueArgs(b),
 	)
 	if err != nil {
 		return redact.WrapError("declare retry queue", err)
@@ -195,4 +191,31 @@ func declareRetryTopology(ch *amqp.Channel, b messaging.BindingSpec, db messagin
 	}
 
 	return nil
+}
+
+// retryQueueArgs builds the declaration arguments for the retry queue.
+//
+// When a TTL'd retry message expires it is dead-lettered back to the
+// originating consumer-group queue via the AMQP default exchange ("").
+// The default exchange routes by routing key equal to the queue name, so
+// x-dead-letter-routing-key is set to b.ConsumerGroup (the main queue).
+//
+// Earlier this dead-lettered through the original exchange (b.Exchange)
+// with the binding key (b.RoutingKey). That republished the retried message
+// into EVERY queue bound with a matching key — for a fanout exchange every
+// sibling consumer group reprocessed the message on each retry bounce of a
+// single group. Routing via the default exchange targets only the queue
+// that originally failed, so siblings never see duplicates.
+//
+// It also fixes the routing key surfaced to handlers: the binding key for a
+// topic exchange is a pattern (e.g. "orders.*") and for fanout is empty, so
+// the previous scheme rewrote messaging.Delivery.RoutingKey on retried
+// deliveries. The original publish key remains available in the x-death
+// header's routing-keys field for handlers that need it.
+func retryQueueArgs(b messaging.BindingSpec) amqp.Table {
+	return amqp.Table{
+		"x-message-ttl":             int64(b.Retry.Delay / time.Millisecond),
+		"x-dead-letter-exchange":    "",
+		"x-dead-letter-routing-key": b.ConsumerGroup,
+	}
 }

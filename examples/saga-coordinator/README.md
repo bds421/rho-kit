@@ -136,9 +136,15 @@ func (c *coordinator) runSaga(ctx context.Context, idemKey string, req OrderRequ
     defer tx.Rollback()
 
     // Pin the exclusive section to THIS transaction. Released on
-    // COMMIT/ROLLBACK; auto-released on connection drop.
-    if err := locker.AcquireTx(ctx, tx, idemKey); err != nil {
+    // COMMIT/ROLLBACK; auto-released on connection drop. AcquireTx
+    // returns (ok, err): ok=false with err=nil means the lock is held
+    // by a concurrent caller — treat that as contention, not success.
+    ok, err := locker.AcquireTx(ctx, tx, idemKey)
+    if err != nil {
         return nil, err
+    }
+    if !ok {
+        return nil, fmt.Errorf("idempotency key %q is locked by a concurrent request", idemKey)
     }
 
     // ... idempotency cache lookup via idemStore.Get ...

@@ -270,6 +270,25 @@ func TestRequireTLS_RejectsLastWinsBypass(t *testing.T) {
 	assert.Error(t, err, "DSN with sslmode=disable as the last token must be rejected, regardless of earlier sslmode=require")
 }
 
+// TestRequireTLS_RejectsEmbeddedSSLModeSubstringBypass pins the fix for
+// a raw-substring scan that could be fooled by an sslmode-like token
+// embedded in another field's value. For
+//
+//	?sslmode=require&application_name=sslmode=verify-full
+//
+// pgx dials with sslmode=require (no server identity verification), but
+// the embedded `application_name` value contains the literal substring
+// `sslmode=verify-full`. A bare last-wins scan returned "verify-full"
+// and skipped the FR-079 require check, accepting an unverified-TLS
+// connection. The scanner now anchors `sslmode=` on a real key
+// boundary, so the embedded token is ignored and require is enforced.
+func TestRequireTLS_RejectsEmbeddedSSLModeSubstringBypass(t *testing.T) {
+	dsn := "postgres://u:p@h/db?sslmode=require&application_name=sslmode=verify-full"
+	err := checkTLS(t, dsn, false)
+	require.Error(t, err, "embedded sslmode= substring must not unlock the require path")
+	assert.Contains(t, err.Error(), "sslmode=require admits MITM")
+}
+
 func TestLastSSLMode(t *testing.T) {
 	cases := []struct {
 		dsn  string
@@ -280,6 +299,17 @@ func TestLastSSLMode(t *testing.T) {
 		{"host=h sslmode=verify-ca", "verify-ca"},
 		{"host=h sslmode=require sslmode=verify-full", "verify-full"},
 		{"postgres://u:p@h/db", ""},
+		// An sslmode-like substring embedded in another field's value
+		// (preceded by `=`) is NOT a real key and must be ignored so the
+		// returned value matches what pgx actually dials.
+		{"postgres://u:p@h/db?sslmode=require&application_name=sslmode=verify-full", "require"},
+		// Likewise an identifier suffix (preceded by a non-delimiter
+		// byte) is not a real key.
+		{"host=h xsslmode=verify-full sslmode=require", "require"},
+		// A DSN beginning with the key (no preceding byte) is a boundary.
+		{"sslmode=verify-full host=h", "verify-full"},
+		// Only the embedded token is present: no real key at all.
+		{"postgres://u:p@h/db?application_name=sslmode=verify-full", ""},
 	}
 	for _, c := range cases {
 		assert.Equalf(t, c.want, lastSSLMode(c.dsn), "lastSSLMode(%q)", c.dsn)
