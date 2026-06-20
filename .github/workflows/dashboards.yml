@@ -38,7 +38,7 @@ jobs:
       # release's sha256sums.txt. Bump together with PROM_VERSION.
       PROM_SHA256: "19700bdd42ec31ee162e4079ebda4cd0a44432df4daa637141bdbea4b1cd8927"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
