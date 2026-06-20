@@ -33,9 +33,11 @@ updates:
         patterns: ["*"]
         update-types: ["patch", "minor"]
     open-pull-requests-limit: 10
+    # prefix already carries the conventional-commit scope ("deps"); do NOT
+    # also set `include: scope`, which appends Dependabot's own (deps) scope
+    # and double-prefixes the title (chore(deps)(deps): ...).
     commit-message:
       prefix: "chore(deps)"
-      include: scope
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -47,6 +49,7 @@ updates:
     groups:
       gh-actions:
         patterns: ["*"]
+    # prefix already carries the scope ("ci"); see the gomod block above for
+    # why `include: scope` is intentionally omitted.
     commit-message:
       prefix: "chore(ci)"
-      include: scope
