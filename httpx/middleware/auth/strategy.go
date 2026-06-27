@@ -339,8 +339,7 @@ func NewSessionAuthenticator(v session.Validator) Authenticator {
 		case bearerTokenInvalid:
 			return Identity{}, ErrInvalidCredentials
 		}
-		if strings.HasPrefix(token, apikey.ScopedTokenPrefixAPI+"_") ||
-			strings.HasPrefix(token, apikey.ScopedTokenPrefixOAuth+"_") {
+		if looksLikeScopedKeyToken(token) || !looksLikeSessionToken(token) {
 			return Identity{}, ErrUnauthenticated
 		}
 		claims, err := v.Validate(r.Context(), token, time.Now())
@@ -378,11 +377,26 @@ func NewScopedKeyBearerAuthenticator(resolver *apikey.ScopedResolver) Authentica
 		if err != nil {
 			return Identity{}, fmt.Errorf("%w: %v", ErrInvalidCredentials, err)
 		}
+		scopes := slices.Clone(principal.Scopes)
 		return Identity{
 			UserID:      principal.UserID,
 			Tenant:      principal.Tenant,
 			Role:        principal.Role,
-			Permissions: slices.Clone(principal.Scopes),
+			Permissions: scopes,
+			Scopes:      strings.Join(scopes, " "),
 		}, nil
 	})
+}
+
+func looksLikeSessionToken(token string) bool {
+	if strings.Count(token, ".") != 1 {
+		return false
+	}
+	parts := strings.Split(token, ".")
+	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
+}
+
+func looksLikeScopedKeyToken(token string) bool {
+	parts := strings.Split(token, "_")
+	return len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != ""
 }
