@@ -26,6 +26,8 @@ import (
 
 // Named types for type-safe, collision-free context keys via contextutil.Key.
 type authUserID string
+type authTenant string
+type authRole string
 type authScopes string
 type permissionSet map[string]struct{}
 
@@ -37,6 +39,8 @@ type trustedS2SMarker struct{}
 
 var (
 	userIDKey      = contextutil.NewKey[authUserID]("httpx.auth.user_id")
+	tenantKey      = contextutil.NewKey[authTenant]("httpx.auth.tenant")
+	roleKey        = contextutil.NewKey[authRole]("httpx.auth.role")
 	permissionsKey = contextutil.NewKey[[]string]("httpx.auth.permissions")
 	permSetKey     = contextutil.NewKey[permissionSet]("httpx.auth.permission_set")
 	scopesKey      = contextutil.NewKey[authScopes]("httpx.auth.scopes")
@@ -499,6 +503,18 @@ func singleHeaderValue(h http.Header, name string) (string, bool) {
 // UserID extracts the user ID from the request context.
 func UserID(ctx context.Context) string {
 	v, _ := userIDKey.Get(ctx)
+	return string(v)
+}
+
+// Tenant extracts the tenant id stamped by multi-credential auth strategies.
+func Tenant(ctx context.Context) string {
+	v, _ := tenantKey.Get(ctx)
+	return string(v)
+}
+
+// Role extracts the coarse RBAC role stamped by session or scoped-key auth.
+func Role(ctx context.Context) string {
+	v, _ := roleKey.Get(ctx)
 	return string(v)
 }
 

@@ -15,7 +15,9 @@ import (
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/security/v2/apikey"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
+	"github.com/bds421/rho-kit/security/v2/session"
 )
 
 // Identity is the result of a successful authentication. It is the
@@ -33,6 +35,10 @@ import (
 type Identity struct {
 	// UserID is the verified subject. Must satisfy IsUUID.
 	UserID string
+	// Tenant is the resolved tenant id for multi-tenant services.
+	Tenant string
+	// Role is the coarse RBAC role (member, admin, …).
+	Role string
 	// Permissions is the unordered list of permission strings
 	// granted to this identity (e.g. "billing:read", "admin:*").
 	Permissions []string
@@ -129,6 +135,12 @@ func Strategy(a Authenticator) func(http.Handler) http.Handler {
 // context-key contract has a single touch point.
 func stampIdentity(ctx context.Context, id Identity) context.Context {
 	ctx = userIDKey.Set(ctx, authUserID(id.UserID))
+	if id.Tenant != "" {
+		ctx = tenantKey.Set(ctx, authTenant(id.Tenant))
+	}
+	if id.Role != "" {
+		ctx = roleKey.Set(ctx, authRole(id.Role))
+	}
 	perms := slices.Clone(id.Permissions)
 	ctx = permissionsKey.Set(ctx, perms)
 	ps := make(permissionSet, len(perms))
@@ -306,5 +318,71 @@ func NewAPIKeyAuthenticator(headerName string, v APIKeyVerifier) Authenticator {
 			return Identity{}, fmt.Errorf("%w: %v", ErrInvalidCredentials, err)
 		}
 		return id, nil
+	})
+}
+
+// ChainMiddleware returns HTTP middleware that tries each [Authenticator] in
+// order via [Chain] and stamps the winning [Identity] on the request context.
+func ChainMiddleware(strategies ...Authenticator) func(http.Handler) http.Handler {
+	return Strategy(Chain(strategies...))
+}
+
+// NewSessionAuthenticator authenticates Authorization: Bearer session tokens
+// via [session.Validator]. Tokens without a Bearer header return
+// [ErrUnauthenticated] so a [Chain] can fall through to API-key strategies.
+func NewSessionAuthenticator(v session.Validator) Authenticator {
+	return AuthenticatorFunc(func(r *http.Request) (Identity, error) {
+		token, status := parseBearerToken(r)
+		switch status {
+		case bearerTokenAbsent:
+			return Identity{}, ErrUnauthenticated
+		case bearerTokenInvalid:
+			return Identity{}, ErrInvalidCredentials
+		}
+		if strings.HasPrefix(token, apikey.ScopedTokenPrefixAPI+"_") ||
+			strings.HasPrefix(token, apikey.ScopedTokenPrefixOAuth+"_") {
+			return Identity{}, ErrUnauthenticated
+		}
+		claims, err := v.Validate(r.Context(), token, time.Now())
+		if err != nil {
+			return Identity{}, ErrInvalidCredentials
+		}
+		return Identity{
+			UserID: claims.UserID,
+			Tenant: claims.Tenant,
+			Role:   claims.Role,
+		}, nil
+	})
+}
+
+// NewScopedKeyBearerAuthenticator authenticates Bearer tokens prefixed with
+// the resolver's wire prefix. Non-matching Bearer tokens
+// return [ErrUnauthenticated] for chain fall-through.
+func NewScopedKeyBearerAuthenticator(resolver *apikey.ScopedResolver) Authenticator {
+	if resolver == nil {
+		panic("middleware/auth: NewScopedKeyBearerAuthenticator requires a non-nil resolver")
+	}
+	prefix := resolver.TokenPrefix()
+	return AuthenticatorFunc(func(r *http.Request) (Identity, error) {
+		token, status := parseBearerToken(r)
+		switch status {
+		case bearerTokenAbsent:
+			return Identity{}, ErrUnauthenticated
+		case bearerTokenInvalid:
+			return Identity{}, ErrInvalidCredentials
+		}
+		if !strings.HasPrefix(token, prefix+"_") {
+			return Identity{}, ErrUnauthenticated
+		}
+		principal, err := resolver.Resolve(r.Context(), token)
+		if err != nil {
+			return Identity{}, fmt.Errorf("%w: %v", ErrInvalidCredentials, err)
+		}
+		return Identity{
+			UserID:      principal.UserID,
+			Tenant:      principal.Tenant,
+			Role:        principal.Role,
+			Permissions: slices.Clone(principal.Scopes),
+		}, nil
 	})
 }
