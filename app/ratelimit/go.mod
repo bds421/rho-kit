@@ -3,18 +3,18 @@ module github.com/bds421/rho-kit/app/ratelimit/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/app/v2 v2.1.0
-	github.com/bds421/rho-kit/httpx/v2 v2.1.0
-	github.com/bds421/rho-kit/observability/v2 v2.1.0
+	github.com/bds421/rho-kit/app/v2 v2.2.0
+	github.com/bds421/rho-kit/httpx/v2 v2.2.0
+	github.com/bds421/rho-kit/observability/v2 v2.2.0
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.1.0 // indirect
-	github.com/bds421/rho-kit/infra/v2 v2.1.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.1.0 // indirect
-	github.com/bds421/rho-kit/runtime/v2 v2.1.0 // indirect
-	github.com/bds421/rho-kit/security/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.2.0 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.2.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.2.0 // indirect
+	github.com/bds421/rho-kit/runtime/v2 v2.2.0 // indirect
+	github.com/bds421/rho-kit/security/v2 v2.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
