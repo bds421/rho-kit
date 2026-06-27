@@ -2,8 +2,14 @@ github.com/bds421/rho-kit/app/v2 v2.1.0 h1:n8WvuKHcKQY4Rf9jWamgZjqca3dDHknNgRIKP
 github.com/bds421/rho-kit/app/v2 v2.1.0/go.mod h1:Ruk3gKVUr2U8NAF2EqlHUz0OssITZ77m2neCJZNQc+A=
 github.com/bds421/rho-kit/core/v2 v2.1.0 h1:Xc0XAm1CDfhEyLqTErcd+1sN4uQXn1zjoLXVNSlr6Wk=
 github.com/bds421/rho-kit/core/v2 v2.1.0/go.mod h1:XaiBe5WdOEreWL/9ab17kCxvfhIMW6HZMMwnBwfB3as=
+github.com/bds421/rho-kit/data/lock/pgadvisory/v2 v2.1.0 h1:g4sRf1I99SNsir8dv6VvCsc3vK7EL4WZcUmlXonKfiw=
+github.com/bds421/rho-kit/data/lock/pgadvisory/v2 v2.1.0/go.mod h1:1TMCIoZkK1lBxr/7TyRGCqKW1WvOexOmgM+DnQYSIJc=
+github.com/bds421/rho-kit/data/v2 v2.1.0 h1:wTZYALDL0CDYFQSLC/biVBLP/+uiuH64LINCLalPpHw=
+github.com/bds421/rho-kit/data/v2 v2.1.0/go.mod h1:YrYUu6e2bBVtQsD8WTFpLLx/qZEA0WFVG0KjlbQuDkk=
 github.com/bds421/rho-kit/httpx/v2 v2.1.0 h1:zTFo5NZYSx+wQ93TcbXku9SYJmCR8a1cWx9xQh63vyY=
 github.com/bds421/rho-kit/httpx/v2 v2.1.0/go.mod h1:kTl/Lpx75HlB6Ykj12WFEpEKyz0o1No36OpgESS5Wno=
+github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2 v2.1.0 h1:tzbB0GwoVbDIcuJNZ4g38t7T5UujNqnInZAwwCfCkvk=
+github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2 v2.1.0/go.mod h1:QdLB83jFsm1DaVa3wnlUg6Omni4WeOJ0z6HsvNpYpUU=
 github.com/bds421/rho-kit/infra/v2 v2.1.0 h1:BCypySynasUc7fNmnoqK6J4IaRrjgEU3+bZCLBNMjt8=
 github.com/bds421/rho-kit/infra/v2 v2.1.0/go.mod h1:o2fwDygQd3tYByH0LkQI/FSoDHYyP0dYw0f//ZBkkiQ=
 github.com/bds421/rho-kit/observability/v2 v2.1.0 h1:l/Rl0YdXCKBQ//vAZ53V3Q+axtZdmgBWNxGSR5VRQ7U=

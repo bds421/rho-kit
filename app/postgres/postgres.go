@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -15,6 +16,13 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/sqldb/migrate"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
+
+// SQLDBProvider exposes a stdlib [*sql.DB] backed by the module's pgx
+// pool. [github.com/bds421/rho-kit/app/leader/v2].PGAdvisoryFromPostgres
+// looks this up at Init time; register postgres before leader.
+type SQLDBProvider interface {
+	SQLDB() *sql.DB
+}
 
 // ResourceKey is the Infrastructure.Resource key under which the Module
 // publishes its initialized [*pgxbackend.Pool]. Use [Pool] to retrieve the
@@ -96,6 +104,15 @@ type pgxModule struct {
 }
 
 func (m *pgxModule) Name() string { return "postgres" }
+
+// SQLDB returns a stdlib database handle over the module pool. The
+// handle must not be closed by callers — it shares the pool's lifetime.
+func (m *pgxModule) SQLDB() *sql.DB {
+	if m.pool == nil {
+		panic("postgres: SQLDB called before Init completed")
+	}
+	return stdlib.OpenDBFromPool(m.pool.Pool())
+}
 
 func (m *pgxModule) Init(ctx context.Context, mc app.ModuleContext) error {
 	m.log = mc.Logger

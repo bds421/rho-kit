@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/bds421/rho-kit/app/v2 v2.1.0
+	github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2 v2.1.0
 	github.com/bds421/rho-kit/infra/v2 v2.1.0
 	github.com/bds421/rho-kit/observability/v2 v2.1.0
 	github.com/stretchr/testify v1.11.1
@@ -11,6 +12,8 @@ require (
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/data/lock/pgadvisory/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/data/v2 v2.1.0 // indirect
 	github.com/bds421/rho-kit/httpx/v2 v2.1.0 // indirect
 	github.com/bds421/rho-kit/resilience/v2 v2.1.0 // indirect
 	github.com/bds421/rho-kit/runtime/v2 v2.1.0 // indirect

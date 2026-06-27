@@ -41,6 +41,8 @@ import (
 {{- end}}
 {{- if .Postgres}}
 
+	kitcron "github.com/bds421/rho-kit/app/cron/v2"
+	kitleader "github.com/bds421/rho-kit/app/leader/v2"
 	kitpostgres "github.com/bds421/rho-kit/app/postgres/v2"
 	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 
@@ -174,7 +176,9 @@ func Run(_ *slog.Logger, version string) error {
 	// it inside the router via postgres.Pool(infra).
 	dsn := config.MustGetSecret("DATABASE_URL", "")
 	b = b.
-		With(kitpostgres.Module(pgxbackend.Config{DSN: dsn}, kitpostgres.WithMigrations(migrations.FS)))
+		With(kitpostgres.Module(pgxbackend.Config{DSN: dsn}, kitpostgres.WithMigrations(migrations.FS))).
+		With(kitleader.PGAdvisoryFromPostgres("{{.ServiceName}}")).
+		With(kitcron.Module())
 {{- end}}
 {{- if .Tenant}}
 
