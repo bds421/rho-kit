@@ -28,3 +28,12 @@ func TestEmitPathsJSON_BuildsOpenAPI31(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, tags, "public")
 }
+
+func TestEmitPathsJSON_RejectsDuplicateRoute(t *testing.T) {
+	_, err := openapi.EmitPathsJSON("example-api", []openapi.RouteMeta{
+		{Method: "GET", Path: "/v1/contacts"},
+		{Method: "GET", Path: "/v1/contacts"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate route")
+}

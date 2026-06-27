@@ -18,13 +18,18 @@ import (
 var (
 	// ErrEmptyMaster is returned when New receives an empty master key.
 	ErrEmptyMaster = errors.New("secretcrypt: master key must not be empty")
+	// ErrShortMaster is returned when the master key is shorter than minMasterLen.
+	ErrShortMaster = errors.New("secretcrypt: master key must be at least 32 bytes")
 	// ErrEmptyDomainLabel is returned when New receives an empty domain label.
 	ErrEmptyDomainLabel = errors.New("secretcrypt: domain label must not be empty")
 	// ErrEmptyIdentity is returned when Encrypt/Decrypt receive an empty identity.
 	ErrEmptyIdentity = errors.New("secretcrypt: identity must not be empty")
 )
 
-const derivedKeyLen = 32
+const (
+	derivedKeyLen = 32
+	minMasterLen  = 32
+)
 
 // Crypter encrypts and decrypts secrets with per-identity keys derived
 // from a single master via HKDF-SHA256.
@@ -38,6 +43,9 @@ type Crypter struct {
 func New(master []byte, domainLabel string) (*Crypter, error) {
 	if len(master) == 0 {
 		return nil, ErrEmptyMaster
+	}
+	if len(master) < minMasterLen {
+		return nil, ErrShortMaster
 	}
 	if domainLabel == "" {
 		return nil, ErrEmptyDomainLabel

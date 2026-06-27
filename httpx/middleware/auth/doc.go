@@ -11,6 +11,9 @@
 //     below).
 //     The X-User-Id value must be a singleton identity token: no duplicate
 //     header lines, comma-combined values, whitespace, or control characters.
+//   - ChainMiddleware: tries multiple [Authenticator]s in order. When
+//     combining session tokens, scoped API keys, and JWTs, register session
+//     first, scoped keys second, JWT last — see [ChainMiddleware] for why.
 //
 // # Authorization
 //

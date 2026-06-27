@@ -110,3 +110,16 @@ func TestPGAdvisoryFromPostgres_RequiresPostgresModule(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "requires postgres module")
 }
+
+func TestPGAdvisoryFromPostgres_InitWiresElector(t *testing.T) {
+	var db sql.DB
+	m := PGAdvisoryFromPostgres("svc")
+	mc, err := app.TestModuleContext(stubPostgresModule{db: &db})
+	require.NoError(t, err)
+
+	require.NoError(t, m.Init(context.Background(), mc))
+
+	infra := app.Infrastructure{}
+	m.Populate(&infra)
+	require.NotNil(t, Elector(infra))
+}

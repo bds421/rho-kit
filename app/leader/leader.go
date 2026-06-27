@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	kitpostgres "github.com/bds421/rho-kit/app/postgres/v2"
 	"github.com/bds421/rho-kit/app/v2"
 	"github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2"
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
@@ -73,7 +74,7 @@ func (m *pgAdvisoryModule) Init(ctx context.Context, mc app.ModuleContext) error
 	if pm == nil {
 		return fmt.Errorf("app/leader: PGAdvisoryFromPostgres requires postgres module registered before leader")
 	}
-	sp, ok := pm.(interface{ SQLDB() *sql.DB })
+	sp, ok := pm.(kitpostgres.SQLDBProvider)
 	if !ok {
 		return fmt.Errorf("app/leader: postgres module does not expose SQLDB")
 	}

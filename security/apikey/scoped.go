@@ -12,6 +12,7 @@ import (
 	"github.com/bds421/rho-kit/core/v2/secret"
 	"github.com/bds421/rho-kit/crypto/v2/passhash"
 	"github.com/bds421/rho-kit/crypto/v2/passhash/bcryptcompat"
+	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )
 
 // Default scoped-key wire prefixes. Override via [ScopedGenerateOptions.TokenPrefix]
@@ -19,8 +20,8 @@ import (
 const (
 	ScopedTokenPrefixAPI   = "rhosk"
 	ScopedTokenPrefixOAuth = "rhoat"
-	scopedLookupPrefixLen   = 8
-	scopedSecretLen         = 32
+	scopedLookupPrefixLen  = 8
+	scopedSecretLen        = 32
 )
 
 // ScopedKind distinguishes API keys from OAuth client records stored in the
@@ -35,17 +36,17 @@ const (
 // ScopedKey is a user-bound scoped credential. Hash holds a passhash PHC
 // string (legacy bcrypt is accepted at verify time via bcryptcompat).
 type ScopedKey struct {
-	ID         string
-	Tenant     string
-	Prefix     string
-	Hash       []byte
-	Scopes     []string
-	Role       string
+	ID            string
+	Tenant        string
+	Prefix        string
+	Hash          []byte
+	Scopes        []string
+	Role          string
 	SubjectUserID string
-	Kind       ScopedKind
-	ExpiresAt  time.Time
-	RevokedAt  time.Time
-	CreatedAt  time.Time
+	Kind          ScopedKind
+	ExpiresAt     time.Time
+	RevokedAt     time.Time
+	CreatedAt     time.Time
 }
 
 // Principal is the auth identity produced by [ScopedResolver.Resolve].
@@ -66,15 +67,16 @@ type PrefixRepository interface {
 
 // ScopedGenerateOptions configures [GenerateScoped].
 type ScopedGenerateOptions struct {
-	Tenant     string
-	Scopes     []string
-	Role       string
+	Tenant string
+	Scopes []string
+	Role   string
+	// SubjectUserID is the UUID-shaped user the key impersonates. Required.
 	SubjectUserID string
-	Kind       ScopedKind
-	TokenPrefix string
-	ExpiresAt  time.Time
-	Now        time.Time
-	HashParams passhash.Params
+	Kind          ScopedKind
+	TokenPrefix   string
+	ExpiresAt     time.Time
+	Now           time.Time
+	HashParams    passhash.Params
 }
 
 // GenerateScoped mints a scoped key and one-time plaintext token
@@ -83,6 +85,12 @@ type ScopedGenerateOptions struct {
 func GenerateScoped(opts ScopedGenerateOptions) (ScopedKey, *secret.String, error) {
 	if opts.Tenant == "" {
 		return ScopedKey{}, nil, fmt.Errorf("apikey: scoped key requires tenant")
+	}
+	if opts.SubjectUserID == "" {
+		return ScopedKey{}, nil, fmt.Errorf("apikey: scoped key requires subject user id")
+	}
+	if !jwtutil.IsUUID(opts.SubjectUserID) {
+		return ScopedKey{}, nil, fmt.Errorf("apikey: subject user id must be a UUID")
 	}
 	prefix := opts.TokenPrefix
 	if prefix == "" {
@@ -113,16 +121,16 @@ func GenerateScoped(opts ScopedGenerateOptions) (ScopedKey, *secret.String, erro
 	}
 	token := prefix + "_" + lookup + "_" + secretPart
 	key := ScopedKey{
-		ID:         lookup,
-		Tenant:     opts.Tenant,
-		Prefix:     lookup,
-		Hash:       []byte(hash),
-		Scopes:     cloneScopes(opts.Scopes),
-		Role:       opts.Role,
+		ID:            lookup,
+		Tenant:        opts.Tenant,
+		Prefix:        lookup,
+		Hash:          []byte(hash),
+		Scopes:        cloneScopes(opts.Scopes),
+		Role:          opts.Role,
 		SubjectUserID: opts.SubjectUserID,
-		Kind:       kind,
-		ExpiresAt:  opts.ExpiresAt,
-		CreatedAt:  opts.Now,
+		Kind:          kind,
+		ExpiresAt:     opts.ExpiresAt,
+		CreatedAt:     opts.Now,
 	}
 	return key, secret.NewFromString(token), nil
 }
@@ -209,12 +217,14 @@ func (r *ScopedResolver) Resolve(ctx context.Context, presented string) (Princip
 	if !res.Matched {
 		return Principal{}, ErrInvalidSecret
 	}
-	userID := key.SubjectUserID
-	if userID == "" {
-		userID = key.ID
+	if key.SubjectUserID == "" {
+		return Principal{}, fmt.Errorf("apikey: scoped key %q missing subject user id", key.ID)
+	}
+	if !jwtutil.IsUUID(key.SubjectUserID) {
+		return Principal{}, fmt.Errorf("apikey: scoped key %q has non-UUID subject user id", key.ID)
 	}
 	return Principal{
-		UserID: userID,
+		UserID: key.SubjectUserID,
 		Tenant: key.Tenant,
 		Role:   key.Role,
 		Scopes: cloneScopes(key.Scopes),
@@ -267,7 +277,7 @@ func (r *MemoryPrefixRepository) InsertScoped(_ context.Context, key ScopedKey) 
 func (r *MemoryPrefixRepository) ActiveByPrefix(_ context.Context, prefix string) (ScopedKey, error) {
 	key, ok := r.keys[prefix]
 	if !ok {
-		return ScopedKey{}, apperror.NewNotFound("scoped api key", prefix)
+		return ScopedKey{}, ErrScopedNotFound
 	}
 	return key, nil
 }

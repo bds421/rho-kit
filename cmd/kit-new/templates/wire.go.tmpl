@@ -175,6 +175,9 @@ func Run(_ *slog.Logger, version string) error {
 	// is published on Infrastructure.Resources by app/postgres; access
 	// it inside the router via postgres.Pool(infra).
 	dsn := config.MustGetSecret("DATABASE_URL", "")
+	// Leader election gates cron to one replica; the advisory key defaults to
+	// the service name — use a distinct key if multiple services share one DB.
+	// Cron is a no-op until jobs are registered on the scheduler.
 	b = b.
 		With(kitpostgres.Module(pgxbackend.Config{DSN: dsn}, kitpostgres.WithMigrations(migrations.FS))).
 		With(kitleader.PGAdvisoryFromPostgres("{{.ServiceName}}")).

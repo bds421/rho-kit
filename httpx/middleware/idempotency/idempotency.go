@@ -299,10 +299,12 @@ func WithRequiredMethods(methods ...string) Option {
 }
 
 // WithOptionalKey allows POST/PUT/PATCH without an Idempotency-Key to
-// pass through unchanged. When the header is absent the middleware does
-// not touch the store; when present, normal deduplication applies.
-// Pair with [WithRequiredMethods] (the default) for opt-in idempotency
-// on mutating routes when clients send Idempotency-Key only when needed.
+// pass through unchanged. Only a fully absent header bypasses the store;
+// a present but empty value still fails validation like any other invalid key.
+// When the header is absent the middleware does not touch the store; when
+// present, normal deduplication applies. Pair with [WithRequiredMethods]
+// (the default) for opt-in idempotency on mutating routes when clients send
+// Idempotency-Key only when needed.
 func WithOptionalKey() Option {
 	return func(c *config) { c.optionalKey = true }
 }

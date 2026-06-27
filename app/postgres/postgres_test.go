@@ -118,3 +118,21 @@ func TestHealthCheck_NoRaceWithStop(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+func TestSQLDB_ReturnsStableHandle(t *testing.T) {
+	m := Module(pgxbackend.Config{
+		DSN:                            "postgres://u:p@127.0.0.1:1/db?sslmode=disable",
+		AllowPlaintextLoopbackForTests: true,
+	}).(*pgxModule)
+
+	mc := app.ModuleContext{
+		Logger: slog.Default(),
+		Runner: lifecycle.NewRunner(slog.Default()),
+	}
+	require.NoError(t, m.Init(context.Background(), mc))
+	t.Cleanup(func() { _ = m.Stop(context.Background()) })
+
+	first := m.SQLDB()
+	second := m.SQLDB()
+	assert.Same(t, first, second, "SQLDB must return the same cached handle")
+}
