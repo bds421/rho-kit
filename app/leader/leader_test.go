@@ -2,6 +2,7 @@ package leader
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/bds421/rho-kit/app/v2"
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
+	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 type stubElector struct{}
@@ -64,4 +66,47 @@ func TestModule_StopIsNoOp(t *testing.T) {
 func TestModule_HealthChecksEmpty(t *testing.T) {
 	m := Module(stubElector{})
 	assert.Empty(t, m.HealthChecks())
+}
+
+func TestPGAdvisory_PanicsOnNilDB(t *testing.T) {
+	assert.PanicsWithValue(t, "app/leader: PGAdvisory requires a non-nil *sql.DB", func() {
+		PGAdvisory(nil, "svc")
+	})
+}
+
+func TestPGAdvisory_PanicsOnEmptyKey(t *testing.T) {
+	var db sql.DB
+	assert.PanicsWithValue(t, "app/leader: PGAdvisory requires a non-empty key", func() {
+		PGAdvisory(&db, "")
+	})
+}
+
+func TestPGAdvisoryFromPostgres_PanicsOnEmptyKey(t *testing.T) {
+	assert.PanicsWithValue(t, "app/leader: PGAdvisoryFromPostgres requires a non-empty key", func() {
+		PGAdvisoryFromPostgres("")
+	})
+}
+
+type stubPostgresModule struct {
+	db *sql.DB
+}
+
+func (stubPostgresModule) Name() string { return "postgres" }
+func (stubPostgresModule) Init(context.Context, app.ModuleContext) error {
+	return nil
+}
+func (stubPostgresModule) Populate(*app.Infrastructure) {}
+func (stubPostgresModule) Stop(context.Context) error   { return nil }
+func (stubPostgresModule) HealthChecks() []health.DependencyCheck {
+	return nil
+}
+func (m stubPostgresModule) SQLDB() *sql.DB { return m.db }
+
+func TestPGAdvisoryFromPostgres_RequiresPostgresModule(t *testing.T) {
+	m := PGAdvisoryFromPostgres("svc")
+	mc, err := app.TestModuleContext()
+	require.NoError(t, err)
+	err = m.Init(context.Background(), mc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires postgres module")
 }

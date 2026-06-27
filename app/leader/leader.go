@@ -16,8 +16,11 @@ package leader
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 
 	"github.com/bds421/rho-kit/app/v2"
+	"github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2"
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
@@ -30,6 +33,53 @@ const ResourceElectorKey = "github.com/bds421/rho-kit/app/leader.elector"
 // the Builder's cron block (and other adapters) that look up
 // leader presence by name without importing this package.
 const ModuleName = "leader-election"
+
+// PGAdvisory returns an [app.Module] backed by a Postgres advisory-lock
+// elector. Register before [github.com/bds421/rho-kit/app/cron/v2].Module
+// so cron jobs gate on [leaderelection.Elector.IsLeader].
+//
+// Panics if db is nil or key is empty.
+func PGAdvisory(db *sql.DB, key string, opts ...pgadvisory.Option) app.Module {
+	if db == nil {
+		panic("app/leader: PGAdvisory requires a non-nil *sql.DB")
+	}
+	if key == "" {
+		panic("app/leader: PGAdvisory requires a non-empty key")
+	}
+	return Module(pgadvisory.New(db, key, opts...))
+}
+
+// PGAdvisoryFromPostgres returns an [app.Module] that resolves the
+// advisory-lock elector from the registered [app/postgres] module at
+// Init time. Register postgres before this module and before
+// [github.com/bds421/rho-kit/app/cron/v2].Module.
+//
+// Panics if key is empty.
+func PGAdvisoryFromPostgres(key string, opts ...pgadvisory.Option) app.Module {
+	if key == "" {
+		panic("app/leader: PGAdvisoryFromPostgres requires a non-empty key")
+	}
+	return &pgAdvisoryModule{key: key, opts: append([]pgadvisory.Option(nil), opts...)}
+}
+
+type pgAdvisoryModule struct {
+	key  string
+	opts []pgadvisory.Option
+	leaderModule
+}
+
+func (m *pgAdvisoryModule) Init(ctx context.Context, mc app.ModuleContext) error {
+	pm := mc.LookupModule("postgres")
+	if pm == nil {
+		return fmt.Errorf("app/leader: PGAdvisoryFromPostgres requires postgres module registered before leader")
+	}
+	sp, ok := pm.(interface{ SQLDB() *sql.DB })
+	if !ok {
+		return fmt.Errorf("app/leader: postgres module does not expose SQLDB")
+	}
+	m.elector = pgadvisory.New(sp.SQLDB(), m.key, m.opts...)
+	return m.leaderModule.Init(ctx, mc)
+}
 
 // Module returns an [app.Module] that runs the supplied Elector
 // under the lifecycle Runner. The Elector's IsLeader() can then be
