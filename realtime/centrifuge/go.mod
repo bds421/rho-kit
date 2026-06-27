@@ -3,9 +3,9 @@ module github.com/bds421/rho-kit/realtime/centrifuge/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.1.0
-	github.com/bds421/rho-kit/observability/v2 v2.1.0
-	github.com/bds421/rho-kit/security/v2 v2.1.0
+	github.com/bds421/rho-kit/core/v2 v2.2.0
+	github.com/bds421/rho-kit/observability/v2 v2.2.0
+	github.com/bds421/rho-kit/security/v2 v2.2.0
 	github.com/centrifugal/centrifuge v0.38.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
@@ -15,7 +15,7 @@ require (
 	cel.dev/expr v0.25.2 // indirect
 	github.com/FZambia/eagle v0.2.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.1.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/centrifugal/protocol v0.19.2 // indirect
@@ -59,10 +59,8 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
-	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260610212136-7ab31c22f7ad // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
