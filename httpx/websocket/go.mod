@@ -3,8 +3,8 @@ module github.com/bds421/rho-kit/httpx/websocket/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.1.0
-	github.com/bds421/rho-kit/observability/v2 v2.1.0
+	github.com/bds421/rho-kit/core/v2 v2.2.0
+	github.com/bds421/rho-kit/observability/v2 v2.2.0
 	github.com/coder/websocket v1.8.15
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
