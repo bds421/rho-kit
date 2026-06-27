@@ -16,13 +16,12 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.1.0
-	github.com/bds421/rho-kit/data/v2 v2.1.0
+	github.com/bds421/rho-kit/core/v2 v2.2.0
+	github.com/bds421/rho-kit/data/v2 v2.2.0
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 )
