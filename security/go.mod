@@ -10,6 +10,7 @@ go 1.26.2
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.1.0
+	github.com/bds421/rho-kit/crypto/v2 v2.1.0
 	github.com/bds421/rho-kit/resilience/v2 v2.1.0
 	github.com/lestrrat-go/jwx/v3 v3.1.1
 	github.com/prometheus/client_golang v1.23.2

@@ -37,4 +37,13 @@
 // app/paseto and crypto/paseto modules. Opaque keys are preferred here
 // because they are instantly revocable and match the external-API
 // convention customers and AI agents expect.
+//
+// # Scoped keys
+//
+// [GenerateScoped] and [ScopedResolver] cover user-bound credentials
+// (configurable wire prefixes; defaults [ScopedTokenPrefixAPI] /
+// [ScopedTokenPrefixOAuth]) hashed with
+// [github.com/bds421/rho-kit/crypto/v2/passhash]; verification accepts
+// legacy bcrypt via
+// [github.com/bds421/rho-kit/crypto/v2/passhash/bcryptcompat].
 package apikey
