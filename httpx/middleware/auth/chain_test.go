@@ -53,3 +53,55 @@ func TestChainMiddleware_FallsThroughToScopedKey(t *testing.T) {
 	assert.Equal(t, "tenant-a", gotTenant)
 	assert.Equal(t, "member", gotRole)
 }
+
+func TestChainMiddleware_FallsThroughNonSessionBearer(t *testing.T) {
+	root := []byte("0123456789abcdef0123456789abcdef")
+	signer, err := session.NewSigner(root, "session")
+	require.NoError(t, err)
+
+	var jwtStrategyCalled bool
+	h := auth.ChainMiddleware(
+		auth.NewSessionAuthenticator(session.Validator{Signer: signer}),
+		auth.AuthenticatorFunc(func(*http.Request) (auth.Identity, error) {
+			jwtStrategyCalled = true
+			return auth.Identity{UserID: testUserID}, nil
+		}),
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer aaa.bbb.ccc")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.True(t, jwtStrategyCalled, "non-session Bearer tokens must fall through to later strategies")
+}
+
+func TestChainMiddleware_ScopedKeyPopulatesScopes(t *testing.T) {
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	repo := apikey.NewMemoryPrefixRepository()
+	key, token, err := apikey.GenerateScoped(apikey.ScopedGenerateOptions{
+		Tenant: "tenant-a", SubjectUserID: testUserID, Role: "member",
+		Scopes: []string{"read:contacts"},
+		Now: now, HashParams: passhash.Params{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLen: 16, KeyLen: 32},
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.InsertScoped(context.Background(), key))
+
+	scopedResolver := apikey.NewScopedResolver(repo, apikey.ScopedTokenPrefixAPI, apikey.WithScopedClock(func() time.Time { return now }))
+	h := auth.ChainMiddleware(
+		auth.NewScopedKeyBearerAuthenticator(scopedResolver),
+	)(auth.RequireScope("read:contacts")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "read:contacts", auth.Scopes(r.Context()))
+		w.WriteHeader(http.StatusNoContent)
+	})))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token.RevealString())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+}
