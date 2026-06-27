@@ -56,7 +56,7 @@ func (r idempotencyMissingUserExtractorRule) Run(fset *token.FileSet, file *ast.
 			File:       pos.Filename,
 			Line:       pos.Line,
 			Message:    "idempotency.Middleware without WithUserExtractor (cross-user replay risk)",
-			Suggestion: "pass idempotency.WithUserExtractor(fn) or, for explicitly shared scope, idempotency.WithAllowSharedKeys() as an option",
+			Suggestion: "pass idempotency.WithUserExtractor(fn) or, for explicitly shared scope, idempotency.WithAllowSharedKeys() as an option; use idempotency.WithOptionalKey() when idempotency is opt-in (header present only)",
 		})
 		return true
 	})
