@@ -25,6 +25,14 @@ func TestNewSecretCopiesInput(t *testing.T) {
 	}
 }
 
+func TestFormatStripeStyle(t *testing.T) {
+	mac := hmac.New(sha256.New, []byte("secret"))
+	_, _ = mac.Write([]byte("payload"))
+	raw := mac.Sum(nil)
+	got := FormatStripeStyle(1719494400, raw)
+	assert.Equal(t, fmt.Sprintf("t=1719494400,v1=%s", hex.EncodeToString(raw)), got)
+}
+
 func TestSign(t *testing.T) {
 	body := []byte(`{"title":"test","message":"hello"}`)
 	secret := testSecret

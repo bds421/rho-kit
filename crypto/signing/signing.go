@@ -192,6 +192,12 @@ func buildSignedPayload(ctx CanonicalContext, ts int64, body []byte) []byte {
 // defaultSigner is the package-level Signer using time.Now as clock source.
 var defaultSigner = NewSigner()
 
+// FormatStripeStyle formats a Unix timestamp and raw HMAC digest as a
+// Stripe-style header value: t=<unix>,v1=<hex>.
+func FormatStripeStyle(ts int64, mac []byte) string {
+	return fmt.Sprintf("t=%d,v1=%s", ts, hex.EncodeToString(mac))
+}
+
 // Sign computes an HMAC-SHA256 signature for the given body and secret,
 // including a Unix timestamp in the signed payload to prevent replay attacks.
 // The signed payload is: "<timestamp>.<body>".
