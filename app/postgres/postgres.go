@@ -98,20 +98,22 @@ func Module(cfg pgxbackend.Config, opts ...Option) app.Module {
 type pgxModule struct {
 	app.BaseModule
 
-	cfg  moduleConfig
-	pool *pgxbackend.Pool
-	log  *slog.Logger
+	cfg   moduleConfig
+	pool  *pgxbackend.Pool
+	sqlDB *sql.DB
+	log   *slog.Logger
 }
 
 func (m *pgxModule) Name() string { return "postgres" }
 
-// SQLDB returns a stdlib database handle over the module pool. The
-// handle must not be closed by callers — it shares the pool's lifetime.
+// SQLDB returns the stdlib database handle over the module pool. The
+// handle is created once during Init and must not be closed by callers —
+// it shares the pool's lifetime.
 func (m *pgxModule) SQLDB() *sql.DB {
-	if m.pool == nil {
+	if m.sqlDB == nil {
 		panic("postgres: SQLDB called before Init completed")
 	}
-	return stdlib.OpenDBFromPool(m.pool.Pool())
+	return m.sqlDB
 }
 
 func (m *pgxModule) Init(ctx context.Context, mc app.ModuleContext) error {
@@ -121,6 +123,7 @@ func (m *pgxModule) Init(ctx context.Context, mc app.ModuleContext) error {
 		return fmt.Errorf("postgres module: %w", err)
 	}
 	m.pool = pool
+	m.sqlDB = stdlib.OpenDBFromPool(pool.Pool())
 	mc.Logger.Info("postgres pool configured")
 
 	// Wire the pgxpool stat collector to Prometheus. The collector reads
@@ -141,6 +144,7 @@ func (m *pgxModule) Init(ctx context.Context, mc app.ModuleContext) error {
 		if err := m.runMigrations(ctx); err != nil {
 			_ = pool.Close()
 			m.pool = nil
+			m.sqlDB = nil
 			return err
 		}
 	}
@@ -148,10 +152,7 @@ func (m *pgxModule) Init(ctx context.Context, mc app.ModuleContext) error {
 }
 
 func (m *pgxModule) runMigrations(ctx context.Context) error {
-	sqlDB := stdlib.OpenDBFromPool(m.pool.Pool())
-	defer func() { _ = sqlDB.Close() }()
-
-	applied, err := migrate.Up(ctx, sqlDB, migrate.Config{Dir: m.cfg.migrationsDir})
+	applied, err := migrate.Up(ctx, m.sqlDB, migrate.Config{Dir: m.cfg.migrationsDir})
 	if err != nil {
 		return fmt.Errorf("postgres module: migrations failed: %w", err)
 	}
@@ -196,6 +197,7 @@ func (m *pgxModule) Stop(_ context.Context) error {
 	}
 	pool := m.pool
 	m.pool = nil
+	m.sqlDB = nil
 	return pool.Close()
 }
 

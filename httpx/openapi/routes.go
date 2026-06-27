@@ -18,9 +18,9 @@ type RouteMeta struct {
 
 // Document is a minimal OpenAPI 3.1 document with paths only.
 type Document struct {
-	OpenAPI string                 `json:"openapi"`
-	Paths   map[string]pathItem    `json:"paths"`
-	Info    map[string]string      `json:"info"`
+	OpenAPI string              `json:"openapi"`
+	Paths   map[string]pathItem `json:"paths"`
+	Info    map[string]string   `json:"info"`
 }
 
 type pathItem map[string]operation
@@ -55,6 +55,9 @@ func EmitPathsJSON(title string, routes []RouteMeta) ([]byte, error) {
 		if !ok {
 			item = make(pathItem)
 			doc.Paths[path] = item
+		}
+		if _, exists := item[method]; exists {
+			return nil, fmt.Errorf("openapi: duplicate route %s %s", strings.ToUpper(method), path)
 		}
 		op := operation{
 			Summary: r.Summary,

@@ -307,14 +307,9 @@ func NewAPIKeyAuthenticator(headerName string, v APIKeyVerifier) Authenticator {
 		}
 		id, err := v.VerifyAPIKey(r.Context(), key)
 		if err != nil {
-			// Flatten any verifier failure to ErrInvalidCredentials so
-			// the wire response stays opaque and a Chain still stops
-			// (no fall-through to a weaker strategy). The cause is kept
-			// in the message — not as a wrapped sentinel — so an infra
-			// outage (DB down, context cancelled, timeout) is
-			// distinguishable from a forged key in logs without letting
-			// the cause hijack the ErrUnauthenticated/ErrInvalidCredentials
-			// chain semantics.
+			httpx.Logger(r.Context(), slog.Default()).Error("middleware/auth: api key verification failed",
+				redact.Error(err),
+			)
 			return Identity{}, fmt.Errorf("%w: %v", ErrInvalidCredentials, err)
 		}
 		return id, nil
@@ -323,6 +318,18 @@ func NewAPIKeyAuthenticator(headerName string, v APIKeyVerifier) Authenticator {
 
 // ChainMiddleware returns HTTP middleware that tries each [Authenticator] in
 // order via [Chain] and stamps the winning [Identity] on the request context.
+//
+// Recommended Bearer order when combining session tokens, scoped API keys,
+// and JWTs:
+//
+//  1. [NewSessionAuthenticator] — session wire format is <payload>.<mac>
+//     (exactly one dot); non-matching shapes return [ErrUnauthenticated].
+//  2. [NewScopedKeyBearerAuthenticator] — scoped keys are <prefix>_<lookup>_<secret>
+//     (exactly two underscores).
+//  3. [NewJWTAuthenticator] — JWTs use multiple dot-separated segments; place
+//     after session so session-shaped tokens are not misrouted. Putting JWT
+//     before session causes session tokens to fail JWT verification and stop
+//     the chain with [ErrInvalidCredentials] (no fall-through).
 func ChainMiddleware(strategies ...Authenticator) func(http.Handler) http.Handler {
 	return Strategy(Chain(strategies...))
 }
@@ -344,6 +351,9 @@ func NewSessionAuthenticator(v session.Validator) Authenticator {
 		}
 		claims, err := v.Validate(r.Context(), token, time.Now())
 		if err != nil {
+			httpx.Logger(r.Context(), slog.Default()).Error("middleware/auth: session token validation failed",
+				redact.Error(err),
+			)
 			return Identity{}, ErrInvalidCredentials
 		}
 		return Identity{
@@ -375,6 +385,9 @@ func NewScopedKeyBearerAuthenticator(resolver *apikey.ScopedResolver) Authentica
 		}
 		principal, err := resolver.Resolve(r.Context(), token)
 		if err != nil {
+			httpx.Logger(r.Context(), slog.Default()).Error("middleware/auth: scoped key verification failed",
+				redact.Error(err),
+			)
 			return Identity{}, fmt.Errorf("%w: %v", ErrInvalidCredentials, err)
 		}
 		scopes := slices.Clone(principal.Scopes)

@@ -31,10 +31,11 @@ type VerifyResult struct {
 	Algo        Algo
 }
 
-// Verify checks password against stored, trying passhash PHC first and
-// falling back to bcrypt ($2a$, $2b$, $2y$). target is the argon2id
-// policy used to decide NeedsRehash for matched PHC hashes; bcrypt matches
-// always set NeedsRehash=true so callers can upgrade on next login.
+// Verify checks password against stored. Legacy bcrypt hashes ($2a$, $2b$,
+// $2y$) are detected by prefix and verified with bcrypt; all other strings
+// are treated as passhash PHC argon2id. target is the argon2id policy used
+// to decide NeedsRehash for matched PHC hashes; bcrypt matches always set
+// NeedsRehash=true so callers can upgrade on next login.
 func Verify(password, stored string, target passhash.Params) (VerifyResult, error) {
 	stored = strings.TrimSpace(stored)
 	if stored == "" {
@@ -75,6 +76,9 @@ func verifyBcrypt(password, stored string) (VerifyResult, error) {
 	}, nil
 }
 
+// isBcryptHash reports whether stored is a bcrypt PHC string. Only $2a$,
+// $2b$, and $2y$ variants are recognized; other legacy prefixes (e.g. $2$)
+// are not supported.
 func isBcryptHash(stored string) bool {
 	return strings.HasPrefix(stored, "$2a$") ||
 		strings.HasPrefix(stored, "$2b$") ||

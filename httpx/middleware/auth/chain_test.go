@@ -85,7 +85,7 @@ func TestChainMiddleware_ScopedKeyPopulatesScopes(t *testing.T) {
 	key, token, err := apikey.GenerateScoped(apikey.ScopedGenerateOptions{
 		Tenant: "tenant-a", SubjectUserID: testUserID, Role: "member",
 		Scopes: []string{"read:contacts"},
-		Now: now, HashParams: passhash.Params{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLen: 16, KeyLen: 32},
+		Now:    now, HashParams: passhash.Params{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLen: 16, KeyLen: 32},
 	})
 	require.NoError(t, err)
 	require.NoError(t, repo.InsertScoped(context.Background(), key))
@@ -104,4 +104,64 @@ func TestChainMiddleware_ScopedKeyPopulatesScopes(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestChainMiddleware_SessionBeforeJWTSucceeds(t *testing.T) {
+	root := []byte("0123456789abcdef0123456789abcdef")
+	signer, err := session.NewSigner(root, "session")
+	require.NoError(t, err)
+
+	token, err := signer.Mint(session.Claims{
+		UserID: testUserID, Tenant: "tenant-a", Role: "member",
+		TokenVersion: 1, Exp: time.Now().Add(time.Hour),
+	})
+	require.NoError(t, err)
+
+	var jwtCalled bool
+	h := auth.ChainMiddleware(
+		auth.NewSessionAuthenticator(session.Validator{Signer: signer}),
+		auth.AuthenticatorFunc(func(*http.Request) (auth.Identity, error) {
+			jwtCalled = true
+			return auth.Identity{UserID: testUserID}, nil
+		}),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, testUserID, auth.UserID(r.Context()))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.False(t, jwtCalled, "session token must authenticate before JWT strategy runs")
+}
+
+func TestChainMiddleware_JWTBeforeSessionBlocksSessionToken(t *testing.T) {
+	root := []byte("0123456789abcdef0123456789abcdef")
+	signer, err := session.NewSigner(root, "session")
+	require.NoError(t, err)
+
+	token, err := signer.Mint(session.Claims{
+		UserID: testUserID, Tenant: "tenant-a", Role: "member",
+		TokenVersion: 1, Exp: time.Now().Add(time.Hour),
+	})
+	require.NoError(t, err)
+
+	h := auth.ChainMiddleware(
+		auth.AuthenticatorFunc(func(*http.Request) (auth.Identity, error) {
+			return auth.Identity{}, auth.ErrInvalidCredentials
+		}),
+		auth.NewSessionAuthenticator(session.Validator{Signer: signer}),
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }

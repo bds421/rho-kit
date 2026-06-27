@@ -16,6 +16,11 @@ func TestNew_RejectsEmptyMaster(t *testing.T) {
 	assert.ErrorIs(t, err, ErrEmptyMaster)
 }
 
+func TestNew_RejectsShortMaster(t *testing.T) {
+	_, err := New([]byte("short"), "webhooks")
+	assert.ErrorIs(t, err, ErrShortMaster)
+}
+
 func TestNew_RejectsEmptyDomainLabel(t *testing.T) {
 	_, err := New(testMaster(), "")
 	assert.ErrorIs(t, err, ErrEmptyDomainLabel)
