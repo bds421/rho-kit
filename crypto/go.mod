@@ -13,7 +13,7 @@ go 1.26.2
 
 require (
 	aidanwoods.dev/go-paseto v1.6.0
-	github.com/bds421/rho-kit/core/v2 v2.1.0
+	github.com/bds421/rho-kit/core/v2 v2.2.0
 	github.com/stretchr/testify v1.11.1
 	github.com/tink-crypto/tink-go/v2 v2.7.0
 	golang.org/x/crypto v0.53.0
