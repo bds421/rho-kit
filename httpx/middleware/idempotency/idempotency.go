@@ -126,6 +126,8 @@ type config struct {
 	preserveHeaders    map[string]bool // optional override of identityResponseHeaders
 	uncachedStatuses   map[int]bool    // statuses released (not cached) after the handler
 	postHandlerTimeout time.Duration
+	optionalKey        bool   // pass through when Idempotency-Key absent on required methods
+	replayHeader       string // response header set to "true" on cache replay; empty disables
 	// semanticHeaders are HTTP headers folded into the fingerprint
 	// key (audit FR-029). Use this for headers whose value affects
 	// the request semantics in ways the kit cannot infer — typically
@@ -296,6 +298,25 @@ func WithRequiredMethods(methods ...string) Option {
 	}
 }
 
+// WithOptionalKey allows POST/PUT/PATCH without an Idempotency-Key to
+// pass through unchanged. When the header is absent the middleware does
+// not touch the store; when present, normal deduplication applies.
+// Pair with [WithRequiredMethods] (the default) for opt-in idempotency
+// on mutating routes when clients send Idempotency-Key only when needed.
+func WithOptionalKey() Option {
+	return func(c *config) { c.optionalKey = true }
+}
+
+// WithReplayHeader sets the response header name emitted on cache replay.
+// The header value is always "true". Default: off (replay is transparent).
+// Panics if name is empty or not a valid HTTP header field name.
+func WithReplayHeader(name string) Option {
+	if !httpguts.ValidHeaderFieldName(name) {
+		panic("middleware/idempotency: WithReplayHeader requires a valid HTTP header field name")
+	}
+	return func(c *config) { c.replayHeader = http.CanonicalHeaderKey(name) }
+}
+
 // WithoutRequiredMethods disables the "method requires an idempotency
 // key" enforcement entirely. With no required methods every request —
 // including mutating ones — takes the early pass-through: the middleware
@@ -450,6 +471,10 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 
 			rawKey, ok := singleHeaderValue(r.Header, cfg.header)
 			if !ok {
+				if cfg.optionalKey && len(r.Header.Values(cfg.header)) == 0 {
+					next.ServeHTTP(w, r)
+					return
+				}
 				httpx.WriteError(w, http.StatusBadRequest, "idempotency key is required exactly once")
 				return
 			}
@@ -555,7 +580,7 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 				if cfg.metrics != nil {
 					cfg.metrics.hits.Inc()
 				}
-				replay(w, cached)
+				replay(w, cached, cfg.replayHeader)
 				return
 			}
 
@@ -872,7 +897,10 @@ func canonicalQuery(v url.Values) string {
 	return v.Encode()
 }
 
-func replay(w http.ResponseWriter, cached *idem.CachedResponse) {
+func replay(w http.ResponseWriter, cached *idem.CachedResponse, replayHeader string) {
+	if replayHeader != "" {
+		w.Header().Set(replayHeader, "true")
+	}
 	for k, vals := range cached.Headers {
 		for _, v := range vals {
 			w.Header().Add(k, v)

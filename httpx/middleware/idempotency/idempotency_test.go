@@ -1822,3 +1822,72 @@ func TestWithSemanticHeaders_CanonicalizesNames(t *testing.T) {
 		t.Fatalf("expected single canonicalised header, got %v", cfg.semanticHeaders)
 	}
 }
+
+func TestWithOptionalKey_PassThroughWithoutHeader(t *testing.T) {
+	store := idem.NewMemoryStore()
+	calls := 0
+	handler := Middleware(store,
+		WithAllowSharedKeys(),
+		WithOptionalKey(),
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusCreated)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if calls != 1 {
+		t.Fatalf("handler called %d times, want 1", calls)
+	}
+}
+
+func TestWithOptionalKey_StillEnforcesWhenHeaderPresent(t *testing.T) {
+	store := idem.NewMemoryStore()
+	handler := Middleware(store,
+		WithAllowSharedKeys(),
+		WithOptionalKey(),
+	)(newTestHandler(`{"ok":true}`, http.StatusOK))
+
+	req1 := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	req1.Header.Set("Idempotency-Key", "key-1")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	req2 := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	req2.Header.Set("Idempotency-Key", "key-1")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec1.Body.String() != rec2.Body.String() {
+		t.Fatalf("replay body mismatch: %q vs %q", rec1.Body.String(), rec2.Body.String())
+	}
+}
+
+func TestWithReplayHeader_SetsOnCacheHit(t *testing.T) {
+	store := idem.NewMemoryStore()
+	handler := Middleware(store,
+		WithAllowSharedKeys(),
+		WithReplayHeader("Idempotent-Replay"),
+	)(newTestHandler(`{"ok":true}`, http.StatusOK))
+
+	req1 := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	req1.Header.Set("Idempotency-Key", "replay-key")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Header().Get("Idempotent-Replay") != "" {
+		t.Fatalf("first response must not set replay header, got %q", rec1.Header().Get("Idempotent-Replay"))
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	req2.Header.Set("Idempotency-Key", "replay-key")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Header().Get("Idempotent-Replay") != "true" {
+		t.Fatalf("replay header = %q, want true", rec2.Header().Get("Idempotent-Replay"))
+	}
+}
