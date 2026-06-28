@@ -286,9 +286,10 @@ func WithAllowAnonymousActor() ServerOption {
 }
 
 // WithActorFromContext reads the actor id from the request context
-// using fn — typically a wrapper around [auth.UserID] from
-// httpx/middleware/auth. The function receives the context from the
-// inbound HTTP request.
+// using fn — typically [auth.FormatActorFromContext] from
+// httpx/middleware/auth for actionlog-shaped strings, or [auth.Actor]
+// when a bare attribution id is enough. The function receives the context
+// from the inbound HTTP request.
 func WithActorFromContext(fn func(context.Context) string) ServerOption {
 	if fn == nil {
 		panic("mcp: WithActorFromContext requires a non-nil extractor")

@@ -64,14 +64,21 @@ stack.Default(mux, logger,
 ## Authentication Recipes
 
 ```go
-// JWT-only:
+// JWT-only (human-shaped sub → ActorUser):
 auth.JWT(jwt.Provider(infra))
+
+// JWT service account (client_credentials-style client_id claim → ActorService):
+auth.JWT(jwt.Provider(infra), auth.WithJWTServiceActorFromClaim("client_id"))
+auth.ChainMiddleware(
+    auth.NewJWTAuthenticator(jwt.Provider(infra), auth.WithJWTServiceActorFromClaim("azp")),
+)
 
 // Service-to-service (JWT OR mTLS):
 auth.RequireS2SAuth(jwt.Provider(infra), []string{"payment-service", "order-service"},
     auth.WithS2SImpersonationGuard(func(r *http.Request, identity, userID string) error {
         return authorizeServiceUser(r.Context(), identity, userID)
     }),
+    auth.WithS2SJWTIdentity(auth.WithJWTServiceActorFromClaim("client_id")),
 )
 
 // RBAC after auth:
@@ -84,10 +91,39 @@ auth.PermissionByMethod("orders:read", "orders:write")
 auth.RequireScope("api:write")       // soft — session auth passes through
 auth.RequireScopeStrict("api:write") // strict — rejects if no scopes present
 
-// Access user in handler:
-userID := auth.UserID(r.Context())
+// Access identity in handler:
+subject := auth.Subject(r.Context())   // visibility / RLS UUID
+actor := auth.Actor(r.Context())       // audit attribution id
+kind := auth.ActorKindFromContext(r.Context())
+userID := auth.UserID(r.Context())       // deprecated alias for Subject
 perms := auth.Permissions(r.Context()) // nil for mTLS S2S
+
+// Multi-credential Bearer chain (session, OAuth access, scoped keys, JWT):
+auth.ChainMiddleware(
+    auth.NewSessionAuthenticator(sessionValidator),
+    auth.NewScopedKeyBearerAuthenticator(scopedResolver),
+    auth.NewJWTAuthenticator(jwtProvider),
+)
+
+// Actionlog / MCP actor string from verified auth context:
+auditActor := auth.FormatActorFromContext(r.Context()) // "user:<uuid>", "service:<id>", ...
+
+// Custom JWT claims for mapping: jwt.WithStringClaims("my_claim") on the Provider.
 ```
+
+gRPC mirrors the same subject/actor context keys via `grpcx/interceptor.Subject`,
+`Actor`, and `ActorKindFromContext` after `AuthUnary` or `MTLSAuthUnary`.
+Pass `interceptor.AsAuthOption(interceptor.WithJWTServiceActorFromClaim("client_id"))`
+to `AuthUnary` for service JWT mapping. `ActorKind` and audit formatting live in
+`security/identity` (shared by both transports). Prefixed JWT subjects (`usr_<uuid>`)
+are normalized by `jwtutil.NormalizeSubjectID`.
+
+Outbound gRPC clients wired via `grpcx/client.NewClient` automatically propagate
+verified identity from context through `x-subject-id`, `x-actor-id`, and
+`x-actor-kind` metadata (plus legacy `x-user-id` for subject). Values are stamped
+only from auth middleware context — never forwarded from unverified inbound
+metadata. Call `interceptor.AppendOutgoingIdentity(ctx)` manually when building
+custom client chains.
 
 Identity-bearing headers such as `X-User-Id`, tenant headers, MCP `X-Actor-Id`,
 and approval actor headers are treated as singleton tokens: duplicate lines,

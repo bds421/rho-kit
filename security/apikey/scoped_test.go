@@ -38,12 +38,12 @@ func TestScopedResolver_ResolveSubjectUserID(t *testing.T) {
 	assert.True(t, HasScope(p, "read:contacts"))
 }
 
-func TestGenerateScoped_RejectsEmptySubjectUserID(t *testing.T) {
-	_, _, err := GenerateScoped(ScopedGenerateOptions{
+func TestGenerateScoped_AllowsEmptySubjectUserID(t *testing.T) {
+	key, _, err := GenerateScoped(ScopedGenerateOptions{
 		Tenant: "tenant-a", Now: time.Now(), HashParams: fastHashParams(),
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "subject user id")
+	require.NoError(t, err)
+	assert.Empty(t, key.SubjectUserID)
 }
 
 func TestGenerateScoped_RejectsNonUUIDSubjectUserID(t *testing.T) {
@@ -55,21 +55,21 @@ func TestGenerateScoped_RejectsNonUUIDSubjectUserID(t *testing.T) {
 	assert.Contains(t, err.Error(), "UUID")
 }
 
-func TestScopedResolver_RejectsMissingSubjectUserID(t *testing.T) {
+func TestScopedResolver_UnboundSubjectUserID(t *testing.T) {
 	now := time.Now()
 	key, token, err := GenerateScoped(ScopedGenerateOptions{
-		Tenant: "tenant-a", SubjectUserID: testSubjectUserID,
-		Now: now, HashParams: fastHashParams(),
+		Tenant: "tenant-a", Now: now, HashParams: fastHashParams(),
 	})
 	require.NoError(t, err)
-	key.SubjectUserID = ""
 	repo := NewMemoryPrefixRepository()
 	require.NoError(t, repo.InsertScoped(context.Background(), key))
 	resolver := NewScopedResolver(repo, ScopedTokenPrefixAPI, WithScopedClock(func() time.Time { return now }))
 
-	_, err = resolver.Resolve(context.Background(), token.RevealString())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "missing subject user id")
+	p, err := resolver.Resolve(context.Background(), token.RevealString())
+	require.NoError(t, err)
+	assert.Empty(t, p.UserID)
+	assert.Equal(t, "tenant-a", p.Tenant)
+	assert.NotEmpty(t, p.KeyID)
 }
 
 func TestScopedResolver_RejectsWrongSecret(t *testing.T) {

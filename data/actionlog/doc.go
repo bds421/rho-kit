@@ -34,7 +34,7 @@
 //
 //	id
 //	tenant_id
-//	actor
+//	actor (convention: "<kind>:<id>" via httpx/middleware/auth.FormatActorFromContext)
 //	action
 //	resource
 //	outcome
