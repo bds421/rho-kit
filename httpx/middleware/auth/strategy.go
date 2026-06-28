@@ -346,7 +346,8 @@ func NewAPIKeyAuthenticator(headerName string, v APIKeyVerifier) Authenticator {
 //  1. [NewOAuthAccessSessionAuthenticator] — optional; payload.sig OAuth access
 //     (one dot). Register before session when used.
 //  2. [NewSessionAuthenticator] — session wire format is <payload>.<mac>
-//     (exactly one dot); prefixed machine tokens are skipped.
+//     (exactly one dot). Non-session shapes fall through via
+//     [ErrUnauthenticated]; each machine strategy matches its own prefix.
 //  3. [NewOAuthAccessBearerAuthenticator] — optional; <prefix>_<lookup>_<secret>.
 //  4. [NewScopedKeyBearerAuthenticator] — scoped keys (prefixed).
 //  5. [NewJWTAuthenticator] — JWTs (multiple dots); after session.
@@ -369,8 +370,7 @@ func NewSessionAuthenticator(v session.Validator) Authenticator {
 		case bearerTokenInvalid:
 			return Identity{}, ErrInvalidCredentials
 		}
-		// Skip prefixed machine tokens (scoped keys, prefix-based OAuth access).
-		if looksLikePrefixedMachineToken(token) || !looksLikeSessionToken(token) {
+		if !looksLikeSessionToken(token) {
 			return Identity{}, ErrUnauthenticated
 		}
 		claims, err := v.Validate(r.Context(), token, time.Now())
@@ -514,9 +514,4 @@ func looksLikeSessionToken(token string) bool {
 	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
 }
 
-// looksLikePrefixedMachineToken reports the <prefix>_<lookup>_<secret> wire
-// shape used by scoped API keys and prefix-based OAuth access tokens.
-func looksLikePrefixedMachineToken(token string) bool {
-	parts := strings.Split(token, "_")
-	return len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != ""
-}
+
