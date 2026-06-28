@@ -144,7 +144,7 @@ func TestMCPServer_EchoToolRoundtrip(t *testing.T) {
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("X-Tenant-Id", "acme")
 	rec := httptest.NewRecorder()
-	mcpHTTPHandler(srv).ServeHTTP(rec, req)
+	mcpHTTPHandler(srv.HTTP()).ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
 	var resp struct {
@@ -175,7 +175,7 @@ func TestMCPServer_RejectsValidationFailure(t *testing.T) {
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("X-Tenant-Id", "acme")
 	rec := httptest.NewRecorder()
-	mcpHTTPHandler(srv).ServeHTTP(rec, req)
+	mcpHTTPHandler(srv.HTTP()).ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
 	var resp struct {
@@ -203,7 +203,7 @@ func TestStrictAudit_RefusesWhenTenantMissing(t *testing.T) {
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	// X-Tenant-Id deliberately omitted.
 	rec := httptest.NewRecorder()
-	mcpHTTPHandler(srv).ServeHTTP(rec, req)
+	mcpHTTPHandler(srv.HTTP()).ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
 	var resp struct {

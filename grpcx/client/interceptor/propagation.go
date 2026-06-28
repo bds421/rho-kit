@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
+	srvinterceptor "github.com/bds421/rho-kit/grpcx/v2/interceptor"
 )
 
 // Metadata key names mirror the server-side interceptor so
@@ -34,7 +35,7 @@ func PropagationUnaryClientInterceptor() grpc.UnaryClientInterceptor {
 		invoker grpc.UnaryInvoker,
 		opts ...grpc.CallOption,
 	) error {
-		ctx = injectIDs(ctx)
+		ctx = injectPropagation(ctx)
 		return invoker(ctx, method, req, reply, cc, opts...)
 	}
 }
@@ -50,17 +51,14 @@ func PropagationStreamClientInterceptor() grpc.StreamClientInterceptor {
 		streamer grpc.Streamer,
 		opts ...grpc.CallOption,
 	) (grpc.ClientStream, error) {
-		ctx = injectIDs(ctx)
+		ctx = injectPropagation(ctx)
 		return streamer(ctx, desc, cc, method, opts...)
 	}
 }
 
-// injectIDs copies kit correlation/request IDs from ctx into outgoing
-// metadata so the server side sees them. If the ID is not present on
-// ctx, nothing is added — the server's adoptOrGenerate will allocate.
-// Existing values are left untouched so a repeated invocation across the
-// interceptor chain does not duplicate entries.
-func injectIDs(ctx context.Context) context.Context {
+// injectPropagation copies kit correlation/request IDs and verified identity
+// from ctx into outgoing metadata. Existing values are left untouched.
+func injectPropagation(ctx context.Context) context.Context {
 	md, _ := metadata.FromOutgoingContext(ctx)
 	if md == nil {
 		md = metadata.MD{}
@@ -73,5 +71,6 @@ func injectIDs(ctx context.Context) context.Context {
 	if rid := contextutil.RequestID(ctx); rid != "" && len(md.Get(requestIDKey)) == 0 {
 		md.Set(requestIDKey, rid)
 	}
-	return metadata.NewOutgoingContext(ctx, md)
+	ctx = metadata.NewOutgoingContext(ctx, md)
+	return srvinterceptor.AppendOutgoingIdentity(ctx)
 }

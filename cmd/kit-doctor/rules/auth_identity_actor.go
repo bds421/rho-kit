@@ -47,6 +47,8 @@ func (r authIdentityActorRule) Run(fset *token.FileSet, file *ast.File) []Findin
 			return true
 		}
 		pos := fset.Position(lit.Pos())
+		fixPath := pos.Filename
+		fixLine := pos.Line
 		findings = append(findings, Finding{
 			Rule:       r.Name(),
 			Severity:   Warning,
@@ -54,6 +56,9 @@ func (r authIdentityActorRule) Run(fset *token.FileSet, file *ast.File) []Findin
 			Line:       pos.Line,
 			Message:    "auth.Identity sets UserID without Actor or Subject — machine attribution is lost after the identity split",
 			Suggestion: "set Subject and Actor (and ActorKind for machine credentials), or use auth.IdentityFromScopedKey for scoped API keys",
+			Fix: func() (string, error) {
+				return fixAuthIdentityDrift(fixPath, fixLine)
+			},
 		})
 		return true
 	})

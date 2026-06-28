@@ -3,6 +3,8 @@ package rules
 import (
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,6 +33,41 @@ func f() auth.Identity {
 }`
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "svc.go", src, 0)
+	require.NoError(t, err)
+	assert.Empty(t, (authIdentityActorRule{}).Run(fset, file))
+}
+
+func TestFixAuthIdentityDrift_AddsSubjectActorKind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "svc.go")
+	const before = `package svc
+
+import "github.com/bds421/rho-kit/httpx/v2/middleware/auth"
+
+func f() auth.Identity {
+	return auth.Identity{UserID: "550e8400-e29b-41d4-a716-446655440000"}
+}
+`
+	require.NoError(t, os.WriteFile(path, []byte(before), 0o644))
+
+	msg, err := fixAuthIdentityDrift(path, 6)
+	require.NoError(t, err)
+	assert.Contains(t, msg, "added Subject, Actor, and ActorKind")
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	const want = `package svc
+
+import "github.com/bds421/rho-kit/httpx/v2/middleware/auth"
+
+func f() auth.Identity {
+	return auth.Identity{Subject: "550e8400-e29b-41d4-a716-446655440000", Actor: "550e8400-e29b-41d4-a716-446655440000", ActorKind: auth.ActorUser, UserID: "550e8400-e29b-41d4-a716-446655440000"}
+}
+`
+	assert.Equal(t, want, string(got))
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, got, 0)
 	require.NoError(t, err)
 	assert.Empty(t, (authIdentityActorRule{}).Run(fset, file))
 }

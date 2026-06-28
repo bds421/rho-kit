@@ -56,6 +56,7 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/id"
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 	actionlogmem "github.com/bds421/rho-kit/data/v2/actionlog/memory"
 	"github.com/bds421/rho-kit/data/v2/approval"
@@ -64,6 +65,7 @@ import (
 	budgetmem "github.com/bds421/rho-kit/data/v2/budget/memory"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/mcp"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/auth"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 )
 
@@ -143,7 +145,7 @@ func run(ctx context.Context, addr string) error {
 	// inspects it. With strict audit on (the v2.0.0 default), MCP
 	// refuses to dispatch a tool when no tenant resolves and an
 	// action logger is configured. See httpx/mcp doc for details.
-	mux.Handle("/mcp", requireDemoBearerToken(demoToken, mcpHTTPHandler(mcpServer)))
+	mux.Handle("/mcp", requireDemoBearerToken(demoToken, mcpHTTPHandler(demoActorMiddleware(mcpServer.HTTP()))))
 	mux.Handle("/admin/dangerous-action", requireDemoBearerToken(demoToken, dangerousAction(astore)))
 	mux.Handle("/admin/budget", requireDemoBearerToken(demoToken, budgetStatus(bud)))
 
@@ -291,7 +293,7 @@ func echo(_ context.Context, in EchoIn) (EchoOut, error) {
 func newMCPServer(alog actionlog.Logger) *mcp.Server {
 	srv := mcp.NewServer(
 		mcp.WithActionLogger(alog),
-		mcp.WithActorExtractor(func(*http.Request) string { return "demo-operator" }),
+		mcp.WithActorFromContext(auth.FormatActorFromContext),
 	)
 	if err := mcp.Register[EchoIn, EchoOut](srv, "echo", echo,
 		mcp.WithToolDescription("Echo the input message back to the caller."),
@@ -299,6 +301,27 @@ func newMCPServer(alog actionlog.Logger) *mcp.Server {
 		panic("agentic-service: MCP tool registration failed")
 	}
 	return srv
+}
+
+// demoActorMiddleware stamps auth.Identity from the X-Actor header after
+// tenant resolution so MCP can use auth.FormatActorFromContext. Production
+// services replace this with real JWT/session auth middleware.
+func demoActorMiddleware(next http.Handler) http.Handler {
+	return auth.Strategy(auth.AuthenticatorFunc(func(r *http.Request) (auth.Identity, error) {
+		actor, ok := singletonRequestHeader(r, "X-Actor")
+		if !ok {
+			return auth.Identity{}, auth.ErrUnauthenticated
+		}
+		tenantID, ok := coretenant.FromContext(r.Context())
+		if !ok || tenantID == "" {
+			return auth.Identity{}, auth.ErrUnauthenticated
+		}
+		return auth.Identity{
+			Actor:     actor,
+			ActorKind: auth.ActorAPIKey,
+			Tenant:    string(tenantID),
+		}.Normalize(), nil
+	}))(next)
 }
 
 // mcpHTTPHandler returns the MCP server's HTTP handler wrapped in the
@@ -313,11 +336,11 @@ func newMCPServer(alog actionlog.Logger) *mcp.Server {
 // at the audit-precheck step rather than the transport edge — that
 // gives the audit a single chokepoint and a uniform error code
 // (-32603) regardless of which transport carried the call.
-func mcpHTTPHandler(srv *mcp.Server) http.Handler {
+func mcpHTTPHandler(next http.Handler) http.Handler {
 	return tenant.New(
 		tenant.WithExtractor(tenant.HeaderExtractor("X-Tenant-Id")),
 		tenant.WithoutTenantRequired(),
-	)(srv.HTTP())
+	)(next)
 }
 
 // dangerousAction is a contrived endpoint that creates an approval

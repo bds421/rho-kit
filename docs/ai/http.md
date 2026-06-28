@@ -118,6 +118,13 @@ to `AuthUnary` for service JWT mapping. `ActorKind` and audit formatting live in
 `security/identity` (shared by both transports). Prefixed JWT subjects (`usr_<uuid>`)
 are normalized by `jwtutil.NormalizeSubjectID`.
 
+Outbound gRPC clients wired via `grpcx/client.NewClient` automatically propagate
+verified identity from context through `x-subject-id`, `x-actor-id`, and
+`x-actor-kind` metadata (plus legacy `x-user-id` for subject). Values are stamped
+only from auth middleware context — never forwarded from unverified inbound
+metadata. Call `interceptor.AppendOutgoingIdentity(ctx)` manually when building
+custom client chains.
+
 Identity-bearing headers such as `X-User-Id`, tenant headers, MCP `X-Actor-Id`,
 and approval actor headers are treated as singleton tokens: duplicate lines,
 comma-combined values, whitespace, and control characters are rejected or
