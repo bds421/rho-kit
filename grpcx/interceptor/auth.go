@@ -160,17 +160,12 @@ func authenticateBearer(ctx context.Context, provider *jwtutil.Provider, token s
 		return ctx, status.Error(codes.Unauthenticated, "invalid token")
 	}
 
-	// Same subject contract as httpx/middleware/auth: a non-UUID sub
-	// must not flow into authorization or business logic as a user id.
-	if !jwtutil.IsUUID(claims.Subject) {
+	subject, ok := jwtutil.NormalizeSubjectID(claims.Subject)
+	if !ok {
 		return ctx, status.Error(codes.Unauthenticated, "invalid token")
 	}
 
-	perms := slices.Clone(claims.Permissions)
-	ctx = userIDKey.Set(ctx, grpcUserID(claims.Subject))
-	ctx = permissionsKey.Set(ctx, grpcPermissions(perms))
-	ctx = scopesKey.Set(ctx, grpcScopes(claims.Scopes))
-	return ctx, nil
+	return stampIdentity(ctx, subject, subject, ActorUser, claims.Permissions, claims.Scopes, false), nil
 }
 
 type bearerTokenStatus int
@@ -227,7 +222,8 @@ func validBearerToken(token string) bool {
 	return true
 }
 
-// UserID extracts the user ID from the gRPC request context.
+// UserID extracts the subject UUID from the gRPC request context. Deprecated:
+// use [Subject]; reads the legacy user_id key or subject key.
 func UserID(ctx context.Context) string {
 	v, _ := userIDKey.Get(ctx)
 	return string(v)
@@ -604,8 +600,12 @@ func authenticateMTLSOrJWT(
 		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
 	}
 
-	userID, ok := extractXUserID(ctx)
-	if !ok || !jwtutil.IsUUID(userID) {
+	rawUserID, ok := extractXUserID(ctx)
+	if !ok {
+		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
+	}
+	userID, ok := jwtutil.NormalizeSubjectID(rawUserID)
+	if !ok {
 		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
 	}
 
@@ -629,9 +629,7 @@ func authenticateMTLSOrJWT(
 		redact.String("client_identity", identity),
 	)
 
-	ctx = userIDKey.Set(ctx, grpcUserID(userID))
-	ctx = trustedS2SKey.Set(ctx, grpcTrustedS2SMarker{})
-	return ctx, nil
+	return stampIdentity(ctx, userID, identity, ActorService, nil, "", true), nil
 }
 
 var errImpersonationGuardPanicked = errors.New("impersonation guard panicked")

@@ -91,5 +91,6 @@ func Registered() []Rule {
 		centrifugeMissingJWTAuthRule{},
 		apphttpWithoutTLSRule{},
 		kitPrimitiveCollisionRule{},
+		authIdentityActorRule{},
 	}
 }

@@ -36,11 +36,31 @@ import (
 // drift between transports.
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// SubjectPrefixUser is the optional wire prefix for human subject ids. Issuers
+// may emit usr_<uuid> instead of a bare UUID; [NormalizeSubjectID] strips it.
+const SubjectPrefixUser = "usr_"
+
 // IsUUID reports whether s is a syntactically-valid UUID. Centralised here
 // so HTTP and gRPC auth paths apply the same rule to JWT subjects and the
 // X-User-Id metadata/header used by mTLS S2S impersonation.
 func IsUUID(s string) bool {
 	return uuidPattern.MatchString(s)
+}
+
+// NormalizeSubjectID accepts a bare UUID or a [SubjectPrefixUser]-prefixed
+// subject and returns the canonical UUID. Both HTTP and gRPC auth middleware
+// use this so issuer-specific subject formats collapse to one visibility key.
+func NormalizeSubjectID(s string) (uuid string, ok bool) {
+	if IsUUID(s) {
+		return s, true
+	}
+	if strings.HasPrefix(s, SubjectPrefixUser) {
+		uuid = s[len(SubjectPrefixUser):]
+		if IsUUID(uuid) {
+			return uuid, true
+		}
+	}
+	return "", false
 }
 
 const (

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,7 +41,11 @@ func TestChainMiddleware_FallsThroughToScopedKey(t *testing.T) {
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotTenant = auth.Tenant(r.Context())
 		gotRole = auth.Role(r.Context())
+		assert.Equal(t, testUserID, auth.Subject(r.Context()))
 		assert.Equal(t, testUserID, auth.UserID(r.Context()))
+		assert.Equal(t, auth.ActorAPIKey, auth.ActorKindFromContext(r.Context()))
+		assert.NotEmpty(t, auth.Actor(r.Context()))
+		assert.True(t, auth.IsMachine(r.Context()))
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -59,11 +64,11 @@ func TestChainMiddleware_FallsThroughNonSessionBearer(t *testing.T) {
 	signer, err := session.NewSigner(root, "session")
 	require.NoError(t, err)
 
-	var jwtStrategyCalled bool
+	var jwtStrategyCalled atomic.Bool
 	h := auth.ChainMiddleware(
 		auth.NewSessionAuthenticator(session.Validator{Signer: signer}),
 		auth.AuthenticatorFunc(func(*http.Request) (auth.Identity, error) {
-			jwtStrategyCalled = true
+			jwtStrategyCalled.Store(true)
 			return auth.Identity{UserID: testUserID}, nil
 		}),
 	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -76,7 +81,7 @@ func TestChainMiddleware_FallsThroughNonSessionBearer(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusNoContent, rec.Code)
-	require.True(t, jwtStrategyCalled, "non-session Bearer tokens must fall through to later strategies")
+	require.True(t, jwtStrategyCalled.Load(), "non-session Bearer tokens must fall through to later strategies")
 }
 
 func TestChainMiddleware_ScopedKeyPopulatesScopes(t *testing.T) {
@@ -106,6 +111,33 @@ func TestChainMiddleware_ScopedKeyPopulatesScopes(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code)
 }
 
+func TestChainMiddleware_UnboundScopedKey(t *testing.T) {
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	repo := apikey.NewMemoryPrefixRepository()
+	key, token, err := apikey.GenerateScoped(apikey.ScopedGenerateOptions{
+		Tenant: "tenant-a", Role: "admin",
+		Now: now, HashParams: passhash.Params{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLen: 16, KeyLen: 32},
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.InsertScoped(context.Background(), key))
+
+	scopedResolver := apikey.NewScopedResolver(repo, apikey.ScopedTokenPrefixAPI, apikey.WithScopedClock(func() time.Time { return now }))
+	h := auth.ChainMiddleware(
+		auth.NewScopedKeyBearerAuthenticator(scopedResolver),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Empty(t, auth.Subject(r.Context()))
+		assert.Equal(t, key.ID, auth.Actor(r.Context()))
+		assert.Equal(t, auth.ActorAPIKey, auth.ActorKindFromContext(r.Context()))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token.RevealString())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
 func TestChainMiddleware_SessionBeforeJWTSucceeds(t *testing.T) {
 	root := []byte("0123456789abcdef0123456789abcdef")
 	signer, err := session.NewSigner(root, "session")
@@ -117,15 +149,16 @@ func TestChainMiddleware_SessionBeforeJWTSucceeds(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	var jwtCalled bool
+	var jwtCalled atomic.Bool
 	h := auth.ChainMiddleware(
 		auth.NewSessionAuthenticator(session.Validator{Signer: signer}),
 		auth.AuthenticatorFunc(func(*http.Request) (auth.Identity, error) {
-			jwtCalled = true
+			jwtCalled.Store(true)
 			return auth.Identity{UserID: testUserID}, nil
 		}),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, testUserID, auth.UserID(r.Context()))
+		assert.Equal(t, auth.ActorUser, auth.ActorKindFromContext(r.Context()))
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -135,7 +168,7 @@ func TestChainMiddleware_SessionBeforeJWTSucceeds(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusNoContent, rec.Code)
-	assert.False(t, jwtCalled, "session token must authenticate before JWT strategy runs")
+	assert.False(t, jwtCalled.Load(), "session token must authenticate before JWT strategy runs")
 }
 
 func TestChainMiddleware_JWTBeforeSessionBlocksSessionToken(t *testing.T) {

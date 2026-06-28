@@ -84,10 +84,26 @@ auth.PermissionByMethod("orders:read", "orders:write")
 auth.RequireScope("api:write")       // soft — session auth passes through
 auth.RequireScopeStrict("api:write") // strict — rejects if no scopes present
 
-// Access user in handler:
-userID := auth.UserID(r.Context())
+// Access identity in handler:
+subject := auth.Subject(r.Context())   // visibility / RLS UUID
+actor := auth.Actor(r.Context())       // audit attribution id
+kind := auth.ActorKindFromContext(r.Context())
+userID := auth.UserID(r.Context())       // deprecated alias for Subject
 perms := auth.Permissions(r.Context()) // nil for mTLS S2S
+
+// Multi-credential Bearer chain (session, OAuth access, scoped keys, JWT):
+auth.ChainMiddleware(
+    auth.NewSessionAuthenticator(sessionValidator),
+    auth.NewScopedKeyBearerAuthenticator(scopedResolver),
+    auth.NewJWTAuthenticator(jwtProvider),
+)
+
+// Actionlog actor convention: auth.FormatActor(identity) => "user:<uuid>" etc.
 ```
+
+gRPC mirrors the same subject/actor context keys via `grpcx/interceptor.Subject`,
+`Actor`, and `ActorKindFromContext` after `AuthUnary` or `MTLSAuthUnary`.
+Prefixed JWT subjects (`usr_<uuid>`) are normalized by `jwtutil.NormalizeSubjectID`.
 
 Identity-bearing headers such as `X-User-Id`, tenant headers, MCP `X-Actor-Id`,
 and approval actor headers are treated as singleton tokens: duplicate lines,

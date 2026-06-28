@@ -26,6 +26,8 @@ import (
 
 // Named types for type-safe, collision-free context keys via contextutil.Key.
 type authUserID string
+type authSubject string
+type authActor string
 type authTenant string
 type authRole string
 type authScopes string
@@ -39,6 +41,9 @@ type trustedS2SMarker struct{}
 
 var (
 	userIDKey      = contextutil.NewKey[authUserID]("httpx.auth.user_id")
+	subjectKey     = contextutil.NewKey[authSubject]("httpx.auth.subject")
+	actorKey       = contextutil.NewKey[authActor]("httpx.auth.actor")
+	actorKindKey   = contextutil.NewKey[ActorKind]("httpx.auth.actor_kind")
 	tenantKey      = contextutil.NewKey[authTenant]("httpx.auth.tenant")
 	roleKey        = contextutil.NewKey[authRole]("httpx.auth.role")
 	permissionsKey = contextutil.NewKey[[]string]("httpx.auth.permissions")
@@ -370,21 +375,19 @@ func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provide
 		return
 	}
 
-	if !jwtutil.IsUUID(claims.Subject) {
+	subject, ok := jwtutil.NormalizeSubjectID(claims.Subject)
+	if !ok {
 		writeBearerUnauthorized(w, "unauthorized")
 		return
 	}
 
-	perms := slices.Clone(claims.Permissions)
-	ctx := userIDKey.Set(r.Context(), authUserID(claims.Subject))
-	ctx = permissionsKey.Set(ctx, perms)
-	// Build a permission map for O(1) lookups in RequirePermission.
-	ps := make(permissionSet, len(perms))
-	for _, p := range perms {
-		ps[p] = struct{}{}
-	}
-	ctx = permSetKey.Set(ctx, ps)
-	ctx = scopesKey.Set(ctx, authScopes(claims.Scopes))
+	ctx := stampIdentity(r.Context(), Identity{
+		Subject:     subject,
+		Actor:       subject,
+		ActorKind:   ActorUser,
+		Permissions: slices.Clone(claims.Permissions),
+		Scopes:      claims.Scopes,
+	})
 	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
@@ -399,8 +402,13 @@ func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provide
 // to not run JWT verification at all). Without the marker those middlewares
 // fail closed.
 func requireHeaderUser(w http.ResponseWriter, r *http.Request, identity string, guard func(*http.Request, string, string) error, next http.Handler) {
-	userID, ok := singleHeaderValue(r.Header, "X-User-Id")
-	if !ok || !jwtutil.IsUUID(userID) {
+	rawUserID, ok := singleHeaderValue(r.Header, "X-User-Id")
+	if !ok {
+		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	userID, ok := jwtutil.NormalizeSubjectID(rawUserID)
+	if !ok {
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -424,8 +432,12 @@ func requireHeaderUser(w http.ResponseWriter, r *http.Request, identity string, 
 		redact.String("path", httpx.RequestPath(r)),
 	)
 
-	ctx := userIDKey.Set(r.Context(), authUserID(userID))
-	ctx = trustedS2SKey.Set(ctx, trustedS2SMarker{})
+	ctx := stampIdentity(r.Context(), Identity{
+		Subject:   userID,
+		Actor:     identity,
+		ActorKind: ActorService,
+		Trusted:   true,
+	})
 	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
@@ -500,7 +512,35 @@ func singleHeaderValue(h http.Header, name string) (string, bool) {
 	return headerutil.SingletonIdentity(h, name)
 }
 
-// UserID extracts the user ID from the request context.
+// Subject extracts the visibility subject UUID from context. Falls back to the
+// legacy user_id key when only JWT/mTLS paths stamped [UserID].
+func Subject(ctx context.Context) string {
+	v, ok := subjectKey.Get(ctx)
+	if ok && v != "" {
+		return string(v)
+	}
+	return UserID(ctx)
+}
+
+// Actor extracts the attribution id (key id, client id, or user UUID).
+func Actor(ctx context.Context) string {
+	v, _ := actorKey.Get(ctx)
+	return string(v)
+}
+
+// ActorKindFromContext returns the actor classification stamped by auth middleware.
+func ActorKindFromContext(ctx context.Context) ActorKind {
+	v, _ := actorKindKey.Get(ctx)
+	return v
+}
+
+// IsMachine reports whether the request was authenticated as a non-human actor.
+func IsMachine(ctx context.Context) bool {
+	return IsMachineKind(ActorKindFromContext(ctx))
+}
+
+// UserID extracts the subject UUID from the request context. Deprecated: use
+// [Subject]; reads the legacy user_id key or subject key.
 func UserID(ctx context.Context) string {
 	v, _ := userIDKey.Get(ctx)
 	return string(v)

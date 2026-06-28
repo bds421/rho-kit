@@ -50,6 +50,9 @@ type ScopedKey struct {
 }
 
 // Principal is the auth identity produced by [ScopedResolver.Resolve].
+// UserID is the bound visibility subject (UUID). KeyID is the actor lookup
+// id for audit attribution; map with
+// [github.com/bds421/rho-kit/httpx/v2/middleware/auth.IdentityFromScopedKey].
 type Principal struct {
 	UserID string
 	Tenant string
@@ -70,7 +73,8 @@ type ScopedGenerateOptions struct {
 	Tenant string
 	Scopes []string
 	Role   string
-	// SubjectUserID is the UUID-shaped user the key impersonates. Required.
+	// SubjectUserID is the optional UUID-shaped visibility subject. Omit for
+	// unbound integration keys (tenant-wide machine access).
 	SubjectUserID string
 	Kind          ScopedKind
 	TokenPrefix   string
@@ -86,11 +90,13 @@ func GenerateScoped(opts ScopedGenerateOptions) (ScopedKey, *secret.String, erro
 	if opts.Tenant == "" {
 		return ScopedKey{}, nil, fmt.Errorf("apikey: scoped key requires tenant")
 	}
-	if opts.SubjectUserID == "" {
-		return ScopedKey{}, nil, fmt.Errorf("apikey: scoped key requires subject user id")
-	}
-	if !jwtutil.IsUUID(opts.SubjectUserID) {
-		return ScopedKey{}, nil, fmt.Errorf("apikey: subject user id must be a UUID")
+	subjectUserID := opts.SubjectUserID
+	if subjectUserID != "" {
+		norm, ok := jwtutil.NormalizeSubjectID(subjectUserID)
+		if !ok {
+			return ScopedKey{}, nil, fmt.Errorf("apikey: subject user id must be a UUID")
+		}
+		subjectUserID = norm
 	}
 	prefix := opts.TokenPrefix
 	if prefix == "" {
@@ -127,7 +133,7 @@ func GenerateScoped(opts ScopedGenerateOptions) (ScopedKey, *secret.String, erro
 		Hash:          []byte(hash),
 		Scopes:        cloneScopes(opts.Scopes),
 		Role:          opts.Role,
-		SubjectUserID: opts.SubjectUserID,
+		SubjectUserID: subjectUserID,
 		Kind:          kind,
 		ExpiresAt:     opts.ExpiresAt,
 		CreatedAt:     opts.Now,
@@ -217,14 +223,16 @@ func (r *ScopedResolver) Resolve(ctx context.Context, presented string) (Princip
 	if !res.Matched {
 		return Principal{}, ErrInvalidSecret
 	}
-	if key.SubjectUserID == "" {
-		return Principal{}, fmt.Errorf("apikey: scoped key %q missing subject user id", key.ID)
-	}
-	if !jwtutil.IsUUID(key.SubjectUserID) {
-		return Principal{}, fmt.Errorf("apikey: scoped key %q has non-UUID subject user id", key.ID)
+	subject := key.SubjectUserID
+	if subject != "" {
+		norm, ok := jwtutil.NormalizeSubjectID(subject)
+		if !ok {
+			return Principal{}, fmt.Errorf("apikey: scoped key %q has non-UUID subject user id", key.ID)
+		}
+		subject = norm
 	}
 	return Principal{
-		UserID: key.SubjectUserID,
+		UserID: subject,
 		Tenant: key.Tenant,
 		Role:   key.Role,
 		Scopes: cloneScopes(key.Scopes),

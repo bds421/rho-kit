@@ -26,14 +26,23 @@ import (
 // RequireScope, Permissions, Scopes) work regardless of which
 // strategy produced the identity.
 //
-// UserID MUST satisfy [jwtutil.IsUUID] — the kit's existing
-// downstream code assumes subject IDs are UUIDs (audit log, tenant
-// resolution, slow-path lookups all key on a UUID-shaped string).
-// Strategies that authenticate against non-UUID identifiers (e.g.
-// an API-key with a slug-shaped key id) MUST map the credential to
-// a UUID before returning.
+// Subject is who the request is for (visibility, RLS). When non-empty
+// it MUST satisfy [jwtutil.IsUUID]. Actor is who performed the action
+// (audit, attribution) and MAY be non-UUID (API key id, client id).
+// Machine credentials may leave Subject empty when Tenant is set; see
+// [Identity.Normalize] and [IsMachineKind].
+//
+// UserID is a deprecated alias for Subject; [Identity.Normalize] keeps
+// both in sync for one release cycle.
 type Identity struct {
-	// UserID is the verified subject. Must satisfy IsUUID.
+	// Subject is the UUID-shaped visibility subject. Empty for unbound
+	// machine credentials when Tenant is set.
+	Subject string
+	// Actor is the attribution id (key id, client id, or user UUID).
+	Actor string
+	// ActorKind classifies Actor for policy branches.
+	ActorKind ActorKind
+	// UserID is deprecated: use Subject. Normalized to match Subject.
 	UserID string
 	// Tenant is the resolved tenant id for multi-tenant services.
 	Tenant string
@@ -42,8 +51,12 @@ type Identity struct {
 	// Permissions is the unordered list of permission strings
 	// granted to this identity (e.g. "billing:read", "admin:*").
 	Permissions []string
-	// Scopes is the OAuth2-style space-separated scope string.
-	Scopes string
+	// ScopeList is the canonical scope token list for machine credentials.
+	// Scopes mirrors ScopeList as a space-separated string for OAuth wire
+	// compat and [Scopes] context readers — both are kept in sync by
+	// [Identity.Normalize].
+	ScopeList []string
+	Scopes    string
 	// Trusted, when true, stamps the trusted-S2S marker that lets
 	// downstream RBAC / scope middleware accept the request
 	// without an explicit permissions claim. Mirror of the existing
@@ -117,10 +130,7 @@ func Strategy(a Authenticator) func(http.Handler) http.Handler {
 				httpx.WriteError(w, http.StatusUnauthorized, "invalid credentials")
 				return
 			}
-			if !jwtutil.IsUUID(id.UserID) {
-				// Defence in depth: a strategy that forgot
-				// to UUID-shape the subject would otherwise
-				// poison downstream code that assumes UUIDs.
+			if !identityValid(id) {
 				httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
@@ -134,7 +144,17 @@ func Strategy(a Authenticator) func(http.Handler) http.Handler {
 // keys the JWT path uses. Centralised so a future change to the
 // context-key contract has a single touch point.
 func stampIdentity(ctx context.Context, id Identity) context.Context {
-	ctx = userIDKey.Set(ctx, authUserID(id.UserID))
+	id = id.Normalize()
+	if id.Subject != "" {
+		ctx = subjectKey.Set(ctx, authSubject(id.Subject))
+		ctx = userIDKey.Set(ctx, authUserID(id.Subject))
+	}
+	if id.Actor != "" {
+		ctx = actorKey.Set(ctx, authActor(id.Actor))
+	}
+	if id.ActorKind != "" {
+		ctx = actorKindKey.Set(ctx, id.ActorKind)
+	}
 	if id.Tenant != "" {
 		ctx = tenantKey.Set(ctx, authTenant(id.Tenant))
 	}
@@ -236,10 +256,12 @@ func NewJWTAuthenticator(provider *jwtutil.Provider) Authenticator {
 			return Identity{}, ErrInvalidCredentials
 		}
 		return Identity{
-			UserID:      claims.Subject,
+			Subject:     claims.Subject,
+			Actor:       claims.Subject,
+			ActorKind:   ActorUser,
 			Permissions: claims.Permissions,
 			Scopes:      claims.Scopes,
-		}, nil
+		}.Normalize(), nil
 	})
 }
 
@@ -319,17 +341,19 @@ func NewAPIKeyAuthenticator(headerName string, v APIKeyVerifier) Authenticator {
 // ChainMiddleware returns HTTP middleware that tries each [Authenticator] in
 // order via [Chain] and stamps the winning [Identity] on the request context.
 //
-// Recommended Bearer order when combining session tokens, scoped API keys,
-// and JWTs:
+// Recommended Bearer order when combining session tokens, OAuth access tokens,
+// scoped API keys, and JWTs:
 //
-//  1. [NewSessionAuthenticator] — session wire format is <payload>.<mac>
-//     (exactly one dot); non-matching shapes return [ErrUnauthenticated].
-//  2. [NewScopedKeyBearerAuthenticator] — scoped keys are <prefix>_<lookup>_<secret>
-//     (exactly two underscores).
-//  3. [NewJWTAuthenticator] — JWTs use multiple dot-separated segments; place
-//     after session so session-shaped tokens are not misrouted. Putting JWT
-//     before session causes session tokens to fail JWT verification and stop
-//     the chain with [ErrInvalidCredentials] (no fall-through).
+//  1. [NewOAuthAccessSessionAuthenticator] — optional; payload.sig OAuth access
+//     (one dot). Register before session when used.
+//  2. [NewSessionAuthenticator] — session wire format is <payload>.<mac>
+//     (exactly one dot); prefixed machine tokens are skipped.
+//  3. [NewOAuthAccessBearerAuthenticator] — optional; <prefix>_<lookup>_<secret>.
+//  4. [NewScopedKeyBearerAuthenticator] — scoped keys (prefixed).
+//  5. [NewJWTAuthenticator] — JWTs (multiple dots); after session.
+//  6. [NewAPIKeyAuthenticator] — X-API-Key header (not Bearer).
+//
+// ErrUnauthenticated lets the chain fall through; ErrInvalidCredentials stops it.
 func ChainMiddleware(strategies ...Authenticator) func(http.Handler) http.Handler {
 	return Strategy(Chain(strategies...))
 }
@@ -346,7 +370,8 @@ func NewSessionAuthenticator(v session.Validator) Authenticator {
 		case bearerTokenInvalid:
 			return Identity{}, ErrInvalidCredentials
 		}
-		if looksLikeScopedKeyToken(token) || !looksLikeSessionToken(token) {
+		// Skip prefixed machine tokens (scoped keys, prefix-based OAuth access).
+		if looksLikePrefixedMachineToken(token) || !looksLikeSessionToken(token) {
 			return Identity{}, ErrUnauthenticated
 		}
 		claims, err := v.Validate(r.Context(), token, time.Now())
@@ -357,10 +382,12 @@ func NewSessionAuthenticator(v session.Validator) Authenticator {
 			return Identity{}, ErrInvalidCredentials
 		}
 		return Identity{
-			UserID: claims.UserID,
-			Tenant: claims.Tenant,
-			Role:   claims.Role,
-		}, nil
+			Subject:   claims.UserID,
+			Actor:     claims.UserID,
+			ActorKind: ActorUser,
+			Tenant:    claims.Tenant,
+			Role:      claims.Role,
+		}.Normalize(), nil
 	})
 }
 
@@ -390,15 +417,94 @@ func NewScopedKeyBearerAuthenticator(resolver *apikey.ScopedResolver) Authentica
 			)
 			return Identity{}, fmt.Errorf("%w: %v", ErrInvalidCredentials, err)
 		}
-		scopes := slices.Clone(principal.Scopes)
-		return Identity{
-			UserID:      principal.UserID,
-			Tenant:      principal.Tenant,
-			Role:        principal.Role,
-			Permissions: scopes,
-			Scopes:      strings.Join(scopes, " "),
-		}, nil
+		return IdentityFromScopedKey(principal), nil
 	})
+}
+
+// OAuthAccessVerifier validates stateless OAuth access tokens (client
+// credentials) and returns a fully populated [Identity].
+//
+// Implementations MUST return [ErrUnauthenticated] when the Bearer token is
+// present but not an OAuth access token of the shape this verifier handles,
+// so a [Chain] can fall through to the next strategy. Return
+// [ErrInvalidCredentials] (or a wrapped variant) only when the token is
+// recognized as OAuth access but cryptographically invalid.
+type OAuthAccessVerifier interface {
+	VerifyOAuthAccess(ctx context.Context, token string) (Identity, error)
+}
+
+// OAuthAccessVerifierFunc adapts a function into an [OAuthAccessVerifier].
+type OAuthAccessVerifierFunc func(ctx context.Context, token string) (Identity, error)
+
+// VerifyOAuthAccess calls f.
+func (f OAuthAccessVerifierFunc) VerifyOAuthAccess(ctx context.Context, token string) (Identity, error) {
+	return f(ctx, token)
+}
+
+// NewOAuthAccessSessionAuthenticator verifies payload.sig OAuth access tokens
+// (<payload>.<mac>, exactly one dot). Register BEFORE [NewSessionAuthenticator]
+// in the chain — both share the one-dot shape. The verifier must return
+// [ErrUnauthenticated] for non-OAuth session-shaped tokens.
+//
+// Panics if verifier is nil.
+func NewOAuthAccessSessionAuthenticator(v OAuthAccessVerifier) Authenticator {
+	if v == nil {
+		panic("middleware/auth: NewOAuthAccessSessionAuthenticator requires a non-nil verifier")
+	}
+	return AuthenticatorFunc(func(r *http.Request) (Identity, error) {
+		token, status := parseBearerToken(r)
+		switch status {
+		case bearerTokenAbsent:
+			return Identity{}, ErrUnauthenticated
+		case bearerTokenInvalid:
+			return Identity{}, ErrInvalidCredentials
+		}
+		if !looksLikeSessionToken(token) {
+			return Identity{}, ErrUnauthenticated
+		}
+		return verifyOAuthAccess(r, v, token)
+	})
+}
+
+// NewOAuthAccessBearerAuthenticator authenticates prefix-based OAuth access
+// tokens (<prefix>_<lookup>_<secret>). Non-matching tokens return
+// [ErrUnauthenticated]. Session automatically skips this wire shape.
+//
+// Panics if verifier is nil or tokenPrefix is empty.
+func NewOAuthAccessBearerAuthenticator(v OAuthAccessVerifier, tokenPrefix string) Authenticator {
+	if v == nil {
+		panic("middleware/auth: NewOAuthAccessBearerAuthenticator requires a non-nil verifier")
+	}
+	if tokenPrefix == "" {
+		panic("middleware/auth: NewOAuthAccessBearerAuthenticator requires a non-empty token prefix")
+	}
+	return AuthenticatorFunc(func(r *http.Request) (Identity, error) {
+		token, status := parseBearerToken(r)
+		switch status {
+		case bearerTokenAbsent:
+			return Identity{}, ErrUnauthenticated
+		case bearerTokenInvalid:
+			return Identity{}, ErrInvalidCredentials
+		}
+		if !strings.HasPrefix(token, tokenPrefix+"_") {
+			return Identity{}, ErrUnauthenticated
+		}
+		return verifyOAuthAccess(r, v, token)
+	})
+}
+
+func verifyOAuthAccess(r *http.Request, v OAuthAccessVerifier, token string) (Identity, error) {
+	id, err := v.VerifyOAuthAccess(r.Context(), token)
+	if err != nil {
+		if errors.Is(err, ErrUnauthenticated) {
+			return Identity{}, ErrUnauthenticated
+		}
+		httpx.Logger(r.Context(), slog.Default()).Error("middleware/auth: oauth access verification failed",
+			redact.Error(err),
+		)
+		return Identity{}, fmt.Errorf("%w: %v", ErrInvalidCredentials, err)
+	}
+	return id.Normalize(), nil
 }
 
 func looksLikeSessionToken(token string) bool {
@@ -409,7 +515,9 @@ func looksLikeSessionToken(token string) bool {
 	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
 }
 
-func looksLikeScopedKeyToken(token string) bool {
+// looksLikePrefixedMachineToken reports the <prefix>_<lookup>_<secret> wire
+// shape used by scoped API keys and prefix-based OAuth access tokens.
+func looksLikePrefixedMachineToken(token string) bool {
 	parts := strings.Split(token, "_")
 	return len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != ""
 }
