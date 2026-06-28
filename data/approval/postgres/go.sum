@@ -1,7 +1,7 @@
-github.com/bds421/rho-kit/core/v2 v2.2.0 h1:QTuOoyrcwloc2xvgXLMGriD3ffU+PtxnHsSLburdK5k=
-github.com/bds421/rho-kit/core/v2 v2.2.0/go.mod h1:GAvf8bXLjTjo6XPYn37PX+6otVLmYk3CcqfcMmUKxPw=
-github.com/bds421/rho-kit/data/v2 v2.2.0 h1:RFocDNgotgJg2XesOTtLEhhkuY0mMxpne7+eiN+8le4=
-github.com/bds421/rho-kit/data/v2 v2.2.0/go.mod h1:DKox3KnPeAxUC9fXZiB2wS4vpH058tpXv5Jbjcpibz4=
+github.com/bds421/rho-kit/core/v2 v2.3.0 h1:zamtyGcrlVwpXMgbLm8dUEOz8G/K2QBDpcHotN+CT8Q=
+github.com/bds421/rho-kit/core/v2 v2.3.0/go.mod h1:GAvf8bXLjTjo6XPYn37PX+6otVLmYk3CcqfcMmUKxPw=
+github.com/bds421/rho-kit/data/v2 v2.3.0 h1:tcuyx9mg2shOngYJuB0JjWmtetI6TLau6/xyzrj0/aQ=
+github.com/bds421/rho-kit/data/v2 v2.3.0/go.mod h1:i3ZuupuCRgmJyqE6HTCMH926PRPYTVhPFPYZIYvxGCw=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
