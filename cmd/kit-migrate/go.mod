@@ -3,11 +3,11 @@ module github.com/bds421/rho-kit/cmd/kit-migrate/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/data/actionlog/postgres/v2 v2.3.0
-	github.com/bds421/rho-kit/data/approval/postgres/v2 v2.3.0
-	github.com/bds421/rho-kit/data/idempotency/pgstore/v2 v2.3.0
-	github.com/bds421/rho-kit/infra/outbox/postgres/v2 v2.3.0
-	github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.3.0
+	github.com/bds421/rho-kit/data/actionlog/postgres/v2 v2.3.1
+	github.com/bds421/rho-kit/data/approval/postgres/v2 v2.3.1
+	github.com/bds421/rho-kit/data/idempotency/pgstore/v2 v2.3.1
+	github.com/bds421/rho-kit/infra/outbox/postgres/v2 v2.3.1
+	github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.3.1
 )
 
 require (
@@ -19,11 +19,11 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.3.0 // indirect
-	github.com/bds421/rho-kit/data/v2 v2.3.0 // indirect
-	github.com/bds421/rho-kit/infra/v2 v2.3.0 // indirect
-	github.com/bds421/rho-kit/io/v2 v2.3.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.3.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.3.1 // indirect
+	github.com/bds421/rho-kit/data/v2 v2.3.1 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.3.1 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.3.1 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.3.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
