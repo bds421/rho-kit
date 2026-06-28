@@ -419,6 +419,53 @@ func TestJWT_ValidToken(t *testing.T) {
 	}
 }
 
+func TestJWT_ServiceActorFromClientIDClaim(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	var capturedActor string
+	var capturedKind ActorKind
+
+	handler := JWT(provider, WithJWTServiceActorFromClaim("client_id"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if UserID(r.Context()) != testUUID {
+			t.Errorf("UserID = %q, want %q", UserID(r.Context()), testUUID)
+		}
+		capturedActor = Actor(r.Context())
+		capturedKind = ActorKindFromContext(r.Context())
+		if !IsMachine(r.Context()) {
+			t.Error("expected machine identity for service JWT")
+		}
+		if got := FormatActorFromContext(r.Context()); got != "service:payments-svc" {
+			t.Errorf("FormatActorFromContext = %q, want service:payments-svc", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub":       testUUID,
+		"client_id": "payments-svc",
+		"iat":       now.Unix(),
+		"exp":       now.Add(5 * time.Minute).Unix(),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if capturedActor != "payments-svc" {
+		t.Errorf("Actor = %q, want payments-svc", capturedActor)
+	}
+	if capturedKind != ActorService {
+		t.Errorf("ActorKind = %q, want %q", capturedKind, ActorService)
+	}
+}
+
 func TestJWT_InvalidToken(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))

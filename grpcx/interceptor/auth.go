@@ -52,6 +52,7 @@ type AuthOption func(*authConfig)
 
 type authConfig struct {
 	skipMethods map[string]struct{}
+	jwt         jwtIdentityConfig
 }
 
 // WithSkipMethods specifies gRPC methods that should bypass authentication.
@@ -87,7 +88,7 @@ func AuthUnary(provider *jwtutil.Provider, opts ...AuthOption) grpc.UnaryServerI
 		if _, skip := cfg.skipMethods[info.FullMethod]; skip {
 			return handler(ctx, req)
 		}
-		ctx, err := authenticate(ctx, provider)
+		ctx, err := authenticate(ctx, provider, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -110,7 +111,7 @@ func AuthStream(provider *jwtutil.Provider, opts ...AuthOption) grpc.StreamServe
 		if _, skip := cfg.skipMethods[info.FullMethod]; skip {
 			return handler(srv, ss)
 		}
-		ctx, err := authenticate(ss.Context(), provider)
+		ctx, err := authenticate(ss.Context(), provider, cfg)
 		if err != nil {
 			return err
 		}
@@ -134,7 +135,7 @@ func buildAuthConfig(opts []AuthOption) authConfig {
 
 // authenticate extracts the JWT from metadata, validates it, and injects
 // claims into the context.
-func authenticate(ctx context.Context, provider *jwtutil.Provider) (context.Context, error) {
+func authenticate(ctx context.Context, provider *jwtutil.Provider, cfg authConfig) (context.Context, error) {
 	token, tokenStatus := parseBearerToken(ctx)
 	switch tokenStatus {
 	case bearerTokenAbsent:
@@ -145,10 +146,10 @@ func authenticate(ctx context.Context, provider *jwtutil.Provider) (context.Cont
 	default:
 		return ctx, status.Error(codes.Unauthenticated, "invalid authorization token")
 	}
-	return authenticateBearer(ctx, provider, token)
+	return authenticateBearer(ctx, provider, token, cfg.jwt)
 }
 
-func authenticateBearer(ctx context.Context, provider *jwtutil.Provider, token string) (context.Context, error) {
+func authenticateBearer(ctx context.Context, provider *jwtutil.Provider, token string, jwtCfg jwtIdentityConfig) (context.Context, error) {
 	claims, err := provider.VerifyContext(ctx, token, time.Now())
 	if err != nil {
 		// ErrKeySetUnavailable is the JWKS-not-loaded / stale case; emit a
@@ -160,12 +161,12 @@ func authenticateBearer(ctx context.Context, provider *jwtutil.Provider, token s
 		return ctx, status.Error(codes.Unauthenticated, "invalid token")
 	}
 
-	subject, ok := jwtutil.NormalizeSubjectID(claims.Subject)
+	subject, actor, kind, ok := subjectActorFromJWTClaims(claims, jwtCfg)
 	if !ok {
 		return ctx, status.Error(codes.Unauthenticated, "invalid token")
 	}
 
-	return stampIdentity(ctx, subject, subject, ActorUser, claims.Permissions, claims.Scopes, false), nil
+	return stampIdentity(ctx, subject, actor, kind, claims.Permissions, claims.Scopes, false), nil
 }
 
 type bearerTokenStatus int
@@ -364,6 +365,7 @@ type mtlsIdentityConfig struct {
 	// listed gRPC method names (audit FR-066). Use for unauthenticated
 	// health endpoints under a combined JWT/mTLS interceptor.
 	skipMethods map[string]struct{}
+	jwt         jwtIdentityConfig
 }
 
 // WithMTLSSkipMethods bypasses authentication for the listed gRPC
@@ -588,7 +590,7 @@ func authenticateMTLSOrJWT(
 	token, tokenStatus := parseBearerToken(ctx)
 	switch tokenStatus {
 	case bearerTokenPresent:
-		return authenticateBearer(ctx, provider, token)
+		return authenticateBearer(ctx, provider, token, cfg.jwt)
 	case bearerTokenInvalid:
 		return ctx, status.Error(codes.Unauthenticated, "invalid authorization token")
 	case bearerTokenAbsent:

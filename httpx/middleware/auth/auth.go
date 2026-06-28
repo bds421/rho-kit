@@ -20,6 +20,7 @@ import (
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/internal/headerutil"
+	"github.com/bds421/rho-kit/security/v2/identity"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
 	"github.com/bds421/rho-kit/security/v2/mtlsidentity"
 )
@@ -58,12 +59,13 @@ var (
 // service-to-service calls.
 //
 // Panics if provider is nil to fail fast on misconfiguration.
-func JWT(provider *jwtutil.Provider) func(http.Handler) http.Handler {
+func JWT(provider *jwtutil.Provider, opts ...JWTOption) func(http.Handler) http.Handler {
 	if provider == nil {
 		panic("middleware/auth: JWT requires a non-nil JWT provider")
 	}
+	jwtCfg := buildJWTIdentityConfig(opts...)
 	return func(next http.Handler) http.Handler {
-		return jwtOnlyHandler(provider, next)
+		return jwtOnlyHandler(provider, jwtCfg, next)
 	}
 }
 
@@ -105,6 +107,7 @@ type mtlsIdentityConfig struct {
 	// impersonationGuard is consulted before stamping the trusted-S2S
 	// marker. Returning an error rejects the impersonation.
 	impersonationGuard func(r *http.Request, identity, userID string) error
+	jwt                jwtIdentityConfig
 }
 
 // WithS2SImpersonationGuard installs a callback that decides whether
@@ -254,7 +257,7 @@ func writeBearerUnauthorized(w http.ResponseWriter, msg string) {
 }
 
 // jwtOnlyHandler returns a handler that requires a valid Bearer JWT token.
-func jwtOnlyHandler(provider *jwtutil.Provider, next http.Handler) http.Handler {
+func jwtOnlyHandler(provider *jwtutil.Provider, jwtCfg jwtIdentityConfig, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, status := parseBearerToken(r)
 		if status != bearerTokenPresent {
@@ -262,7 +265,7 @@ func jwtOnlyHandler(provider *jwtutil.Provider, next http.Handler) http.Handler 
 			return
 		}
 
-		verifyJWT(w, r, provider, token, next)
+		verifyJWT(w, r, provider, token, jwtCfg, next)
 	})
 }
 
@@ -275,7 +278,7 @@ func s2sHandler(provider *jwtutil.Provider, cfg mtlsIdentityConfig, next http.Ha
 		token, status := parseBearerToken(r)
 		switch status {
 		case bearerTokenPresent:
-			verifyJWT(w, r, provider, token, next)
+			verifyJWT(w, r, provider, token, cfg.jwt, next)
 			return
 		case bearerTokenInvalid:
 			writeBearerUnauthorized(w, "unauthorized")
@@ -361,7 +364,7 @@ func matchCertIdentity(cert *x509.Certificate, cfg mtlsIdentityConfig) (bool, st
 // Note: uses time.Now() for token verification. For deterministic testing,
 // use jwtutil.NewProviderWithKeySet with pre-built key sets and tokens whose
 // expiry window covers the test execution time.
-func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provider, token string, next http.Handler) {
+func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provider, token string, jwtCfg jwtIdentityConfig, next http.Handler) {
 	claims, err := provider.VerifyContext(r.Context(), token, time.Now())
 	if err != nil {
 		// ErrKeySetUnavailable means the JWKS hasn't been fetched yet or has
@@ -375,19 +378,13 @@ func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provide
 		return
 	}
 
-	subject, ok := jwtutil.NormalizeSubjectID(claims.Subject)
+	id, ok := identityFromJWTClaims(claims, jwtCfg)
 	if !ok {
 		writeBearerUnauthorized(w, "unauthorized")
 		return
 	}
-
-	ctx := stampIdentity(r.Context(), Identity{
-		Subject:     subject,
-		Actor:       subject,
-		ActorKind:   ActorUser,
-		Permissions: slices.Clone(claims.Permissions),
-		Scopes:      claims.Scopes,
-	})
+	id.Permissions = slices.Clone(id.Permissions)
+	ctx := stampIdentity(r.Context(), id)
 	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
@@ -537,6 +534,16 @@ func ActorKindFromContext(ctx context.Context) ActorKind {
 // IsMachine reports whether the request was authenticated as a non-human actor.
 func IsMachine(ctx context.Context) bool {
 	return IsMachineKind(ActorKindFromContext(ctx))
+}
+
+// FormatActorFromContext returns the conventional actionlog/audit actor string
+// for the identity stamped on ctx by auth middleware.
+func FormatActorFromContext(ctx context.Context) string {
+	return identity.Format(identity.Ref{
+		Subject: Subject(ctx),
+		Actor:   Actor(ctx),
+		Kind:    ActorKindFromContext(ctx),
+	})
 }
 
 // UserID extracts the subject UUID from the request context. Deprecated: use

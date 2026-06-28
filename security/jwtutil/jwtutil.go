@@ -82,6 +82,19 @@ type Claims struct {
 	ExpiresAt   int64    `json:"exp"`
 	NotBefore   int64    `json:"nbf"`
 	Issuer      string   `json:"iss"`
+
+	stringClaims map[string]string
+}
+
+// StringClaim returns a string-valued JWT claim captured during verification.
+// Standard OAuth claims client_id, azp, and act are always extracted; add more
+// via [WithStringClaims] on the [Provider].
+func (c *Claims) StringClaim(name string) (string, bool) {
+	if c == nil || len(c.stringClaims) == 0 {
+		return "", false
+	}
+	v, ok := c.stringClaims[name]
+	return v, ok && v != ""
 }
 
 // KeySet holds a JWKS key set for JWT signature verification.
@@ -236,7 +249,7 @@ func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
 	if ks == nil {
 		return nil, ErrInvalidKeySet
 	}
-	return verifyToken(ks.set, tokenString, now, ks.ExpectedIssuer, ks.ExpectedAudience)
+	return verifyToken(ks.set, tokenString, now, ks.ExpectedIssuer, ks.ExpectedAudience, nil)
 }
 
 // verifyTimingFloor is the minimum wall-clock duration verifyToken
@@ -275,7 +288,9 @@ func currentVerifyFloor() time.Duration {
 // least verifyTimingFloor (default 50 µs) has elapsed since entry. This
 // removes the kid-existence side channel described above
 // verifyTimingFloor.
-func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer, expectedAudience string) (*Claims, error) {
+var defaultStringClaims = []string{"client_id", "azp", "act"}
+
+func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer, expectedAudience string, extraStringClaims []string) (*Claims, error) {
 	start := time.Now()
 	defer func() {
 		floor := currentVerifyFloor()
@@ -390,7 +405,30 @@ func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer,
 		return nil, errMalformedScopesClaim
 	}
 
+	populateStringClaims(tok, claims, extraStringClaims)
 	return claims, nil
+}
+
+func populateStringClaims(tok jwt.Token, c *Claims, extra []string) {
+	seen := make(map[string]struct{}, len(defaultStringClaims)+len(extra))
+	names := append(append([]string(nil), defaultStringClaims...), extra...)
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		var s string
+		if err := tok.Get(name, &s); err != nil || s == "" {
+			continue
+		}
+		if c.stringClaims == nil {
+			c.stringClaims = make(map[string]string)
+		}
+		c.stringClaims[name] = s
+	}
 }
 
 func verificationTime(now time.Time) time.Time {
@@ -438,12 +476,13 @@ type Provider struct {
 	refresh          time.Duration
 	expectedIssuer   string
 	expectedAudience string
-	revocation       RevocationChecker
-	allowAnyIssuer   bool
-	allowAnyAudience bool
-	allowInsecureURL bool
-	maxStale         time.Duration
-	clock            func() time.Time
+	revocation         RevocationChecker
+	extraStringClaims  []string
+	allowAnyIssuer     bool
+	allowAnyAudience   bool
+	allowInsecureURL   bool
+	maxStale           time.Duration
+	clock              func() time.Time
 
 	mu                  sync.RWMutex
 	keyset              *KeySet
@@ -523,6 +562,16 @@ func WithRevocationChecker(checker RevocationChecker) ProviderOption {
 		panic("jwtutil: WithRevocationChecker requires a non-nil checker")
 	}
 	return func(p *Provider) { p.revocation = checker }
+}
+
+// WithStringClaims registers additional JWT claim names to capture as
+// strings during [Provider.VerifyContext]. client_id, azp, and act are
+// always extracted for identity mapping in auth middleware.
+func WithStringClaims(names ...string) ProviderOption {
+	copied := append([]string(nil), names...)
+	return func(p *Provider) {
+		p.extraStringClaims = append(p.extraStringClaims, copied...)
+	}
 }
 
 // WithAllowAnyIssuer opts into the unsafe behaviour of accepting tokens
@@ -1073,7 +1122,7 @@ func (p *Provider) VerifyContext(ctx context.Context, token string, now time.Tim
 	if ksErr != nil {
 		return nil, ksErr
 	}
-	claims, err := verifyToken(ks.set, token, now, p.expectedIssuer, p.expectedAudience)
+	claims, err := verifyToken(ks.set, token, now, p.expectedIssuer, p.expectedAudience, p.extraStringClaims)
 	if err != nil {
 		return nil, err
 	}

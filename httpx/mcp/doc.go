@@ -62,8 +62,9 @@
 // default when [WithActionLogger] is configured unless the caller
 // explicitly opts in with [WithAllowAnonymousActor]. The Server does
 // NOT trust any request header by default; wire [WithActorFromContext]
-// to read the verified user id from the auth-middleware-populated
-// context.
+// with [github.com/bds421/rho-kit/httpx/v2/middleware/auth.FormatActorFromContext]
+// (or [auth.Actor]) to read verified identity from auth middleware —
+// not raw [auth.UserID] alone, which omits machine attribution.
 //
 // The SDK's [sdkmcp.CallToolRequest] does not expose the full
 // [*http.Request]. The kit's wrapper synthesises a minimal

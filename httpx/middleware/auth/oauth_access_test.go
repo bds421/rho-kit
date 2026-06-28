@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,13 +75,13 @@ func TestOAuthAccessSessionAuthenticator_BeforeSession(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	var oauthCalled bool
+	var oauthCalled atomic.Bool
 	oauthAuth := auth.NewOAuthAccessSessionAuthenticator(
 		auth.OAuthAccessVerifierFunc(func(_ context.Context, token string) (auth.Identity, error) {
 			if token != "oauthpayload.oauthmac" {
 				return auth.Identity{}, auth.ErrUnauthenticated
 			}
-			oauthCalled = true
+			oauthCalled.Store(true)
 			return auth.Identity{
 				Subject: testUserID, Actor: "client1", ActorKind: auth.ActorOAuthClient,
 				Tenant: "tenant-a",
@@ -99,7 +100,7 @@ func TestOAuthAccessSessionAuthenticator_BeforeSession(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		require.Equal(t, http.StatusNoContent, rec.Code)
-		require.True(t, oauthCalled)
+		require.True(t, oauthCalled.Load())
 	})
 
 	t.Run("session token after oauth skip", func(t *testing.T) {

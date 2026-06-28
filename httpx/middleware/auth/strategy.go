@@ -239,10 +239,11 @@ func Chain(strategies ...Authenticator) Authenticator {
 //     ErrInvalidCredentials.
 //
 // Panics if provider is nil.
-func NewJWTAuthenticator(provider *jwtutil.Provider) Authenticator {
+func NewJWTAuthenticator(provider *jwtutil.Provider, opts ...JWTOption) Authenticator {
 	if provider == nil {
 		panic("middleware/auth: NewJWTAuthenticator requires a non-nil provider")
 	}
+	jwtCfg := buildJWTIdentityConfig(opts...)
 	return AuthenticatorFunc(func(r *http.Request) (Identity, error) {
 		token, status := parseBearerToken(r)
 		switch status {
@@ -255,13 +256,11 @@ func NewJWTAuthenticator(provider *jwtutil.Provider) Authenticator {
 		if err != nil {
 			return Identity{}, ErrInvalidCredentials
 		}
-		return Identity{
-			Subject:     claims.Subject,
-			Actor:       claims.Subject,
-			ActorKind:   ActorUser,
-			Permissions: claims.Permissions,
-			Scopes:      claims.Scopes,
-		}.Normalize(), nil
+		id, ok := identityFromJWTClaims(claims, jwtCfg)
+		if !ok {
+			return Identity{}, ErrInvalidCredentials
+		}
+		return id, nil
 	})
 }
 
