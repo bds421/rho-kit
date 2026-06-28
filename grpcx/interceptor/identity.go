@@ -5,26 +5,26 @@ import (
 	"slices"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/security/v2/identity"
 )
 
-// ActorKind classifies who performed the request. Values match
-// httpx/middleware/auth.ActorKind so audit and policy strings stay portable.
-type ActorKind string
+// ActorKind classifies who performed the request. Alias of [identity.ActorKind].
+type ActorKind = identity.ActorKind
 
 const (
-	ActorUser        ActorKind = "user"
-	ActorAPIKey      ActorKind = "api_key"
-	ActorOAuthClient ActorKind = "oauth_client"
-	ActorService     ActorKind = "service"
+	ActorUser        = identity.ActorUser
+	ActorAPIKey      = identity.ActorAPIKey
+	ActorOAuthClient = identity.ActorOAuthClient
+	ActorService     = identity.ActorService
 )
 
 type grpcSubject string
 type grpcActor string
 
 var (
-	subjectKey    = contextutil.NewKey[grpcSubject]("grpcx.auth.subject")
-	actorKey      = contextutil.NewKey[grpcActor]("grpcx.auth.actor")
-	actorKindKey  = contextutil.NewKey[ActorKind]("grpcx.auth.actor_kind")
+	subjectKey   = contextutil.NewKey[grpcSubject]("grpcx.auth.subject")
+	actorKey     = contextutil.NewKey[grpcActor]("grpcx.auth.actor")
+	actorKindKey = contextutil.NewKey[ActorKind]("grpcx.auth.actor_kind")
 )
 
 // stampIdentity writes subject/actor fields onto ctx. Mirrors the HTTP
@@ -73,15 +73,19 @@ func ActorKindFromContext(ctx context.Context) ActorKind {
 
 // IsMachineKind reports whether kind represents a non-human actor.
 func IsMachineKind(kind ActorKind) bool {
-	switch kind {
-	case ActorAPIKey, ActorOAuthClient, ActorService:
-		return true
-	default:
-		return false
-	}
+	return identity.IsMachineKind(kind)
 }
 
 // IsMachine reports whether ctx carries a non-human actor kind.
 func IsMachine(ctx context.Context) bool {
-	return IsMachineKind(ActorKindFromContext(ctx))
+	return identity.IsMachineKind(ActorKindFromContext(ctx))
+}
+
+// FormatActor returns the conventional actionlog/audit actor string for ctx.
+func FormatActor(ctx context.Context) string {
+	return identity.Format(identity.Ref{
+		Subject: Subject(ctx),
+		Actor:   Actor(ctx),
+		Kind:    ActorKindFromContext(ctx),
+	})
 }

@@ -5,27 +5,25 @@ import (
 	"strings"
 
 	"github.com/bds421/rho-kit/security/v2/apikey"
+	"github.com/bds421/rho-kit/security/v2/identity"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )
 
-// ActorKind classifies who performed the request for audit, rate limits, and
-// policy branches. Apps may prefix [Identity.Actor] strings at their boundary;
-// kind drives kit middleware behavior.
-type ActorKind string
+// ActorKind classifies who performed the request. Alias of [identity.ActorKind].
+type ActorKind = identity.ActorKind
 
 const (
-	// ActorUser is a human or user-shaped session/JWT subject.
-	ActorUser ActorKind = "user"
-	// ActorAPIKey is a scoped or header API key credential.
-	ActorAPIKey ActorKind = "api_key"
-	// ActorOAuthClient is an OAuth client-credentials access token.
-	ActorOAuthClient ActorKind = "oauth_client"
-	// ActorService is a trusted service identity (JWT S2S, mTLS, internal).
-	ActorService ActorKind = "service"
-	// ActorAnonymous is the zero value; [Identity.Normalize] treats it as user
-	// when Subject is set without an explicit kind.
-	ActorAnonymous ActorKind = ""
+	ActorUser        = identity.ActorUser
+	ActorAPIKey      = identity.ActorAPIKey
+	ActorOAuthClient = identity.ActorOAuthClient
+	ActorService     = identity.ActorService
+	ActorAnonymous   = identity.ActorAnonymous
 )
+
+// IsMachineKind reports whether kind represents a non-human actor.
+func IsMachineKind(kind ActorKind) bool {
+	return identity.IsMachineKind(kind)
+}
 
 // Normalize fills Subject/Actor/ActorKind from legacy [Identity.UserID] and
 // syncs [Identity.Scopes] with [Identity.ScopeList]. Call before stamping or
@@ -58,16 +56,6 @@ func (id Identity) Normalize() Identity {
 		id.Scopes = strings.Join(id.ScopeList, " ")
 	}
 	return id
-}
-
-// IsMachineKind reports whether kind represents a non-human actor.
-func IsMachineKind(kind ActorKind) bool {
-	switch kind {
-	case ActorAPIKey, ActorOAuthClient, ActorService:
-		return true
-	default:
-		return false
-	}
 }
 
 // identityValid reports whether id may be stamped after normalization.
@@ -123,24 +111,11 @@ func actorKindFromScoped(kind apikey.ScopedKind) ActorKind {
 }
 
 // FormatActor returns the conventional actionlog/audit actor string for id.
-// Convention: "<actor_kind>:<actor_id>" (user actors use the UUID subject).
 func FormatActor(id Identity) string {
 	id = id.Normalize()
-	switch id.ActorKind {
-	case ActorUser, ActorAnonymous:
-		if id.Subject != "" {
-			return "user:" + id.Subject
-		}
-		return "user:" + id.Actor
-	case ActorAPIKey, ActorOAuthClient, ActorService:
-		if id.Actor == "" {
-			return string(id.ActorKind) + ":"
-		}
-		return string(id.ActorKind) + ":" + id.Actor
-	default:
-		if id.Actor != "" {
-			return string(id.ActorKind) + ":" + id.Actor
-		}
-		return "user:" + id.Subject
-	}
+	return identity.Format(identity.Ref{
+		Subject: id.Subject,
+		Actor:   id.Actor,
+		Kind:    id.ActorKind,
+	})
 }

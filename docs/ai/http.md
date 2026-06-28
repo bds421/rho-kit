@@ -103,6 +103,7 @@ auth.ChainMiddleware(
 
 gRPC mirrors the same subject/actor context keys via `grpcx/interceptor.Subject`,
 `Actor`, and `ActorKindFromContext` after `AuthUnary` or `MTLSAuthUnary`.
+`ActorKind` and audit formatting live in `security/identity` (shared by both transports).
 Prefixed JWT subjects (`usr_<uuid>`) are normalized by `jwtutil.NormalizeSubjectID`.
 
 Identity-bearing headers such as `X-User-Id`, tenant headers, MCP `X-Actor-Id`,
