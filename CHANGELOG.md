@@ -4,6 +4,17 @@
 
 _(no entries yet)_
 
+## v2.3.0 — 2026-06-28
+
+Additive feature release across the `/v2` module set (coordination tag
+`release/v2.3.0`). No breaking changes.
+
+- **feat(auth).** Subject/Actor identity split for HTTP and gRPC; shared
+  `security/identity` package; JWT service-actor mapping; gRPC metadata
+  propagation; `FormatActorFromContext`; kit-doctor drift rule + autofix.
+- **feat(auth).** OAuth access-token authenticator; unbound scoped API keys;
+  `jwtutil.NormalizeSubjectID` for prefixed subject wire forms.
+
 ## v2.1.0 — 2026-06-10
 
 Additive feature + fix release across the `/v2` module set (coordination tag
