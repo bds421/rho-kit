@@ -8,8 +8,8 @@ go 1.26.2
 
 require (
 	cloud.google.com/go/secretmanager v1.20.0
-	github.com/bds421/rho-kit/core/v2 v2.2.0
-	github.com/bds421/rho-kit/infra/secrets/v2 v2.2.0
+	github.com/bds421/rho-kit/core/v2 v2.3.0
+	github.com/bds421/rho-kit/infra/secrets/v2 v2.3.0
 	github.com/googleapis/gax-go/v2 v2.22.0
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/grpc v1.81.1
