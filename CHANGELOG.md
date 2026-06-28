@@ -4,6 +4,15 @@
 
 _(no entries yet)_
 
+## v2.3.1 — 2026-06-28
+
+Patch release (coordination tag `release/v2.3.1`).
+
+- **fix(auth).** Remove `looksLikePrefixedMachineToken` session skip heuristic that
+  falsely rejected one-dot session bearer tokens with `usr_` prefixes or
+  base64url underscores. Machine credentials still fall through via wire-shape
+  (no dot) and prefix-specific chain strategies.
+
 ## v2.3.0 — 2026-06-28
 
 Additive feature release across the `/v2` module set (coordination tag
