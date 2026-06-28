@@ -3,8 +3,8 @@ module github.com/bds421/rho-kit/infra/messaging/natsbackend/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.3.0
-	github.com/bds421/rho-kit/infra/v2 v2.3.0
+	github.com/bds421/rho-kit/core/v2 v2.3.1
+	github.com/bds421/rho-kit/infra/v2 v2.3.1
 	github.com/nats-io/nats.go v1.52.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -32,8 +32,8 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/io/v2 v2.3.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.3.0
+	github.com/bds421/rho-kit/io/v2 v2.3.1 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.3.1
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
