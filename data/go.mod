@@ -16,8 +16,8 @@ module github.com/bds421/rho-kit/data/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.3.0
-	github.com/bds421/rho-kit/observability/v2 v2.3.0
+	github.com/bds421/rho-kit/core/v2 v2.3.1
+	github.com/bds421/rho-kit/observability/v2 v2.3.1
 	github.com/dgraph-io/ristretto/v2 v2.4.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2

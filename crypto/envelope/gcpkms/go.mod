@@ -12,8 +12,8 @@ go 1.26.2
 
 require (
 	cloud.google.com/go/kms v1.31.0
-	github.com/bds421/rho-kit/core/v2 v2.3.0
-	github.com/bds421/rho-kit/crypto/v2 v2.3.0
+	github.com/bds421/rho-kit/core/v2 v2.3.1
+	github.com/bds421/rho-kit/crypto/v2 v2.3.1
 	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 )
