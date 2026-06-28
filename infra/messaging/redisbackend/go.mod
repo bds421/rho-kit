@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
-	github.com/bds421/rho-kit/data/stream/redisstream/v2 v2.2.0
+	github.com/bds421/rho-kit/data/stream/redisstream/v2 v2.3.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/sdk v1.44.0
@@ -12,7 +12,7 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/data/v2 v2.2.0 // indirect
+	github.com/bds421/rho-kit/data/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
@@ -22,12 +22,12 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.2.0
-	github.com/bds421/rho-kit/infra/redis/v2 v2.2.0 // indirect
-	github.com/bds421/rho-kit/infra/v2 v2.2.0
-	github.com/bds421/rho-kit/io/v2 v2.2.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.2.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.2.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.3.0
+	github.com/bds421/rho-kit/infra/redis/v2 v2.3.0 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.3.0
+	github.com/bds421/rho-kit/io/v2 v2.3.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.3.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.3.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
