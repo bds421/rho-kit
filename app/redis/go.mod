@@ -7,7 +7,7 @@ require (
 	github.com/bds421/rho-kit/core/v2 v2.3.1
 	github.com/bds421/rho-kit/infra/redis/v2 v2.3.1
 	github.com/bds421/rho-kit/observability/v2 v2.3.1
-	github.com/redis/go-redis/v9 v9.20.1
+	github.com/redis/go-redis/v9 v9.21.0
 	github.com/stretchr/testify v1.11.1
 )
 

@@ -32,5 +32,5 @@ require (
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.42.0 // indirect
-	github.com/aws/smithy-go v1.27.2 // indirect
+	github.com/aws/smithy-go v1.27.3 // indirect
 )

@@ -47,7 +47,7 @@ require (
 	github.com/nats-io/nats.go v1.52.0
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/rabbitmq/amqp091-go v1.12.0
-	github.com/redis/go-redis/v9 v9.20.1
+	github.com/redis/go-redis/v9 v9.21.0
 	github.com/riverqueue/river v0.39.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.39.0
 	github.com/segmentio/kafka-go v0.4.51
