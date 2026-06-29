@@ -2,7 +2,7 @@ module github.com/bds421/rho-kit/httpx/middleware/signedrequest/redis/v2
 
 go 1.26.2
 
-require github.com/redis/go-redis/v9 v9.20.1
+require github.com/redis/go-redis/v9 v9.21.0
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.3.1 // indirect
