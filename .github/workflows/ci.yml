@@ -61,7 +61,7 @@ jobs:
         id: gobuild-cache
         run: echo "salt=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       - name: Cache Go build cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: ${{ runner.os }}-gobuild-${{ github.ref }}-${{ hashFiles('**/go.sum') }}-${{ steps.gobuild-cache.outputs.salt }}
