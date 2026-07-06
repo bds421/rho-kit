@@ -7,7 +7,7 @@ module github.com/bds421/rho-kit/observability/pyroscope/v2
 go 1.26.2
 
 require (
-	github.com/grafana/pyroscope-go v1.3.1
+	github.com/grafana/pyroscope-go v1.4.0
 	github.com/stretchr/testify v1.11.1
 )
 

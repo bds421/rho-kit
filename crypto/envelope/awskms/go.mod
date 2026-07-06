@@ -11,17 +11,17 @@ module github.com/bds421/rho-kit/crypto/envelope/awskms/v2
 go 1.26.2
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.42.0
-	github.com/aws/aws-sdk-go-v2/service/kms v1.53.4
-	github.com/aws/smithy-go v1.27.2
+	github.com/aws/aws-sdk-go-v2 v1.42.1
+	github.com/aws/aws-sdk-go-v2/service/kms v1.53.6
+	github.com/aws/smithy-go v1.27.3
 	github.com/bds421/rho-kit/core/v2 v2.3.1
 	github.com/bds421/rho-kit/crypto/v2 v2.3.1
 	github.com/prometheus/client_golang v1.23.2
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.29 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.29 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.30 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.30 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
