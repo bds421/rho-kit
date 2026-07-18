@@ -1,5 +1,5 @@
-github.com/bds421/rho-kit/security/v2 v2.3.1 h1:OmHG3Y9nmgg0ONypcYqT4/lpCfInF4ReBX+7EyqSq2Y=
-github.com/bds421/rho-kit/security/v2 v2.3.1/go.mod h1:jUD3mUicQJRXMmg9EtoZWg7b4m+KLcy6faHcDdTZCAs=
+github.com/bds421/rho-kit/security/v2 v2.4.0 h1:AC3n/wG8qlmlaipPKhmPat4uYJNOWpWqI0nMhuznxG8=
+github.com/bds421/rho-kit/security/v2 v2.4.0/go.mod h1:Myh6PIywDJxzYcMoPa0hWEZFkLKXXj1cANGr+bV7OmE=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

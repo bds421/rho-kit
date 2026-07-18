@@ -3,16 +3,16 @@ module github.com/bds421/rho-kit/examples/background-worker/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/infra/v2 v2.3.1
-	github.com/bds421/rho-kit/resilience/v2 v2.3.1
-	github.com/bds421/rho-kit/runtime/v2 v2.3.1
+	github.com/bds421/rho-kit/infra/v2 v2.4.0
+	github.com/bds421/rho-kit/resilience/v2 v2.4.0
+	github.com/bds421/rho-kit/runtime/v2 v2.4.0
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.3.1 // indirect
-	github.com/bds421/rho-kit/io/v2 v2.3.1 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.3.1 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.4.0 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.4.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.4.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
