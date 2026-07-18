@@ -441,6 +441,11 @@ func (l *Logger) LogE(ctx context.Context, event Event) error {
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()
 	}
+	// The HMAC must cover the exact timestamp every supported Store can return.
+	// PostgreSQL timestamptz is microsecond-precision; normalize before signing
+	// so a persisted event verifies after a database round trip. This does not
+	// change canonicalEvent's byte layout, only the accepted stored precision.
+	event.Timestamp = event.Timestamp.UTC().Truncate(time.Microsecond)
 	if event.TraceID == "" {
 		event.TraceID = extractTraceID(ctx)
 	}

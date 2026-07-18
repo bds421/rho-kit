@@ -270,7 +270,10 @@ FOR UPDATE`
 		return approval.Request{}, redact.WrapError("approval/postgres: decide select", err)
 	}
 
-	now := s.clock().UTC()
+	// The value returned from this call must be byte-for-byte reproducible
+	// after a Postgres round trip. timestamptz stores microseconds, so use the
+	// same normalization as Create before both persistence and return.
+	now := toPgTimestamp(s.clock())
 
 	// Auto-expire branch: persist the state flip to expired AND surface
 	// ErrInvalidTransition to the caller. We commit the state change and
