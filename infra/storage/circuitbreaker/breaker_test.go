@@ -34,6 +34,54 @@ func TestCircuitBreaker_PassesThrough(t *testing.T) {
 	assert.Equal(t, []byte("hello"), data)
 }
 
+type multipartBreakerBackend struct {
+	*membackend.Backend
+	partErr   error
+	partCalls atomic.Int32
+	listCalls atomic.Int32
+}
+
+func (backend *multipartBreakerBackend) InitUpload(context.Context, string, storage.ObjectMeta) (storage.MultipartUpload, error) {
+	return storage.MultipartUpload{Key: "staging/item", UploadID: "upload-a"}, nil
+}
+func (backend *multipartBreakerBackend) UploadPart(_ context.Context, _ storage.MultipartUpload, number int, _ io.Reader) (storage.PartInfo, error) {
+	backend.partCalls.Add(1)
+	if backend.partErr != nil {
+		return storage.PartInfo{}, backend.partErr
+	}
+	return storage.PartInfo{PartNumber: number, ETag: "etag", ChecksumSHA256: "checksum"}, nil
+}
+func (backend *multipartBreakerBackend) CompleteUpload(context.Context, storage.MultipartUpload, []storage.PartInfo) error {
+	return nil
+}
+func (backend *multipartBreakerBackend) AbortUpload(context.Context, storage.MultipartUpload) error {
+	return nil
+}
+func (backend *multipartBreakerBackend) ListMultipartUploads(context.Context, string, storage.MultipartUploadListOptions) (storage.MultipartUploadPage, error) {
+	backend.listCalls.Add(1)
+	return storage.MultipartUploadPage{}, nil
+}
+
+func TestMultipartCapabilitiesPreserveCircuitBreaker(t *testing.T) {
+	t.Parallel()
+	backend := &multipartBreakerBackend{Backend: membackend.New(), partErr: errors.New("backend unavailable")}
+	wrapper := New(backend, WithThreshold(1), WithResetTimeout(time.Hour))
+	uploader, ok := storage.AsMultipartUploader(wrapper)
+	require.True(t, ok)
+	lister, ok := storage.AsMultipartUploadLister(wrapper)
+	require.True(t, ok)
+
+	_, err := uploader.UploadPart(context.Background(), storage.MultipartUpload{Key: "staging/item", UploadID: "upload-a"}, 1, bytes.NewReader([]byte("part")))
+	require.Error(t, err)
+	assert.Equal(t, int32(1), backend.partCalls.Load())
+	_, err = lister.ListMultipartUploads(context.Background(), "staging/", storage.MultipartUploadListOptions{MaxUploads: 10})
+	require.ErrorIs(t, err, ErrCircuitOpen)
+	assert.Equal(t, int32(0), backend.listCalls.Load(), "open circuit must block multipart maintenance")
+
+	_, ok = storage.AsCopier(wrapper)
+	require.True(t, ok, "multipart outer wrapper must preserve existing optional capabilities")
+}
+
 func TestCircuitBreaker_OpensAfterThreshold(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

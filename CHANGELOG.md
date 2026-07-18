@@ -2,7 +2,10 @@
 
 ## Unreleased
 
-_(no entries yet)_
+- **feat(storage).** Add portable, checksummed S3 multipart uploads with
+  bounded part spooling, idempotent complete/abort, stale-upload pagination,
+  retry/circuit-breaker capability preservation, and Docker MinIO plus
+  opt-in AWS conformance tests.
 
 ## v2.3.1 — 2026-06-28
 

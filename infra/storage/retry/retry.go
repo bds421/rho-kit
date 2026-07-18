@@ -150,8 +150,20 @@ func New(backend storage.Storage, opts ...Option) storage.Storage {
 	_, hasCopier := storage.AsCopier(backend)
 	_, hasPresigned := storage.AsPresigned(backend)
 	_, hasURLer := storage.AsPublicURLer(backend)
+	_, hasMultipart := storage.AsMultipartUploader(backend)
+	_, hasMultipartLister := storage.AsMultipartUploadLister(backend)
 
-	return composeRetry(r, hasLister, hasCopier, hasPresigned, hasURLer)
+	base := composeRetry(r, hasLister, hasCopier, hasPresigned, hasURLer)
+	switch {
+	case hasMultipart && hasMultipartLister:
+		return &retryMultipartAndLister{Storage: base, retry: r}
+	case hasMultipart:
+		return &retryMultipart{Storage: base, retry: r}
+	case hasMultipartLister:
+		return &retryMultipartLister{Storage: base, retry: r}
+	default:
+		return base
+	}
 }
 
 // policy converts the storage Config to a kit/retry Policy.
@@ -369,6 +381,134 @@ func retryErrorSeq(err error) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
 		yield(storage.ObjectInfo{}, err)
 	}
+}
+
+type retryMultipart struct {
+	storage.Storage
+	retry *RetryStorage
+}
+
+func (wrapper *retryMultipart) Unwrap() storage.Storage { return wrapper.Storage }
+func (wrapper *retryMultipart) Close() error            { return storage.Close(wrapper.Storage) }
+func (wrapper *retryMultipart) InitUpload(ctx context.Context, key string, meta storage.ObjectMeta) (storage.MultipartUpload, error) {
+	return wrapper.retry.initUploadImpl(ctx, key, meta)
+}
+func (wrapper *retryMultipart) UploadPart(ctx context.Context, upload storage.MultipartUpload, partNumber int, reader io.Reader) (storage.PartInfo, error) {
+	return wrapper.retry.uploadPartImpl(ctx, upload, partNumber, reader)
+}
+func (wrapper *retryMultipart) CompleteUpload(ctx context.Context, upload storage.MultipartUpload, parts []storage.PartInfo) error {
+	return wrapper.retry.completeUploadImpl(ctx, upload, parts)
+}
+func (wrapper *retryMultipart) AbortUpload(ctx context.Context, upload storage.MultipartUpload) error {
+	return wrapper.retry.abortUploadImpl(ctx, upload)
+}
+
+type retryMultipartLister struct {
+	storage.Storage
+	retry *RetryStorage
+}
+
+func (wrapper *retryMultipartLister) Unwrap() storage.Storage { return wrapper.Storage }
+func (wrapper *retryMultipartLister) Close() error            { return storage.Close(wrapper.Storage) }
+func (wrapper *retryMultipartLister) ListMultipartUploads(ctx context.Context, prefix string, opts storage.MultipartUploadListOptions) (storage.MultipartUploadPage, error) {
+	return wrapper.retry.listMultipartUploadsImpl(ctx, prefix, opts)
+}
+
+type retryMultipartAndLister struct {
+	storage.Storage
+	retry *RetryStorage
+}
+
+func (wrapper *retryMultipartAndLister) Unwrap() storage.Storage { return wrapper.Storage }
+func (wrapper *retryMultipartAndLister) Close() error            { return storage.Close(wrapper.Storage) }
+func (wrapper *retryMultipartAndLister) InitUpload(ctx context.Context, key string, meta storage.ObjectMeta) (storage.MultipartUpload, error) {
+	return wrapper.retry.initUploadImpl(ctx, key, meta)
+}
+func (wrapper *retryMultipartAndLister) UploadPart(ctx context.Context, upload storage.MultipartUpload, partNumber int, reader io.Reader) (storage.PartInfo, error) {
+	return wrapper.retry.uploadPartImpl(ctx, upload, partNumber, reader)
+}
+func (wrapper *retryMultipartAndLister) CompleteUpload(ctx context.Context, upload storage.MultipartUpload, parts []storage.PartInfo) error {
+	return wrapper.retry.completeUploadImpl(ctx, upload, parts)
+}
+func (wrapper *retryMultipartAndLister) AbortUpload(ctx context.Context, upload storage.MultipartUpload) error {
+	return wrapper.retry.abortUploadImpl(ctx, upload)
+}
+func (wrapper *retryMultipartAndLister) ListMultipartUploads(ctx context.Context, prefix string, opts storage.MultipartUploadListOptions) (storage.MultipartUploadPage, error) {
+	return wrapper.retry.listMultipartUploadsImpl(ctx, prefix, opts)
+}
+
+func (r *RetryStorage) initUploadImpl(ctx context.Context, key string, meta storage.ObjectMeta) (storage.MultipartUpload, error) {
+	uploader, ok := storage.AsMultipartUploader(r.backend)
+	if !ok {
+		return storage.MultipartUpload{}, fmt.Errorf("storage/retry: underlying backend does not implement storage.MultipartUploader")
+	}
+	var upload storage.MultipartUpload
+	err := kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error {
+		var callErr error
+		upload, callErr = uploader.InitUpload(ctx, key, storage.CloneObjectMeta(meta))
+		return callErr
+	})
+	return upload, err
+}
+
+func (r *RetryStorage) uploadPartImpl(ctx context.Context, upload storage.MultipartUpload, partNumber int, reader io.Reader) (storage.PartInfo, error) {
+	uploader, ok := storage.AsMultipartUploader(r.backend)
+	if !ok {
+		return storage.PartInfo{}, fmt.Errorf("storage/retry: underlying backend does not implement storage.MultipartUploader")
+	}
+	seeker, seekable := reader.(io.Seeker)
+	if !seekable {
+		return uploader.UploadPart(ctx, upload, partNumber, reader)
+	}
+	start, err := seeker.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return uploader.UploadPart(ctx, upload, partNumber, reader)
+	}
+	var part storage.PartInfo
+	first := true
+	err = kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error {
+		if !first {
+			if _, seekErr := seeker.Seek(start, io.SeekStart); seekErr != nil {
+				return seekErr
+			}
+		}
+		first = false
+		var callErr error
+		part, callErr = uploader.UploadPart(ctx, upload, partNumber, reader)
+		return callErr
+	})
+	return part, err
+}
+
+func (r *RetryStorage) completeUploadImpl(ctx context.Context, upload storage.MultipartUpload, parts []storage.PartInfo) error {
+	uploader, ok := storage.AsMultipartUploader(r.backend)
+	if !ok {
+		return fmt.Errorf("storage/retry: underlying backend does not implement storage.MultipartUploader")
+	}
+	copyParts := append([]storage.PartInfo(nil), parts...)
+	return kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error { return uploader.CompleteUpload(ctx, upload, copyParts) })
+}
+
+func (r *RetryStorage) abortUploadImpl(ctx context.Context, upload storage.MultipartUpload) error {
+	uploader, ok := storage.AsMultipartUploader(r.backend)
+	if !ok {
+		return fmt.Errorf("storage/retry: underlying backend does not implement storage.MultipartUploader")
+	}
+	return kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error { return uploader.AbortUpload(ctx, upload) })
+}
+
+func (r *RetryStorage) listMultipartUploadsImpl(ctx context.Context, prefix string, opts storage.MultipartUploadListOptions) (storage.MultipartUploadPage, error) {
+	lister, ok := storage.AsMultipartUploadLister(r.backend)
+	if !ok {
+		return storage.MultipartUploadPage{}, fmt.Errorf("storage/retry: underlying backend does not implement storage.MultipartUploadLister")
+	}
+	var page storage.MultipartUploadPage
+	err := kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error {
+		var callErr error
+		page, callErr = lister.ListMultipartUploads(ctx, prefix, opts)
+		return callErr
+	})
+	return page, err
 }
 
 // Compile-time interface compliance check.
