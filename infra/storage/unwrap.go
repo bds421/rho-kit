@@ -103,6 +103,12 @@ func AsMultipartUploader(s Storage) (MultipartUploader, bool) {
 	return asImpl[MultipartUploader](s)
 }
 
+// AsMultipartUploadLister walks the Unwrap chain to find the maintenance-side
+// active-upload listing capability without bypassing opaque decorators.
+func AsMultipartUploadLister(s Storage) (MultipartUploadLister, bool) {
+	return asImpl[MultipartUploadLister](s)
+}
+
 // AsTagger walks the Unwrap chain to find a Tagger implementation. Returns
 // (nil, false) if no backend in the chain implements Tagger, or if traversal
 // hits an [OpaqueDecorator] that does not itself implement Tagger.

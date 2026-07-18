@@ -27,8 +27,10 @@ const tracerName = "kit/storage/s3"
 
 // Compile-time interface compliance checks.
 var (
-	_ storage.Storage        = (*Backend)(nil)
-	_ storage.PresignedStore = (*Backend)(nil)
+	_ storage.Storage               = (*Backend)(nil)
+	_ storage.PresignedStore        = (*Backend)(nil)
+	_ storage.MultipartUploader     = (*Backend)(nil)
+	_ storage.MultipartUploadLister = (*Backend)(nil)
 )
 
 // Client abstracts the S3 API methods used by Backend.
@@ -41,6 +43,17 @@ type Client interface {
 	HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error)
 	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
 	CopyObject(ctx context.Context, params *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error)
+}
+
+// MultipartClient is the optional AWS API subset required by
+// storage.MultipartUploader. Keeping it separate preserves NewWithClient
+// compatibility for tests and adapters that only implement the core Client.
+type MultipartClient interface {
+	CreateMultipartUpload(context.Context, *s3.CreateMultipartUploadInput, ...func(*s3.Options)) (*s3.CreateMultipartUploadOutput, error)
+	UploadPart(context.Context, *s3.UploadPartInput, ...func(*s3.Options)) (*s3.UploadPartOutput, error)
+	CompleteMultipartUpload(context.Context, *s3.CompleteMultipartUploadInput, ...func(*s3.Options)) (*s3.CompleteMultipartUploadOutput, error)
+	AbortMultipartUpload(context.Context, *s3.AbortMultipartUploadInput, ...func(*s3.Options)) (*s3.AbortMultipartUploadOutput, error)
+	ListMultipartUploads(context.Context, *s3.ListMultipartUploadsInput, ...func(*s3.Options)) (*s3.ListMultipartUploadsOutput, error)
 }
 
 // Presigner abstracts the S3 presign API methods.

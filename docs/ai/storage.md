@@ -77,6 +77,28 @@ if ps, ok := backend.(storage.PresignedStore); ok {
 }
 ```
 
+Large non-seekable streams can use the portable multipart capability. Each
+part is bounded to `s3backend.MaxMultipartPartBytes`, spooled independently,
+and sent with SHA-256; callers remain responsible for splitting the source and
+for their whole-object digest or validation policy:
+
+```go
+uploader, ok := storage.AsMultipartUploader(backend)
+if !ok { return errors.New("multipart storage required") }
+
+upload, err := uploader.InitUpload(ctx, key, meta)
+// Upload contiguous parts numbered from 1, then pass every returned PartInfo
+// to CompleteUpload. AbortUpload is safe to retry after uncertain failure.
+```
+
+Use `storage.AsMultipartUploadLister` for bounded stale-session collection.
+The retry and circuit-breaker decorators preserve both multipart capabilities.
+The encryption decorator intentionally remains opaque because raw provider
+parts would bypass its client-side encryption; use S3 server-side encryption
+or a dedicated encrypted multipart adapter instead. Backends configured with
+whole-object upload validators reject multipart initialization because those
+validators cannot honestly validate independent parts.
+
 Shared helpers such as `storage.DeleteMany` and `storage.CopyMany` validate
 keys before touching a backend and reject batches above
 `storage.MaxBatchKeys`.
@@ -210,6 +232,12 @@ err := storagehttp.ServeFile(w, r, backend, key, storagehttp.ServeOptions{
 ```
 
 ## Environment Variables
+
+The integration suite always supports Docker MinIO under the `integration`
+build tag. Set `RHO_KIT_TEST_AWS_S3_REGION` and
+`RHO_KIT_TEST_AWS_S3_BUCKET` (and optionally
+`RHO_KIT_TEST_AWS_S3_PREFIX`) to run the same multipart contract against an
+existing AWS bucket via the default credential chain.
 
 ### S3
 | Variable | Required | Notes |

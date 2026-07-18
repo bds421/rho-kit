@@ -179,8 +179,20 @@ func New(backend storage.Storage, opts ...Option) Stater {
 	_, hasCopier := storage.AsCopier(backend)
 	_, hasPresigned := storage.AsPresigned(backend)
 	_, hasURLer := storage.AsPublicURLer(backend)
+	_, hasMultipart := storage.AsMultipartUploader(backend)
+	_, hasMultipartLister := storage.AsMultipartUploadLister(backend)
 
-	return composeBreaker(cb, hasLister, hasCopier, hasPresigned, hasURLer)
+	base := composeBreaker(cb, hasLister, hasCopier, hasPresigned, hasURLer)
+	switch {
+	case hasMultipart && hasMultipartLister:
+		return &breakerMultipartAndLister{Stater: base, breaker: cb}
+	case hasMultipart:
+		return &breakerMultipart{Stater: base, breaker: cb}
+	case hasMultipartLister:
+		return &breakerMultipartLister{Stater: base, breaker: cb}
+	default:
+		return base
+	}
 }
 
 // State returns the current circuit state.
@@ -410,6 +422,119 @@ func cbErrorSeq(err error) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
 		yield(storage.ObjectInfo{}, err)
 	}
+}
+
+type breakerMultipart struct {
+	Stater
+	breaker *CircuitBreaker
+}
+
+func (wrapper *breakerMultipart) Unwrap() storage.Storage { return wrapper.Stater }
+func (wrapper *breakerMultipart) Close() error            { return storage.Close(wrapper.Stater) }
+func (wrapper *breakerMultipart) InitUpload(ctx context.Context, key string, meta storage.ObjectMeta) (storage.MultipartUpload, error) {
+	return wrapper.breaker.initUploadImpl(ctx, key, meta)
+}
+func (wrapper *breakerMultipart) UploadPart(ctx context.Context, upload storage.MultipartUpload, partNumber int, reader io.Reader) (storage.PartInfo, error) {
+	return wrapper.breaker.uploadPartImpl(ctx, upload, partNumber, reader)
+}
+func (wrapper *breakerMultipart) CompleteUpload(ctx context.Context, upload storage.MultipartUpload, parts []storage.PartInfo) error {
+	return wrapper.breaker.completeUploadImpl(ctx, upload, parts)
+}
+func (wrapper *breakerMultipart) AbortUpload(ctx context.Context, upload storage.MultipartUpload) error {
+	return wrapper.breaker.abortUploadImpl(ctx, upload)
+}
+
+type breakerMultipartLister struct {
+	Stater
+	breaker *CircuitBreaker
+}
+
+func (wrapper *breakerMultipartLister) Unwrap() storage.Storage { return wrapper.Stater }
+func (wrapper *breakerMultipartLister) Close() error            { return storage.Close(wrapper.Stater) }
+func (wrapper *breakerMultipartLister) ListMultipartUploads(ctx context.Context, prefix string, opts storage.MultipartUploadListOptions) (storage.MultipartUploadPage, error) {
+	return wrapper.breaker.listMultipartUploadsImpl(ctx, prefix, opts)
+}
+
+type breakerMultipartAndLister struct {
+	Stater
+	breaker *CircuitBreaker
+}
+
+func (wrapper *breakerMultipartAndLister) Unwrap() storage.Storage { return wrapper.Stater }
+func (wrapper *breakerMultipartAndLister) Close() error            { return storage.Close(wrapper.Stater) }
+func (wrapper *breakerMultipartAndLister) InitUpload(ctx context.Context, key string, meta storage.ObjectMeta) (storage.MultipartUpload, error) {
+	return wrapper.breaker.initUploadImpl(ctx, key, meta)
+}
+func (wrapper *breakerMultipartAndLister) UploadPart(ctx context.Context, upload storage.MultipartUpload, partNumber int, reader io.Reader) (storage.PartInfo, error) {
+	return wrapper.breaker.uploadPartImpl(ctx, upload, partNumber, reader)
+}
+func (wrapper *breakerMultipartAndLister) CompleteUpload(ctx context.Context, upload storage.MultipartUpload, parts []storage.PartInfo) error {
+	return wrapper.breaker.completeUploadImpl(ctx, upload, parts)
+}
+func (wrapper *breakerMultipartAndLister) AbortUpload(ctx context.Context, upload storage.MultipartUpload) error {
+	return wrapper.breaker.abortUploadImpl(ctx, upload)
+}
+func (wrapper *breakerMultipartAndLister) ListMultipartUploads(ctx context.Context, prefix string, opts storage.MultipartUploadListOptions) (storage.MultipartUploadPage, error) {
+	return wrapper.breaker.listMultipartUploadsImpl(ctx, prefix, opts)
+}
+
+func (cb *CircuitBreaker) initUploadImpl(ctx context.Context, key string, meta storage.ObjectMeta) (storage.MultipartUpload, error) {
+	uploader, ok := storage.AsMultipartUploader(cb.backend)
+	if !ok {
+		return storage.MultipartUpload{}, fmt.Errorf("storage/circuitbreaker: underlying backend does not implement storage.MultipartUploader")
+	}
+	var upload storage.MultipartUpload
+	err := cb.cb.Execute(func() error {
+		var callErr error
+		upload, callErr = uploader.InitUpload(ctx, key, storage.CloneObjectMeta(meta))
+		return callErr
+	})
+	return upload, err
+}
+
+func (cb *CircuitBreaker) uploadPartImpl(ctx context.Context, upload storage.MultipartUpload, partNumber int, reader io.Reader) (storage.PartInfo, error) {
+	uploader, ok := storage.AsMultipartUploader(cb.backend)
+	if !ok {
+		return storage.PartInfo{}, fmt.Errorf("storage/circuitbreaker: underlying backend does not implement storage.MultipartUploader")
+	}
+	var part storage.PartInfo
+	err := cb.cb.Execute(func() error {
+		var callErr error
+		part, callErr = uploader.UploadPart(ctx, upload, partNumber, reader)
+		return callErr
+	})
+	return part, err
+}
+
+func (cb *CircuitBreaker) completeUploadImpl(ctx context.Context, upload storage.MultipartUpload, parts []storage.PartInfo) error {
+	uploader, ok := storage.AsMultipartUploader(cb.backend)
+	if !ok {
+		return fmt.Errorf("storage/circuitbreaker: underlying backend does not implement storage.MultipartUploader")
+	}
+	copyParts := append([]storage.PartInfo(nil), parts...)
+	return cb.cb.Execute(func() error { return uploader.CompleteUpload(ctx, upload, copyParts) })
+}
+
+func (cb *CircuitBreaker) abortUploadImpl(ctx context.Context, upload storage.MultipartUpload) error {
+	uploader, ok := storage.AsMultipartUploader(cb.backend)
+	if !ok {
+		return fmt.Errorf("storage/circuitbreaker: underlying backend does not implement storage.MultipartUploader")
+	}
+	return cb.cb.Execute(func() error { return uploader.AbortUpload(ctx, upload) })
+}
+
+func (cb *CircuitBreaker) listMultipartUploadsImpl(ctx context.Context, prefix string, opts storage.MultipartUploadListOptions) (storage.MultipartUploadPage, error) {
+	lister, ok := storage.AsMultipartUploadLister(cb.backend)
+	if !ok {
+		return storage.MultipartUploadPage{}, fmt.Errorf("storage/circuitbreaker: underlying backend does not implement storage.MultipartUploadLister")
+	}
+	var page storage.MultipartUploadPage
+	err := cb.cb.Execute(func() error {
+		var callErr error
+		page, callErr = lister.ListMultipartUploads(ctx, prefix, opts)
+		return callErr
+	})
+	return page, err
 }
 
 // Compile-time interface compliance check.

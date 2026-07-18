@@ -197,6 +197,89 @@ func TestAsCopier_RetryForwardsAndRetries(t *testing.T) {
 	assert.Equal(t, []byte("payload"), data)
 }
 
+type multipartBackend struct {
+	*membackend.Backend
+	partCalls atomic.Int32
+	listCalls atomic.Int32
+	failPart  func() error
+	failList  func() error
+}
+
+func (backend *multipartBackend) InitUpload(context.Context, string, storage.ObjectMeta) (storage.MultipartUpload, error) {
+	return storage.MultipartUpload{Key: "staging/item", UploadID: "upload-a"}, nil
+}
+func (backend *multipartBackend) UploadPart(_ context.Context, _ storage.MultipartUpload, number int, reader io.Reader) (storage.PartInfo, error) {
+	backend.partCalls.Add(1)
+	_, _ = io.Copy(io.Discard, reader)
+	if backend.failPart != nil {
+		if err := backend.failPart(); err != nil {
+			return storage.PartInfo{}, err
+		}
+	}
+	return storage.PartInfo{PartNumber: number, ETag: "etag", ChecksumSHA256: "checksum"}, nil
+}
+func (backend *multipartBackend) CompleteUpload(context.Context, storage.MultipartUpload, []storage.PartInfo) error {
+	return nil
+}
+func (backend *multipartBackend) AbortUpload(context.Context, storage.MultipartUpload) error {
+	return nil
+}
+func (backend *multipartBackend) ListMultipartUploads(context.Context, string, storage.MultipartUploadListOptions) (storage.MultipartUploadPage, error) {
+	backend.listCalls.Add(1)
+	if backend.failList != nil {
+		if err := backend.failList(); err != nil {
+			return storage.MultipartUploadPage{}, err
+		}
+	}
+	return storage.MultipartUploadPage{Uploads: []storage.MultipartUploadInfo{{Upload: storage.MultipartUpload{Key: "staging/item", UploadID: "upload-a"}}}}, nil
+}
+
+func TestMultipartCapabilitiesPreserveRetryPolicy(t *testing.T) {
+	t.Parallel()
+	backend := &multipartBackend{Backend: membackend.New()}
+	transient := storage.NewTransientError("multipart", "staging/item", errors.New("timeout"))
+	var partAttempts atomic.Int32
+	backend.failPart = func() error {
+		if partAttempts.Add(1) == 1 {
+			return transient
+		}
+		return nil
+	}
+	var listAttempts atomic.Int32
+	backend.failList = func() error {
+		if listAttempts.Add(1) == 1 {
+			return transient
+		}
+		return nil
+	}
+	wrapper := New(backend, WithMaxAttempts(3), WithBaseDelay(time.Millisecond))
+	uploader, ok := storage.AsMultipartUploader(wrapper)
+	require.True(t, ok)
+	lister, ok := storage.AsMultipartUploadLister(wrapper)
+	require.True(t, ok)
+	_, err := uploader.UploadPart(context.Background(), storage.MultipartUpload{Key: "staging/item", UploadID: "upload-a"}, 1, bytes.NewReader([]byte("part")))
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), backend.partCalls.Load())
+	_, err = lister.ListMultipartUploads(context.Background(), "staging/", storage.MultipartUploadListOptions{MaxUploads: 10})
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), backend.listCalls.Load())
+
+	_, ok = storage.AsCopier(wrapper)
+	require.True(t, ok, "multipart outer wrapper must preserve existing optional capabilities")
+}
+
+func TestMultipartNonSeekablePartIsNeverRetried(t *testing.T) {
+	t.Parallel()
+	backend := &multipartBackend{Backend: membackend.New(), failPart: func() error {
+		return storage.NewTransientError("multipart", "staging/item", errors.New("timeout"))
+	}}
+	uploader, ok := storage.AsMultipartUploader(New(backend, WithMaxAttempts(3), WithBaseDelay(time.Millisecond)))
+	require.True(t, ok)
+	_, err := uploader.UploadPart(context.Background(), storage.MultipartUpload{Key: "staging/item", UploadID: "upload-a"}, 1, &nonSeekableReader{r: bytes.NewReader([]byte("part"))})
+	require.Error(t, err)
+	assert.Equal(t, int32(1), backend.partCalls.Load())
+}
+
 func TestRetryStorage_StopsOnPermanent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
