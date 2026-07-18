@@ -2,8 +2,8 @@
 
 ## v2.4.0 — 2026-07-18
 
-Additive storage release (coordination tag `release/v2.4.0`). No breaking
-changes.
+Additive storage and portability-fix release (coordination tag
+`release/v2.4.0`). No breaking changes.
 
 - **feat(storage).** Add portable, checksummed S3 multipart uploads with
   bounded part spooling, idempotent complete/abort, stale-upload pagination,
@@ -11,6 +11,11 @@ changes.
   opt-in AWS conformance tests.
 - **ci.** Run release, CI, dashboard, and supply-chain workflows on the patched
   Go 1.26.5 toolchain.
+- **fix(approval/postgres).** Normalize decision timestamps to PostgreSQL's
+  microsecond precision before returning them, so idempotent reads reproduce
+  the original decision exactly.
+- **fix(auditlog).** Normalize event timestamps before chain signing so the
+  PostgreSQL adapter can verify HMAC chains after a timestamp round trip.
 
 ## v2.3.1 — 2026-06-28
 

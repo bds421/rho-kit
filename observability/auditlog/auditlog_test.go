@@ -90,8 +90,22 @@ func TestLogger_Log_PreservesExplicitFields(t *testing.T) {
 	events := store.Events()
 	require.Len(t, events, 1)
 	assert.Equal(t, "custom-id", events[0].ID)
-	assert.Equal(t, now, events[0].Timestamp)
+	assert.Equal(t, now.UTC().Truncate(time.Microsecond), events[0].Timestamp)
 	assert.Equal(t, "0123456789abcdef0123456789abcdef", events[0].TraceID)
+}
+
+func TestLogger_Log_NormalizesTimestampBeforeSigning(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	input := time.Date(2026, 7, 18, 12, 0, 0, 123456789, time.FixedZone("UTC+2", 2*60*60))
+
+	require.NoError(t, l.LogE(context.Background(), Event{
+		ID: "event-precision", Timestamp: input, Actor: "svc", Action: "sync", Resource: "data", Status: StatusSuccess,
+	}))
+	events := store.Events()
+	require.Len(t, events, 1)
+	assert.Equal(t, input.UTC().Truncate(time.Microsecond), events[0].Timestamp)
+	require.NoError(t, VerifyChain(events, testChainKey))
 }
 
 func TestQuery_FilterByActor(t *testing.T) {

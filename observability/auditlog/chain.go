@@ -43,7 +43,9 @@ var ErrChainBroken = errors.New("auditlog: chain integrity check failed")
 //     boundary can be confused with another field's payload (length
 //     prefixing prevents e.g. an actor "alice\x00action=approve"
 //     colliding with actor="alice", action="approve"),
-//   - encodes the timestamp as a fixed-width 8-byte UnixNano,
+//   - encodes the timestamp as a fixed-width 8-byte UnixNano; Logger input is
+//     normalized to UTC microsecond precision before signing so database-backed
+//     stores can reproduce the exact value,
 //   - covers the entire wire-relevant content of the event.
 //
 // This encoding is part of the on-disk contract: changing it invalidates
