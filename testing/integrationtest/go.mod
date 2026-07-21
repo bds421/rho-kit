@@ -3,43 +3,43 @@ module github.com/bds421/rho-kit/testing/integrationtest/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.4.0
-	github.com/bds421/rho-kit/crypto/v2 v2.4.0
-	github.com/bds421/rho-kit/data/actionlog/postgres/v2 v2.4.0
-	github.com/bds421/rho-kit/data/apikey/postgres/v2 v2.4.0
-	github.com/bds421/rho-kit/data/approval/postgres/v2 v2.4.0
-	github.com/bds421/rho-kit/data/budget/redis/v2 v2.4.0
-	github.com/bds421/rho-kit/data/cache/rediscache/v2 v2.4.0
-	github.com/bds421/rho-kit/data/cron/pgstore/v2 v2.4.0
-	github.com/bds421/rho-kit/data/idempotency/pgstore/v2 v2.4.0
-	github.com/bds421/rho-kit/data/idempotency/redisstore/v2 v2.4.0
-	github.com/bds421/rho-kit/data/lock/pgadvisory/v2 v2.4.0
-	github.com/bds421/rho-kit/data/lock/redislock/v2 v2.4.0
-	github.com/bds421/rho-kit/data/queue/redisqueue/v2 v2.4.0
-	github.com/bds421/rho-kit/data/queue/riverqueue/v2 v2.4.0
-	github.com/bds421/rho-kit/data/ratelimit/redis/v2 v2.4.0
-	github.com/bds421/rho-kit/data/saga/pgstore/v2 v2.4.0
-	github.com/bds421/rho-kit/data/stream/redisstream/v2 v2.4.0
-	github.com/bds421/rho-kit/data/v2 v2.4.0
-	github.com/bds421/rho-kit/httpx/websocket/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/leaderelection/redislock/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/messaging/kafkabackend/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/messaging/redisbackend/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/outbox/postgres/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/redis/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/v2 v2.4.0
-	github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.4.0
-	github.com/bds421/rho-kit/observability/v2 v2.4.0
-	github.com/bds421/rho-kit/runtime/v2 v2.4.0
-	github.com/bds421/rho-kit/security/v2 v2.4.0
-	github.com/bds421/rho-kit/testing/kittest/v2 v2.4.0
+	github.com/bds421/rho-kit/core/v2 v2.5.0
+	github.com/bds421/rho-kit/crypto/v2 v2.5.0
+	github.com/bds421/rho-kit/data/actionlog/postgres/v2 v2.5.0
+	github.com/bds421/rho-kit/data/apikey/postgres/v2 v2.5.0
+	github.com/bds421/rho-kit/data/approval/postgres/v2 v2.5.0
+	github.com/bds421/rho-kit/data/budget/redis/v2 v2.5.0
+	github.com/bds421/rho-kit/data/cache/rediscache/v2 v2.5.0
+	github.com/bds421/rho-kit/data/cron/pgstore/v2 v2.5.0
+	github.com/bds421/rho-kit/data/idempotency/pgstore/v2 v2.5.0
+	github.com/bds421/rho-kit/data/idempotency/redisstore/v2 v2.5.0
+	github.com/bds421/rho-kit/data/lock/pgadvisory/v2 v2.5.0
+	github.com/bds421/rho-kit/data/lock/redislock/v2 v2.5.0
+	github.com/bds421/rho-kit/data/queue/redisqueue/v2 v2.5.0
+	github.com/bds421/rho-kit/data/queue/riverqueue/v2 v2.5.0
+	github.com/bds421/rho-kit/data/ratelimit/redis/v2 v2.5.0
+	github.com/bds421/rho-kit/data/saga/pgstore/v2 v2.5.0
+	github.com/bds421/rho-kit/data/stream/redisstream/v2 v2.5.0
+	github.com/bds421/rho-kit/data/v2 v2.5.0
+	github.com/bds421/rho-kit/httpx/websocket/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/leaderelection/redislock/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/messaging/kafkabackend/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/messaging/redisbackend/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/outbox/postgres/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/redis/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/v2 v2.5.0
+	github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.5.0
+	github.com/bds421/rho-kit/observability/v2 v2.5.0
+	github.com/bds421/rho-kit/runtime/v2 v2.5.0
+	github.com/bds421/rho-kit/security/v2 v2.5.0
+	github.com/bds421/rho-kit/testing/kittest/v2 v2.5.0
 	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
 	github.com/hibiken/asynq v0.26.0
@@ -78,8 +78,8 @@ require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/bds421/rho-kit/io/v2 v2.4.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.4.0 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.5.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.5.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
