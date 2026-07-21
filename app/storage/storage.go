@@ -51,7 +51,7 @@ const (
 	ResourceBackendKey = "github.com/bds421/rho-kit/app/storage.backend"
 	// ResourceManagerKey is the [app.Infrastructure.Resource] key
 	// under which [Module] publishes the *storage.Manager populated
-	// with named backends. Absent when no [Named] option is passed.
+	// with named backends. Absent when no [WithNamed] option is passed.
 	ResourceManagerKey = "github.com/bds421/rho-kit/app/storage.manager"
 )
 
@@ -101,7 +101,7 @@ func WithHealthCheck(check health.DependencyCheck) Option {
 }
 
 // Module returns an [app.Module] that registers backend as the
-// default object-storage backend and, if [Named] options are
+// default object-storage backend and, if [WithNamed] options are
 // supplied, builds a *storage.Manager populated with the named
 // entries.
 //
@@ -181,7 +181,7 @@ func Backend(infra app.Infrastructure) storage.Storage {
 }
 
 // Manager returns the populated *storage.Manager, or nil if no
-// [Named] options were passed to [Module].
+// [WithNamed] options were passed to [Module].
 func Manager(infra app.Infrastructure) *storage.Manager {
 	v, ok := infra.Resource(ResourceManagerKey)
 	if !ok {

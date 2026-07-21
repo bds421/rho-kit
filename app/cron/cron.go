@@ -25,6 +25,7 @@ package cron
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/bds421/rho-kit/app/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
@@ -70,11 +71,16 @@ func (m *cronModule) Init(_ context.Context, mc app.ModuleContext) error {
 	opts := append([]kitcron.Option(nil), m.userOpts...)
 	// Optional leader gating: query the registered modules for an
 	// ElectorProvider. The Builder pre-populates ModuleContext's
-	// initialized-modules map in registration order, so the leader
-	// module's Elector() is callable here as long as the leader
-	// module was registered BEFORE cron.Module — which is the
-	// natural shape anyway.
-	if leader, ok := lookupElector(mc); ok {
+	// module map with every registered module before any Init runs,
+	// so a leader module registered AFTER cron is still visible —
+	// but its Elector() is nil until its own Init runs. lookupElector
+	// fails loud on that ordering mistake rather than silently
+	// scheduling jobs on every replica.
+	leader, ok, err := lookupElector(mc)
+	if err != nil {
+		return err
+	}
+	if ok {
 		opts = append(opts, kitcron.WithLeaderGate(leader.IsLeader))
 	}
 	m.scheduler = kitcron.New(mc.Logger, opts...)
@@ -97,24 +103,29 @@ func (m *cronModule) HealthChecks() []health.DependencyCheck { return nil }
 // app/leader. The lookup is optional — services that don't
 // register a leader module run cron unguarded.
 //
-// A foreign ElectorProvider whose Elector() returns a nil interface
-// is treated as absent: app/leader always returns a non-nil elector,
-// but a third-party module under the same name must not crash Init by
-// having the leader.IsLeader method value dereference a nil interface.
-func lookupElector(mc app.ModuleContext) (electorLike, bool) {
-	m := mc.LookupModule("leader-election")
+// When a module named [app.LeaderModuleName] is present and implements
+// ElectorProvider but Elector() returns nil, Init fails with an
+// ordering error. That is the failure mode of registering
+// leader.PGAdvisoryFromPostgres after cron.Module: the module map is
+// pre-populated, Elector() is still nil, and silently running
+// unguarded would execute scheduled jobs on every replica.
+func lookupElector(mc app.ModuleContext) (electorLike, bool, error) {
+	m := mc.LookupModule(app.LeaderModuleName)
 	if m == nil {
-		return nil, false
+		return nil, false, nil
 	}
 	ep, ok := m.(app.ElectorProvider)
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	e := ep.Elector()
 	if e == nil {
-		return nil, false
+		return nil, false, fmt.Errorf(
+			"app/cron: %q module is registered but Elector() is nil — register the leader module before cron so its Init runs first (or omit leader if unguarded cron on every replica is intentional)",
+			app.LeaderModuleName,
+		)
 	}
-	return e, true
+	return e, true, nil
 }
 
 // electorLike is a tiny structural mirror over

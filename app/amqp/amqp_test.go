@@ -185,3 +185,30 @@ func TestModule_LoopbackPlaintext_NotSetForProviderOnly(t *testing.T) {
 	assert.False(t, m.allowPlaintext,
 		"provider-only construction has no static URL to apply the loopback heuristic to")
 }
+
+// TestModule_LoopbackStaticURL_NotExemptWhenURLProviderPresent pins the
+// review finding: a leftover amqp://localhost static URL must not set
+// allowPlaintext when WithURLProvider is also supplied (the static URL
+// is ignored at dial time, so the exemption would silently cover any
+// non-loopback amqp:// URL the provider returns).
+func TestModule_LoopbackStaticURL_NotExemptWhenURLProviderPresent(t *testing.T) {
+	provider := func(context.Context) (string, error) {
+		return "amqp://rabbit.prod.internal:5672/", nil
+	}
+	m := Module("amqp://localhost:5672", WithURLProvider(provider)).(*messagingModule)
+	assert.False(t, m.allowPlaintext,
+		"static loopback URL must not mint a global plaintext exemption when a URL provider is present")
+	assert.NotNil(t, m.urlProvider)
+}
+
+// TestModule_StaticURLTransportCheck_SkippedWithProvider confirms that
+// a non-loopback static amqp:// URL is ignored (not panicking) when a
+// provider is supplied — the static URL is not used for dials.
+func TestModule_StaticURLTransportCheck_SkippedWithProvider(t *testing.T) {
+	provider := func(context.Context) (string, error) {
+		return "amqps://rabbit.prod.internal:5671/", nil
+	}
+	assert.NotPanics(t, func() {
+		_ = Module("amqp://rabbit.prod.example:5672", WithURLProvider(provider))
+	})
+}

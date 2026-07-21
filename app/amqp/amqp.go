@@ -105,7 +105,12 @@ func Module(amqpURL string, opts ...Option) app.Module {
 	if amqpURL == "" && mc.urlProvider == nil {
 		panic("amqp: Module requires a non-empty URL or WithURLProvider")
 	}
-	if amqpURL != "" && !mc.allowPlaintext {
+	// When a URL provider is supplied the static URL is ignored at dial
+	// time (see WithURLProvider). Skip static-URL transport-safety and
+	// the loopback plaintext exemption so a leftover "amqp://localhost"
+	// default cannot mint a global WithoutTLS that would also cover
+	// provider-returned non-loopback amqp:// URLs.
+	if amqpURL != "" && !mc.allowPlaintext && mc.urlProvider == nil {
 		enforceTransportSafety(amqpURL)
 		// The construction check above lets loopback amqp:// URLs through
 		// (local-dev fixtures "bypass the check"). The backend dial path

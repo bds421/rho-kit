@@ -70,11 +70,19 @@ func Module(slos ...slo.SLO) app.Module {
 	return ModuleWith(nil, slos...)
 }
 
+// ModuleOpts is the kit-conventional constructor: required SLOs as a
+// slice, then variadic [Option]s (mirrors postgres.Module(cfg, opts...),
+// amqp.Module(url, opts...), …). Prefer this over [ModuleWith].
+//
+// Panics if no SLOs are supplied, or if any option is nil.
+func ModuleOpts(slos []slo.SLO, opts ...Option) app.Module {
+	return ModuleWith(opts, slos...)
+}
+
 // ModuleWith returns an [app.Module] that wires SLO monitoring,
-// applying the supplied [Option]s. It behaves like [Module] but lets
-// callers override the [prometheus.Gatherer] via [WithGatherer]. The
-// SLO list is copied at construction time so later mutation of the
-// slice has no effect.
+// applying the supplied [Option]s. Prefer [ModuleOpts] for the
+// kit-wide required-then-variadic-options shape; this form keeps the
+// historical opts-slice-first signature for existing callers.
 //
 // Panics if no SLOs are supplied, or if any option is nil.
 func ModuleWith(opts []Option, slos ...slo.SLO) app.Module {

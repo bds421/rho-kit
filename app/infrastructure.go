@@ -152,8 +152,12 @@ func HTTPClient(infra Infrastructure) *http.Client {
 // all function fields. Use this in tests to avoid nil-pointer panics when
 // testing RouterFunc implementations.
 func TestInfrastructure() Infrastructure {
+	// Eagerly allocate the resource store so copy-by-value safety holds
+	// even before the first SetResource (RouterFunc takes Infrastructure
+	// by value; lazy allocation on a copy would strand resources).
 	return Infrastructure{
 		Logger:             slog.Default(),
+		resources:          newResourceStore(),
 		Background:         func(_ string, _ func(ctx context.Context) error) {},
 		SetCustomReadiness: func(_ http.Handler) {},
 		AddHealthCheck:     func(_ health.DependencyCheck) {},

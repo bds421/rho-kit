@@ -702,7 +702,7 @@ func TestInitModules_DuplicateNamePanics(t *testing.T) {
 	m1 := &stubModule{name: "dup-secret-token"}
 	m2 := &stubModule{name: "dup-secret-token"}
 
-	assert.PanicsWithValue(t, "app: duplicate module name (builtin + user modules must have unique names)", func() {
+	assert.PanicsWithValue(t, "app: duplicate module name dup-secret-token (builtin + user modules must have unique names)", func() {
 		_, _ = initModules(context.Background(), []Module{m1, m2}, "test-service", logger, nil, BaseConfig{}, nil)
 	})
 }

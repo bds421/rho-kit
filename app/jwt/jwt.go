@@ -169,7 +169,7 @@ func (m *jwtModule) Init(_ context.Context, mc app.ModuleContext) error {
 	// surfaces as this actionable error rather than a panic — the
 	// builtin httpclient is always present in production, but callers
 	// driving Init via app.TestModuleContext may omit it.
-	hcm, ok := mc.LookupModule("httpclient").(app.HTTPClientProvider)
+	hcm, ok := mc.LookupModule(app.HTTPClientModuleName).(app.HTTPClientProvider)
 	if !ok {
 		return errors.New("app/jwt: httpclient module not registered or unexpected type")
 	}
@@ -189,6 +189,9 @@ func (m *jwtModule) Init(_ context.Context, mc app.ModuleContext) error {
 		opts = append(opts, jwtutil.WithExpectedAudience(m.cfg.audience))
 	} else {
 		opts = append(opts, jwtutil.WithAllowAnyAudience())
+		mc.Logger.Warn("jwt provider configured WITHOUT audience enforcement",
+			"jwks_configured", m.jwksURL != "",
+		)
 	}
 
 	m.provider = jwtutil.NewProvider(m.jwksURL, httpClient, jwtutil.CacheTTL(), opts...)

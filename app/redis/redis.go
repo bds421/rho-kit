@@ -127,7 +127,10 @@ type redisModule struct {
 	logger *slog.Logger
 }
 
-func (m *redisModule) Name() string { return "redis" }
+// ModuleName is the registered Module.Name() value.
+const ModuleName = "redis"
+
+func (m *redisModule) Name() string { return ModuleName }
 
 func (m *redisModule) Init(_ context.Context, mc app.ModuleContext) error {
 	m.logger = mc.Logger

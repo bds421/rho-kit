@@ -70,7 +70,7 @@ type pgAdvisoryModule struct {
 }
 
 func (m *pgAdvisoryModule) Init(ctx context.Context, mc app.ModuleContext) error {
-	pm := mc.LookupModule("postgres")
+	pm := mc.LookupModule(kitpostgres.ModuleName)
 	if pm == nil {
 		return fmt.Errorf("app/leader: PGAdvisoryFromPostgres requires postgres module registered before leader")
 	}

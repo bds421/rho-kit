@@ -58,7 +58,7 @@ func (s stubElector) IsLeader() bool                                          { 
 
 func TestModule_InitGatesOnLeader(t *testing.T) {
 	stub := &stubLeaderModule{
-		BaseModule: app.NewBaseModule("leader-election"),
+		BaseModule: app.NewBaseModule(app.LeaderModuleName),
 		leader:     true,
 	}
 	m := Module()
@@ -73,28 +73,30 @@ func TestModule_InitGatesOnLeader(t *testing.T) {
 	assert.NotNil(t, Scheduler(infra))
 }
 
-// nilElectorModule mimics a foreign ElectorProvider whose Elector()
-// returns a nil interface value. app/leader never does this, but a
-// third-party module registered under "leader-election" might, and
-// the lookup must degrade to unguarded rather than panic.
+// nilElectorModule mimics a leader module that is registered but has
+// not finished Init yet (Elector() still nil) — the shape of
+// leader.PGAdvisoryFromPostgres when cron is registered first.
 type nilElectorModule struct {
 	app.BaseModule
 }
 
 func (nilElectorModule) Elector() leaderelection.Elector { return nil }
 
-func TestModule_InitWithNilElectorRunsUnguarded(t *testing.T) {
-	stub := nilElectorModule{BaseModule: app.NewBaseModule("leader-election")}
+func TestModule_InitWithNilElectorFailsLoud(t *testing.T) {
+	stub := nilElectorModule{BaseModule: app.NewBaseModule(app.LeaderModuleName)}
 	m := Module()
 	mc := newMC(t, &stub, m)
 
-	// A nil Elector must not panic inside Init (the leader.IsLeader
-	// method value would otherwise dereference a nil interface).
-	require.NoError(t, m.Init(context.Background(), mc))
+	err := m.Init(context.Background(), mc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Elector() is nil")
+	assert.Contains(t, err.Error(), "register the leader module before cron")
+}
 
-	infra := app.Infrastructure{}
-	m.Populate(&infra)
-	assert.NotNil(t, Scheduler(infra))
+func TestModule_InitUsesLeaderModuleNameConstant(t *testing.T) {
+	// Pin the well-known name so a rename of app.LeaderModuleName without
+	// updating app/leader.ModuleName would fail this cross-package contract.
+	assert.Equal(t, "leader-election", app.LeaderModuleName)
 }
 
 func TestScheduler_NilWhenNotRegistered(t *testing.T) {

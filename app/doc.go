@@ -35,6 +35,8 @@
 //
 // Light primitives (JWT/PASETO, signed requests, multi-tenant middleware,
 // rate limiting, storage, audit log, cron, leader election, feature flags,
-// SLO, action log, approval store, authz decider) stay on the Builder
-// directly because their dep weight is bounded.
+// SLO, action log, approval store, authz decider) are also bridge modules
+// under app/<name> — register them with [Builder.With] the same way as
+// postgres/redis. Their dep weight is small, but keeping them out of the
+// app/v2 root still avoids pulling optional packages into every service.
 package app

@@ -12,18 +12,21 @@
 //     reach for it via [KeyedLimiter] inside their RouterFunc and
 //     wrap routes individually.
 //
-// Both modules satisfy the [app.RateLimitDeclarer] capability so
-// the always-on Builder validator counts them as an explicit
-// "yes, we ARE rate-limiting" declaration.
+// Only [IP] satisfies the [app.RateLimitDeclarer] capability: it
+// auto-installs mux-wide middleware. [Keyed] publishes a limiter for
+// per-route use but does NOT count as a rate-limit declaration —
+// Keyed-only services must also register [IP] or call
+// [app.Builder.WithoutRateLimit] so the un-throttled public mux is an
+// affirmative choice.
 //
-// The kit insists on an explicit choice: register [IP]
-// and/or [Keyed], or call [app.Builder.WithoutRateLimit]
-// to acknowledge the un-throttled posture. Builder.Validate
-// rejects any third option.
+// The kit insists on an explicit choice: register [IP], or call
+// [app.Builder.WithoutRateLimit] to acknowledge the un-throttled
+// posture. Builder.Validate rejects any third option.
 package ratelimit
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/bds421/rho-kit/app/v2"
@@ -43,42 +46,88 @@ const (
 	// under which every [Keyed] cooperatively appends its
 	// limiter. The value is a map[string]*mwrl.KeyedLimiter.
 	ResourceKeyedMapKey = "github.com/bds421/rho-kit/app/ratelimit.keyed"
+
+	// ModuleNameIP is the registered Name() for [IP].
+	ModuleNameIP = "ratelimit-ip"
+	// ModuleNameKeyedPrefix is the Name() prefix for [Keyed] modules
+	// (full name is ModuleNameKeyedPrefix + name).
+	ModuleNameKeyedPrefix = "ratelimit-keyed-"
 )
+
+// Option configures an [IP] module before Builder.Run executes it.
+type Option func(*ipModule)
+
+// WithTrustedProxies forwards CIDRs to the underlying IP limiter so
+// X-Forwarded-For / X-Real-IP from those proxies are used for bucketing.
+// Without this option the limiter trusts loopback only — behind a
+// non-loopback load balancer every client collapses into one bucket.
+//
+// Panics if any CIDR is invalid (same contract as
+// [mwrl.WithTrustedProxies]).
+func WithTrustedProxies(cidrs []string) Option {
+	// Validate eagerly so misconfiguration panics at Module construction
+	// rather than deep inside Init.
+	_ = mwrl.WithTrustedProxies(cidrs)
+	cloned := append([]string(nil), cidrs...)
+	return func(m *ipModule) {
+		m.trustedProxies = cloned
+	}
+}
 
 // IP returns an [app.Module] that registers a per-IP rate
 // limiter, attaches its sweeper to the lifecycle runner, and
 // contributes [mwrl.Middleware] at [app.PhaseRateLimit] so the
 // public mux is auto-protected.
 //
-// Panics if requests <= 0 or window <= 0.
-func IP(requests int, window time.Duration) app.Module {
+// Pass [WithTrustedProxies] when the service sits behind a non-loopback
+// ingress so per-client XFF attribution works.
+//
+// Panics if requests <= 0 or window <= 0, or if an option is nil /
+// invalid.
+func IP(requests int, window time.Duration, opts ...Option) app.Module {
 	if requests <= 0 {
 		panic("app/ratelimit: IP requires a positive request limit")
 	}
 	if window <= 0 {
 		panic("app/ratelimit: IP requires a positive window")
 	}
-	return &ipModule{requests: requests, window: window}
+	m := &ipModule{requests: requests, window: window}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("app/ratelimit: IP option must not be nil")
+		}
+		opt(m)
+	}
+	return m
 }
 
 type ipModule struct {
-	requests int
-	window   time.Duration
+	requests       int
+	window         time.Duration
+	trustedProxies []string
 
 	limiter *mwrl.Limiter
+	// Cached so PublicMiddleware returns a stable function value across
+	// repeated reads (matches budget/tenant/signedrequest bridges).
+	publicMW func(http.Handler) http.Handler
 }
 
-func (m *ipModule) Name() string                                  { return "ratelimit-ip" }
-func (m *ipModule) DeclaresRateLimit()                            {}
-func (m *ipModule) HealthChecks() []health.DependencyCheck        { return nil }
-func (m *ipModule) Stop(_ context.Context) error                  { return nil }
+func (m *ipModule) Name() string                           { return ModuleNameIP }
+func (m *ipModule) DeclaresRateLimit()                     {}
+func (m *ipModule) HealthChecks() []health.DependencyCheck { return nil }
+func (m *ipModule) Stop(_ context.Context) error           { return nil }
 
 func (m *ipModule) Init(_ context.Context, mc app.ModuleContext) error {
 	metrics := mwrl.NewMetrics()
-	m.limiter = mwrl.NewLimiter(m.requests, m.window,
+	opts := []mwrl.LimiterOption{
 		mwrl.WithMetrics(metrics),
 		mwrl.WithLimiterName("ip"),
-	)
+	}
+	if len(m.trustedProxies) > 0 {
+		opts = append(opts, mwrl.WithTrustedProxies(m.trustedProxies))
+	}
+	m.limiter = mwrl.NewLimiter(m.requests, m.window, opts...)
+	m.publicMW = mwrl.Middleware(m.limiter)
 	mc.Runner.Add("rate-limiter-cleanup", m.limiter)
 	return nil
 }
@@ -90,12 +139,12 @@ func (m *ipModule) Populate(infra *app.Infrastructure) {
 }
 
 func (m *ipModule) PublicMiddleware() []app.PhasedMiddleware {
-	if m.limiter == nil {
+	if m.limiter == nil || m.publicMW == nil {
 		return nil
 	}
 	return []app.PhasedMiddleware{{
 		Phase: app.PhaseRateLimit,
-		Func:  mwrl.Middleware(m.limiter),
+		Func:  m.publicMW,
 	}}
 }
 
@@ -104,6 +153,10 @@ func (m *ipModule) PublicMiddleware() []app.PhasedMiddleware {
 // [IP] no middleware is auto-installed — the keyed limiter
 // is for explicit per-route use (e.g., rejecting bursty API keys
 // before the request body is read).
+//
+// Keyed alone does NOT satisfy Builder.Validate's rate-limit
+// declaration: register [IP] for mux-wide protection, or call
+// [app.Builder.WithoutRateLimit] to acknowledge the un-throttled mux.
 //
 // Multiple [Keyed] modules with distinct names are supported; the
 // underlying resource map indexes them by name. Duplicate names
@@ -135,10 +188,12 @@ type keyedModule struct {
 	limiter *mwrl.KeyedLimiter
 }
 
-func (m *keyedModule) Name() string                                  { return "ratelimit-keyed-" + m.name }
-func (m *keyedModule) DeclaresRateLimit()                            {}
-func (m *keyedModule) HealthChecks() []health.DependencyCheck        { return nil }
-func (m *keyedModule) Stop(_ context.Context) error                  { return nil }
+func (m *keyedModule) Name() string { return ModuleNameKeyedPrefix + m.name }
+
+// Keyed deliberately does NOT implement DeclaresRateLimit: it installs
+// no mux-wide middleware. Pair with [IP] or [app.Builder.WithoutRateLimit].
+func (m *keyedModule) HealthChecks() []health.DependencyCheck { return nil }
+func (m *keyedModule) Stop(_ context.Context) error           { return nil }
 
 func (m *keyedModule) Init(_ context.Context, mc app.ModuleContext) error {
 	metrics := mwrl.NewMetrics()

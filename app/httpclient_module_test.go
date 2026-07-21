@@ -14,12 +14,12 @@ import (
 )
 
 func TestHTTPClientModule_Name(t *testing.T) {
-	m := newHTTPClientModule(false)
+	m := newHTTPClientModule(false, 0)
 	assert.Equal(t, "httpclient", m.Name())
 }
 
 func TestHTTPClientModule_InitWithoutTracing(t *testing.T) {
-	m := newHTTPClientModule(false)
+	m := newHTTPClientModule(false, 0)
 	mc := testModuleContext(t)
 
 	err := m.Init(context.Background(), mc)
@@ -41,7 +41,7 @@ var _ Module = (*stubTracingProvider)(nil)
 
 func TestHTTPClientModule_InitWithTracingModule(t *testing.T) {
 	tracing := &stubTracingProvider{BaseModule: NewBaseModule("tracing"), active: true}
-	hcm := newHTTPClientModule(true)
+	hcm := newHTTPClientModule(true, 0)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	runner := lifecycle.NewRunner(logger)
@@ -58,7 +58,7 @@ func TestHTTPClientModule_InitWithTracingModule(t *testing.T) {
 }
 
 func TestHTTPClientModule_PopulateSetsFields(t *testing.T) {
-	m := newHTTPClientModule(false)
+	m := newHTTPClientModule(false, 0)
 	mc := testModuleContext(t)
 	require.NoError(t, m.Init(context.Background(), mc))
 
@@ -68,7 +68,7 @@ func TestHTTPClientModule_PopulateSetsFields(t *testing.T) {
 }
 
 func TestHTTPClientModule_ClientBeforeInit(t *testing.T) {
-	m := newHTTPClientModule(false)
+	m := newHTTPClientModule(false, 0)
 	assert.Nil(t, m.Client(), "Client should be nil before Init")
 }
 
@@ -99,7 +99,7 @@ func TestBuilder_TracingProviderInitsBeforeHTTPClient(t *testing.T) {
 	tracing := &initObservingTracing{BaseModule: NewBaseModule("tracing-stub")}
 	b := New("test", "v1", BaseConfig{}).With(tracing)
 
-	hcm := newHTTPClientModule(true) // tracingConfigured=true
+	hcm := newHTTPClientModule(true, 0) // tracingConfigured=true
 	builtinModules := []Module{hcm}
 
 	// Mirror the production ordering logic from Builder.Run: tracing

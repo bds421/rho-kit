@@ -7,6 +7,7 @@ import (
 
 	"github.com/bds421/rho-kit/app/v2"
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/security/v2/netutil"
@@ -37,6 +38,13 @@ func WithMessageSizeLimiter(l messaging.MessageSizeLimiter) Option {
 // Module returns an [app.Module] that opens and supervises a NATS
 // JetStream connection plus a default publisher. Pass to
 // [app.Builder.With].
+//
+// Transport safety (FR-073) is enforced by [natsbackend.Connect]:
+// non-TLS URLs with password/token credentials are rejected unless
+// Config.AllowInsecure is set. This mirrors app/redis and app/amqp
+// (those bridges panic at Module construction; NATS fails at Connect
+// with the same cleartext-credentials guard). Prefer tls:// / wss://
+// or an explicit AllowInsecure for local fixtures.
 //
 // Panics if cfg.URL is empty or invalid.
 func Module(cfg natsbackend.Config, opts ...Option) app.Module {
@@ -82,7 +90,10 @@ type natsModule struct {
 	messageSizeLimiter messaging.MessageSizeLimiter
 }
 
-func (m *natsModule) Name() string { return "nats" }
+// ModuleName is the registered Module.Name() value.
+const ModuleName = "nats"
+
+func (m *natsModule) Name() string { return ModuleName }
 
 func (m *natsModule) Init(ctx context.Context, mc app.ModuleContext) error {
 	m.logger = mc.Logger
@@ -118,6 +129,25 @@ func (m *natsModule) Populate(infra *app.Infrastructure) {
 	if m.publisher != nil {
 		infra.SetResource(ResourcePublisherKey, m.publisher)
 	}
+}
+
+// HealthChecks exposes NATS connectivity on /readyz so a broker outage
+// fails readiness like the amqp/redis/postgres bridges.
+func (m *natsModule) HealthChecks() []health.DependencyCheck {
+	if m == nil || m.conn == nil {
+		return nil
+	}
+	conn := m.conn
+	return []health.DependencyCheck{{
+		Name:     "nats",
+		Critical: true,
+		Check: func(_ context.Context) string {
+			if !conn.Healthy() {
+				return health.StatusUnhealthy
+			}
+			return health.StatusHealthy
+		},
+	}}
 }
 
 func (m *natsModule) Stop(ctx context.Context) error {

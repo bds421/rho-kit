@@ -97,11 +97,15 @@ type Builder struct {
 	// boot dependencies (e.g. Postgres warmup, KMS key fetch).
 	startupTimeout time.Duration
 
-	// Modules — populated by [Builder.With]. Adapter
-	// sub-packages (app/postgres, app/redis, app/amqp, app/nats, app/tracing,
-	// app/grpc) all surface as modules registered through this list, plus the
-	// jwt/paseto/httpclient/leader/slo built-ins assembled in
-	// [Builder.buildIntegrationModules].
+	// httpClientTimeout overrides the default 10s outbound client
+	// timeout used by the builtin httpclient module. Zero keeps 10s.
+	httpClientTimeout time.Duration
+
+	// Modules — populated by [Builder.With]. Adapter sub-packages
+	// (app/postgres, app/redis, app/amqp, app/nats, app/tracing, app/grpc,
+	// app/jwt, app/paseto, app/leader, app/slo, …) all surface as modules
+	// registered through this list. The only builtin assembled in
+	// [Builder.buildIntegrationModules] is the httpclient module.
 	modules []Module
 
 	// Router
@@ -180,16 +184,6 @@ func (b *Builder) Background(name string, fn func(ctx context.Context) error) *B
 	return b
 }
 
-// OnShutdown registers a hook called when SIGINT/SIGTERM is received.
-// Hooks run synchronously BEFORE any component's Stop is invoked, so
-// DB / Redis / message-broker connections are still live when hooks
-// execute. Each hook gets its own 10-second deadline; hooks that
-// exceed it are abandoned without blocking the rest of the shutdown.
-//
-// Hooks run in registration order. Use this for "publish a final
-// state" semantics: emit a goodbye message, persist last in-flight
-// work, drain external producers. Closing the actual infrastructure
-// is the Builder's job — don't manually close DB/Redis here.
 // defaultStartupTimeout caps module initialization time so a hung
 // module cannot block startup forever (FR-013). 60 seconds is a
 // generous default — tighten via [Builder.StartupTimeout] for
@@ -211,6 +205,30 @@ func (b *Builder) StartupTimeout(d time.Duration) *Builder {
 	return b
 }
 
+// WithHTTPClientTimeout overrides the default 10s timeout on the kit's
+// shared outbound *http.Client (app.HTTPClient). Use for slow upstreams
+// (file transfer, LLM APIs) that still need the TLS hot-reload and OTel
+// instrumentation the httpclient module centralizes.
+func (b *Builder) WithHTTPClientTimeout(d time.Duration) *Builder {
+	if d <= 0 {
+		panic("app: WithHTTPClientTimeout requires a positive duration")
+	}
+	b.httpClientTimeout = d
+	return b
+}
+
+// OnShutdown registers a hook called when SIGINT/SIGTERM is received.
+// Hooks run synchronously BEFORE any component's Stop is invoked, so
+// DB / Redis / message-broker connections are still live when hooks
+// execute. Each hook gets its own 10-second deadline; hooks that
+// exceed it are abandoned without blocking the rest of the shutdown.
+//
+// Hooks run in registration order. Use this for "publish a final
+// state" semantics: emit a goodbye message, persist last in-flight
+// work, drain external producers. Closing the actual infrastructure
+// is the Builder's job — don't manually close DB/Redis here.
+//
+// Panics if fn is nil.
 func (b *Builder) OnShutdown(fn func(context.Context)) *Builder {
 	if fn == nil {
 		// FR-012 [LOW]: a nil hook would otherwise panic at shutdown
@@ -231,9 +249,16 @@ func (b *Builder) OnShutdown(fn func(context.Context)) *Builder {
 // amqp091, nats.go, otelgrpc, grpc-go, openfeature, and go-paseto
 // imports for services that do not need them.
 //
-// Modules are initialized in registration order, after all built-in
-// infrastructure (JWT, HTTP client, etc.) but before the RouterFunc
-// is called.
+// Init order (see [Builder.RunContext]):
+//  1. User modules that implement [TracingProvider] (hoisted so the
+//     builtin HTTP client can observe TracingActive at its Init)
+//  2. Builtins from [Builder.buildIntegrationModules] (currently only
+//     the httpclient module)
+//  3. Remaining user modules in registration order
+//
+// Stop order is the reverse of Init. JWT, PASETO, leader election,
+// cron, flags, SLO, and storage are all app/* bridge modules registered
+// via With — they are not Builder builtins.
 //
 // Panics if module is nil, has an empty name, or has the same name
 // as a module that is already registered. These are startup-time
@@ -341,12 +366,22 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		tlsSource    netutil.CertificateSource
 		tlsReloadSrc *netutil.FilesCertificateSource
 		tlsErr       error
+		// closeReloadingTLS closes the reloading source when RunContext
+		// returns before runner.Run takes ownership via shutdown hooks.
+		closeReloadingTLS func()
 	)
+	defer func() {
+		if closeReloadingTLS != nil {
+			closeReloadingTLS()
+		}
+	}()
 	if httpCfg.reloadingTLSActive {
 		src, srcErr := b.cfg.TLS.Reloading(httpCfg.reloadingTLSOpts...)
 		if srcErr != nil {
 			return fmt.Errorf("build reloading TLS source: %w", srcErr)
 		}
+		// Own Close on early-return paths until runner.Run hands off.
+		closeReloadingTLS = func() { _ = src.Close() }
 		// Thread the same server TLS options into the reloading path so
 		// OptionalClientCertificates / future client-auth opt-outs
 		// take effect identically whether or not TLS reload is wired —
@@ -670,15 +705,21 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	}
 
 	// 14. Public server — added last so it is stopped first (reverse order).
+	// Caller server options are applied FIRST; kit hardened defaults
+	// (error log + resolved TLS / mTLS config) are applied AFTER so
+	// security-critical settings cannot be silently relaxed via
+	// app/http.WithServerOption (matches that option's godoc).
 	srvOpts := make([]httpx.ServerOption, 0, len(httpCfg.serverOpts)+2)
+	srvOpts = append(srvOpts, httpCfg.serverOpts...)
 	srvOpts = append(srvOpts, serverErrorLogOpt)
 	if serverTLS != nil {
 		srvOpts = append(srvOpts, httpx.WithTLSConfig(serverTLS))
 	}
-	srvOpts = append(srvOpts, httpCfg.serverOpts...)
 	srv := httpx.NewServer(b.cfg.Server.Addr(), httpHandler, srvOpts...)
 	runner.Add("public-server", lifecycle.NewHTTPServer(srv))
 
 	// 15. Run — signal handling, component lifecycle, graceful shutdown.
+	// Hand off reloading TLS ownership to the shutdown hook path.
+	closeReloadingTLS = nil
 	return runner.Run(ctx)
 }

@@ -15,10 +15,13 @@ import (
 // by the built-in httpclient module. Bridge modules in app/* that
 // need the kit-configured *http.Client at Init time (e.g., app/jwt
 // uses it to fetch the JWKS document) look it up via
-// `mc.Module("httpclient").(HTTPClientProvider).Client()`.
+// `mc.Module(HTTPClientModuleName).(HTTPClientProvider).Client()`.
 //
-// The kit's httpclient module is initialised before every other
-// adapter module, so the lookup always succeeds at Init time.
+// The httpclient builtin is initialised after any user
+// [TracingProvider] modules and before all other user modules, so
+// non-tracing bridges always see a ready client at Init. Modules that
+// implement TracingProvider run before httpclient and must not depend
+// on it during their own Init.
 type HTTPClientProvider interface {
 	Client() *http.Client
 }
@@ -34,6 +37,9 @@ type httpClientModule struct {
 	// whether tracing initialized successfully.
 	tracingConfigured bool
 
+	// timeout is the outbound client timeout. Zero means 10s.
+	timeout time.Duration
+
 	// initialized during Init
 	client *http.Client
 }
@@ -41,10 +47,11 @@ type httpClientModule struct {
 // newHTTPClientModule creates an HTTP client module.
 // tracingConfigured should be true when a tracing module is registered
 // (so the httpClient module can query its TracingActive state during Init).
-func newHTTPClientModule(tracingConfigured bool) *httpClientModule {
+func newHTTPClientModule(tracingConfigured bool, timeout time.Duration) *httpClientModule {
 	return &httpClientModule{
-		BaseModule:        NewBaseModule("httpclient"),
+		BaseModule:        NewBaseModule(HTTPClientModuleName),
 		tracingConfigured: tracingConfigured,
+		timeout:           timeout,
 	}
 }
 
@@ -67,21 +74,32 @@ func (m *httpClientModule) Init(_ context.Context, mc ModuleContext) error {
 
 	tracingActive := false
 	if m.tracingConfigured {
-		// Find the tracing provider module by interface satisfaction.
-		// app/tracing.Module() returns a Module whose value implements
-		// TracingProvider; app/v2 does not import OTel directly.
+		// Exactly one TracingProvider is allowed — map iteration order
+		// would otherwise make TracingActive nondeterministic.
+		var found TracingProvider
 		for _, mod := range mc.modules {
-			if tp, ok := mod.(TracingProvider); ok {
-				tracingActive = tp.TracingActive()
-				break
+			tp, ok := mod.(TracingProvider)
+			if !ok {
+				continue
 			}
+			if found != nil {
+				return fmt.Errorf("httpclient module: multiple TracingProvider modules registered; only one is allowed")
+			}
+			found = tp
+		}
+		if found != nil {
+			tracingActive = found.TracingActive()
 		}
 	}
 
+	timeout := m.timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
 	if tracingActive {
-		m.client = httpx.NewTracingHTTPClient(10*time.Second, cTLS)
+		m.client = httpx.NewTracingHTTPClient(timeout, cTLS)
 	} else {
-		m.client = httpx.NewHTTPClient(10*time.Second, cTLS)
+		m.client = httpx.NewHTTPClient(timeout, cTLS)
 	}
 
 	mc.Logger.Info("http client configured", "tracing", tracingActive)

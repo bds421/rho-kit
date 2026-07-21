@@ -88,23 +88,23 @@ func validateDependencyCheck(check health.DependencyCheck, where string) {
 }
 
 // buildIntegrationModules assembles the built-in modules the Builder always
-// runs: HTTP client (tracing-aware when an app/tracing module is registered),
-// JWT verifier (when WithJWT is set), PASETO provider (when WithPASETO is
-// set), and the leader-election driver (when WithLeaderElection is set).
+// runs. Today that is only the httpclient module (tracing-aware when an
+// app/tracing module is registered). JWT, PASETO, leader election, and
+// other adapters live in app/* bridge packages and are registered by the
+// caller via [Builder.With] — they are not assembled here.
 //
-// Adapter modules (postgres, redis, amqp, nats, tracing, grpc) are NOT built
-// here — they live in sub-packages and are registered by the caller via
-// [Builder.With]. The Builder discovers them as ordinary entries in
-// b.modules.
-//
-// Registration order: jwt depends on the httpclient module's resolved
-// *http.Client, so httpclient must initialize first.
+// Init order relative to user modules: modules implementing
+// [TracingProvider] are hoisted ahead of these builtins so the HTTP client
+// can observe TracingActive(); remaining user modules initialize after
+// builtins (see [Builder.With] and [Builder.RunContext]). Bridge modules
+// that depend on the kit *http.Client (e.g. app/jwt) must therefore not
+// implement TracingProvider, or must tolerate httpclient not being ready.
 func (b *Builder) buildIntegrationModules() []Module {
 	var modules []Module
 
 	tracingActive := b.hasTracingModule()
 
-	modules = append(modules, newHTTPClientModule(tracingActive))
+	modules = append(modules, newHTTPClientModule(tracingActive, b.httpClientTimeout))
 
 	return modules
 }

@@ -104,7 +104,10 @@ type pgxModule struct {
 	log   *slog.Logger
 }
 
-func (m *pgxModule) Name() string { return "postgres" }
+// ModuleName is the registered Module.Name() value.
+const ModuleName = "postgres"
+
+func (m *pgxModule) Name() string { return ModuleName }
 
 // SQLDB returns the stdlib database handle over the module pool. The
 // handle is created once during Init and must not be closed by callers —
@@ -142,9 +145,12 @@ func (m *pgxModule) Init(ctx context.Context, mc app.ModuleContext) error {
 
 	if m.cfg.migrationsDir != nil {
 		if err := m.runMigrations(ctx); err != nil {
+			if m.sqlDB != nil {
+				_ = m.sqlDB.Close()
+				m.sqlDB = nil
+			}
 			_ = pool.Close()
 			m.pool = nil
-			m.sqlDB = nil
 			return err
 		}
 	}
@@ -191,14 +197,32 @@ func (m *pgxModule) Populate(infra *app.Infrastructure) {
 	infra.SetResource(ResourceKey, m.pool)
 }
 
-func (m *pgxModule) Stop(_ context.Context) error {
+func (m *pgxModule) Stop(ctx context.Context) error {
 	if m == nil || m.pool == nil {
 		return nil
 	}
 	pool := m.pool
 	m.pool = nil
-	m.sqlDB = nil
-	return pool.Close()
+	if m.sqlDB != nil {
+		// Close the derived *sql.DB first so its connectionOpener goroutine
+		// exits; OpenDBFromPool sets MaxIdleConns(0) but Close is still
+		// required to release the stdlib bookkeeping.
+		_ = m.sqlDB.Close()
+		m.sqlDB = nil
+	}
+	// pool.Close blocks until acquired connections return. Bound it by
+	// the shutdown context so a stuck borrower cannot hang process exit.
+	done := make(chan struct{})
+	go func() {
+		_ = pool.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Pool returns the Postgres pool published by the [Module] under

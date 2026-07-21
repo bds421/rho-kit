@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"testing"
 
@@ -23,7 +24,7 @@ type stubHTTPClient struct {
 
 func newStubHTTPClient() *stubHTTPClient {
 	return &stubHTTPClient{
-		BaseModule: app.NewBaseModule("httpclient"),
+		BaseModule: app.NewBaseModule(app.HTTPClientModuleName),
 		client:     &http.Client{},
 	}
 }
@@ -37,7 +38,7 @@ type wrongTypeHTTPClient struct {
 }
 
 func newWrongTypeHTTPClient() *wrongTypeHTTPClient {
-	return &wrongTypeHTTPClient{BaseModule: app.NewBaseModule("httpclient")}
+	return &wrongTypeHTTPClient{BaseModule: app.NewBaseModule(app.HTTPClientModuleName)}
 }
 
 func initContext(t *testing.T, modules ...app.Module) app.ModuleContext {
@@ -137,3 +138,69 @@ func TestInit_PopulateBeforeInitPublishesNothing(t *testing.T) {
 	assert.Nil(t, Provider(infra),
 		"Populate before Init must not publish a nil provider as a resource")
 }
+
+func TestInit_WarnsOnAudienceOptOut(t *testing.T) {
+	var records []slog.Record
+	handler := &captureHandler{records: &records}
+	logger := slog.New(handler)
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	mod := Module(
+		testJWKS,
+		WithIssuer("https://idp.example.com"),
+		WithoutAudience(),
+		WithRegisterer(prometheus.NewRegistry()),
+	)
+	mc := initContext(t, newStubHTTPClient())
+	require.NoError(t, mod.Init(context.Background(), mc))
+
+	found := false
+	for _, rec := range records {
+		if rec.Message == "jwt provider configured WITHOUT audience enforcement" {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "Init must Warn when WithoutAudience is set; records=%d", len(records))
+}
+
+func TestInit_WarnsOnIssuerOptOut(t *testing.T) {
+	var records []slog.Record
+	handler := &captureHandler{records: &records}
+	logger := slog.New(handler)
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	mod := Module(
+		testJWKS,
+		WithoutIssuer(),
+		WithAudience("backend"),
+		WithRegisterer(prometheus.NewRegistry()),
+	)
+	mc := initContext(t, newStubHTTPClient())
+	require.NoError(t, mod.Init(context.Background(), mc))
+
+	found := false
+	for _, rec := range records {
+		if rec.Message == "jwt provider configured WITHOUT issuer enforcement" {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "Init must Warn when WithoutIssuer is set")
+}
+
+type captureHandler struct {
+	records *[]slog.Record
+}
+
+func (h *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	*h.records = append(*h.records, r.Clone())
+	return nil
+}
+func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(string) slog.Handler      { return h }

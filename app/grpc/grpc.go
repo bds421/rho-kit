@@ -65,6 +65,13 @@ func WithPublicHealth() Option {
 // Module returns an [app.Module] that runs a gRPC server on addr and
 // registers services via registrar. Pass to [app.Builder.With].
 //
+// Rate limiting: Builder.Validate's rate-limit declaration (ratelimit.IP)
+// covers the public HTTP listener only. This gRPC listener is a separate
+// public surface — grpcx stream caps bound concurrency per connection but
+// do not throttle request rate or connection acceptance. Operators must
+// add interceptors (or an external gateway limit) for gRPC; registering
+// ratelimit.IP alone does NOT throttle this port.
+//
 // Panics if registrar is nil or addr is empty (startup-time configuration
 // errors).
 func Module(registrar func(*grpc.Server), addr string, opts ...Option) app.Module {
@@ -111,7 +118,10 @@ type grpcModule struct {
 	stopErr  error
 }
 
-func (m *grpcModule) Name() string { return "grpc" }
+// ModuleName is the registered Module.Name() value.
+const ModuleName = "grpc"
+
+func (m *grpcModule) Name() string { return ModuleName }
 
 // SetServerTLS implements [app.ServerTLSReceiver]. The Builder hands the
 // resolved kit-level *tls.Config to this hook before Init runs so the
@@ -175,6 +185,11 @@ func (m *grpcModule) Init(_ context.Context, mc app.ModuleContext) error {
 		creds := credentials.NewTLS(m.tlsConfig)
 		opts = append([]grpcx.ServerOption{grpcx.WithGRPCServerOptions(grpc.Creds(creds))}, m.opts...)
 		mc.Logger.Info("gRPC server TLS auto-wired from kit serverTLS")
+	} else {
+		// Public gRPC without kit serverTLS is plaintext. Call this out
+		// loudly - http.WithoutTLS only documents the HTTP surface, and
+		// credentials in metadata would otherwise cross the network clear.
+		mc.Logger.Warn("gRPC server starting without transport credentials (plaintext); set TLS_CERT/TLS_KEY or supply grpc.Creds via WithGRPCServerOptions")
 	}
 
 	m.server = grpcx.NewServer(opts...)

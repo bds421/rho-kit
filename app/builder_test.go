@@ -459,3 +459,15 @@ func drainSignals() {
 	}
 	signal.Stop(ch)
 }
+
+func TestTestInfrastructure_ResourceStoreCopySafe(t *testing.T) {
+	// RouterFunc takes Infrastructure by value; SetResource on a helper
+	// copy must still be visible to the original when the store was
+	// eagerly allocated.
+	infra := TestInfrastructure()
+	copy := infra
+	copy.SetResource("test-key", "test-value")
+	v, ok := infra.Resource("test-key")
+	require.True(t, ok, "resource must be visible on original after SetResource on copy")
+	assert.Equal(t, "test-value", v)
+}

@@ -61,10 +61,10 @@ func TestIP_ImplementsRateLimitDeclarer(t *testing.T) {
 	assert.True(t, ok, "IP module must satisfy RateLimitDeclarer for the Builder gate")
 }
 
-func TestKeyed_ImplementsRateLimitDeclarer(t *testing.T) {
+func TestKeyed_DoesNotImplementRateLimitDeclarer(t *testing.T) {
 	m := Keyed("api", 10, time.Minute)
 	_, ok := m.(app.RateLimitDeclarer)
-	assert.True(t, ok)
+	assert.False(t, ok, "Keyed must NOT satisfy RateLimitDeclarer — it installs no mux-wide middleware")
 }
 
 func TestIP_InitAndPopulate(t *testing.T) {
@@ -120,4 +120,18 @@ func TestLimiters_NilWhenNotRegistered(t *testing.T) {
 	infra := app.Infrastructure{}
 	assert.Nil(t, IPLimiter(infra))
 	assert.Nil(t, KeyedLimiter(infra, "anything"))
+}
+
+func TestIP_WithTrustedProxies(t *testing.T) {
+	m := IP(100, time.Minute, WithTrustedProxies([]string{"10.0.0.0/8"}))
+	require.NoError(t, m.Init(context.Background(), newMC(t)))
+	infra := app.Infrastructure{}
+	m.Populate(&infra)
+	assert.NotNil(t, IPLimiter(infra))
+}
+
+func TestIP_WithTrustedProxies_PanicsOnInvalid(t *testing.T) {
+	assert.Panics(t, func() {
+		IP(100, time.Minute, WithTrustedProxies([]string{"not-a-cidr"}))
+	})
 }

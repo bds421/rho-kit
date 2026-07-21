@@ -74,7 +74,6 @@ func TestModule_OptionsAreApplied(t *testing.T) {
 		appapikey.WithPrefix("acme"),
 		appapikey.WithClock(func() time.Time { return now }),
 		appapikey.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
-		appapikey.WithClock(nil), // nil clock is ignored, keeps prior
 	).(interface {
 		Init(context.Context, app.ModuleContext) error
 		PublicMiddleware() []app.PhasedMiddleware
@@ -132,4 +131,10 @@ func TestModule_MiddlewareAuthenticatesRequests(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	assert.False(t, authenticated)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestWithClock_NilPanics(t *testing.T) {
+	require.PanicsWithValue(t, "app/apikey: WithClock requires a non-nil clock", func() {
+		_ = appapikey.WithClock(nil)
+	})
 }

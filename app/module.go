@@ -211,10 +211,21 @@ type MiddlewareInstaller interface {
 	PublicMiddleware() []PhasedMiddleware
 }
 
+// LeaderModuleName is the well-known [Module.Name] value used by the
+// leader-election bridge (app/leader). Cross-module lookups that must
+// not import app/leader (e.g. app/cron) use this constant so a rename
+// cannot silently desync the lookup string from the bridge.
+const LeaderModuleName = "leader-election"
+
+// HTTPClientModuleName is the well-known [Module.Name] value of the
+// always-on builtin httpclient module. Bridge modules that need the
+// kit HTTP client at Init (e.g. app/jwt) look it up by this name.
+const HTTPClientModuleName = "httpclient"
+
 // ElectorProvider is the public capability interface implemented
 // by the leader-election bridge module (app/leader). The Builder's
 // cron block looks up the elector via
-// `mc.Module(leader.ModuleName).(ElectorProvider).Elector()` so
+// `mc.Module(LeaderModuleName).(ElectorProvider).Elector()` so
 // cron can gate scheduled work to the leader replica without core
 // app/v2 importing the bridge package.
 type ElectorProvider interface {
@@ -354,9 +365,12 @@ type ModuleContext struct {
 	modules map[string]Module
 }
 
-// Module retrieves a previously initialized module by name. It panics if the
-// module is not found, which indicates a registration ordering error. This is
-// acceptable because it occurs at startup time, not at runtime.
+// Module retrieves a registered module by name. It panics if the module is
+// not found (programmer error). The returned module may not have completed
+// Init yet: initModules pre-populates the map with every registered module
+// before any Init runs so peers can read config. Callers that need
+// post-Init runtime state must use provider accessors that guard
+// initialization, or read [Infrastructure.Resource] from the RouterFunc.
 func (mc ModuleContext) Module(name string) Module {
 	m, ok := mc.modules[name]
 	if !ok {
@@ -452,7 +466,7 @@ func initModules(
 	seen := make(map[string]bool, len(modules))
 	for _, m := range modules {
 		if seen[m.Name()] {
-			panic("app: duplicate module name (builtin + user modules must have unique names)")
+			panic("app: duplicate module name " + m.Name() + " (builtin + user modules must have unique names)")
 		}
 		seen[m.Name()] = true
 	}

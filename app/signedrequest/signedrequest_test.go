@@ -19,7 +19,7 @@ func testResolver() signedrequest.KeyResolver {
 }
 
 func testStore() signedrequest.NonceStore {
-	return signedrequest.NewMemoryNonceStore(5 * time.Minute)
+	return signedrequest.NewMemoryNonceStore(10 * time.Minute)
 }
 
 func TestModule_Name(t *testing.T) {

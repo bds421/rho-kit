@@ -25,11 +25,14 @@ func WithPrefix(prefix string) Option {
 }
 
 // WithClock overrides the verification clock (defaults to time.Now).
+// Passing a nil clock panics at option-construction time (fail-fast),
+// matching the kit convention used by sibling app/* options.
 func WithClock(now func() time.Time) Option {
+	if now == nil {
+		panic("app/apikey: WithClock requires a non-nil clock")
+	}
 	return func(m *module) {
-		if now != nil {
-			m.now = now
-		}
+		m.now = now
 	}
 }
 

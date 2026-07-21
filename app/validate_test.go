@@ -120,7 +120,7 @@ func TestValidate_ValidPorts(t *testing.T) {
 
 // TestValidate_NoRateLimitDeclarationRejected pins Lens F A.5: a Builder
 // that declares no rate limiter at all must fail at Validate() with an
-// actionable error naming all three options.
+// actionable error naming IP and WithoutRateLimit.
 func TestValidate_NoRateLimitDeclarationRejected(t *testing.T) {
 	b := New("test-svc", "v0.1.0", validBaseConfig()).
 		With(allowPlaintextOnly())
@@ -128,7 +128,7 @@ func TestValidate_NoRateLimitDeclarationRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no rate-limit declaration is present")
 	}
-	for _, want := range []string{"ratelimit.IP", "ratelimit.Keyed", "WithoutRateLimit"} {
+	for _, want := range []string{"ratelimit.IP", "WithoutRateLimit"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("rate-limit error must name %q (got: %v)", want, err)
 		}
@@ -144,8 +144,8 @@ func (fakeRateLimitDeclarer) DeclaresRateLimit() {}
 
 // TestValidate_RateLimitDeclarerSatisfiesGate confirms that any
 // module implementing RateLimitDeclarer satisfies the gate — the
-// real-world implementations (app/ratelimit.IP,
-// app/ratelimit.Keyed) get their own tests in that package.
+// real-world implementation (app/ratelimit.IP) gets its own tests
+// in that package. Keyed deliberately does NOT declare rate limit.
 func TestValidate_RateLimitDeclarerSatisfiesGate(t *testing.T) {
 	b := New("test-svc", "v0.1.0", validBaseConfig()).
 		With(allowPlaintextOnly()).

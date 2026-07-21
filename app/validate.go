@@ -2,6 +2,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -28,11 +29,10 @@ import (
 // resolve to the IPv6 wildcard at listen time, so they're flagged
 // as non-loopback.
 //
-// net.ResolveTCPAddr does NOT do DNS lookup for numeric host
-// strings; it only invokes the resolver when the input is a
-// hostname, in which case the validator (run once at boot) is the
-// right place to do it — a hostname that resolves to a non-loopback
-// IS exposing /metrics on the network and should be flagged.
+// Numeric hosts are checked via net.ParseIP (no DNS). Hostnames are
+// resolved with LookupIPAddr and every returned address must be
+// loopback — a multi-A record that mixes loopback with a routable
+// address fails closed (FR-010).
 func isLoopbackHost(host string) bool {
 	if host == "" {
 		// Empty defaults to 127.0.0.1 in the listener config.
@@ -51,13 +51,23 @@ func isLoopbackHost(host string) bool {
 		// default validator rejects it.
 		return false
 	}
-	addr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(stripped, "0"))
-	if err != nil {
-		// Resolution failed (typo, unresolvable hostname) — fail
-		// closed: not provably loopback.
+	// Numeric IP literal: no DNS, single-address check.
+	if ip := net.ParseIP(stripped); ip != nil {
+		return ip.IsLoopback()
+	}
+	// Hostname: require EVERY resolved address to be loopback so a
+	// multi-A record (loopback + routable) cannot pass the FR-010
+	// guard when Listen later binds the routable address.
+	ips, err := net.DefaultResolver.LookupIPAddr(context.Background(), stripped)
+	if err != nil || len(ips) == 0 {
 		return false
 	}
-	return addr.IP != nil && addr.IP.IsLoopback()
+	for _, a := range ips {
+		if a.IP == nil || !a.IP.IsLoopback() {
+			return false
+		}
+	}
+	return true
 }
 
 // Validate checks for common configuration mistakes before startup.
@@ -135,7 +145,7 @@ func (b *Builder) validateProductionSafety() error {
 	// WithIPRateLimit, WithKeyedRateLimit, or the explicit
 	// WithoutRateLimit opt-out for traffic-bounded services.
 	if !b.hasRateLimitDeclaration() && !b.allowNoRateLimit {
-		return fmt.Errorf("rate limiting must be declared explicitly: register a ratelimit.IP / ratelimit.Keyed from app/ratelimit, or call WithoutRateLimit for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker)")
+		return fmt.Errorf("rate limiting must be declared explicitly: register ratelimit.IP from app/ratelimit (mux-wide), or call WithoutRateLimit for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker). Note: ratelimit.Keyed alone does not satisfy this gate — it installs no public-mux middleware")
 	}
 
 	// C-1 + FR-010 [HIGH]: the internal ops port exposes /metrics,
