@@ -30,16 +30,22 @@ var (
 	ErrShortRoot = errors.New("session: root key must be at least 32 bytes")
 	// ErrInvalidToken is returned for malformed or wrongly signed tokens.
 	ErrInvalidToken = errors.New("session: invalid token")
+	// ErrInvalidClaims is returned by [HMACSigner.Mint] when required claim
+	// fields are missing (empty UserID/Tenant or zero Exp).
+	ErrInvalidClaims = errors.New("session: invalid claims")
 	// ErrExpired is returned when the token exp claim is in the past.
 	ErrExpired = errors.New("session: token expired")
 	// ErrSessionRevoked is returned when ver no longer matches the store.
 	ErrSessionRevoked = errors.New("session: session revoked")
+	// ErrValidatorNotConfigured is returned by [Validator.Validate] when
+	// Signer is nil — a wiring bug, not a bad token.
+	ErrValidatorNotConfigured = errors.New("session: validator has no Signer")
 )
 
 const (
-	minRootLen   = 32
+	minRootLen    = 32
 	derivedKeyLen = 32
-	maxTokenLen  = 4096
+	maxTokenLen   = 4096
 )
 
 // Claims are the session token fields carried on the wire and returned
@@ -101,8 +107,9 @@ type HMACSigner struct {
 // SignerOption configures [NewSigner].
 type SignerOption func(*HMACSigner)
 
-// WithClock overrides the time source used by [Validator] helpers; the
-// signer itself does not call now — Verify receives now from the caller.
+// WithClock overrides the time source used when [HMACSigner.Verify] is
+// called with a zero now (and by any helper that falls back to the
+// signer's clock). Callers that pass an explicit now are unaffected.
 func WithClock(now clock.Func) SignerOption {
 	if now == nil {
 		panic("session: WithClock requires a non-nil time source")
@@ -127,12 +134,14 @@ func NewSigner(root []byte, label string, opts ...SignerOption) (*HMACSigner, er
 }
 
 // Mint returns a signed token for claims. Exp must be set by the caller.
+// Missing required fields return [ErrInvalidClaims]; verification failures
+// continue to use [ErrInvalidToken].
 func (s *HMACSigner) Mint(claims Claims) (string, error) {
 	if claims.UserID == "" || claims.Tenant == "" {
-		return "", ErrInvalidToken
+		return "", ErrInvalidClaims
 	}
 	if claims.Exp.IsZero() {
-		return "", ErrInvalidToken
+		return "", ErrInvalidClaims
 	}
 	w := wireClaims{
 		UserID:       claims.UserID,
@@ -151,7 +160,20 @@ func (s *HMACSigner) Mint(claims Claims) (string, error) {
 }
 
 // Verify checks the token signature and exp claim.
+// When now is the zero time, the signer's clock (see [WithClock],
+// defaulting to time.Now) is used so production call sites can omit an
+// explicit clock while tests inject a fixed one.
 func (s *HMACSigner) Verify(token string, now time.Time) (Claims, error) {
+	if s == nil {
+		return Claims{}, ErrInvalidToken
+	}
+	if now.IsZero() {
+		clockFn := s.now
+		if clockFn == nil {
+			clockFn = time.Now
+		}
+		now = clockFn()
+	}
 	if len(token) > maxTokenLen {
 		return Claims{}, ErrInvalidToken
 	}
@@ -206,8 +228,8 @@ type Validator struct {
 // Validate verifies the token and, when Store is set, checks token version
 // and refreshes Role from the database.
 func (v *Validator) Validate(ctx context.Context, token string, now time.Time) (Claims, error) {
-	if v.Signer == nil {
-		return Claims{}, ErrInvalidToken
+	if v == nil || v.Signer == nil {
+		return Claims{}, ErrValidatorNotConfigured
 	}
 	claims, err := v.Signer.Verify(token, now)
 	if err != nil {

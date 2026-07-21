@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -32,6 +34,11 @@ type fakeIssuer struct {
 
 	mu    sync.Mutex
 	codes map[string]codeRecord
+
+	// tokenHandler, when non-nil, replaces the default /token handler
+	// body. Tests use it to serve malicious/malformed token responses
+	// without mutating the client's OAuth2Config (which returns a copy).
+	tokenHandler http.HandlerFunc
 }
 
 type codeRecord struct {
@@ -92,6 +99,10 @@ func newFakeIssuer(t *testing.T, clientID string) *fakeIssuer {
 		http.Redirect(w, r, u.String(), http.StatusFound)
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		if f.tokenHandler != nil {
+			f.tokenHandler(w, r)
+			return
+		}
 		_ = r.ParseForm()
 		code := r.FormValue("code")
 		f.mu.Lock()
@@ -257,6 +268,7 @@ func TestHandlers_EndToEndCallbackSetsSession(t *testing.T) {
 	loginResp, err := httpc.Get(appSrv.URL + "/oauth/login")
 	require.NoError(t, err)
 	defer func() { _ = loginResp.Body.Close() }()
+	loginCookies := loginResp.Cookies()
 	authURL, err := url.Parse(loginResp.Header.Get("Location"))
 	require.NoError(t, err)
 	state := authURL.Query().Get("state")
@@ -268,9 +280,12 @@ func TestHandlers_EndToEndCallbackSetsSession(t *testing.T) {
 	require.Equal(t, http.StatusFound, authResp.StatusCode)
 
 	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=code-"+state+"&state="+state, nil)
+	for _, ck := range loginCookies {
+		cbReq.AddCookie(ck)
+	}
 	cbResp := httptest.NewRecorder()
 	mux.ServeHTTP(cbResp, cbReq)
-	require.Equal(t, http.StatusNoContent, cbResp.Code, "callback: %s", cbResp.Body.String())
+	require.Equal(t, http.StatusOK, cbResp.Code, "callback: %s", cbResp.Body.String())
 
 	cookies := cbResp.Result().Cookies()
 	require.NotEmpty(t, cookies)
@@ -427,6 +442,13 @@ func TestHandlers_CallbackCtxCancelDuringExchange(t *testing.T) {
 	handler := client.Handlers()
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=c1&state=s1", nil).WithContext(ctx)
+	// Browser-bound CSRF cookie required alongside server-side state.
+	// Hash must match production stateBindingValue (sha256 of state, raw URL-base64).
+	sum := sha256.Sum256([]byte("s1"))
+	req.AddCookie(&http.Cookie{
+		Name:  "kit_oauth_session_state",
+		Value: base64.RawURLEncoding.EncodeToString(sum[:]),
+	})
 	rec := httptest.NewRecorder()
 
 	done := make(chan struct{})
@@ -444,7 +466,7 @@ func TestHandlers_CallbackCtxCancelDuringExchange(t *testing.T) {
 		t.Fatalf("handler did not return after ctx cancel — exchange likely ignored ctx")
 	}
 
-	require.NotEqual(t, http.StatusNoContent, rec.Code,
+	require.NotEqual(t, http.StatusOK, rec.Code,
 		"successful callback should be impossible when exchange was cancelled")
 	for _, ck := range rec.Result().Cookies() {
 		require.NotEqual(t, "kit_oauth_session", ck.Name,
@@ -470,4 +492,165 @@ func TestMemoryStateStore_Expiry(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	_, err = s.Get(context.Background(), "k")
 	require.ErrorIs(t, err, oauth2.ErrStateNotFound)
+}
+
+// TestHandlers_CallbackRejectsMissingStateCookie pins the browser-bound
+// CSRF cookie: a callback with a valid server-side state but no cookie
+// from the initiating browser must fail closed with 400.
+func TestHandlers_CallbackRejectsMissingStateCookie(t *testing.T) {
+	issuer := newFakeIssuer(t, "test-client")
+	stateStore := oauth2.NewMemoryStateStore()
+	client, err := oauth2.NewClient(context.Background(),
+		oauth2.Config{
+			Issuer: issuer.server.URL, ClientID: "test-client",
+			RedirectURL: "https://app/cb",
+		},
+		oauth2.WithSessionStore(oauth2.NewMemorySessionStore()),
+		oauth2.WithStateStore(stateStore),
+		oauth2.WithInsecureCookie(),
+	)
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/", client.Handlers())
+
+	// Drive /login so a real state lands in the store (and would have
+	// set a cookie on a real browser — we deliberately drop it).
+	httpc := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	appSrv := httptest.NewServer(mux)
+	defer appSrv.Close()
+	loginResp, err := httpc.Get(appSrv.URL + "/oauth/login")
+	require.NoError(t, err)
+	defer func() { _ = loginResp.Body.Close() }()
+	authURL, err := url.Parse(loginResp.Header.Get("Location"))
+	require.NoError(t, err)
+	state := authURL.Query().Get("state")
+	require.NotEmpty(t, state)
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=c&state="+state, nil)
+	// Intentionally no state cookie.
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.True(t, strings.Contains(rec.Body.String(), "state mismatch"), "body: %s", rec.Body.String())
+}
+
+// TestHandlers_CallbackRejectsWrongStateCookie pins cookie/query
+// binding: a cookie for a different state must not authorize the
+// callback even when the query state exists server-side.
+func TestHandlers_CallbackRejectsWrongStateCookie(t *testing.T) {
+	issuer := newFakeIssuer(t, "test-client")
+	client, err := oauth2.NewClient(context.Background(),
+		oauth2.Config{
+			Issuer: issuer.server.URL, ClientID: "test-client",
+			RedirectURL: "https://app/cb",
+		},
+		oauth2.WithSessionStore(oauth2.NewMemorySessionStore()),
+		oauth2.WithStateStore(oauth2.NewMemoryStateStore()),
+		oauth2.WithInsecureCookie(),
+	)
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/", client.Handlers())
+	appSrv := httptest.NewServer(mux)
+	defer appSrv.Close()
+
+	httpc := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	loginResp, err := httpc.Get(appSrv.URL + "/oauth/login")
+	require.NoError(t, err)
+	defer func() { _ = loginResp.Body.Close() }()
+	authURL, err := url.Parse(loginResp.Header.Get("Location"))
+	require.NoError(t, err)
+	state := authURL.Query().Get("state")
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=c&state="+state, nil)
+	// Present a cookie, but bind it to the wrong state value.
+	req.AddCookie(&http.Cookie{Name: "kit_oauth_session_state", Value: "not-the-binding-hash"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.True(t, strings.Contains(rec.Body.String(), "state mismatch"), "body: %s", rec.Body.String())
+}
+
+// failingStateStore returns a non-NotFound error from Get so the
+// callback can distinguish infra outages from CSRF mismatches.
+type failingStateStore struct {
+	put oauth2.StateStore
+}
+
+func (f *failingStateStore) Put(ctx context.Context, state string, entry oauth2.StateEntry, ttl time.Duration) error {
+	return f.put.Put(ctx, state, entry, ttl)
+}
+func (f *failingStateStore) Get(ctx context.Context, state string) (oauth2.StateEntry, error) {
+	return oauth2.StateEntry{}, fmt.Errorf("redis: connection refused")
+}
+func (f *failingStateStore) Delete(ctx context.Context, state string) error {
+	return nil
+}
+
+// TestHandlers_CallbackStateStoreInfraErrorReturns503 pins the
+// review finding: StateStore failures that are not ErrStateNotFound
+// must surface as 503 (infra), not 400 (CSRF-shaped).
+func TestHandlers_CallbackStateStoreInfraErrorReturns503(t *testing.T) {
+	issuer := newFakeIssuer(t, "test-client")
+	inner := oauth2.NewMemoryStateStore()
+	client, err := oauth2.NewClient(context.Background(),
+		oauth2.Config{
+			Issuer: issuer.server.URL, ClientID: "test-client",
+			RedirectURL: "https://app/cb",
+		},
+		oauth2.WithSessionStore(oauth2.NewMemorySessionStore()),
+		oauth2.WithStateStore(&failingStateStore{put: inner}),
+		oauth2.WithInsecureCookie(),
+	)
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/", client.Handlers())
+	appSrv := httptest.NewServer(mux)
+	defer appSrv.Close()
+
+	httpc := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	loginResp, err := httpc.Get(appSrv.URL + "/oauth/login")
+	require.NoError(t, err)
+	defer func() { _ = loginResp.Body.Close() }()
+	loginCookies := loginResp.Cookies()
+	authURL, err := url.Parse(loginResp.Header.Get("Location"))
+	require.NoError(t, err)
+	state := authURL.Query().Get("state")
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=c&state="+state, nil)
+	for _, ck := range loginCookies {
+		req.AddCookie(ck)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "body: %s", rec.Body.String())
+	require.True(t, strings.Contains(rec.Body.String(), "state store unavailable"), "body: %s", rec.Body.String())
+}
+
+func TestOAuth2Config_ReturnsCopy(t *testing.T) {
+	issuer := newFakeIssuer(t, "test-client")
+	client, err := oauth2.NewClient(context.Background(),
+		oauth2.Config{
+			Issuer: issuer.server.URL, ClientID: "test-client",
+			RedirectURL: "https://app/cb",
+		},
+		oauth2.WithSessionStore(oauth2.NewMemorySessionStore()),
+		oauth2.WithStateStore(oauth2.NewMemoryStateStore()),
+		oauth2.WithInsecureCookie(),
+	)
+	require.NoError(t, err)
+	cfg := client.OAuth2Config()
+	require.NotNil(t, cfg)
+	orig := cfg.ClientID
+	cfg.ClientID = "mutated"
+	cfg.RedirectURL = "https://evil.example/cb"
+	cfg2 := client.OAuth2Config()
+	require.Equal(t, orig, cfg2.ClientID, "mutation of returned config must not affect client")
+	require.NotEqual(t, "https://evil.example/cb", cfg2.RedirectURL)
 }

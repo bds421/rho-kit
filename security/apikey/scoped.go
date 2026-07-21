@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
@@ -60,6 +61,11 @@ type Principal struct {
 	Scopes []string
 	Kind   ScopedKind
 	KeyID  string
+	// NeedsRehash is true when the stored hash should be upgraded to the
+	// current [WithScopedHashTarget] argon2id policy (legacy bcrypt match,
+	// or argon2id params below target). Callers persist a fresh hash via
+	// their PrefixRepository when this is set.
+	NeedsRehash bool
 }
 
 // PrefixRepository looks up active scoped keys by their O(1) prefix column.
@@ -232,12 +238,13 @@ func (r *ScopedResolver) Resolve(ctx context.Context, presented string) (Princip
 		subject = norm
 	}
 	return Principal{
-		UserID: subject,
-		Tenant: key.Tenant,
-		Role:   key.Role,
-		Scopes: cloneScopes(key.Scopes),
-		Kind:   key.Kind,
-		KeyID:  key.ID,
+		UserID:      subject,
+		Tenant:      key.Tenant,
+		Role:        key.Role,
+		Scopes:      cloneScopes(key.Scopes),
+		Kind:        key.Kind,
+		KeyID:       key.ID,
+		NeedsRehash: res.NeedsRehash,
 	}, nil
 }
 
@@ -260,7 +267,10 @@ func parseScopedToken(token, prefix string) (lookupPrefix, secret string, err er
 }
 
 // MemoryPrefixRepository is an in-memory [PrefixRepository] for tests.
+// Safe for concurrent use; ActiveByPrefix returns a defensive clone so
+// callers cannot mutate the stored Scopes/Hash slices.
 type MemoryPrefixRepository struct {
+	mu   sync.RWMutex
 	keys map[string]ScopedKey
 }
 
@@ -274,18 +284,33 @@ func (r *MemoryPrefixRepository) InsertScoped(_ context.Context, key ScopedKey) 
 	if key.Prefix == "" {
 		return fmt.Errorf("apikey: scoped key requires prefix")
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, exists := r.keys[key.Prefix]; exists {
 		return apperror.NewConflict("apikey: scoped key prefix already exists")
 	}
-	r.keys[key.Prefix] = key
+	r.keys[key.Prefix] = cloneScopedKey(key)
 	return nil
 }
 
 // ActiveByPrefix implements [PrefixRepository].
 func (r *MemoryPrefixRepository) ActiveByPrefix(_ context.Context, prefix string) (ScopedKey, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	key, ok := r.keys[prefix]
 	if !ok {
 		return ScopedKey{}, ErrScopedNotFound
 	}
-	return key, nil
+	return cloneScopedKey(key), nil
+}
+
+func cloneScopedKey(k ScopedKey) ScopedKey {
+	out := k
+	if k.Scopes != nil {
+		out.Scopes = append([]string(nil), k.Scopes...)
+	}
+	if k.Hash != nil {
+		out.Hash = append([]byte(nil), k.Hash...)
+	}
+	return out
 }

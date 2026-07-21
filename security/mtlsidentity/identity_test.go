@@ -17,6 +17,7 @@ func TestNormalizeSAN(t *testing.T) {
 		{name: "empty", input: "  ", wantOK: false},
 		{name: "dns", input: "SVC-A.Internal", wantKind: SANDNS, wantValue: "svc-a.internal", wantOK: true},
 		{name: "uri", input: "spiffe://example.org/svc-a", wantKind: SANURI, wantValue: "spiffe://example.org/svc-a", wantOK: true},
+		{name: "uri case normalize", input: "SPIFFE://Example.ORG/svc-A", wantKind: SANURI, wantValue: "spiffe://example.org/svc-A", wantOK: true},
 		{name: "unsafe", input: "svc\nname", wantErr: ErrInvalidSAN},
 		{name: "invalid dns", input: "svc_name.internal", wantErr: ErrInvalidDNSSAN},
 		{name: "invalid uri", input: "spiffe://example.org/%zz?token=secret-token", wantErr: ErrInvalidURISAN},

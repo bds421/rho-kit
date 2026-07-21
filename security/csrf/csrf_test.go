@@ -322,3 +322,9 @@ func invalidSessionIDs() map[string]string {
 		"over max":        strings.Repeat("a", MaxSessionIDLen+1),
 	}
 }
+
+func TestNewIssuer_RejectsSubSecondTTL(t *testing.T) {
+	_, err := NewIssuer(make([]byte, 32), WithTTL(500*time.Millisecond))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "1s")
+}

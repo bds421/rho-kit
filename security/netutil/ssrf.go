@@ -212,6 +212,8 @@ var privateIPv6Ranges = func() []net.IPNet {
 		"3fff::/20",      // Documentation (RFC 9637)
 		"5f00::/16",      // SRv6 SIDs, not globally reachable (RFC 9602)
 		"::ffff:0:0/96",  // IPv4-mapped — To4() converts these to IPv4 first, so the IPv4 ranges catch them; this entry is defense-in-depth for implementations that skip To4()
+		"::/96",          // Deprecated IPv4-compatible (RFC 4291); defense-in-depth alongside mapped form
+		"fec0::/10",      // Deprecated site-local (RFC 3879); still appears on legacy networks
 	}
 	nets := make([]net.IPNet, 0, len(cidrs))
 	for _, c := range cidrs {

@@ -155,8 +155,12 @@ func (c TLSConfig) ServerTLS(opts ...ServerTLSOption) (*tls.Config, error) {
 		}
 		opt(&o)
 	}
-	if !c.Enabled() {
+	set, missing := tlsConfigStatus(c)
+	if len(set) == 0 {
 		return nil, nil
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("netutil: partial TLS configuration — set fields %v but missing %v; either set all of TLS_CA_CERT, TLS_CERT, TLS_KEY or none", set, missing)
 	}
 
 	cert, caPool, err := c.loadCertAndCA()
@@ -179,10 +183,16 @@ func (c TLSConfig) ServerTLS(opts ...ServerTLSOption) (*tls.Config, error) {
 
 // ClientTLS returns a *tls.Config for an HTTP/AMQP/SQL client that
 // presents a client certificate and verifies the server against the CA.
-// Returns nil if TLS is not enabled.
+// Returns nil if TLS is not enabled. Partial configuration (some but not
+// all of CACert/Cert/Key set) returns an error rather than failing open
+// to plaintext — matching [TLSConfig.Validate].
 func (c TLSConfig) ClientTLS() (*tls.Config, error) {
-	if !c.Enabled() {
+	set, missing := tlsConfigStatus(c)
+	if len(set) == 0 {
 		return nil, nil
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("netutil: partial TLS configuration — set fields %v but missing %v; either set all of TLS_CA_CERT, TLS_CERT, TLS_KEY or none", set, missing)
 	}
 
 	cert, caPool, err := c.loadCertAndCA()

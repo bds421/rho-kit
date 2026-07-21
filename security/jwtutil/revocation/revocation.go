@@ -96,13 +96,13 @@ type ActorFromContext func(ctx context.Context) string
 
 // Store records revoked JWT IDs until the token's natural expiration.
 type Store struct {
-	cache    Cache
-	prefix   string
-	clock    clock.Func
-	logger   *slog.Logger
-	audit    AuditSink
-	actorFn  ActorFromContext
-	verbose  bool
+	cache   Cache
+	prefix  string
+	clock   clock.Func
+	logger  *slog.Logger
+	audit   AuditSink
+	actorFn ActorFromContext
+	verbose bool
 }
 
 // Option configures Store.
@@ -223,10 +223,10 @@ func (s *Store) revokeID(ctx context.Context, issuer, id string, expiresAt time.
 	if err != nil {
 		return err
 	}
-	ttl := time.Until(expiresAt)
-	if s.clock != nil {
-		ttl = expiresAt.Sub(s.clock())
-	}
+	// New always installs a non-nil clock (default time.Now); always
+	// use it so tests with WithClock stay deterministic and we never
+	// mix wall Until with an injected clock.
+	ttl := expiresAt.Sub(s.clock())
 	if ttl <= 0 {
 		return ErrInvalidExpiry
 	}
@@ -298,7 +298,13 @@ func (s *Store) emit(ctx context.Context, action, issuer, id string, err error) 
 	resource := identifierResource(issuer, id)
 
 	if s.logger != nil {
-		s.logger.Info("jwt revocation",
+		// Success stays at Info (operator triage); failures use Error so
+		// WithLogger's documented level contract matches the emission.
+		logFn := s.logger.Info
+		if err != nil {
+			logFn = s.logger.Error
+		}
+		logFn("jwt revocation",
 			slog.String("action", action),
 			slog.String("actor", actor),
 			slog.String("resource", resource),
@@ -371,10 +377,13 @@ func identifierResource(issuer, id string) string {
 }
 
 func redactedLen(value string) string {
+	// Bucketed length stamp — exact counts are not disclosed (matches
+	// core/redact.StringValue). Empty stays a short stable marker so
+	// existing revocation log tests that key on "<empty>" keep working.
 	if value == "" {
 		return "<empty>"
 	}
-	return fmt.Sprintf("<redacted %d bytes>", len(value))
+	return redact.StringValue(value)
 }
 
 // errorClass returns the canonical kit sentinel an error wraps, or "unknown"

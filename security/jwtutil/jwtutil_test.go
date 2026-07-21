@@ -940,8 +940,8 @@ func TestNewProvider_RejectsInvalidJWKSURLs(t *testing.T) {
 					t.Fatal("expected panic")
 				}
 				msg := fmt.Sprint(r)
-				if msg != "jwtutil: NewProvider JWKS URL is invalid" {
-					t.Fatalf("panic = %v, want stable JWKS URL marker", r)
+				if !strings.HasPrefix(msg, "jwtutil: NewProvider JWKS URL is invalid") {
+					t.Fatalf("panic = %v, want stable JWKS URL marker prefix", r)
 				}
 				if tt.leak != "" && strings.Contains(msg, tt.leak) {
 					t.Fatalf("panic leaked URL component %q: %v", tt.leak, r)
@@ -1419,15 +1419,21 @@ func TestProvider_Run_FetchFromTestServer(t *testing.T) {
 	if ks == nil {
 		t.Fatal("expected keyset after Run")
 	}
-	// R4: fetch() must not mutate the parsed keyset's policy fields —
-	// Provider.Verify carries the policy. Verifying via the provider applies
-	// the configured "test" issuer; tokens issued by the wrong issuer would
-	// be rejected by Provider.Verify, not by ks.ExpectedIssuer.
-	if got := ks.ExpectedIssuer; got != "" {
-		t.Errorf("freshly-parsed keyset must not carry provider policy; got ExpectedIssuer=%q", got)
+	// R4: fetch() must not mutate the live stored keyset's policy fields
+	// (two providers may share one parsed *KeySet). The defensive
+	// snapshot returned by KeySet() does copy the Provider's
+	// issuer/audience so callers that verify via the snapshot inherit
+	// the same guardrails as Provider.Verify.
+	if got := ks.ExpectedIssuer; got != "test" {
+		t.Errorf("KeySet() snapshot ExpectedIssuer = %q, want test (provider policy)", got)
 	}
 	if p.expectedIssuer != "test" {
 		t.Errorf("provider expectedIssuer = %q, want test", p.expectedIssuer)
+	}
+	// Live store remains free of provider policy (snapshot is a copy).
+	live, _ := p.keySetWithReason()
+	if live != nil && live.ExpectedIssuer != "" {
+		t.Errorf("live keyset ExpectedIssuer = %q, want empty (policy lives on Provider)", live.ExpectedIssuer)
 	}
 
 	cancel()
@@ -2287,5 +2293,48 @@ func TestVerify_TimingFloorClosesKidExistenceSideChannel(t *testing.T) {
 	// 4 µs measurement and well below the 50 µs nominal floor.
 	if median < 30*time.Microsecond {
 		t.Fatalf("wrong-kid rejection median (%s) must be ≥ 30µs; the timing floor closes the kid-existence side channel", median)
+	}
+}
+
+// baseFieldRoundTripper mimics otelhttp.Transport: a wrapper with a public
+// settable Base field holding the real *http.Transport.
+type baseFieldRoundTripper struct {
+	Base http.RoundTripper
+}
+
+func (b *baseFieldRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return b.Base.RoundTrip(req)
+}
+
+func TestJWKSHTTPClient_HardensWrappedTransportBase(t *testing.T) {
+	inner := http.DefaultTransport.(*http.Transport).Clone()
+	weak := &tls.Config{MinVersion: tls.VersionTLS10, ServerName: "jwks.wrap.test"}
+	inner.TLSClientConfig = weak
+
+	wrapper := &baseFieldRoundTripper{Base: inner}
+	custom := &http.Client{Transport: wrapper, Timeout: time.Second}
+
+	hardened := jwksHTTPClient(custom)
+	// Caller wrapper must not be mutated.
+	if wrapper.Base != inner {
+		t.Fatal("jwksHTTPClient must not mutate caller wrapper Base")
+	}
+	if weak.MinVersion != tls.VersionTLS10 {
+		t.Fatal("jwksHTTPClient must not mutate caller TLS config")
+	}
+
+	outWrap, ok := hardened.Transport.(*baseFieldRoundTripper)
+	if !ok {
+		t.Fatalf("transport type = %T, want *baseFieldRoundTripper clone", hardened.Transport)
+	}
+	tr, ok := outWrap.Base.(*http.Transport)
+	if !ok {
+		t.Fatalf("Base type = %T, want hardened *http.Transport", outWrap.Base)
+	}
+	if tr.TLSClientConfig == nil || tr.TLSClientConfig.MinVersion != minimumTLSVersion {
+		t.Fatalf("wrapped Base MinVersion = %v, want floor %x", tr.TLSClientConfig, minimumTLSVersion)
+	}
+	if tr.TLSClientConfig.ServerName != "jwks.wrap.test" {
+		t.Fatalf("ServerName not preserved: %q", tr.TLSClientConfig.ServerName)
 	}
 }

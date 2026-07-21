@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
 // MemorySessionStore is an in-process [SessionStore] for tests and
@@ -26,7 +28,9 @@ func NewMemorySessionStore() *MemorySessionStore {
 
 // Put implements [SessionStore]. Opportunistically sweeps already-expired
 // sessions so abandoned entries (a login whose owner never returns) cannot
-// accumulate without bound.
+// accumulate without bound. Overwriting a live session with the same id
+// zeroizes the replaced secrets when they do not share pointers with the
+// incoming session.
 func (m *MemorySessionStore) Put(_ context.Context, id string, sess Session, ttl time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -43,12 +47,27 @@ func (m *MemorySessionStore) Put(_ context.Context, id string, sess Session, ttl
 			delete(m.sessions, key)
 		}
 	}
+	if existing, ok := m.sessions[id]; ok {
+		// Zero replaced secrets when they are distinct objects from the
+		// incoming session (same-pointer reuse is left alone).
+		if existing.sess.AccessToken != nil && existing.sess.AccessToken != sess.AccessToken {
+			existing.sess.AccessToken.Zero()
+		}
+		if existing.sess.RefreshToken != nil && existing.sess.RefreshToken != sess.RefreshToken {
+			existing.sess.RefreshToken.Zero()
+		}
+	}
 	m.sessions[id] = memorySession{sess: sess, expiresAt: now.Add(ttl)}
 	return nil
 }
 
 // Get implements [SessionStore]. Returns ErrSessionNotFound if the
 // session is missing OR expired.
+//
+// The returned [Session] is a deep copy: AccessToken/RefreshToken are
+// fresh [secret.String] values and Claims is a shallow-cloned map. Callers
+// may retain the snapshot across a concurrent Delete/eviction without the
+// store-owned secret buffers being zeroized under them.
 func (m *MemorySessionStore) Get(_ context.Context, id string) (Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -67,7 +86,31 @@ func (m *MemorySessionStore) Get(_ context.Context, id string) (Session, error) 
 		delete(m.sessions, id)
 		return Session{}, ErrSessionNotFound
 	}
-	return entry.sess, nil
+	return cloneSession(entry.sess), nil
+}
+
+// cloneSession returns a Session whose secret pointers and Claims map
+// do not alias the store-owned values, so zeroize-on-Delete cannot
+// corrupt a concurrent caller's snapshot.
+func cloneSession(s Session) Session {
+	out := Session{
+		SessionID: s.SessionID,
+		UserID:    s.UserID,
+		Expiry:    s.Expiry,
+	}
+	if s.AccessToken != nil {
+		out.AccessToken = secret.NewFromString(s.AccessToken.RevealString())
+	}
+	if s.RefreshToken != nil && !s.RefreshToken.IsEmpty() {
+		out.RefreshToken = secret.NewFromString(s.RefreshToken.RevealString())
+	}
+	if s.Claims != nil {
+		out.Claims = make(map[string]any, len(s.Claims))
+		for k, v := range s.Claims {
+			out.Claims[k] = v
+		}
+	}
+	return out
 }
 
 // Delete implements [SessionStore]. Zeroizes the session's secrets
@@ -131,6 +174,23 @@ func (m *MemoryStateStore) Get(_ context.Context, state string) (StateEntry, err
 	}
 	if time.Now().After(entry.expiresAt) {
 		delete(m.entries, state)
+		return StateEntry{}, ErrStateNotFound
+	}
+	return entry.entry, nil
+}
+
+// Take atomically returns and deletes a state entry (single-use
+// consume). Used by the callback path so concurrent callbacks cannot
+// both observe the same state.
+func (m *MemoryStateStore) Take(_ context.Context, state string) (StateEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, ok := m.entries[state]
+	if !ok {
+		return StateEntry{}, ErrStateNotFound
+	}
+	delete(m.entries, state)
+	if time.Now().After(entry.expiresAt) {
 		return StateEntry{}, ErrStateNotFound
 	}
 	return entry.entry, nil

@@ -22,7 +22,7 @@ type memoryKey struct {
 	resource string
 }
 
-// NewMemory returns an empty in-memory decider.
+// NewMemoryStore returns an empty in-memory decider.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{allows: map[memoryKey]struct{}{}}
 }
@@ -68,6 +68,6 @@ func (m *MemoryStore) Allow(ctx context.Context, subject, action, resource strin
 
 func mustValidateRequest(req Request) {
 	if err := ValidateRequest(req); err != nil {
-		panic("authz/memory: invalid request")
+		panic("authz/memory: invalid request: " + err.Error())
 	}
 }

@@ -20,8 +20,9 @@ import (
 )
 
 // runLoginAndAuthorize drives a login + /authorize round-trip against
-// the fake issuer and returns the issued state token.
-func runLoginAndAuthorize(t *testing.T, mux *http.ServeMux, loginPath string) (state string) {
+// the fake issuer and returns the issued state token plus the login
+// cookies (including the browser-bound CSRF state cookie).
+func runLoginAndAuthorize(t *testing.T, mux *http.ServeMux, loginPath string) (state string, cookies []*http.Cookie) {
 	t.Helper()
 	appSrv := httptest.NewServer(mux)
 	t.Cleanup(appSrv.Close)
@@ -32,6 +33,7 @@ func runLoginAndAuthorize(t *testing.T, mux *http.ServeMux, loginPath string) (s
 	require.NoError(t, err)
 	defer func() { _ = loginResp.Body.Close() }()
 	require.Equal(t, http.StatusFound, loginResp.StatusCode)
+	cookies = loginResp.Cookies()
 	authURL, err := url.Parse(loginResp.Header.Get("Location"))
 	require.NoError(t, err)
 	state = authURL.Query().Get("state")
@@ -39,7 +41,13 @@ func runLoginAndAuthorize(t *testing.T, mux *http.ServeMux, loginPath string) (s
 	authResp, err := httpc.Get(authURL.String())
 	require.NoError(t, err)
 	defer func() { _ = authResp.Body.Close() }()
-	return state
+	return state, cookies
+}
+
+func addCookies(req *http.Request, cookies []*http.Cookie) {
+	for _, ck := range cookies {
+		req.AddCookie(ck)
+	}
 }
 
 // TestHandlers_OpenRedirectRejected covers finding 1: a post-login
@@ -60,14 +68,15 @@ func TestHandlers_OpenRedirectRejected(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/oauth/", client.Handlers())
 
-	state := runLoginAndAuthorize(t, mux, "/oauth/login?redirect_to="+url.QueryEscape("https://evil.example.com/steal"))
+	state, cookies := runLoginAndAuthorize(t, mux, "/oauth/login?redirect_to="+url.QueryEscape("https://evil.example.com/steal"))
 
 	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=code-"+state+"&state="+state, nil)
+	addCookies(cbReq, cookies)
 	cbResp := httptest.NewRecorder()
 	mux.ServeHTTP(cbResp, cbReq)
 
 	// A session is still established, but we must never redirect to the
-	// attacker host. The callback should fall back to 204 (no deep link)
+	// attacker host. The callback should fall back to the landing page (no deep link)
 	// rather than emit a Location header pointing at evil.example.com.
 	if loc := cbResp.Header().Get("Location"); loc != "" {
 		require.NotContains(t, loc, "evil.example.com",
@@ -94,9 +103,10 @@ func TestHandlers_SafeRelativeRedirectHonoured(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/oauth/", client.Handlers())
 
-	state := runLoginAndAuthorize(t, mux, "/oauth/login?redirect_to="+url.QueryEscape("/dashboard?tab=billing"))
+	state, cookies := runLoginAndAuthorize(t, mux, "/oauth/login?redirect_to="+url.QueryEscape("/dashboard?tab=billing"))
 
 	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=code-"+state+"&state="+state, nil)
+	addCookies(cbReq, cookies)
 	cbResp := httptest.NewRecorder()
 	mux.ServeHTTP(cbResp, cbReq)
 
@@ -122,9 +132,10 @@ func TestHandlers_SchemeRelativeRedirectRejected(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/oauth/", client.Handlers())
 
-	state := runLoginAndAuthorize(t, mux, "/oauth/login?redirect_to="+url.QueryEscape("//evil.example.com/path"))
+	state, cookies := runLoginAndAuthorize(t, mux, "/oauth/login?redirect_to="+url.QueryEscape("//evil.example.com/path"))
 
 	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=code-"+state+"&state="+state, nil)
+	addCookies(cbReq, cookies)
 	cbResp := httptest.NewRecorder()
 	mux.ServeHTTP(cbResp, cbReq)
 
@@ -214,7 +225,7 @@ func TestHandlers_CallbackVerifyErrorNotLeaked(t *testing.T) {
 	issuer := newFakeIssuer(t, "test-client")
 	wrongKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
-	issuer.mux.HandleFunc("/token-badsig", func(w http.ResponseWriter, r *http.Request) {
+	issuer.tokenHandler = func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		code := r.FormValue("code")
 		issuer.mu.Lock()
@@ -241,7 +252,7 @@ func TestHandlers_CallbackVerifyErrorNotLeaked(t *testing.T) {
 		require.NoError(t, jerr)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"a","token_type":"Bearer","expires_in":3600,"id_token":"` + raw + `"}`))
-	})
+	}
 
 	client, err := oauth2.NewClient(context.Background(),
 		oauth2.Config{
@@ -253,20 +264,19 @@ func TestHandlers_CallbackVerifyErrorNotLeaked(t *testing.T) {
 		oauth2.WithInsecureCookie(),
 	)
 	require.NoError(t, err)
-	// Point the token endpoint at the bad-signature handler.
-	client.OAuth2Config().Endpoint.TokenURL = issuer.server.URL + "/token-badsig"
 
 	mux := http.NewServeMux()
 	mux.Handle("/oauth/", client.Handlers())
-	state := runLoginAndAuthorize(t, mux, "/oauth/login")
+	state, cookies := runLoginAndAuthorize(t, mux, "/oauth/login")
 
 	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=code-"+state+"&state="+state, nil)
+	addCookies(cbReq, cookies)
 	cbResp := httptest.NewRecorder()
 	mux.ServeHTTP(cbResp, cbReq)
 
 	require.Equal(t, http.StatusBadRequest, cbResp.Code)
 	body := cbResp.Body.String()
-	require.Contains(t, body, oauth2.ErrCodeExchange.Error())
+	require.Contains(t, body, oauth2.ErrIDTokenInvalid.Error())
 	// The raw verifier error mentions signature / verification details;
 	// none of that should cross the trust boundary into the body.
 	lower := strings.ToLower(body)

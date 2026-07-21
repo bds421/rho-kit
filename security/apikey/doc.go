@@ -40,11 +40,12 @@
 //
 // # Scoped keys
 //
-// [GenerateScoped] and [ScopedResolver] cover user-bound credentials
-// with a required UUID-shaped [ScopedKey.SubjectUserID] (configurable
-// wire prefixes; defaults [ScopedTokenPrefixAPI] /
-// [ScopedTokenPrefixOAuth]) hashed with
-// [github.com/bds421/rho-kit/crypto/v2/passhash]; verification accepts
-// legacy bcrypt via
+// [GenerateScoped] and [ScopedResolver] cover tenant-scoped credentials
+// with an optional UUID-shaped [ScopedKey.SubjectUserID] (omit for
+// unbound integration keys with tenant-wide machine access; when set it
+// must be UUID-shaped). Wire prefixes are configurable (defaults
+// [ScopedTokenPrefixAPI] / [ScopedTokenPrefixOAuth]); secrets are hashed
+// with [github.com/bds421/rho-kit/crypto/v2/passhash]. Verification
+// accepts legacy bcrypt via
 // [github.com/bds421/rho-kit/crypto/v2/passhash/bcryptcompat].
 package apikey

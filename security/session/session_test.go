@@ -101,3 +101,37 @@ func TestDeriveKey_DistinctLabels(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, a, b)
 }
+func TestHMACSigner_WithClockUsedWhenNowZero(t *testing.T) {
+	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s, err := NewSigner(make([]byte, 32), "session", WithClock(func() time.Time { return fixed }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := s.Mint(Claims{UserID: "u", Tenant: "t", Exp: fixed.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Zero now should use WithClock (fixed), not wall clock.
+	claims, err := s.Verify(tok, time.Time{})
+	if err != nil {
+		t.Fatalf("Verify with zero now: %v", err)
+	}
+	if claims.UserID != "u" {
+		t.Fatalf("claims = %+v", claims)
+	}
+}
+
+func TestMint_RejectsIncompleteClaims(t *testing.T) {
+	s, err := NewSigner(make([]byte, 32), "label")
+	require.NoError(t, err)
+	_, err = s.Mint(Claims{UserID: "u", Tenant: "", Exp: time.Now().Add(time.Hour)})
+	assert.ErrorIs(t, err, ErrInvalidClaims)
+	_, err = s.Mint(Claims{UserID: "u", Tenant: "t"})
+	assert.ErrorIs(t, err, ErrInvalidClaims)
+}
+
+func TestValidator_NilSigner(t *testing.T) {
+	var v Validator
+	_, err := v.Validate(context.Background(), "tok", time.Now())
+	require.ErrorIs(t, err, ErrValidatorNotConfigured)
+}

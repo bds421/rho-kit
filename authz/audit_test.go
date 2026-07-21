@@ -61,8 +61,8 @@ func TestLogged_DenyEmitsInfoExactlyOnce(t *testing.T) {
 		"slog must not leak raw subject identifiers; the audit sink keeps full values")
 	assert.NotContains(t, out, "resource=doc:1")
 	assert.NotContains(t, out, "verb=read")
-	assert.Contains(t, out, "<redacted 5 bytes>",
-		"redacted length stamps must still appear for actor/resource")
+	assert.Contains(t, out, "<redacted, <16 bytes>",
+		"redacted bucket stamps must still appear for actor/resource")
 	assert.Contains(t, out, "outcome=deny")
 	assert.Contains(t, out, "reason=denied")
 	assert.Contains(t, out, "level=INFO")

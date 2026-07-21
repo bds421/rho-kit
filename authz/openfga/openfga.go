@@ -53,9 +53,7 @@ var ErrRedirectBlocked = errors.New("openfga: redirects are disabled by default"
 // Safe for concurrent use — all state is immutable post-construction;
 // the embedded OpenFGA client is itself goroutine-safe.
 type Decider struct {
-	c       *client.OpenFgaClient
-	storeID string
-	modelID string
+	c *client.OpenFgaClient
 }
 
 // Config bundles the connection knobs the kit takes opinions on.
@@ -117,16 +115,22 @@ func openFGAURLLogState(rawURL string) (valid, hostConfigured bool) {
 }
 
 // New builds a Decider from cfg. Returns an error if the SDK client
-// fails to construct — typically a malformed APIURL.
+// fails to construct — typically a malformed APIURL — or if the
+// caller-supplied HTTP client's TLS config is rejected by the kit
+// floor (e.g. InsecureSkipVerify).
 func New(cfg Config) (*Decider, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
-	c, err := client.NewSdkClient(clientConfiguration(cfg))
+	clientCfg, err := clientConfiguration(cfg)
+	if err != nil {
+		return nil, err
+	}
+	c, err := client.NewSdkClient(clientCfg)
 	if err != nil {
 		return nil, fmt.Errorf("openfga: build client: %w", err)
 	}
-	return &Decider{c: c, storeID: cfg.StoreID, modelID: cfg.ModelID}, nil
+	return &Decider{c: c}, nil
 }
 
 func validateConfig(cfg Config) error {
@@ -169,8 +173,11 @@ func validateConfig(cfg Config) error {
 	return nil
 }
 
-func clientConfiguration(cfg Config) *client.ClientConfiguration {
-	httpClient := openFGAHTTPClient(cfg.HTTPClient)
+func clientConfiguration(cfg Config) (*client.ClientConfiguration, error) {
+	httpClient, err := openFGAHTTPClient(cfg.HTTPClient)
+	if err != nil {
+		return nil, err
+	}
 	return &client.ClientConfiguration{
 		ApiUrl:               cfg.APIURL,
 		StoreId:              cfg.StoreID,
@@ -179,10 +186,10 @@ func clientConfiguration(cfg Config) *client.ClientConfiguration {
 		HTTPClient:           httpClient,
 		DefaultHeaders:       cloneHeaders(cfg.DefaultHeaders),
 		UserAgent:            cfg.UserAgent,
-	}
+	}, nil
 }
 
-func openFGAHTTPClient(client *http.Client) *http.Client {
+func openFGAHTTPClient(client *http.Client) (*http.Client, error) {
 	if client == nil {
 		return defaultHTTPClient()
 	}
@@ -202,32 +209,44 @@ func openFGAHTTPClient(client *http.Client) *http.Client {
 		transport := cloneDefaultTransport()
 		transport.MaxIdleConnsPerHost = defaultMaxIdleConnsPerHost
 		transport.MaxResponseHeaderBytes = defaultMaxResponseHeaderBytes
-		transport.TLSClientConfig = cloneTLSConfigWithFloor(transport.TLSClientConfig)
+		tlsCfg, err := cloneTLSConfigWithFloor(transport.TLSClientConfig)
+		if err != nil {
+			return nil, err
+		}
+		transport.TLSClientConfig = tlsCfg
 		cloned.Transport = transport
 	} else if tr, ok := cloned.Transport.(*http.Transport); ok {
 		hardened := tr.Clone()
 		if hardened.MaxResponseHeaderBytes <= 0 {
 			hardened.MaxResponseHeaderBytes = defaultMaxResponseHeaderBytes
 		}
-		hardened.TLSClientConfig = cloneTLSConfigWithFloor(hardened.TLSClientConfig)
+		tlsCfg, err := cloneTLSConfigWithFloor(hardened.TLSClientConfig)
+		if err != nil {
+			return nil, err
+		}
+		hardened.TLSClientConfig = tlsCfg
 		cloned.Transport = hardened
 	}
 	if cloned.CheckRedirect == nil {
 		cloned.CheckRedirect = blockRedirect
 	}
-	return &cloned
+	return &cloned, nil
 }
 
-func defaultHTTPClient() *http.Client {
+func defaultHTTPClient() (*http.Client, error) {
 	transport := cloneDefaultTransport()
 	transport.MaxIdleConnsPerHost = defaultMaxIdleConnsPerHost
 	transport.MaxResponseHeaderBytes = defaultMaxResponseHeaderBytes
-	transport.TLSClientConfig = cloneTLSConfigWithFloor(transport.TLSClientConfig)
+	tlsCfg, err := cloneTLSConfigWithFloor(transport.TLSClientConfig)
+	if err != nil {
+		return nil, err
+	}
+	transport.TLSClientConfig = tlsCfg
 	return &http.Client{
 		Timeout:       defaultHTTPClientTimeout,
 		Transport:     transport,
 		CheckRedirect: blockRedirect,
-	}
+	}, nil
 }
 
 func cloneDefaultTransport() *http.Transport {
@@ -248,15 +267,12 @@ func cloneDefaultTransport() *http.Transport {
 	}
 }
 
-func cloneTLSConfigWithFloor(cfg *tls.Config) *tls.Config {
+func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
 	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, minimumHTTPClientTLSVersion)
 	if err != nil {
-		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
-			panic("openfga: HTTP client TLS InsecureSkipVerify=true is not permitted")
-		}
-		panic("openfga: default HTTP client TLS MaxVersion must allow TLS 1.2 or newer")
+		return nil, fmt.Errorf("openfga: http client tls: %w", err)
 	}
-	return cloned
+	return cloned, nil
 }
 
 func blockRedirect(_ *http.Request, _ []*http.Request) error {

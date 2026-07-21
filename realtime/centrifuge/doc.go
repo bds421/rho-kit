@@ -68,10 +68,15 @@
 // [WithJWTAuth] integrates a kit [jwtutil.Verifier] with centrifuge's
 // `OnConnecting` callback: the bearer token sent by the centrifuge
 // client is verified, and the verified subject is propagated to the
-// centrifuge connection as the user identifier. Channel-level
-// authorization (who may subscribe to `room:foo`?) remains the
-// caller's responsibility — wire it via centrifuge's `OnSubscribe`
-// callback on the underlying Node.
+// centrifuge connection as the user identifier.
+//
+// Channel-level authorization is fail-closed by default: without
+// [WithSubscribeAuthorizer] / [WithPublishAuthorizer] (or a deliberate
+// [WithOpenChannelsUnsafe]), every client subscribe and publish is
+// rejected with permission denied. Metrics still fire so denials are
+// observable. Do not replace per-client OnSubscribe/OnPublish via
+// [Node.Underlying] — centrifuge installs those hooks only through
+// OnConnect, and replacing OnConnect drops kit metrics and authz.
 //
 // # When centrifuge is NOT the right answer
 //

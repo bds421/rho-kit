@@ -63,6 +63,11 @@ func NormalizeSAN(input string) (SAN, bool, error) {
 		if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return SAN{}, false, ErrInvalidURISAN
 		}
+		// Scheme and host are case-insensitive on the wire (RFC 3986);
+		// lowercase them so allowlist comparisons match DNS SAN handling.
+		// Path stays case-sensitive (SPIFFE path segments are).
+		u.Scheme = strings.ToLower(u.Scheme)
+		u.Host = strings.ToLower(u.Host)
 		return SAN{Kind: SANURI, Value: u.String()}, true, nil
 	}
 	if !validDNSIdentity(raw) {
@@ -83,7 +88,9 @@ func NormalizeCN(input string) (string, bool, error) {
 	if containsUnsafeIdentityRune(cn) {
 		return "", false, ErrInvalidCN
 	}
-	return cn, true, nil
+	// Case-fold to match DNS SAN normalization so allowlists are
+	// case-insensitive for CN identity.
+	return strings.ToLower(cn), true, nil
 }
 
 func validDNSIdentity(s string) bool {

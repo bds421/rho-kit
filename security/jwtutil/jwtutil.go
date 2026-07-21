@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	neturl "net/url"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -241,10 +242,17 @@ func ParseKeySetFromPEM(pemData []byte, kid string) (*KeySet, error) {
 // indistinguishable from a stolen credential and have no place in this kit.
 //
 // Issuer and audience are validated against [KeySet.ExpectedIssuer] and
-// [KeySet.ExpectedAudience]. Prefer calling [Provider.Verify] when verifying
-// through a Provider — Provider.Verify uses the Provider's policy without
-// touching these shared fields, which is the safe path when one parsed
-// KeySet is reused across multiple providers.
+// [KeySet.ExpectedAudience] ONLY when those fields are non-empty. Empty
+// fields skip the corresponding check (signature-only verification).
+// This is a deliberate low-level escape hatch; production services MUST
+// set both fields (or use [Provider] / [NewProvider], which refuse to
+// construct without an explicit issuer/audience policy or AllowAny
+// opt-out). Leaving both empty accepts tokens minted for any sibling
+// audience that trusts the same signer (RFC 7519 confused-deputy).
+// Prefer [Provider.Verify] for service auth.
+//
+// A future major version may fail closed when ExpectedIssuer /
+// ExpectedAudience are unset; see V3_BREAKING_PROPOSALS.md.
 func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
 	if ks == nil {
 		return nil, ErrInvalidKeySet
@@ -471,18 +479,18 @@ func toStringSlice(v any) ([]string, error) {
 // many goroutines; the internal key set is swapped atomically on each
 // successful refresh.
 type Provider struct {
-	url              string
-	httpClient       *http.Client
-	refresh          time.Duration
-	expectedIssuer   string
-	expectedAudience string
-	revocation         RevocationChecker
-	extraStringClaims  []string
-	allowAnyIssuer     bool
-	allowAnyAudience   bool
-	allowInsecureURL   bool
-	maxStale           time.Duration
-	clock              func() time.Time
+	url               string
+	httpClient        *http.Client
+	refresh           time.Duration
+	expectedIssuer    string
+	expectedAudience  string
+	revocation        RevocationChecker
+	extraStringClaims []string
+	allowAnyIssuer    bool
+	allowAnyAudience  bool
+	allowInsecureURL  bool
+	maxStale          time.Duration
+	clock             func() time.Time
 
 	mu                  sync.RWMutex
 	keyset              *KeySet
@@ -759,7 +767,7 @@ func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opt
 	// http (e.g. for service-mesh sidecar localhost). A plaintext JWKS lets
 	// any on-path attacker inject signing keys, fully forging tokens.
 	if err := validateJWKSURL(url, p.allowInsecureURL); err != nil {
-		panic("jwtutil: NewProvider JWKS URL is invalid")
+		panic("jwtutil: NewProvider JWKS URL is invalid: " + err.Error())
 	}
 	if p.clock == nil {
 		p.clock = time.Now
@@ -970,21 +978,98 @@ func jwksHTTPClient(client *http.Client) *http.Client {
 	// 66 closed a hostile-review finding that a user-supplied
 	// Transport could ship without the TLS 1.2 floor that
 	// defaultHTTPClient enforces.
+	//
+	// Hardening walks *http.Transport and common wrapper shapes that
+	// expose a settable Base/RT/Transport RoundTripper field (otelhttp,
+	// retry wrappers). Opaque RoundTrippers (httptest test doubles,
+	// fully custom dialers) cannot have a TLS config applied — those
+	// are left as-is because they typically do not negotiate TLS, but
+	// a production JWKS client should pass *http.Transport (or a
+	// wrapper around one) so the floor is load-bearing.
 	cloned := *client
 	if cloned.Timeout <= 0 {
 		cloned.Timeout = defaultHTTPTimeout
 	}
 	if cloned.Transport == nil {
 		cloned.Transport = defaultHTTPTransport()
-	} else if tr, ok := cloned.Transport.(*http.Transport); ok {
-		hardened := tr.Clone()
-		hardened.TLSClientConfig = cloneTLSConfigWithFloor(hardened.TLSClientConfig)
-		cloned.Transport = hardened
+	} else {
+		cloned.Transport = hardenJWKSRoundTripper(cloned.Transport)
 	}
 	if cloned.CheckRedirect == nil {
 		cloned.CheckRedirect = blockJWKSRedirect
 	}
 	return &cloned
+}
+
+// hardenJWKSRoundTripper applies the TLS 1.2 floor to rt when it is an
+// *http.Transport, or when it is a wrapper struct with a settable
+// Base/RT/Transport field that eventually reaches an *http.Transport.
+// Unrecognised RoundTrippers are returned unchanged (see jwksHTTPClient).
+func hardenJWKSRoundTripper(rt http.RoundTripper) http.RoundTripper {
+	if rt == nil {
+		return defaultHTTPTransport()
+	}
+	if tr, ok := rt.(*http.Transport); ok {
+		hardened := tr.Clone()
+		hardened.TLSClientConfig = cloneTLSConfigWithFloor(hardened.TLSClientConfig)
+		return hardened
+	}
+	if hardened, ok := hardenWrappedRoundTripper(rt); ok {
+		return hardened
+	}
+	return rt
+}
+
+// hardenWrappedRoundTripper best-effort clones wrapper RoundTrippers that
+// expose a settable Base, RT, or Transport field of type http.RoundTripper
+// or *http.Transport (the otelhttp.Transport shape). Returns (nil, false)
+// when the value is not a settable struct wrapper we recognise.
+func hardenWrappedRoundTripper(rt http.RoundTripper) (http.RoundTripper, bool) {
+	v := reflect.ValueOf(rt)
+	if !v.IsValid() {
+		return nil, false
+	}
+	// Only addressable-copyable pointer-to-struct wrappers.
+	if v.Kind() != reflect.Pointer || v.IsNil() || v.Elem().Kind() != reflect.Struct {
+		return nil, false
+	}
+	// Shallow-copy the wrapper so we never mutate the caller's instance.
+	orig := v.Elem()
+	cpPtr := reflect.New(orig.Type())
+	cpPtr.Elem().Set(orig)
+	cp := cpPtr.Elem()
+
+	for _, name := range []string{"Base", "RT", "Transport"} {
+		f := cp.FieldByName(name)
+		if !f.IsValid() || !f.CanSet() {
+			continue
+		}
+		// Field is http.RoundTripper interface or *http.Transport.
+		var inner http.RoundTripper
+		switch {
+		case f.Type() == reflect.TypeOf((*http.Transport)(nil)):
+			if f.IsNil() {
+				inner = defaultHTTPTransport()
+			} else {
+				inner = f.Interface().(*http.Transport)
+			}
+			hardened := hardenJWKSRoundTripper(inner)
+			f.Set(reflect.ValueOf(hardened))
+			out, _ := cpPtr.Interface().(http.RoundTripper)
+			return out, true
+		case f.Type().Implements(reflect.TypeOf((*http.RoundTripper)(nil)).Elem()):
+			if f.IsNil() {
+				inner = defaultHTTPTransport()
+			} else {
+				inner, _ = f.Interface().(http.RoundTripper)
+			}
+			hardened := hardenJWKSRoundTripper(inner)
+			f.Set(reflect.ValueOf(hardened))
+			out, _ := cpPtr.Interface().(http.RoundTripper)
+			return out, true
+		}
+	}
+	return nil, false
 }
 
 func blockJWKSRedirect(_ *http.Request, _ []*http.Request) error {
@@ -1027,10 +1112,13 @@ func (p *Provider) KeySet() *KeySet {
 	if ks == nil {
 		return nil
 	}
+	// Populate issuer/audience from the Provider's set-once policy so a
+	// caller that verifies via the snapshot inherits the same guardrails
+	// as Provider.Verify (the live keyset never carried these fields).
 	return &KeySet{
 		set:              ks.set,
-		ExpectedIssuer:   ks.ExpectedIssuer,
-		ExpectedAudience: ks.ExpectedAudience,
+		ExpectedIssuer:   p.expectedIssuer,
+		ExpectedAudience: p.expectedAudience,
 	}
 }
 

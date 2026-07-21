@@ -81,6 +81,8 @@ func TestIsPrivateIP(t *testing.T) {
 		{"documentation 3fff", "3fff::1", true},
 		{"SRv6 SIDs", "5f00::1", true},
 		{"public IPv6", "2607:f8b0:4004:800::200e", false},
+		{"site-local fec0", "fec0::1", true},
+		{"IPv4-compatible ::/96", "::c0a8:0101", true},
 	}
 
 	for _, tt := range tests {

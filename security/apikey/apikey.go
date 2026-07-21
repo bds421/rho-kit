@@ -169,33 +169,42 @@ func Parse(token, prefix string) (keyID, secretSegment string, err error) {
 	return parts[1], parts[2], nil
 }
 
-// Verify checks a presented secret segment against the key. It compares the
-// SHA-256 hash in constant time and rejects revoked or expired keys. now is
-// supplied by the caller (clock injection) so verification is deterministic
-// in tests. Returns nil when the key authenticates.
+// Verify checks a presented secret segment against the key. It always
+// performs the SHA-256 hash and constant-time compare first so the
+// revoked/expired and unknown-id (dummy-key) paths do equivalent work,
+// then reports revoked/expired status before InvalidSecret so callers
+// still learn the key is no longer usable when the secret matched.
+// now is supplied by the caller (clock injection) so verification is
+// deterministic in tests. Returns nil when the key authenticates.
 func (k Key) Verify(presentedSecret string, now time.Time) error {
+	// Always hash+compare so expired/revoked keys are not timing-distinguishable
+	// from the middleware's dummy-key path on a repository miss.
+	presented := Hash(presentedSecret)
+	match := subtle.ConstantTimeCompare(presented[:], k.Hash[:]) == 1
+	if err := k.statusError(now); err != nil {
+		return err
+	}
+	if !match {
+		return ErrInvalidSecret
+	}
+	return nil
+}
+
+// statusError returns ErrRevoked/ErrExpired when the key is inactive at now.
+// Shared by [Key.Verify] and [Key.IsActive] so the two cannot drift.
+func (k Key) statusError(now time.Time) error {
 	if !k.RevokedAt.IsZero() && !now.Before(k.RevokedAt) {
 		return ErrRevoked
 	}
 	if !k.ExpiresAt.IsZero() && !now.Before(k.ExpiresAt) {
 		return ErrExpired
 	}
-	presented := Hash(presentedSecret)
-	if subtle.ConstantTimeCompare(presented[:], k.Hash[:]) != 1 {
-		return ErrInvalidSecret
-	}
 	return nil
 }
 
 // IsActive reports whether the key is neither expired nor revoked at now.
 func (k Key) IsActive(now time.Time) bool {
-	if !k.RevokedAt.IsZero() && !now.Before(k.RevokedAt) {
-		return false
-	}
-	if !k.ExpiresAt.IsZero() && !now.Before(k.ExpiresAt) {
-		return false
-	}
-	return true
+	return k.statusError(now) == nil
 }
 
 func displayPrefix(prefix, keyID string) string {

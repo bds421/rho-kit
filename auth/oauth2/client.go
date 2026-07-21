@@ -2,6 +2,9 @@ package oauth2
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,7 +26,6 @@ import (
 // [github.com/coreos/go-oidc/v3/oidc.Provider] for issuer discovery +
 // ID-token verification. Concurrency-safe after construction.
 type Client struct {
-	cfg          Config
 	provider     *oidc.Provider
 	oauth        *xoauth2.Config
 	verifier     *oidc.IDTokenVerifier
@@ -131,7 +133,6 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 		return nil, errors.New("oauth2: Config.RedirectURL is required")
 	}
 	c := &Client{
-		cfg:          cfg,
 		usePKCE:      true,
 		sessionTTL:   24 * time.Hour,
 		stateTTL:     10 * time.Minute,
@@ -164,10 +165,15 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 		c.httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
 
-	// go-oidc honours the http.Client stashed on ctx via
-	// oidc.ClientContext (which it forwards into its internal
-	// discovery + JWKS fetcher).
-	discoveryCtx := oidc.ClientContext(ctx, c.httpClient)
+	// go-oidc's RemoteKeySet retains the construction context for every
+	// later JWKS refresh. A caller wrapping NewClient in
+	// context.WithTimeout(...); defer cancel() would otherwise leave the
+	// provider using a cancelled ctx after construction, so every key
+	// rotation fails with "context canceled" until process restart.
+	// Honour the caller's ctx for the initial discovery round-trip via
+	// the http.Client timeout, but bind the long-lived provider to a
+	// non-cancellable context so JWKS refresh outlives construction.
+	discoveryCtx := oidc.ClientContext(context.WithoutCancel(ctx), c.httpClient)
 	provider, err := oidc.NewProvider(discoveryCtx, cfg.Issuer)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrIssuerDiscovery, err)
@@ -257,8 +263,16 @@ func isDoubleSlashPrefix(path string) bool {
 }
 
 // Handlers returns the http.Handler that serves /login, /callback,
-// /logout under a path prefix. Mount with mux.Handle("/oauth/", ...).
-func (c *Client) Handlers() http.Handler {
+// /logout under the fixed mount prefix "/oauth". Mount exactly as:
+//
+//	mux.Handle("/oauth/", client.Handlers())
+//
+// which exposes /oauth/login, /oauth/callback, /oauth/logout. Mounting
+// under any other prefix silently 404s because StripPrefix only strips
+// "/oauth". Callers that need a different prefix should wire the three
+// handler methods themselves (or wrap the returned handler with their
+// own StripPrefix after forking this shape).
+func (c *Client) Handlers() Handlers {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", c.handleLogin)
 	mux.HandleFunc("GET /callback", c.handleCallback)
@@ -312,6 +326,13 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "oauth2: state persistence failed", http.StatusInternalServerError)
 		return
 	}
+	// Bind the CSRF state to the initiating browser. Server-side
+	// single-use storage alone only prevents replay; without a
+	// browser-bound cookie an attacker can complete login as
+	// themselves and lure the victim into consuming the callback
+	// (login CSRF / session swap). The cookie carries a hash of the
+	// state so the raw state is not double-exposed.
+	http.SetCookie(w, c.stateCookie(stateBindingValue(state)))
 	http.Redirect(w, r, c.oauth.AuthCodeURL(state, authOpts...), http.StatusFound)
 }
 
@@ -337,15 +358,40 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "oauth2: missing state or code", http.StatusBadRequest)
 		return
 	}
-	entry, err := c.state.Get(r.Context(), stateToken)
-	if err != nil {
-		c.logger.WarnContext(r.Context(), "oauth2: callback state lookup failed", slog.String("error", err.Error()))
+	// Browser binding: the state cookie set at /login must match this
+	// callback's state. Presence in StateStore alone is not enough —
+	// that would accept a state minted for a different browser
+	// (login CSRF / session swap).
+	stateCookie, err := r.Cookie(c.stateCookieName())
+	if err != nil || stateCookie.Value == "" {
+		c.logger.WarnContext(r.Context(), "oauth2: callback missing state cookie")
 		http.Error(w, ErrStateMismatch.Error(), http.StatusBadRequest)
 		return
 	}
-	// Single-use state: delete before exchange so a replay can't
-	// succeed even on a slow exchange.
-	_ = c.state.Delete(r.Context(), stateToken)
+	expected := stateBindingValue(stateToken)
+	if subtle.ConstantTimeCompare([]byte(stateCookie.Value), []byte(expected)) != 1 {
+		c.logger.WarnContext(r.Context(), "oauth2: callback state cookie mismatch")
+		http.Error(w, ErrStateMismatch.Error(), http.StatusBadRequest)
+		return
+	}
+	// Clear the one-shot binding cookie whether the rest of the flow
+	// succeeds or fails.
+	http.SetCookie(w, c.clearStateCookie())
+
+	entry, err := c.takeState(r.Context(), stateToken)
+	if err != nil {
+		if errors.Is(err, ErrStateNotFound) {
+			c.logger.WarnContext(r.Context(), "oauth2: callback state mismatch", redact.Error(err))
+			http.Error(w, ErrStateMismatch.Error(), http.StatusBadRequest)
+			return
+		}
+		// Infrastructure failures (Redis down, timeouts) must not be
+		// reported as "state mismatch" — that misleads operators and
+		// confuses attack-signal dashboards with availability faults.
+		c.logger.WarnContext(r.Context(), "oauth2: callback state store failed", redact.Error(err))
+		http.Error(w, "oauth2: state store unavailable", http.StatusServiceUnavailable)
+		return
+	}
 
 	exchangeCtx := oidc.ClientContext(r.Context(), c.httpClient)
 	exchangeOpts := []xoauth2.AuthCodeOption{}
@@ -369,7 +415,7 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		// or the issuer's raw endpoint body. Log it redacted and return
 		// only the opaque sentinel across the trust boundary.
 		c.logger.WarnContext(r.Context(), "oauth2: id_token verify failed", redact.Error(err))
-		http.Error(w, ErrCodeExchange.Error(), http.StatusBadRequest)
+		http.Error(w, ErrIDTokenInvalid.Error(), http.StatusBadRequest)
 		return
 	}
 	if idToken.Nonce != entry.Nonce {
@@ -378,7 +424,8 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	var claims map[string]any
 	if err := idToken.Claims(&claims); err != nil {
-		http.Error(w, fmt.Sprintf("oauth2: id_token claims: %v", err), http.StatusBadGateway)
+		c.logger.WarnContext(r.Context(), "oauth2: id_token claims decode failed", redact.Error(err))
+		http.Error(w, ErrIDTokenInvalid.Error(), http.StatusBadGateway)
 		return
 	}
 
@@ -388,14 +435,19 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess := Session{
-		SessionID:    sessionID,
-		UserID:       idToken.Subject,
-		AccessToken:  secret.NewFromString(token.AccessToken),
-		RefreshToken: secret.NewFromString(token.RefreshToken),
-		Expiry:       token.Expiry,
-		Claims:       claims,
+		SessionID:   sessionID,
+		UserID:      idToken.Subject,
+		AccessToken: secret.NewFromString(token.AccessToken),
+		Expiry:      token.Expiry,
+		Claims:      claims,
+	}
+	// Nil when the issuer did not grant a refresh token (documented
+	// Session.RefreshToken contract).
+	if token.RefreshToken != "" {
+		sess.RefreshToken = secret.NewFromString(token.RefreshToken)
 	}
 	if err := c.sessions.Put(r.Context(), sessionID, sess, c.sessionTTL); err != nil {
+		c.logger.WarnContext(r.Context(), "oauth2: session.Put failed", redact.Error(err))
 		http.Error(w, "oauth2: session persistence failed", http.StatusInternalServerError)
 		return
 	}
@@ -411,20 +463,41 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	w.WriteHeader(http.StatusNoContent)
+	// No deep link: leave the browser on a human-readable landing page
+	// rather than a blank 204 body (common when SPA apps forgot to pass
+	// redirect_to). Operators can still override via redirect_to.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("<!doctype html><title>Signed in</title><p>Signed in. You can close this window.</p>"))
 }
 
 // handleLogout drops the session and clears the cookie.
 func (c *Client) handleLogout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(c.cookieName)
-	if err == nil {
-		_ = c.sessions.Delete(r.Context(), cookie.Value)
+	if err == nil && cookie.Value != "" {
+		if delErr := c.sessions.Delete(r.Context(), cookie.Value); delErr != nil {
+			// Logout is a security-relevant state change. Cookie is still
+			// cleared client-side so the browser stops sending the id, but
+			// a store fault means the server-side session may remain
+			// usable if the cookie is later re-presented (stolen cookie).
+			c.logger.ErrorContext(r.Context(), "oauth2: session.Delete failed on logout",
+				redact.Error(delErr))
+			http.Error(w, "oauth2: session revocation failed", http.StatusInternalServerError)
+			// Still clear the cookie so the client stops presenting it.
+			http.SetCookie(w, c.clearSessionCookie())
+			return
+		}
 	}
 	// Mirror Domain (and other scoping attributes) from sessionCookie so a
 	// domain-scoped session cookie set via WithCookieDomain is actually
 	// matched and removed by the browser; otherwise the stale cookie value
 	// would linger client-side.
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, c.clearSessionCookie())
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (c *Client) clearSessionCookie() *http.Cookie {
+	return &http.Cookie{
 		Name:     c.cookieName,
 		Value:    "",
 		Path:     "/",
@@ -433,9 +506,49 @@ func (c *Client) handleLogout(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   c.cookieSecure,
 		SameSite: http.SameSiteLaxMode,
-	})
-	w.WriteHeader(http.StatusNoContent)
+	}
 }
+
+// stateTaker is optionally implemented by StateStore backends that can
+// atomically consume a one-shot state entry (GETDEL / Take).
+type stateTaker interface {
+	Take(ctx context.Context, state string) (StateEntry, error)
+}
+
+// takeState consumes a single-use login state. Prefer atomic Take when
+// the store implements it; otherwise Get-then-Delete with Delete errors
+// logged (non-atomic fallback for external backends).
+func (c *Client) takeState(ctx context.Context, state string) (StateEntry, error) {
+	if taker, ok := c.state.(stateTaker); ok {
+		return taker.Take(ctx, state)
+	}
+	entry, err := c.state.Get(ctx, state)
+	if err != nil {
+		return StateEntry{}, err
+	}
+	if delErr := c.state.Delete(ctx, state); delErr != nil {
+		c.logger.ErrorContext(ctx, "oauth2: state.Delete failed after Get; entry may be replayable",
+			redact.Error(delErr))
+	}
+	return entry, nil
+}
+
+// SessionFromRequest loads the session bound to the request's session
+// cookie. Returns ErrSessionNotFound when the cookie is absent/empty or
+// the store has no matching live session.
+func (c *Client) SessionFromRequest(ctx context.Context, r *http.Request) (Session, error) {
+	if r == nil {
+		return Session{}, ErrSessionNotFound
+	}
+	cookie, err := r.Cookie(c.cookieName)
+	if err != nil || cookie.Value == "" {
+		return Session{}, ErrSessionNotFound
+	}
+	return c.sessions.Get(ctx, cookie.Value)
+}
+
+// CookieName returns the session cookie name used by this client.
+func (c *Client) CookieName() string { return c.cookieName }
 
 func (c *Client) sessionCookie(sessionID string) *http.Cookie {
 	return &http.Cookie{
@@ -450,11 +563,67 @@ func (c *Client) sessionCookie(sessionID string) *http.Cookie {
 	}
 }
 
-// OAuth2Config returns the underlying *xoauth2.Config so callers can
-// build refresh-token transports (oauth2.Token{RefreshToken: ...}.
-// Client(ctx)) or per-request OAuth2 transports without re-discovering
-// endpoints. Returned value MUST NOT be mutated.
-func (c *Client) OAuth2Config() *xoauth2.Config { return c.oauth }
+// stateCookieName is the browser-bound CSRF state cookie. Derived from
+// the session cookie name so WithCookieName stays a single control.
+func (c *Client) stateCookieName() string {
+	return c.cookieName + "_state"
+}
+
+// stateBindingValue returns the cookie value for a login state token.
+// We store a hash rather than the raw state so a leaked cookie alone
+// does not give an attacker the full state parameter without also
+// controlling the redirect query.
+func stateBindingValue(state string) string {
+	sum := sha256.Sum256([]byte(state))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func (c *Client) stateCookie(value string) *http.Cookie {
+	return &http.Cookie{
+		Name:     c.stateCookieName(),
+		Value:    value,
+		Path:     "/",
+		Domain:   c.cookieDomain,
+		HttpOnly: true,
+		Secure:   c.cookieSecure,
+		// Lax so the cookie is sent on the top-level IdP redirect back
+		// to /callback (SameSite=Strict would drop it on that hop).
+		SameSite: http.SameSiteLaxMode,
+		// MaxAge mirrors stateTTL; Expires is belt-and-braces for older
+		// clients that ignore MaxAge.
+		MaxAge:  int(c.stateTTL.Seconds()),
+		Expires: time.Now().Add(c.stateTTL),
+	}
+}
+
+func (c *Client) clearStateCookie() *http.Cookie {
+	return &http.Cookie{
+		Name:     c.stateCookieName(),
+		Value:    "",
+		Path:     "/",
+		Domain:   c.cookieDomain,
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   c.cookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+// OAuth2Config returns a shallow copy of the underlying *xoauth2.Config
+// so callers can build refresh-token transports
+// (oauth2.Token{RefreshToken: ...}.Client(ctx)) or per-request OAuth2
+// transports without re-discovering endpoints. Mutating the returned
+// value never affects the client's login/callback exchange path.
+func (c *Client) OAuth2Config() *xoauth2.Config {
+	if c == nil || c.oauth == nil {
+		return nil
+	}
+	cp := *c.oauth
+	if c.oauth.Scopes != nil {
+		cp.Scopes = append([]string(nil), c.oauth.Scopes...)
+	}
+	return &cp
+}
 
 // Provider returns the underlying *oidc.Provider for callers needing
 // UserInfo or non-standard discovery fields.

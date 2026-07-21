@@ -99,6 +99,11 @@ var (
 	ErrNonceMismatch = errors.New("oauth2: id_token nonce mismatch")
 	// ErrCodeExchange wraps token-endpoint exchange failures.
 	ErrCodeExchange = errors.New("oauth2: code exchange failed")
+	// ErrIDTokenInvalid is returned when the ID token fails verification or
+	// claims decoding. Distinct from [ErrCodeExchange] so operators can
+	// distinguish token-endpoint failures from ID-token validation failures
+	// without reflecting verifier details to the client.
+	ErrIDTokenInvalid = errors.New("oauth2: id_token invalid")
 	// ErrProviderError is returned by the callback handler when the
 	// issuer redirects back with an OAuth2 `error` parameter (RFC 6749
 	// §4.1.2.1). The opaque, attacker-influenced `error`/`error_description`
@@ -107,13 +112,16 @@ var (
 	ErrProviderError = errors.New("oauth2: provider returned an error")
 )
 
-// Handlers is the interface returned by [Client.Handlers]. The login
-// handler redirects to the issuer; the callback handler exchanges the
-// code + sets the session cookie. Mounted under a path prefix:
+// Handlers is the http.Handler returned by [Client.Handlers]. It serves
+// the OAuth2 login, callback, and logout endpoints. Mount under a path
+// prefix:
 //
 //	mux.Handle("/oauth/", oauthClient.Handlers())
 //
-// exposes /oauth/login, /oauth/callback, /oauth/logout.
+// which exposes /oauth/login, /oauth/callback, /oauth/logout.
+//
+// The concrete type is an opaque http.Handler (typically StripPrefix +
+// ServeMux). Callers should depend only on the [http.Handler] methods.
 type Handlers interface {
 	http.Handler
 }

@@ -89,6 +89,12 @@ func Run(ctx context.Context) error {
 		centrifuge.WithJWTAuth(verifier),
 		centrifuge.WithChannelClassifier(classifyChannel),
 		centrifuge.WithLogger(logger),
+		// Demo-only: allow any authenticated client on any channel so the
+		// smoke test can subscribe without a full authz matrix. Production
+		// services MUST replace this with WithSubscribeAuthorizer /
+		// WithPublishAuthorizer that enforce user:/tenant: ownership.
+		// kit-doctor:allow centrifuge-open-channels-unsafe
+		centrifuge.WithOpenChannelsUnsafe(),
 	)
 	if err != nil {
 		return fmt.Errorf("build centrifuge node: %w", err)

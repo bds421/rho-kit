@@ -65,9 +65,11 @@ type CertificateSource interface {
 // still serving last-good while reload is broken".
 //
 // Safe for concurrent use after construction. Call [Close] to stop
-// the polling goroutine; without it, the goroutine releases when the
-// FilesCertificateSource is unreachable but the kit cannot enforce
-// determinism.
+// the polling goroutine when [WithReloadInterval] enabled polling.
+// Close is mandatory in that case: the poll goroutine holds a reference
+// to the source, so dropping the last external reference without Close
+// does NOT make the source unreachable and leaks the goroutine, ticker,
+// and cert snapshot for the process lifetime.
 type FilesCertificateSource struct {
 	cfg TLSConfig
 

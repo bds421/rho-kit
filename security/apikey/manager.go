@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/apperror"
 	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
@@ -97,8 +98,13 @@ func (m *Manager) Rotate(ctx context.Context, oldID string, overlap time.Duratio
 	if err != nil {
 		return Key{}, nil, fmt.Errorf("apikey: rotate: load old key: %w", err)
 	}
-
+	// A revoked key must not be resurrected into a fresh active credential;
+	// callers that need a genuinely new credential after revoke should Issue.
 	now := m.now()
+	if !old.RevokedAt.IsZero() && !old.RevokedAt.After(now) {
+		return Key{}, nil, fmt.Errorf("apikey: rotate: %w", ErrRevoked)
+	}
+
 	newKey, token, err := Generate(GenerateOptions{
 		Kind:        old.Kind,
 		Scopes:      old.Scopes,
@@ -122,9 +128,45 @@ func (m *Manager) Rotate(ctx context.Context, oldID string, overlap time.Duratio
 		revokeAt = now.Add(overlap)
 	}
 	if err := m.repo.Revoke(ctx, oldID, revokeAt); err != nil {
+		// Best-effort roll back the newly inserted key so a failed
+		// revocation schedule does not leave an orphaned live credential
+		// whose token was never returned to the caller.
+		_ = m.repo.Revoke(ctx, newKey.ID, now)
 		return Key{}, nil, fmt.Errorf("apikey: rotate: schedule old key revocation: %w", err)
 	}
 	return newKey, token, nil
+}
+
+// RotateOwned is owner-scoped [Rotate]: the key must exist and belong to
+// owner. On owner mismatch the error is not-found (same as a missing id)
+// so callers cannot probe other tenants' key ids.
+func (m *Manager) RotateOwned(ctx context.Context, owner, oldID string, overlap time.Duration) (Key, *secret.String, error) {
+	if owner == "" {
+		return Key{}, nil, fmt.Errorf("apikey: rotate owned: owner must not be empty")
+	}
+	old, err := m.repo.FindByID(ctx, oldID)
+	if err != nil {
+		return Key{}, nil, fmt.Errorf("apikey: rotate owned: load old key: %w", err)
+	}
+	if old.Owner != owner {
+		return Key{}, nil, apperror.NewNotFound("api key", oldID)
+	}
+	return m.Rotate(ctx, oldID, overlap)
+}
+
+// RevokeOwned is owner-scoped [Revoke]. Owner mismatch returns not-found.
+func (m *Manager) RevokeOwned(ctx context.Context, owner, id string) error {
+	if owner == "" {
+		return fmt.Errorf("apikey: revoke owned: owner must not be empty")
+	}
+	key, err := m.repo.FindByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("apikey: revoke owned: %w", err)
+	}
+	if key.Owner != owner {
+		return apperror.NewNotFound("api key", id)
+	}
+	return m.Revoke(ctx, id)
 }
 
 // Revoke revokes a key immediately.
@@ -154,6 +196,12 @@ func (m *Manager) List(ctx context.Context, owner string) ([]Key, error) {
 func rotatedExpiry(old Key, now time.Time) time.Time {
 	if old.ExpiresAt.IsZero() {
 		return time.Time{}
+	}
+	// Zero CreatedAt would make ExpiresAt.Sub(CreatedAt) ≈ ExpiresAt's
+	// absolute Unix offset (~hundreds of years), granting a near-immortal
+	// replacement. Fall back to the absolute ExpiresAt as documented.
+	if old.CreatedAt.IsZero() {
+		return old.ExpiresAt
 	}
 	ttl := old.ExpiresAt.Sub(old.CreatedAt)
 	if ttl <= 0 {

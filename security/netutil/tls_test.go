@@ -252,3 +252,28 @@ func writePEMForTest(t *testing.T, path, typ string, der []byte) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+func TestServerTLS_PartialConfigErrors(t *testing.T) {
+	cfg := TLSConfig{Cert: "/tmp/cert.pem"} // missing CA + Key
+	tlsCfg, err := cfg.ServerTLS()
+	if err == nil {
+		t.Fatal("partial TLS must not fail open to nil,nil")
+	}
+	if tlsCfg != nil {
+		t.Fatal("expected nil tls.Config on partial config")
+	}
+	if !strings.Contains(err.Error(), "partial TLS") {
+		t.Fatalf("err = %v, want partial TLS message", err)
+	}
+}
+
+func TestClientTLS_PartialConfigErrors(t *testing.T) {
+	cfg := TLSConfig{CACert: "/tmp/ca.pem", Key: "/tmp/key.pem"} // missing Cert
+	tlsCfg, err := cfg.ClientTLS()
+	if err == nil {
+		t.Fatal("partial TLS must not fail open to nil,nil")
+	}
+	if tlsCfg != nil {
+		t.Fatal("expected nil tls.Config on partial config")
+	}
+}

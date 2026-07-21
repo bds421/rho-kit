@@ -1,7 +1,7 @@
 // Package oauth2 is the kit's OAuth2 / OIDC relying-party client.
 // Companion to [security/jwtutil] (which VERIFIES inbound JWTs); this
 // package ISSUES login redirects, EXCHANGES authorization codes, and
-// REFRESHES access/refresh tokens against an upstream OIDC issuer.
+// persists browser sessions against an upstream OIDC issuer.
 //
 // Built on the ecosystem-standard [golang.org/x/oauth2] (for the
 // OAuth2 dance and PKCE helpers) and
@@ -13,22 +13,28 @@
 // guards, PKCE challenge/verifier pairing) come from the audited
 // libraries, NOT the kit.
 //
+// Token refresh and client-credentials (M2M) flows are NOT provided as
+// first-class APIs. Use [Client.OAuth2Config] as the escape hatch to
+// build a refresh TokenSource or credentials grant via
+// golang.org/x/oauth2. [Client.SessionFromRequest] loads the session
+// cookie established by the login/callback handlers.
+//
 // # Use this package when
 //
 //   - Your service authenticates end-users via an external OIDC
 //     provider (Auth0, Keycloak, Cognito, Okta, Google, ...).
 //   - You want the kit to handle the PKCE state machine, OIDC
-//     well-known discovery, ID-token verification, and refresh-token
-//     dance instead of hand-rolling them per service.
+//     well-known discovery, ID-token verification, and browser
+//     session cookies instead of hand-rolling them per service.
 //
 // # Do NOT use this package for
 //
 //   - Verifying JWTs issued by your own services. Use
 //     [security/jwtutil] — it doesn't need OAuth2 client wiring.
-//   - Machine-to-machine token issuance. The OAuth2 client credentials
-//     flow ships in this package, but the typical kit pattern for M2M
-//     is service-to-service mTLS (see [security/mtlsidentity]) since
-//     mTLS doesn't need a token at all.
+//   - Machine-to-machine token issuance. Prefer service-to-service
+//     mTLS (see [security/mtlsidentity]), or drive the credentials
+//     grant via [Client.OAuth2Config] yourself.
+
 //
 // # Sibling packages
 //

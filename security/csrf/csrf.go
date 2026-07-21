@@ -138,6 +138,11 @@ func NewIssuerWithSecrets(current []byte, previous [][]byte, opts ...Option) (*I
 	if i.ttl <= 0 {
 		return nil, errors.New("csrf: TTL must be positive")
 	}
+	// Tokens encode issued-at as Unix seconds, so sub-second TTLs would
+	// truncate to zero and expire every token instantly on Verify.
+	if i.ttl < time.Second {
+		return nil, errors.New("csrf: TTL must be at least 1s (token timestamps are second-resolution)")
+	}
 	return i, nil
 }
 
@@ -147,7 +152,7 @@ func NewIssuerWithSecrets(current []byte, previous [][]byte, opts ...Option) (*I
 func MustNewIssuer(secret []byte, opts ...Option) *Issuer {
 	i, err := NewIssuer(secret, opts...)
 	if err != nil {
-		panic("csrf: MustNewIssuer issuer configuration is invalid")
+		panic("csrf: MustNewIssuer: " + err.Error())
 	}
 	return i
 }
@@ -156,7 +161,7 @@ func MustNewIssuer(secret []byte, opts ...Option) *Issuer {
 func MustNewIssuerWithSecrets(current []byte, previous [][]byte, opts ...Option) *Issuer {
 	i, err := NewIssuerWithSecrets(current, previous, opts...)
 	if err != nil {
-		panic("csrf: MustNewIssuerWithSecrets issuer configuration is invalid")
+		panic("csrf: MustNewIssuerWithSecrets: " + err.Error())
 	}
 	return i
 }
@@ -184,7 +189,7 @@ func (i *Issuer) Issue(sessionID string) (Token, error) {
 	prefix := sessionPrefix(sessionID)
 
 	// Layout: prefix(8) || iat(8) || nonce(16) || mac(32) = 64 bytes
-	body := make([]byte, 0, sessionPrefixLen+8+nonceLen)
+	body := make([]byte, 0, sessionPrefixLen+8+nonceLen+32) // full 64-byte layout incl. MAC
 	body = append(body, prefix...)
 	body = binary.BigEndian.AppendUint64(body, uint64(now))
 	body = append(body, nonce...)

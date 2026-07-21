@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,14 +27,23 @@ import (
 // [Node.Start] may be called at most once; a re-entry returns an
 // error rather than racing the centrifuge node's internal state.
 type Node struct {
-	node       *cfg.Node
-	logger     *slog.Logger
-	verifier   *jwtutil.Provider
-	classifier ChannelClassifier
-	metrics    *Metrics
+	node                *cfg.Node
+	logger              *slog.Logger
+	verifier            *jwtutil.Provider
+	classifier          ChannelClassifier
+	metrics             *Metrics
+	subscribeAuthorizer ChannelAuthorizer
+	publishAuthorizer   ChannelAuthorizer
+	openChannelsUnsafe  bool
+	wsMessageSizeLimit  int
+	wsWriteTimeout      time.Duration
 
-	started atomic.Bool
-	stopped atomic.Bool
+	// lifecycleMu serialises Start/Stop so check-then-act across the
+	// started/stopped atomics cannot leak a running node that Stop
+	// will never shut down.
+	lifecycleMu sync.Mutex
+	started     atomic.Bool
+	stopped     atomic.Bool
 }
 
 // NewNode constructs a kit-wrapped centrifuge node. Options are
@@ -59,6 +69,9 @@ func NewNode(opts ...Option) (*Node, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if c.verifier == nil && !c.anonymousUnsafe {
+		return nil, errors.New("realtime/centrifuge: NewNode requires WithJWTAuth or explicit WithAnonymousConnectionsUnsafe (bare nodes are not open pub/sub buses)")
+	}
 
 	cnode, err := cfg.New(cfg.Config{
 		LogLevel:   toCentrifugeLogLevel(c.logLevel),
@@ -78,30 +91,40 @@ func NewNode(opts ...Option) (*Node, error) {
 	}
 
 	n := &Node{
-		node:       cnode,
-		logger:     logger,
-		verifier:   c.verifier,
-		classifier: c.classifier,
-		metrics:    metrics,
+		node:                cnode,
+		logger:              logger,
+		verifier:            c.verifier,
+		classifier:          c.classifier,
+		metrics:             metrics,
+		subscribeAuthorizer: c.subscribeAuthorizer,
+		publishAuthorizer:   c.publishAuthorizer,
+		openChannelsUnsafe:  c.openChannelsUnsafe,
+		wsMessageSizeLimit:  c.wsMessageSizeLimit,
+		wsWriteTimeout:      c.wsWriteTimeout,
 	}
 
-	// Install kit-side callback wiring. Callers may override or
-	// extend by calling node.Underlying().OnSubscribe / OnPublish
-	// etc., but the kit's connect-auth and metrics observation must
-	// be installed first so they run regardless of caller wiring.
+	// Install kit-side callback wiring (connect auth, channel authz,
+	// metrics). Channel-level authz is configured via
+	// WithSubscribeAuthorizer / WithPublishAuthorizer /
+	// WithOpenChannelsUnsafe — not by replacing handlers on the
+	// underlying node (centrifuge.Node has no OnSubscribe/OnPublish;
+	// those are per-client hooks installed here in OnConnect).
 	n.installCallbacks()
 	return n, nil
 }
 
 // Underlying returns the wrapped [centrifuge.Node] for advanced
 // users who need access to surfaces the kit does not (yet) expose
-// — channel-level authorization callbacks, server-side
-// subscriptions, RPC handlers, history/presence APIs.
+// — server-side subscriptions, RPC handlers, history/presence APIs.
 //
-// The kit's connect-auth and metrics callbacks are already
-// installed; callers MAY register additional callbacks but MUST
-// NOT replace OnConnecting with logic that bypasses the kit's
-// auth chain.
+// Channel-level authorization MUST be configured via
+// [WithSubscribeAuthorizer] / [WithPublishAuthorizer] (or deliberately
+// [WithOpenChannelsUnsafe]). Do not call client.OnSubscribe /
+// client.OnPublish yourself: those hooks are installed per connection
+// inside the kit's OnConnect, and replacing OnConnect wholesale drops
+// kit metrics and authz. Callers MAY register additional node-level
+// callbacks (OnSurvey, …) but MUST NOT replace OnConnecting with
+// logic that bypasses the kit's auth chain.
 func (n *Node) Underlying() *cfg.Node {
 	return n.node
 }
@@ -122,12 +145,23 @@ func (n *Node) Start(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("realtime/centrifuge: Start requires a non-nil context")
 	}
-	if !n.started.CompareAndSwap(false, true) {
+	n.lifecycleMu.Lock()
+	if n.stopped.Load() {
+		n.lifecycleMu.Unlock()
+		return errors.New("realtime/centrifuge: Node.Start after Stop")
+	}
+	if n.started.Load() {
+		n.lifecycleMu.Unlock()
 		return errors.New("realtime/centrifuge: Node.Start already invoked")
 	}
 	if err := n.node.Run(); err != nil {
+		n.lifecycleMu.Unlock()
 		return redact.WrapError("realtime/centrifuge: node run", err)
 	}
+	// Mark started only after Run succeeds so a failed Start can be
+	// retried and Stop's never-ran guard stays accurate.
+	n.started.Store(true)
+	n.lifecycleMu.Unlock()
 	// Block until ctx cancels — Run() returns immediately after
 	// starting internal goroutines; lifecycle.Component contract
 	// requires Start to block.
@@ -141,16 +175,23 @@ func (n *Node) Start(ctx context.Context) error {
 // Idempotent: a second Stop is a no-op. Stop is a safe no-op when
 // Start was never reached too — centrifuge's Shutdown nil-derefs an
 // unstarted node, so the kit guards against that to keep the
-// lifecycle.Runner happy in failure-cleanup paths.
+// lifecycle.Runner happy in failure-cleanup paths. A Stop that races
+// a concurrent Start waits for Start to finish transitioning so a
+// successfully started node is always shut down.
 func (n *Node) Stop(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("realtime/centrifuge: Stop requires a non-nil context")
 	}
-	if !n.stopped.CompareAndSwap(false, true) {
+	n.lifecycleMu.Lock()
+	defer n.lifecycleMu.Unlock()
+	if n.stopped.Load() {
 		return nil
 	}
+	n.stopped.Store(true)
 	if !n.started.Load() {
-		// Never ran — nothing to shut down.
+		// Never ran — nothing to shut down. stopped is set so a later
+		// Start is refused rather than leaving a node with no
+		// shutdown path.
 		return nil
 	}
 	if err := n.node.Shutdown(ctx); err != nil {
@@ -168,12 +209,20 @@ func (n *Node) Stop(ctx context.Context) error {
 // stack — wrap with auth, rate limiting, request IDs, panic
 // recovery exactly like any other http.Handler.
 func (n *Node) WebsocketHandler() http.Handler {
-	return cfg.NewWebsocketHandler(n.node, cfg.WebsocketConfig{})
+	wscfg := cfg.WebsocketConfig{}
+	if n.wsMessageSizeLimit > 0 {
+		wscfg.MessageSizeLimit = n.wsMessageSizeLimit
+	}
+	if n.wsWriteTimeout > 0 {
+		wscfg.WriteTimeout = n.wsWriteTimeout
+	}
+	return cfg.NewWebsocketHandler(n.node, wscfg)
 }
 
 // installCallbacks wires the kit-side OnConnecting handler (JWT
-// auth + connect metrics) and the subscribe/publish observation
-// hooks for channel-class metrics.
+// auth + connect metrics) and per-client subscribe/publish handlers
+// that enforce channel authorization (fail-closed by default) while
+// still emitting channel-class metrics.
 func (n *Node) installCallbacks() {
 	n.node.OnConnecting(func(ctx context.Context, e cfg.ConnectEvent) (cfg.ConnectReply, error) {
 		if n.verifier == nil {
@@ -187,11 +236,18 @@ func (n *Node) installCallbacks() {
 		}
 		claims, err := n.verifier.VerifyContext(ctx, token, time.Now())
 		if err != nil {
-			n.metrics.observeConnect(connectOutcomeRejected)
-			n.logger.WarnContext(ctx, "centrifuge: connect token verification failed",
-				redact.Error(err),
-			)
-			return cfg.ConnectReply{}, cfg.DisconnectInvalidToken
+			disc, outcome := connectVerifyFailure(err)
+			n.metrics.observeConnect(outcome)
+			if outcome == connectOutcomeError {
+				n.logger.ErrorContext(ctx, "centrifuge: connect token verification failed (key set unavailable)",
+					redact.Error(err),
+				)
+			} else {
+				n.logger.WarnContext(ctx, "centrifuge: connect token verification failed",
+					redact.Error(err),
+				)
+			}
+			return cfg.ConnectReply{}, disc
 		}
 		n.metrics.observeConnect(connectOutcomeAccepted)
 		return cfg.ConnectReply{
@@ -205,10 +261,18 @@ func (n *Node) installCallbacks() {
 	n.node.OnConnect(func(client *cfg.Client) {
 		client.OnSubscribe(func(e cfg.SubscribeEvent, cb cfg.SubscribeCallback) {
 			n.metrics.observeSubscribe(n.classifier(e.Channel))
+			if err := n.authorizeChannel(client, e.Channel, n.subscribeAuthorizer); err != nil {
+				cb(cfg.SubscribeReply{}, err)
+				return
+			}
 			cb(cfg.SubscribeReply{}, nil)
 		})
 		client.OnPublish(func(e cfg.PublishEvent, cb cfg.PublishCallback) {
 			n.metrics.observePublish(n.classifier(e.Channel))
+			if err := n.authorizeChannel(client, e.Channel, n.publishAuthorizer); err != nil {
+				cb(cfg.PublishReply{}, err)
+				return
+			}
 			cb(cfg.PublishReply{}, nil)
 		})
 		client.OnDisconnect(func(e cfg.DisconnectEvent) {
@@ -217,11 +281,55 @@ func (n *Node) installCallbacks() {
 	})
 }
 
+// authorizeChannel applies fail-closed channel authorization.
+// Order: open-channels opt-in → explicit authorizer → default deny.
+func (n *Node) authorizeChannel(client *cfg.Client, channel string, authorizer ChannelAuthorizer) error {
+	if n.openChannelsUnsafe {
+		return nil
+	}
+	if authorizer == nil {
+		return cfg.ErrorPermissionDenied
+	}
+	ctx := context.Background()
+	if client != nil {
+		if cctx := client.Context(); cctx != nil {
+			ctx = cctx
+		}
+	}
+	ev := ChannelAuthEvent{Channel: channel}
+	if client != nil {
+		ev.ClientID = client.ID()
+		ev.UserID = client.UserID()
+	}
+	if err := authorizer(ctx, ev); err != nil {
+		// Map caller errors to permission-denied so clients never see
+		// raw internal error text; log the detail for operators.
+		n.logger.WarnContext(ctx, "centrifuge: channel authorization denied",
+			redact.String("channel", channel),
+			redact.String("user_id", ev.UserID),
+			redact.Error(err),
+		)
+		return cfg.ErrorPermissionDenied
+	}
+	return nil
+}
+
 // extractBearer extracts a bearer token from the centrifuge connect
 // event. Centrifuge clients send the token via either the dedicated
 // Token field (JWT-style auth) or the freeform Data blob (older
 // clients). The kit accepts either with the Token field taking
 // precedence.
+
+// connectVerifyFailure maps a verifier error to the centrifuge disconnect
+// advice and the connects_total outcome label. Infrastructure failures
+// (JWKS not ready / stale) are temporary; token failures are terminal.
+func connectVerifyFailure(err error) (disconnect cfg.Disconnect, outcome string) {
+	if errors.Is(err, jwtutil.ErrKeySetUnavailable) {
+		return cfg.DisconnectServerError, connectOutcomeError
+	}
+	return cfg.DisconnectInvalidToken, connectOutcomeRejected
+}
+
 func extractBearer(token string, data []byte) string {
 	if token != "" {
 		return strings.TrimPrefix(token, "Bearer ")

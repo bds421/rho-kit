@@ -68,7 +68,10 @@ func (r *MemoryRepository) Revoke(_ context.Context, id string, at time.Time) er
 	if !ok {
 		return apperror.NewNotFound("api key", id)
 	}
-	if key.RevokedAt.IsZero() {
+	// Allow setting an initial revocation or moving an existing one
+	// earlier (emergency revoke of a rotating key with a future RevokedAt).
+	// Never push RevokedAt later — that would re-extend a revoked window.
+	if key.RevokedAt.IsZero() || at.Before(key.RevokedAt) {
 		revoked := cloneKey(key)
 		revoked.RevokedAt = at
 		r.keys[id] = revoked

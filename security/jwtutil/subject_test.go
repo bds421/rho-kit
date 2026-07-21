@@ -5,9 +5,9 @@ import "testing"
 func TestNormalizeSubjectID(t *testing.T) {
 	uuid := "11111111-1111-1111-1111-111111111111"
 	cases := []struct {
-		in      string
-		want    string
-		wantOK  bool
+		in     string
+		want   string
+		wantOK bool
 	}{
 		{uuid, uuid, true},
 		{SubjectPrefixUser + uuid, uuid, true},

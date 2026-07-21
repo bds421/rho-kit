@@ -73,10 +73,13 @@ func TestConfig_LogValue_RedactsCredentialsAndHeaders(t *testing.T) {
 }
 
 func TestClientConfiguration_DefaultsHTTPClientTimeout(t *testing.T) {
-	cfg := clientConfiguration(Config{
+	cfg, err := clientConfiguration(Config{
 		APIURL:  "https://openfga.test",
 		StoreID: testStoreID,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.HTTPClient == nil {
 		t.Fatal("expected default HTTP client")
@@ -105,10 +108,13 @@ func TestClientConfiguration_DefaultHTTPClientBlocksRedirects(t *testing.T) {
 	}))
 	defer redirector.Close()
 
-	cfg := clientConfiguration(Config{
+	cfg, err := clientConfiguration(Config{
 		APIURL:  "https://openfga.test",
 		StoreID: testStoreID,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	resp, err := cfg.HTTPClient.Get(redirector.URL)
 	if resp != nil {
@@ -132,7 +138,10 @@ func TestDefaultHTTPClient_ClonesTLSConfigAndEnforcesFloor(t *testing.T) {
 	base.TLSClientConfig = cfg
 	http.DefaultTransport = base
 
-	client := defaultHTTPClient()
+	client, err := defaultHTTPClient()
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg.NextProtos[0] = "mutated"
 	tr, ok := client.Transport.(*http.Transport)
 	if !ok {
@@ -155,7 +164,7 @@ func TestDefaultHTTPClient_ClonesTLSConfigAndEnforcesFloor(t *testing.T) {
 	}
 }
 
-func TestDefaultHTTPClient_PanicsOnTLSMaxVersionBelowFloor(t *testing.T) {
+func TestDefaultHTTPClient_ErrorsOnTLSMaxVersionBelowFloor(t *testing.T) {
 	prev := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = prev })
 
@@ -163,26 +172,26 @@ func TestDefaultHTTPClient_PanicsOnTLSMaxVersionBelowFloor(t *testing.T) {
 	base.TLSClientConfig = &tls.Config{MaxVersion: minimumHTTPClientTLSVersion - 1}
 	http.DefaultTransport = base
 
-	defer func() {
-		rec := recover()
-		if rec == nil {
-			t.Fatal("expected panic")
-		}
-		if rec != "openfga: default HTTP client TLS MaxVersion must allow TLS 1.2 or newer" {
-			t.Fatalf("panic = %v", rec)
-		}
-	}()
-	_ = defaultHTTPClient()
+	_, err := defaultHTTPClient()
+	if err == nil {
+		t.Fatal("expected error for TLS MaxVersion below floor")
+	}
+	if !strings.Contains(err.Error(), "http client tls") {
+		t.Fatalf("error = %v, want http client tls", err)
+	}
 }
 
 func TestClientConfiguration_CustomHTTPClientBlocksRedirectsByDefault(t *testing.T) {
 	custom := &http.Client{Timeout: 2 * time.Second}
 
-	cfg := clientConfiguration(Config{
+	cfg, err := clientConfiguration(Config{
 		APIURL:     "https://openfga.test",
 		StoreID:    testStoreID,
 		HTTPClient: custom,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.HTTPClient == custom {
 		t.Fatal("expected custom HTTP client without redirect policy to be cloned")
@@ -214,11 +223,14 @@ func TestClientConfiguration_CustomHTTPClientFillsMissingTimeout(t *testing.T) {
 		},
 	}
 
-	cfg := clientConfiguration(Config{
+	cfg, err := clientConfiguration(Config{
 		APIURL:     "https://openfga.test",
 		StoreID:    testStoreID,
 		HTTPClient: custom,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.HTTPClient == custom {
 		t.Fatal("expected custom HTTP client with zero timeout to be cloned")
@@ -255,11 +267,14 @@ func TestClientConfiguration_RetainsCustomHTTPClientTimeoutAndCheckRedirect(t *t
 		CheckRedirect: customRedirect,
 	}
 
-	cfg := clientConfiguration(Config{
+	cfg, err := clientConfiguration(Config{
 		APIURL:     "https://openfga.test",
 		StoreID:    testStoreID,
 		HTTPClient: custom,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.HTTPClient.Timeout != 2*time.Second {
 		t.Fatalf("Timeout = %v, want 2s", cfg.HTTPClient.Timeout)
@@ -283,11 +298,14 @@ func TestClientConfiguration_CustomHTTPClientFillsMissingTransport(t *testing.T)
 		},
 	}
 
-	cfg := clientConfiguration(Config{
+	cfg, err := clientConfiguration(Config{
 		APIURL:     "https://openfga.test",
 		StoreID:    testStoreID,
 		HTTPClient: custom,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.HTTPClient == custom {
 		t.Fatal("expected custom client with nil transport to be cloned")
@@ -413,11 +431,14 @@ func TestNew_RejectsMalformedDefaultHeaders(t *testing.T) {
 
 func TestClientConfiguration_ClonesDefaultHeaders(t *testing.T) {
 	headers := map[string]string{"X-Trace-ID": "before"}
-	cfg := clientConfiguration(Config{
+	cfg, err := clientConfiguration(Config{
 		APIURL:         "https://openfga.test",
 		StoreID:        testStoreID,
 		DefaultHeaders: headers,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	headers["X-Trace-ID"] = "after"
 	headers["X-New"] = "new"
 

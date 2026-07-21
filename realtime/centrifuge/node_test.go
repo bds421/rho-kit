@@ -21,6 +21,7 @@ func newQuietLogger() *slog.Logger {
 
 func TestNewNode_OK(t *testing.T) {
 	node, err := rtcentrifuge.NewNode(
+		rtcentrifuge.WithAnonymousConnectionsUnsafe(),
 		rtcentrifuge.WithLogger(newQuietLogger()),
 	)
 	require.NoError(t, err)
@@ -33,6 +34,12 @@ func TestNewNode_NilOption(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestNewNode_RequiresAuthOrAnonymousUnsafe(t *testing.T) {
+	_, err := rtcentrifuge.NewNode(rtcentrifuge.WithLogger(newQuietLogger()))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "WithAnonymousConnectionsUnsafe")
+}
+
 func TestOptionPanics(t *testing.T) {
 	cases := []struct {
 		name string
@@ -41,6 +48,8 @@ func TestOptionPanics(t *testing.T) {
 		{"WithLogger(nil)", func() { rtcentrifuge.WithLogger(nil) }},
 		{"WithJWTAuth(nil)", func() { rtcentrifuge.WithJWTAuth(nil) }},
 		{"WithChannelClassifier(nil)", func() { rtcentrifuge.WithChannelClassifier(nil) }},
+		{"WithSubscribeAuthorizer(nil)", func() { rtcentrifuge.WithSubscribeAuthorizer(nil) }},
+		{"WithPublishAuthorizer(nil)", func() { rtcentrifuge.WithPublishAuthorizer(nil) }},
 		{"WithRegisterer(nil)", func() { rtcentrifuge.WithRegisterer(nil) }},
 		{"NewMetrics(nil-option)", func() { rtcentrifuge.NewMetrics(nil) }},
 	}
@@ -57,14 +66,14 @@ func TestOptionPanics(t *testing.T) {
 }
 
 func TestWebsocketHandler_NotNil(t *testing.T) {
-	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithLogger(newQuietLogger()))
+	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithAnonymousConnectionsUnsafe(), rtcentrifuge.WithLogger(newQuietLogger()))
 	require.NoError(t, err)
 	h := node.WebsocketHandler()
 	require.NotNil(t, h)
 }
 
 func TestNode_StartStop(t *testing.T) {
-	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithLogger(newQuietLogger()))
+	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithAnonymousConnectionsUnsafe(), rtcentrifuge.WithLogger(newQuietLogger()))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -90,7 +99,7 @@ func TestNode_StartStop(t *testing.T) {
 }
 
 func TestNode_DoubleStartRejected(t *testing.T) {
-	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithLogger(newQuietLogger()))
+	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithAnonymousConnectionsUnsafe(), rtcentrifuge.WithLogger(newQuietLogger()))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -108,7 +117,7 @@ func TestNode_DoubleStartRejected(t *testing.T) {
 }
 
 func TestNode_StopIsIdempotent(t *testing.T) {
-	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithLogger(newQuietLogger()))
+	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithAnonymousConnectionsUnsafe(), rtcentrifuge.WithLogger(newQuietLogger()))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -120,7 +129,7 @@ func TestNode_StopIsIdempotent(t *testing.T) {
 }
 
 func TestNode_StartRejectsNilContext(t *testing.T) {
-	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithLogger(newQuietLogger()))
+	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithAnonymousConnectionsUnsafe(), rtcentrifuge.WithLogger(newQuietLogger()))
 	require.NoError(t, err)
 	//nolint:staticcheck // SA1012: testing the nil-ctx rejection path on purpose.
 	//lint:ignore SA1012 nil-ctx rejection contract test
@@ -129,7 +138,7 @@ func TestNode_StartRejectsNilContext(t *testing.T) {
 }
 
 func TestNode_StopRejectsNilContext(t *testing.T) {
-	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithLogger(newQuietLogger()))
+	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithAnonymousConnectionsUnsafe(), rtcentrifuge.WithLogger(newQuietLogger()))
 	require.NoError(t, err)
 	//nolint:staticcheck // SA1012: testing the nil-ctx rejection path on purpose.
 	//lint:ignore SA1012 nil-ctx rejection contract test
@@ -153,6 +162,7 @@ func TestChannelClassifier_CustomMapsCorrectly(t *testing.T) {
 	// the WithChannelClassifier option without panicking and
 	// produces the expected mapping.
 	node, err := rtcentrifuge.NewNode(
+		rtcentrifuge.WithAnonymousConnectionsUnsafe(),
 		rtcentrifuge.WithLogger(newQuietLogger()),
 		rtcentrifuge.WithChannelClassifier(classifier),
 	)
@@ -241,6 +251,7 @@ func TestNewMetrics_RegistersCollectors(t *testing.T) {
 func TestNewNode_WithMetricsRegisterer_RegistersCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	node, err := rtcentrifuge.NewNode(
+		rtcentrifuge.WithAnonymousConnectionsUnsafe(),
 		rtcentrifuge.WithLogger(newQuietLogger()),
 		rtcentrifuge.WithMetricsRegisterer(reg),
 	)
@@ -266,12 +277,14 @@ func TestNewNode_WithMetricsRegisterer_RegistersCollectors(t *testing.T) {
 
 func TestWithLogLevelOptions_DoNotPanic(t *testing.T) {
 	_, err := rtcentrifuge.NewNode(
+		rtcentrifuge.WithAnonymousConnectionsUnsafe(),
 		rtcentrifuge.WithLogger(newQuietLogger()),
 		rtcentrifuge.WithLogLevelDebug(),
 	)
 	require.NoError(t, err)
 
 	_, err = rtcentrifuge.NewNode(
+		rtcentrifuge.WithAnonymousConnectionsUnsafe(),
 		rtcentrifuge.WithLogger(newQuietLogger()),
 		rtcentrifuge.WithLogLevelError(),
 	)

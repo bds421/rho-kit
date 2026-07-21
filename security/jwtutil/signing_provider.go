@@ -651,6 +651,11 @@ func (p *SigningProvider) loop() {
 			err := p.refresh(ctx)
 			cancel()
 			if err != nil {
+				// Clean Close cancels rootCtx; do not fire the operator
+				// alert callback for that expected shutdown path.
+				if errors.Is(err, context.Canceled) && p.closed.Load() {
+					continue
+				}
 				p.callOnRefreshError(err)
 			}
 		}
