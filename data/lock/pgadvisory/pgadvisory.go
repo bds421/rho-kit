@@ -46,32 +46,14 @@ type Locker struct {
 	logger *slog.Logger
 }
 
-// MaxLockKeyLen caps the byte length of a lock key passed to
-// [Locker.Acquire] / [Locker.AcquireTx]. Mirrors
-// [redislock.MaxLockKeyLen]: the key is hashed before it reaches
-// Postgres, but the same hygiene applies so unvalidated bytes never
-// flow into spans/logs and the validation behavior matches its
-// redislock/redlock siblings across the [lock.Locker] interface.
-const MaxLockKeyLen = 1024
+// MaxLockKeyLen mirrors [lock.MaxKeyLen].
+const MaxLockKeyLen = lock.MaxKeyLen
 
-// validateLockKey enforces the kit's lock-key shape: non-empty, no
-// control bytes, length within MaxLockKeyLen. pgadvisory hashes the key
-// to an int64 (so an empty key would otherwise hash to a valid id and
-// silently acquire), but it shares this guard with redislock/redlock so
-// code swapping backends through [lock.Locker] gets identical key
-// validation rather than a silent divergence.
+// validateLockKey delegates to [lock.ValidateKey] so this backend stays
+// interchangeable with redislock/redlock under the [lock.Locker] contract.
 func validateLockKey(key string) error {
-	if key == "" {
-		return errors.New("pgadvisory: lock key must not be empty")
-	}
-	if len(key) > MaxLockKeyLen {
-		return errors.New("pgadvisory: lock key exceeds maximum length")
-	}
-	for i := 0; i < len(key); i++ {
-		c := key[i]
-		if c < 0x20 || c == 0x7f {
-			return errors.New("pgadvisory: lock key contains control bytes")
-		}
+	if err := lock.ValidateKey(key); err != nil {
+		return fmt.Errorf("pgadvisory: %w", err)
 	}
 	return nil
 }

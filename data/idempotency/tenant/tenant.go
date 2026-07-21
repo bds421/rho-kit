@@ -46,6 +46,8 @@ package tenant
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
@@ -74,6 +76,13 @@ func Wrap(inner idempotency.Store) idempotency.Store {
 // scopedKey rewrites raw with the kit-canonical tenant key format. It validates
 // the caller-provided key before adding the tenant prefix so empty raw
 // keys cannot be hidden by the wrapper.
+//
+// When the length-prefixed scoped form exceeds [idempotency.MaxKeyLen]
+// (possible with long tenant IDs + long raw keys), the storage key is
+// replaced with a fixed-length SHA-256 hex digest so every valid raw
+// key remains usable regardless of tenant-ID length (review-12). Short
+// scoped keys keep the readable length-prefixed form for operator
+// introspection.
 func scopedKey(ctx context.Context, raw string) (string, error) {
 	if err := idempotency.ValidateKey(raw); err != nil {
 		return "", err
@@ -85,6 +94,10 @@ func scopedKey(ctx context.Context, raw string) (string, error) {
 	scoped, err := coretenant.KeyFor(id, raw)
 	if err != nil {
 		return "", err
+	}
+	if len(scoped) > idempotency.MaxKeyLen {
+		sum := sha256.Sum256([]byte(scoped))
+		scoped = hex.EncodeToString(sum[:])
 	}
 	if err := idempotency.ValidateKey(scoped); err != nil {
 		return "", err

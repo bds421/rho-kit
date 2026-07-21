@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"math"
 	"runtime"
@@ -17,6 +18,14 @@ import (
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
+
+const setNXShardCount = 16
+
+func setNXShard(key string) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return int(h.Sum32() % setNXShardCount)
+}
 
 // MemoryCache implements Cache using an in-memory Ristretto cache with TTL support.
 // Suitable for testing, single-instance deployments, or as a local L1 cache.
@@ -33,11 +42,10 @@ type MemoryCache struct {
 	cleanupInterval time.Duration
 	logger          *slog.Logger
 
-	// setNXMu serialises SetNX operations for atomicity within this
-	// process. Ristretto's underlying SetWithTTL is not test-and-set, so
-	// without this two concurrent SetNX calls could both observe "key
-	// missing" and both write — defeating the whole point of NX.
-	setNXMu sync.Mutex
+	// setNXShards serialise SetNX/Delete per key hash so unrelated keys
+	// do not contend on one global mutex. Ristretto's SetWithTTL is not
+	// test-and-set; the shard lock plus nxClaims still give in-process NX.
+	setNXShards [setNXShardCount]sync.Mutex
 
 	// opsMu serialises Close against in-flight Get/Set/Delete/etc.
 	// Ops take RLock; Close takes Lock. Without this, concurrent
@@ -560,23 +568,26 @@ func (mc *MemoryCache) SetNX(ctx context.Context, key string, value []byte, ttl 
 	if err := mc.readyClosed(); err != nil {
 		return false, err
 	}
-	mc.setNXMu.Lock()
-	defer mc.setNXMu.Unlock()
+	sh := &mc.setNXShards[setNXShard(key)]
+	sh.Lock()
+	defer sh.Unlock()
 
+	// Flush Ristretto's write buffer before claim/existence checks so a
+	// plain Set is visible and so claim-vs-eviction is accurate.
+	mc.cache.Wait()
 	if existing, claimed := mc.nxClaims.Load(key); claimed {
 		c := existing.(nxClaim)
 		if c.expiresAt.IsZero() || time.Now().Before(c.expiresAt) {
-			return false, nil
+			// Claim still live — but if TinyLFU/eviction dropped the value,
+			// the slot is empty and unclaimable; drop the stale claim so
+			// compute-once can re-acquire (ttl=0 claims would otherwise
+			// pin forever).
+			if _, ok := mc.cache.Get(key); ok {
+				return false, nil
+			}
 		}
 		mc.nxClaims.Delete(key)
 	}
-	// Flush Ristretto's write buffer before the existence check. A NEW-key
-	// SetWithTTL (plain Set) only enqueues to setBuf and is not yet visible
-	// via Get; without Wait a Set(k) immediately followed by SetNX(k) would
-	// miss the buffered value and overwrite it while returning ok=true,
-	// violating the in-process test-and-set contract. nxClaims only covers
-	// prior SetNX writes, not plain Set, so the flush is required here too.
-	mc.cache.Wait()
 	if _, ok := mc.cache.Get(key); ok {
 		return false, nil
 	}
@@ -604,7 +615,7 @@ func (mc *MemoryCache) SetNX(ctx context.Context, key string, value []byte, ttl 
 
 // Delete removes a key.
 //
-// Holds setNXMu around the cache+claim removal so a concurrent SetNX
+// Holds the per-key setNX shard around the cache+claim removal so a concurrent SetNX
 // cannot interleave its claim store between this Delete's two clears —
 // otherwise the stale claim would outlive the entry and block legitimate
 // re-claims until the original TTL elapsed.
@@ -623,8 +634,9 @@ func (mc *MemoryCache) Delete(ctx context.Context, key string) error {
 	if err := mc.readyClosed(); err != nil {
 		return err
 	}
-	mc.setNXMu.Lock()
-	defer mc.setNXMu.Unlock()
+	sh := &mc.setNXShards[setNXShard(key)]
+	sh.Lock()
+	defer sh.Unlock()
 	mc.cache.Del(key)
 	// Ristretto buffers writes (including deletes); without Wait, an
 	// immediate Get on the same key after Delete can still see the

@@ -88,14 +88,15 @@ func TestHeaderToMap_CopiesTable(t *testing.T) {
 
 // --- deepCopyValue ---
 
-// budget0 is a fresh per-test node budget. Tests that exercise the
-// happy path want plenty of room; the truncation tests below construct
-// their own tighter budget.
-var budget0 = maxHeaderNodes
+// budgets for happy-path deep-copy tests (plenty of room).
+func freshBudgets() (nodes, bytes int) {
+	return maxHeaderNodes, maxHeaderBytes
+}
 
 func TestDeepCopyValue_Table(t *testing.T) {
 	inner := amqp.Table{"nested-key": "nested-val"}
-	copy := deepCopyValue(inner, 0, &budget0)
+	n, b := freshBudgets()
+	copy := deepCopyValue(inner, 0, &n, &b)
 
 	copiedTable, ok := copy.(map[string]any)
 	require.True(t, ok, "expected deep copy to return map[string]any for amqp.Table")
@@ -107,7 +108,7 @@ func TestDeepCopyValue_Table(t *testing.T) {
 
 func TestDeepCopyValue_Slice(t *testing.T) {
 	original := []any{"a", int64(1), amqp.Table{"x": "y"}}
-	copy := deepCopyValue(original, 0, &budget0)
+	copy := func() any { n, b := freshBudgets(); return deepCopyValue(original, 0, &n, &b) }()
 
 	copiedSlice, ok := copy.([]any)
 	require.True(t, ok, "expected deep copy to return []any for []any")
@@ -121,7 +122,7 @@ func TestDeepCopyValue_Slice(t *testing.T) {
 
 func TestDeepCopyValue_Bytes(t *testing.T) {
 	original := []byte{0x01, 0x02, 0x03}
-	copy := deepCopyValue(original, 0, &budget0)
+	copy := func() any { n, b := freshBudgets(); return deepCopyValue(original, 0, &n, &b) }()
 
 	copiedBytes, ok := copy.([]byte)
 	require.True(t, ok, "expected deep copy to return []byte")
@@ -132,22 +133,22 @@ func TestDeepCopyValue_Bytes(t *testing.T) {
 }
 
 func TestDeepCopyValue_Scalar_Int(t *testing.T) {
-	result := deepCopyValue(int64(99), 0, &budget0)
+	result := func() any { n, b := freshBudgets(); return deepCopyValue(int64(99), 0, &n, &b) }()
 	assert.Equal(t, int64(99), result)
 }
 
 func TestDeepCopyValue_Scalar_String(t *testing.T) {
-	result := deepCopyValue("hello", 0, &budget0)
+	result := func() any { n, b := freshBudgets(); return deepCopyValue("hello", 0, &n, &b) }()
 	assert.Equal(t, "hello", result)
 }
 
 func TestDeepCopyValue_Scalar_Bool(t *testing.T) {
-	result := deepCopyValue(true, 0, &budget0)
+	result := func() any { n, b := freshBudgets(); return deepCopyValue(true, 0, &n, &b) }()
 	assert.Equal(t, true, result)
 }
 
 func TestDeepCopyValue_Nil(t *testing.T) {
-	result := deepCopyValue(nil, 0, &budget0)
+	result := func() any { n, b := freshBudgets(); return deepCopyValue(nil, 0, &n, &b) }()
 	assert.Nil(t, result)
 }
 

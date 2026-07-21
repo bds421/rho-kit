@@ -177,14 +177,21 @@ func TestNewTypedCache_InvalidPrefix_TooLong(t *testing.T) {
 }
 
 func TestNewTypedCache_ValidLongPrefix(t *testing.T) {
-	prefix := strings.Repeat("x", MaxKeyPrefixLen)
+	// Max-length prefix must still end with ':' for delimiter safety.
+	prefix := strings.Repeat("x", MaxKeyPrefixLen-1) + ":"
 	_, err := NewTypedCache[string](MustNewMemoryCache(), prefix)
 	assert.NoError(t, err)
 }
 
+func TestNewTypedCache_RejectsPrefixWithoutDelimiter(t *testing.T) {
+	_, err := NewTypedCache[string](MustNewMemoryCache(), "users")
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrKeyInvalidChars)
+}
+
 func TestTypedCache_CombinedKeyTooLong(t *testing.T) {
-	// Prefix of 400 bytes + key of 625 bytes = 1025 > MaxKeyLen (1024).
-	prefix := strings.Repeat("p", 400)
+	// Prefix of 400 bytes (with trailing ':') + key of 625 bytes > MaxKeyLen.
+	prefix := strings.Repeat("p", 399) + ":"
 	tc := newTestTypedCache[string](t, MustNewMemoryCache(), prefix)
 	ctx := context.Background()
 

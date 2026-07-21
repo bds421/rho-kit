@@ -316,8 +316,9 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 	}
 	defer zeroBytes(ciphertext)
 
-	meta.Size = int64(len(ciphertext))
-	if err := e.backend.Put(ctx, key, bytes.NewReader(ciphertext), meta); err != nil {
+	putMeta := storage.CloneObjectMeta(meta)
+	putMeta.Size = int64(len(ciphertext))
+	if err := e.backend.Put(ctx, key, bytes.NewReader(ciphertext), putMeta); err != nil {
 		return storage.WrapSafe("encryption: put failed", err)
 	}
 	return nil
@@ -495,6 +496,10 @@ func (e *EncryptedStorage) list(ctx context.Context, prefix string, opts storage
 			yield(storage.ObjectInfo{}, fmt.Errorf("encryption: underlying backend does not implement storage.Lister"))
 		}
 	}
+	// gcmOverhead is nonce(12)+tag(16). List sizes are adjusted under the
+	// assumption that every object under this backend was written through
+	// EncryptedStorage.Put — do not mix plaintext writes into the same
+	// keyspace, or reported sizes will be silently 28 bytes short (review-18).
 	const gcmOverhead = 12 + 16
 	return func(yield func(storage.ObjectInfo, error) bool) {
 		for info, err := range lister.List(ctx, prefix, opts) {

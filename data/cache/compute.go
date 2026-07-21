@@ -55,6 +55,10 @@ const defaultRefreshTimeout = 30 * time.Second
 // indefinitely.
 const defaultComputeTimeout = 60 * time.Second
 
+// maxCacheTTL caps primary and stale TTLs so time.Time arithmetic never
+// wraps (~10 years is well below math.MaxInt64 nanoseconds).
+const maxCacheTTL = 10 * 365 * 24 * time.Hour
+
 // ComputeOption configures a ComputeCache.
 type ComputeOption func(*computeConfig)
 
@@ -65,6 +69,9 @@ type ComputeOption func(*computeConfig)
 func WithStaleTTL(d time.Duration) ComputeOption {
 	if d < 0 {
 		panic("cache: WithStaleTTL requires d >= 0")
+	}
+	if d > maxCacheTTL {
+		panic("cache: WithStaleTTL exceeds maximum (~10y)")
 	}
 	return func(cfg *computeConfig) {
 		cfg.staleTTL = d
@@ -527,10 +534,7 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 		return zero, fmt.Errorf("cache compute: ComputeFunc returned non-positive ttl; ComputeCache requires a positive TTL because it adds stale-while-revalidate semantics on top")
 	}
 	// Reject TTL values that would overflow time.Time arithmetic when
-	// added to time.Now() or combined with the stale window. math.MaxInt64
-	// nanoseconds is ~292 years; cap well below it so we never wrap to
-	// a negative ExpiresAt or a negative backend TTL (L045).
-	const maxCacheTTL = 10 * 365 * 24 * time.Hour // ~10 years
+	// added to time.Now() or combined with the stale window (L045).
 	if ttl > maxCacheTTL {
 		var zero T
 		return zero, fmt.Errorf("cache compute: ttl %s exceeds maximum %s", ttl, maxCacheTTL)

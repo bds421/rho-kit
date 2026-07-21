@@ -3,6 +3,8 @@ package cache
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -98,6 +100,12 @@ func ValidateKeyPrefix(prefix string) error {
 	}
 	if containsInvalidKeyRune(prefix) {
 		return ErrKeyInvalidChars
+	}
+	// Non-empty prefixes must end with ':' so "user"+"s1" cannot collide
+	// with "users"+"1" when two wrappers share a backend. Empty prefix is
+	// allowed for single-purpose caches that own the whole keyspace.
+	if prefix != "" && !strings.HasSuffix(prefix, ":") {
+		return fmt.Errorf("%w: key prefix must be empty or end with ':'", ErrKeyInvalidChars)
 	}
 	return nil
 }

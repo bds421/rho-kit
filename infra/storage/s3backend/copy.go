@@ -54,7 +54,13 @@ func (b *Backend) Copy(ctx context.Context, srcKey, dstKey string) error {
 
 	start := now()
 	_, err := b.client.CopyObject(ctx, input)
-	b.metrics.observeOp(b.instance, "copy", start, err)
+	// Expected source-not-found is control flow and must not inflate
+	// storage_s3_operation_errors_total (review-19).
+	metricErr := err
+	if isCopySourceNotFound(err) {
+		metricErr = nil
+	}
+	b.metrics.observeOp(b.instance, "copy", start, metricErr)
 
 	if err != nil {
 		// A missing source must surface as storage.ErrObjectNotFound so

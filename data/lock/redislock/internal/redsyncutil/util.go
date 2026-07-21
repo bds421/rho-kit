@@ -13,8 +13,6 @@ import (
 	"math/rand/v2"
 	"sync/atomic"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/go-redsync/redsync/v4"
 
@@ -22,30 +20,16 @@ import (
 	"github.com/bds421/rho-kit/data/v2/lock"
 )
 
-// MaxLockKeyLen caps the byte length of a lock key. Beyond this length
-// Redis keys become awkward to inspect and large keys hurt cluster
-// performance. Matches the kit's tenant-scoped key cap.
-const MaxLockKeyLen = 1024
+// MaxLockKeyLen mirrors [lock.MaxKeyLen].
+const MaxLockKeyLen = lock.MaxKeyLen
 
-// ValidateLockKey enforces non-empty keys of valid UTF-8 without control
-// or whitespace runes, within MaxLockKeyLen. Aligns with budget/ratelimit/
-// idempotency Redis key hygiene so co-tenant key builders get consistent
-// rejection. label is the package name used in error text
-// ("redislock" or "redlock").
+// ValidateLockKey delegates to [lock.ValidateKey] and prefixes the error
+// with label ("redislock" or "redlock") so log lines keep their package
+// identity. The core contract lives in package lock so backends cannot
+// silently diverge (review-12).
 func ValidateLockKey(label, key string) error {
-	if key == "" {
-		return fmt.Errorf("%s: lock key must not be empty", label)
-	}
-	if len(key) > MaxLockKeyLen {
-		return fmt.Errorf("%s: lock key exceeds maximum length", label)
-	}
-	if !utf8.ValidString(key) {
-		return fmt.Errorf("%s: lock key is not valid UTF-8", label)
-	}
-	for _, r := range key {
-		if unicode.IsControl(r) || unicode.IsSpace(r) {
-			return fmt.Errorf("%s: lock key contains whitespace or control characters", label)
-		}
+	if err := lock.ValidateKey(key); err != nil {
+		return fmt.Errorf("%s: %w", label, err)
 	}
 	return nil
 }

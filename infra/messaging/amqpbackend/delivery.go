@@ -121,48 +121,68 @@ func headerToMap(h amqp.Table) map[string]any {
 	if h == nil {
 		return nil
 	}
-	budget := maxHeaderNodes
-	return deepCopyTable(h, 0, &budget)
+	nodeBudget := maxHeaderNodes
+	byteBudget := maxHeaderBytes
+	return deepCopyTable(h, 0, &nodeBudget, &byteBudget)
 }
 
-func deepCopyTable(src amqp.Table, depth int, budget *int) map[string]any {
+func deepCopyTable(src amqp.Table, depth int, nodeBudget, byteBudget *int) map[string]any {
 	if depth >= maxHeaderDepth {
 		return map[string]any{"": truncatedHeaderValue}
 	}
 	result := make(map[string]any, len(src))
 	for k, v := range src {
-		if *budget <= 0 {
+		if *nodeBudget <= 0 || *byteBudget <= 0 {
 			result[k] = truncatedHeaderValue
 			continue
 		}
-		*budget--
-		result[k] = deepCopyValue(v, depth+1, budget)
+		*nodeBudget--
+		// Charge key bytes against the aggregate budget before recursing.
+		if len(k) > *byteBudget {
+			result[k] = truncatedHeaderValue
+			*byteBudget = 0
+			continue
+		}
+		*byteBudget -= len(k)
+		result[k] = deepCopyValue(v, depth+1, nodeBudget, byteBudget)
 	}
 	return result
 }
 
-func deepCopyValue(v any, depth int, budget *int) any {
+func deepCopyValue(v any, depth int, nodeBudget, byteBudget *int) any {
 	switch val := v.(type) {
 	case amqp.Table:
-		return deepCopyTable(val, depth, budget)
+		return deepCopyTable(val, depth, nodeBudget, byteBudget)
 	case []any:
 		if depth >= maxHeaderDepth {
 			return truncatedHeaderValue
 		}
 		copied := make([]any, len(val))
 		for i, item := range val {
-			if *budget <= 0 {
+			if *nodeBudget <= 0 || *byteBudget <= 0 {
 				copied[i] = truncatedHeaderValue
 				continue
 			}
-			*budget--
-			copied[i] = deepCopyValue(item, depth+1, budget)
+			*nodeBudget--
+			copied[i] = deepCopyValue(item, depth+1, nodeBudget, byteBudget)
 		}
 		return copied
 	case []byte:
+		if len(val) > *byteBudget {
+			*byteBudget = 0
+			return truncatedHeaderValue
+		}
+		*byteBudget -= len(val)
 		copied := make([]byte, len(val))
 		copy(copied, val)
 		return copied
+	case string:
+		if len(val) > *byteBudget {
+			*byteBudget = 0
+			return truncatedHeaderValue
+		}
+		*byteBudget -= len(val)
+		return val
 	default:
 		return v
 	}

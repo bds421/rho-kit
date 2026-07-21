@@ -85,6 +85,8 @@ type config struct {
 }
 
 type probeConfig struct {
+	insecureTLS bool
+
 	base          *url.URL
 	readinessPath string
 	headersPath   string
@@ -135,6 +137,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	probeCfg := probeConfig{
+		insecureTLS:   cfg.insecureTLS,
 		base:          base,
 		readinessPath: cfg.readinessPath,
 		headersPath:   cfg.headersPath,
@@ -213,7 +216,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	fs.BoolVar(&cfg.soft, "soft", false, "treat UNKNOWN results as pass (exploratory mode); FAIL still exits 1")
 	fs.BoolVar(&cfg.noAllowSkips, "no-allow-skips", false, "treat SKIPPED probes as failures (route-by-convention probes must have an endpoint configured)")
 	fs.BoolVar(&cfg.insecureTLS, "insecure", false, "skip TLS cert verification (dev only)")
-	fs.IntVar(&cfg.timeoutMS, "timeout-ms", 5000, "per-probe timeout in milliseconds")
+	fs.IntVar(&cfg.timeoutMS, "timeout-ms", 5000, "per-request HTTP timeout in milliseconds (not wall-clock per multi-request probe)")
 	fs.StringVar(&cfg.readinessPath, "readiness-path", "/ready", "readiness probe path")
 	fs.StringVar(&cfg.headersPath, "headers-path", "/", "path used for security-header, request-id, and correlation-id probes")
 	fs.StringVar(&cfg.jwtPath, "jwt-path", "/api/v1/whoami", "JWT-gated probe path")
@@ -286,27 +289,17 @@ type Probe struct {
 	Run      func(*http.Client, probeConfig) (Status, string)
 }
 
-func runAll(hc *http.Client, base string) []Result {
-	parsed, err := url.Parse(base)
-	if err != nil {
-		return []Result{{
-			Probe:  "configuration",
-			Status: StatusFail,
-			Detail: "parse base URL failed",
-		}}
-	}
-	return runAllWithConfig(hc, probeConfig{
-		base:          parsed,
-		readinessPath: "/ready",
-		headersPath:   "/",
-		jwtPath:       "/api/v1/whoami",
-		csrfPath:      "/api/v1/state",
-		rateLimitPath: "/",
-	})
-}
-
 func runAllWithConfig(hc *http.Client, cfg probeConfig) []Result {
-	out := make([]Result, 0, len(probes))
+	out := make([]Result, 0, len(probes)+1)
+	if cfg.insecureTLS {
+		// Surface that this run is not an authoritative compliance signal
+		// so CI logs cannot silently treat -insecure as a real attest (review-24).
+		out = append(out, Result{
+			Probe:  "tls-verification",
+			Status: StatusUnknown,
+			Detail: "certificate verification disabled via -insecure; results are not authoritative for compliance",
+		})
+	}
 	for _, p := range probes {
 		status, detail := p.Run(hc, cfg)
 		ids := make([]string, len(p.Controls))
@@ -647,4 +640,3 @@ func expectHeaderToken(hc *http.Client, url, key string, allowed ...string) (Sta
 	}
 	return fail(fmt.Sprintf("response header %s value %q is not one of %v", key, got, allowed))
 }
-

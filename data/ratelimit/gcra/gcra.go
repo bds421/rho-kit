@@ -53,14 +53,20 @@ const numShards = 16
 // create avoidable hot-path tail latency.
 const sweepBudget = 256
 
+// defaultMaxKeys bounds total per-key cardinality across shards between
+// sweeps so attacker-controlled keys cannot grow memory unboundedly
+// (review-12).
+const defaultMaxKeys = 100_000
+
 // Limiter is a per-key GCRA [ratelimit.Limiter].
 //
 // Safe for concurrent use — Allow takes the per-shard mutex for the
 // key; Close is idempotent and joins the sweeper goroutine.
 type Limiter struct {
-	rate  time.Duration
-	burst int
-	now   clock.Func
+	rate    time.Duration
+	burst   int
+	now     clock.Func
+	maxKeys int
 
 	shards [numShards]gcraShard
 
@@ -107,6 +113,16 @@ func WithoutSweeper() Option {
 	return func(l *Limiter) { l.sweepInterval = 0 }
 }
 
+// WithMaxKeys sets the hard total cardinality cap across all shards.
+// When a shard would exceed its share, Allow force-evicts cold keys and
+// may drop an arbitrary entry. Default 100_000; 0 disables the cap.
+func WithMaxKeys(n int) Option {
+	if n < 0 {
+		panic("gcra: WithMaxKeys requires n >= 0")
+	}
+	return func(l *Limiter) { l.maxKeys = n }
+}
+
 // New constructs a Limiter that allows up to `burst` events within any
 // `period` duration, smoothed at `period/burst` per event.
 //
@@ -132,6 +148,7 @@ func New(period time.Duration, burst int, opts ...Option) *Limiter {
 		rate:          rate,
 		burst:         burst,
 		now:           time.Now,
+		maxKeys:       defaultMaxKeys,
 		sweepInterval: defaultSweepInterval,
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
@@ -281,7 +298,10 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 	}
 
 	tat, ok := sh.tats[key]
-	if !ok || tat.Before(now) {
+	if !ok {
+		l.ensureRoomLocked(sh, now)
+		tat = now
+	} else if tat.Before(now) {
 		tat = now
 	}
 	allowAt := tat.Add(-time.Duration(l.burst-1) * l.rate)
@@ -290,6 +310,33 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 	}
 	sh.tats[key] = tat.Add(l.rate)
 	return true, 0, nil
+}
+
+// ensureRoomLocked enforces a per-shard share of maxKeys. Caller holds sh.mu.
+func (l *Limiter) ensureRoomLocked(sh *gcraShard, now time.Time) {
+	if l.maxKeys <= 0 {
+		return
+	}
+	// Ceil division so total capacity is at least maxKeys.
+	perShard := (l.maxKeys + numShards - 1) / numShards
+	if perShard < 1 {
+		perShard = 1
+	}
+	if len(sh.tats) < perShard {
+		return
+	}
+	// Drop cold (expired TAT) keys first.
+	for k, tat := range sh.tats {
+		if !tat.After(now) {
+			delete(sh.tats, k)
+		}
+	}
+	for len(sh.tats) >= perShard {
+		for k := range sh.tats {
+			delete(sh.tats, k)
+			break
+		}
+	}
 }
 
 // Len returns the number of tracked keys. Useful in tests.

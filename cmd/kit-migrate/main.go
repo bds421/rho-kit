@@ -398,7 +398,10 @@ func checkDuplicateVersions(filterName string) error {
 		for _, filename := range files {
 			version := gooseVersion(filename)
 			prev, ok := seen[version]
-			if ok && prev != filename {
+			if ok {
+				// Same version + same filename across components would
+				// still write the same target path twice and fail mid-
+				// publish under O_EXCL (review-24). Treat as a collision.
 				return fmt.Errorf(
 					"duplicate goose version %s shared by %s and %s; goose refuses to run a directory with duplicate versions (publish a single component with the NAME argument instead)",
 					version, prev, filename,

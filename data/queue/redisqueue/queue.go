@@ -104,7 +104,7 @@ type Message struct {
 
 // NewMessage creates a Message with a UUID v7 ID and current timestamp.
 func NewMessage(msgType string, payload any) (Message, error) {
-	if err := kitqueue.ValidateMessage(kitqueue.Message{Type: msgType}, 0); err != nil {
+	if err := kitqueue.ValidateMessage(kitqueue.Message{Type: msgType}, kitqueue.UnlimitedPayloadBytes); err != nil {
 		return Message{}, err
 	}
 	data, err := json.Marshal(payload)

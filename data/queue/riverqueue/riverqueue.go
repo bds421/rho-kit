@@ -175,7 +175,7 @@ func WithMaxMessageBytes(maxBytes int) PublisherOption {
 // when an outer product contract or River queue policy already applies a
 // stricter bound.
 func WithoutMaxPayloadBytes() PublisherOption {
-	return func(p *Publisher) { p.maxPayloadBytes = 0 }
+	return func(p *Publisher) { p.maxPayloadBytes = kitqueue.UnlimitedPayloadBytes }
 }
 
 // PublisherOption configures a [Publisher] at construction time.
@@ -240,7 +240,7 @@ func WithWorkerMaxPayloadBytes(maxBytes int) EnvelopeWorkerOption {
 // when River queue policy or an outer product contract applies a stricter
 // bound before work dispatch.
 func WithoutWorkerMaxPayloadBytes() EnvelopeWorkerOption {
-	return func(w *EnvelopeWorker) { w.maxPayloadBytes = 0 }
+	return func(w *EnvelopeWorker) { w.maxPayloadBytes = kitqueue.UnlimitedPayloadBytes }
 }
 
 // EnvelopeWorkerOption configures an [EnvelopeWorker] at construction time.

@@ -470,3 +470,17 @@ func TestNew_traceIDsTopLevelUnderGroupE2E(t *testing.T) {
 		t.Error("trace_id should not be nested under req")
 	}
 }
+
+func TestFromContextOK_Presence(t *testing.T) {
+	ctx := context.Background()
+	_, ok := FromContextOK(ctx)
+	if ok {
+		t.Fatal("empty context should report ok=false")
+	}
+	// Storing slog.Default explicitly must still report present.
+	ctx = WithContext(ctx, slog.Default())
+	got, ok := FromContextOK(ctx)
+	if !ok || got == nil {
+		t.Fatal("explicitly stored default logger must report ok=true")
+	}
+}

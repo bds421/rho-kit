@@ -63,10 +63,12 @@ func TestValidate(t *testing.T) {
 		{"forged decided_by", Request{ID: "i", TenantID: "t", Actor: "a", Action: "x", DecidedBy: "evil", ExpiresAt: future}, false},
 		{"forged decided_at", Request{ID: "i", TenantID: "t", Actor: "a", Action: "x", DecidedAt: now, ExpiresAt: future}, false},
 		{"forged decided_by and decided_at", Request{ID: "i", TenantID: "t", Actor: "a", Action: "x", DecidedBy: "evil", DecidedAt: now, ExpiresAt: future}, false},
+		{"payload not json", Request{ID: "i", TenantID: "t", Actor: "a", Action: "x", Payload: []byte("not-json"), ExpiresAt: future}, false},
+		{"created_at far future", Request{ID: "i", TenantID: "t", Actor: "a", Action: "x", CreatedAt: now.Add(time.Hour), ExpiresAt: future}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := validate(c.r, now)
+			err := ValidateForCreate(c.r, now)
 			if c.ok {
 				assert.NoError(t, err)
 			} else {

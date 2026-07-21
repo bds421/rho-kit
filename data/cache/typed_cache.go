@@ -2,42 +2,46 @@ package cache
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
-// TypedCache wraps a Cache to provide type-safe JSON serialization.
-// It marshals/unmarshals values of type T transparently.
+// TypedCache wraps a Cache to provide type-safe serialization of T.
+// By default values are encoded as JSON via [JSONCodec]; use
+// [NewTypedCacheWithCodec] for a custom [Codec].
 type TypedCache[T any] struct {
 	backend Cache
 	prefix  string
+	codec   Codec[T]
 }
 
 // NewTypedCache creates a TypedCache that serializes T to/from JSON.
 // The prefix is prepended verbatim to all keys (full = prefix + key) to
 // avoid collisions between caches sharing one backend.
 //
-// The prefix is concatenated WITHOUT an inserted delimiter, so callers
-// MUST include a trailing separator (e.g. "users:") to keep the keyspace
-// unambiguous. Without one, related prefixes collide — prefix "user" with
-// key "s1" maps to the same backend key as prefix "users" with key "1".
+// The prefix MUST be empty or end with ':' so related prefixes cannot
+// collide (e.g. "user"+"s1" vs "users"+"1"). See [ValidateKeyPrefix].
 //
-// Returns an error if backend is nil, or if the prefix contains invalid
-// characters or is too long. The combined prefix+key must fit within
-// MaxKeyLen (checked per-operation in fullKey). A prefix longer than
-// MaxKeyPrefixLen is rejected upfront to guarantee at least MaxKeyPrefixLen
-// bytes remain for keys.
+// Returns an error if backend is nil, or if the prefix is invalid.
 func NewTypedCache[T any](backend Cache, prefix string) (*TypedCache[T], error) {
+	return NewTypedCacheWithCodec(backend, prefix, JSONCodec[T]{})
+}
+
+// NewTypedCacheWithCodec is like [NewTypedCache] but uses the supplied
+// codec instead of JSON. codec must not be nil.
+func NewTypedCacheWithCodec[T any](backend Cache, prefix string, codec Codec[T]) (*TypedCache[T], error) {
 	if backend == nil {
 		return nil, fmt.Errorf("cache: NewTypedCache requires a non-nil backend")
+	}
+	if codec == nil {
+		return nil, fmt.Errorf("cache: NewTypedCacheWithCodec requires a non-nil codec")
 	}
 	if err := ValidateKeyPrefix(prefix); err != nil {
 		return nil, err
 	}
-	return &TypedCache[T]{backend: backend, prefix: prefix}, nil
+	return &TypedCache[T]{backend: backend, prefix: prefix, codec: codec}, nil
 }
 
 // fullKey validates the user-provided key and returns the combined prefix+key.
@@ -68,7 +72,7 @@ func (tc *TypedCache[T]) Get(ctx context.Context, key string) (T, error) {
 		return zero, err
 	}
 	var result T
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := tc.codec.Unmarshal(data, &result); err != nil {
 		return zero, redact.WrapError("cache unmarshal", err)
 	}
 	return result, nil
@@ -80,7 +84,7 @@ func (tc *TypedCache[T]) Set(ctx context.Context, key string, value T, ttl time.
 	if err != nil {
 		return err
 	}
-	data, err := json.Marshal(value)
+	data, err := tc.codec.Marshal(value)
 	if err != nil {
 		return redact.WrapError("cache marshal", err)
 	}

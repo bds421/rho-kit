@@ -30,6 +30,7 @@ func Run(t *testing.T, factory Factory) {
 
 	t.Run("RejectsEmptyKey", func(t *testing.T) { testRejectsEmptyKey(t, factory) })
 	t.Run("RejectsOversizedKey", func(t *testing.T) { testRejectsOversizedKey(t, factory) })
+	t.Run("RejectsInvalidKeyChars", func(t *testing.T) { testRejectsInvalidKeyChars(t, factory) })
 	t.Run("RejectsInvalidTTL", func(t *testing.T) { testRejectsInvalidTTL(t, factory) })
 	t.Run("LockSetGetRoundTrip", func(t *testing.T) { testLockSetGetRoundTrip(t, factory) })
 	t.Run("FingerprintMatchPath", func(t *testing.T) { testFingerprintMatchPath(t, factory) })
@@ -80,6 +81,36 @@ func testRejectsOversizedKey(t *testing.T, factory Factory) {
 
 	err = s.Unlock(ctx, oversized, "tok")
 	assert.ErrorIs(t, err, idempotency.ErrKeyTooLong, "Unlock must reject oversized key")
+}
+
+func testRejectsInvalidKeyChars(t *testing.T, factory Factory) {
+	s := factory(t)
+	ctx := context.Background()
+
+	// Control bytes, whitespace, and invalid UTF-8 must all surface as
+	// ErrKeyInvalidChars so backends cannot silently accept keys that
+	// corrupt logs or protocol framing (review-12).
+	invalids := []string{
+		"has\nnewline",
+		"has\rreturn",
+		"has\ttab",
+		"has space",
+		"has\x00nul",
+		string([]byte{0xff, 0xfe, 'a'}),
+	}
+	for _, key := range invalids {
+		_, _, err := s.Get(ctx, key, nil)
+		assert.ErrorIs(t, err, idempotency.ErrKeyInvalidChars, "Get key %q", key)
+
+		_, _, _, err = s.TryLock(ctx, key, nil, time.Minute)
+		assert.ErrorIs(t, err, idempotency.ErrKeyInvalidChars, "TryLock key %q", key)
+
+		err = s.Set(ctx, key, "tok", idempotency.CachedResponse{StatusCode: 200}, time.Minute)
+		assert.ErrorIs(t, err, idempotency.ErrKeyInvalidChars, "Set key %q", key)
+
+		err = s.Unlock(ctx, key, "tok")
+		assert.ErrorIs(t, err, idempotency.ErrKeyInvalidChars, "Unlock key %q", key)
+	}
 }
 
 func testRejectsInvalidTTL(t *testing.T, factory Factory) {

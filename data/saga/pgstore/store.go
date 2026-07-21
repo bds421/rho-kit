@@ -104,6 +104,14 @@ func newClaimToken() string {
 //     contract of [saga.StateStore.Put]. A vanished row (concurrent
 //     Delete) surfaces as ErrConcurrentUpdate.
 //
+// Diverges from [saga.MemoryStateStore.Put], which is an unconditional
+// upsert: a fresh Instance with a non-zero UpdatedAt (e.g. copied from
+// another record) returns ErrConcurrentUpdate here while the memory
+// backend would store it. This is intentional for DurableExecutor
+// insert-vs-update routing — callers outside the executor should either
+// leave UpdatedAt zero for first write, or use Get then Put. Explicit
+// Insert/Update methods are a candidate for a future major version.
+//
 // The UPDATE path does NOT gate on updated_at: the executor reads an
 // Instance once and then Puts repeatedly without re-reading, so its
 // in-memory UpdatedAt is stale after the first write. See

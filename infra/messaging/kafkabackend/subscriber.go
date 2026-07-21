@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	kafka "github.com/segmentio/kafka-go"
@@ -353,6 +354,14 @@ func (s *Subscriber) Consume(ctx context.Context, b messaging.Binding, handler m
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil
 			}
+			if isFatalKafkaFetchError(err) {
+				s.logger.Error("kafkabackend: fatal fetch error — stopping consumer",
+					redact.String("topic", b.Exchange),
+					redact.Error(err),
+				)
+				s.metrics.observeConsumed(b.Exchange, s.groupID, kafkaConsumeOutcomeFetchError)
+				return redact.WrapError("kafkabackend: fatal fetch error", err)
+			}
 			s.logger.Warn("kafkabackend: fetch failed",
 				redact.String("topic", b.Exchange),
 				redact.Error(err),
@@ -595,4 +604,41 @@ func buildDialer(cfg Config) (*kafka.Dialer, error) {
 		d.SASLMechanism = mech
 	}
 	return d, nil
+}
+
+// isFatalKafkaFetchError reports fetch errors that will never heal without
+// operator intervention (auth/ACL/topic misconfiguration). Transient
+// network and rebalance errors continue to retry (review-17).
+func isFatalKafkaFetchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ke kafka.Error
+	if errors.As(err, &ke) {
+		switch ke {
+		case kafka.TopicAuthorizationFailed,
+			kafka.GroupAuthorizationFailed,
+			kafka.ClusterAuthorizationFailed,
+			kafka.SASLAuthenticationFailed,
+			kafka.UnknownTopicOrPartition,
+			kafka.InvalidTopic,
+			kafka.UnsupportedSASLMechanism,
+			kafka.IllegalSASLState:
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"sasl authentication failed",
+		"topic authorization failed",
+		"group authorization failed",
+		"cluster authorization failed",
+		"unknown topic or partition",
+		"invalid topic",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }

@@ -331,11 +331,7 @@ func (c *CachedLoader) spawnRefresh(key string) {
 func copyForCaller(src Secret) Secret {
 	out := src
 	if src.Value != nil {
-		b := src.Value.Reveal()
-		out.Value = secret.New(b)
-		for i := range b {
-			b[i] = 0
-		}
+		out.Value = src.Value.Clone()
 	}
 	return out
 }

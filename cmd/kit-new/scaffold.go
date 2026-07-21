@@ -224,30 +224,44 @@ func scaffold(outDir string, p Params) error {
 		return fmt.Errorf("kit-new: create output directory failed")
 	}
 
+	var created []string
+	rollback := func() {
+		for i := len(created) - 1; i >= 0; i-- {
+			_ = os.Remove(created[i])
+		}
+		// Best-effort: remove the output dir if we created it empty of keepers.
+		_ = os.Remove(absOutDir)
+	}
 	for _, file := range plan {
 		parent := filepath.Dir(file.fullPath)
 		if err := rejectSymlinkAncestors(absOutDir, file.fullPath); err != nil {
+			rollback()
 			return fmt.Errorf("kit-new: unsafe destination: %w", err)
 		}
 		if err := os.MkdirAll(parent, 0o750); err != nil {
+			rollback()
 			return fmt.Errorf("kit-new: create destination directory failed")
 		}
 		if err := rejectSymlinkAncestors(absOutDir, file.fullPath); err != nil {
+			rollback()
 			return fmt.Errorf("kit-new: unsafe destination: %w", err)
 		}
 		f, err := os.OpenFile(file.fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
+			rollback()
 			if os.IsExist(err) {
 				return fmt.Errorf("kit-new: destination already exists; refusing to overwrite")
 			}
 			return fmt.Errorf("kit-new: create destination failed")
 		}
+		created = append(created, file.fullPath)
 		if err := file.tmpl.Execute(f, p); err != nil {
 			_ = f.Close()
-			_ = os.Remove(file.fullPath)
+			rollback()
 			return fmt.Errorf("kit-new: render template failed")
 		}
 		if err := f.Close(); err != nil {
+			rollback()
 			return fmt.Errorf("kit-new: close destination failed")
 		}
 	}
@@ -325,11 +339,11 @@ func renderString(t *template.Template, data any) (string, error) {
 // field name like "Postgres" or "MCP") is true. Unknown gate names
 // panic — they indicate a code-side typo, not a runtime user error.
 func gateActive(p Params, gate string) bool {
+	// Only Postgres uses the row-level gate list; MCP/Tenant are handled
+	// inside templates via {{if .MCP}} / {{if .Tenant}} (review-24).
 	switch gate {
 	case "Postgres":
 		return p.Postgres
-	case "MCP":
-		return p.MCP
 	default:
 		panic("kit-new: unknown template gate")
 	}

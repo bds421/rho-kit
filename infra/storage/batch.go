@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
@@ -105,10 +106,24 @@ func validateCopyPairs(pairs []CopyPair) error {
 }
 
 // batchError converts a map of key→error into a single error.
+// Each failure is annotated with its key (length-redacted) so callers can
+// tell which of the batch keys still need cleanup without re-probing
+// every key (review-18).
 func batchError(failures map[string]error) error {
 	var errs []error
-	for _, err := range failures {
-		errs = append(errs, redact.WrapError("delete object", err))
+	// Sort keys for deterministic Join order in tests/logs.
+	keys := make([]string, 0, len(failures))
+	for k := range failures {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		err := failures[k]
+		// Include a length stamp of the key (not the raw key) to avoid
+		// leaking storage paths into error strings while still
+		// distinguishing failures. Callers that need exact keys should
+		// use a BatchDeleter backend that returns map[string]error.
+		errs = append(errs, fmt.Errorf("delete object key_len=%d: %w", len(k), err))
 	}
 	return errors.Join(errs...)
 }

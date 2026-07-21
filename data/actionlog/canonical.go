@@ -123,7 +123,21 @@ func canonicalJSON(v map[string]any) ([]byte, error) {
 // sortedAny walks v, returning a structurally identical value with
 // every map's keys sorted. Non-map / non-slice values are returned
 // as-is — JSON serialisation of primitives is already deterministic.
+// maxSortedAnyDepth caps Metadata nesting for SignEntry/VerifyEntry
+// paths that do not run validMetadata first. Mirrors walkMetadata.
+const maxSortedAnyDepth = 16
+
 func sortedAny(v any) any {
+	return sortedAnyDepth(v, 0)
+}
+
+func sortedAnyDepth(v any, depth int) any {
+	if depth > maxSortedAnyDepth {
+		// Bound recursion so cyclic or hyper-nested Metadata cannot
+		// stack-overflow the process (encoding/json would also reject
+		// cycles, but only after sortedAny walked them).
+		return nil
+	}
 	switch x := v.(type) {
 	case map[string]any:
 		keys := make([]string, 0, len(x))
@@ -137,13 +151,13 @@ func sortedAny(v any) any {
 		// slice element order deterministic via the recursion.
 		out := make(map[string]any, len(x))
 		for _, k := range keys {
-			out[k] = sortedAny(x[k])
+			out[k] = sortedAnyDepth(x[k], depth+1)
 		}
 		return out
 	case []any:
 		out := make([]any, len(x))
 		for i := range x {
-			out[i] = sortedAny(x[i])
+			out[i] = sortedAnyDepth(x[i], depth+1)
 		}
 		return out
 	default:

@@ -298,6 +298,9 @@ func ValidateForCreate(r Request, now time.Time) error {
 	if len(r.Payload) > MaxPayloadSize {
 		return ErrInvalidRequest
 	}
+	if len(r.Payload) > 0 && !json.Valid(r.Payload) {
+		return ErrInvalidRequest
+	}
 	if r.State != "" && r.State != StatePending {
 		return ErrInvalidRequest
 	}
@@ -306,6 +309,13 @@ func ValidateForCreate(r Request, now time.Time) error {
 	// package boundary so both stores cannot persist a pending request
 	// that already shows a decider/decision timestamp (audit pollution).
 	if r.DecidedBy != "" || !r.DecidedAt.IsZero() {
+		return ErrInvalidRequest
+	}
+	// CreatedAt is used for keyset pagination and TTL-based expiry paths.
+	// Zero is allowed: stores fill it from their clock. A far-future value
+	// would scramble newest-first listings and defeat TTL expiry — reject
+	// with a small clock-skew tolerance.
+	if !r.CreatedAt.IsZero() && r.CreatedAt.After(now.Add(5*time.Minute)) {
 		return ErrInvalidRequest
 	}
 	if r.ExpiresAt.IsZero() {
@@ -336,9 +346,6 @@ func ValidateReason(reason string) error {
 	return nil
 }
 
-func validate(r Request, now time.Time) error {
-	return ValidateForCreate(r, now)
-}
 
 func validTenantID(s string) bool {
 	if len(s) > MaxTenantIDLen {

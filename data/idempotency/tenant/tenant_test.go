@@ -118,16 +118,30 @@ func TestWrap_RejectsEmptyRawKey(t *testing.T) {
 	assert.ErrorIs(t, err, idempotency.ErrKeyEmpty)
 }
 
-func TestWrap_RejectsScopedKeyTooLong(t *testing.T) {
+func TestWrap_HashesWhenScopedExceedsMaxKeyLen(t *testing.T) {
+	// Long tenant IDs + long raw keys used to fail closed with ErrKeyTooLong
+	// after prefixing. The wrapper now hashes the scoped form so every
+	// ValidateKey-passing raw key remains usable (review-12).
 	w := Wrap(idempotency.NewMemoryStore())
 	ctx, ctxErr := coretenant.WithID(context.Background(), coretenant.MustNewID(strings.Repeat("t", coretenant.MaxIDLen)))
 	require.NoError(t, ctxErr)
 
-	token, mismatch, ok, err := w.TryLock(ctx, strings.Repeat("k", idempotency.MaxKeyLen), nil, time.Minute)
-	assert.Empty(t, token)
+	raw := strings.Repeat("k", idempotency.MaxKeyLen)
+	token, mismatch, ok, err := w.TryLock(ctx, raw, nil, time.Minute)
+	require.NoError(t, err)
 	assert.False(t, mismatch)
-	assert.False(t, ok)
-	assert.ErrorIs(t, err, idempotency.ErrKeyTooLong)
+	assert.True(t, ok)
+	assert.NotEmpty(t, token)
+
+	require.NoError(t, w.Set(ctx, raw, token, idempotency.CachedResponse{
+		StatusCode: 200,
+		Body:       []byte("hashed-ok"),
+	}, time.Minute))
+	resp, mismatch, err := w.Get(ctx, raw, nil)
+	require.NoError(t, err)
+	assert.False(t, mismatch)
+	require.NotNil(t, resp)
+	assert.Equal(t, []byte("hashed-ok"), resp.Body)
 }
 
 func TestWrap_NilInnerPanics(t *testing.T) {
@@ -236,4 +250,30 @@ func TestWrap_UnlockReleasesOnlyOwnTenantLock(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok, "tenant B's lock should still be held")
 	_ = tokB
+}
+
+func TestWrap_LongTenantAndKeyStillWorks(t *testing.T) {
+	// Raw key near MaxKeyLen + long tenant ID used to fail closed with
+	// ErrKeyTooLong after prefixing; scoped keys are now hashed when they
+	// exceed MaxKeyLen so the Store contract holds for every tenant.
+	inner := idempotency.NewMemoryStore()
+	w := Wrap(inner)
+
+	tenantID := strings.Repeat("t", 100)
+	rawKey := strings.Repeat("k", 200)
+	ctx := ctxWith(tenantID)
+
+	tok, _, ok, err := w.TryLock(ctx, rawKey, []byte("body"), time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, w.Set(ctx, rawKey, tok, idempotency.CachedResponse{
+		StatusCode: 200,
+		Body:       []byte("ok"),
+	}, time.Minute))
+
+	resp, mismatch, err := w.Get(ctx, rawKey, []byte("body"))
+	require.NoError(t, err)
+	assert.False(t, mismatch)
+	require.NotNil(t, resp)
+	assert.Equal(t, []byte("ok"), resp.Body)
 }

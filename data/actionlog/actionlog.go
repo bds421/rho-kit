@@ -355,6 +355,9 @@ type Store interface {
 	AppendChained(ctx context.Context, tenantID string, build func(prev Entry, prevSeq int64) (Entry, error)) (Entry, error)
 
 	// Get returns the entry by id, or [ErrNotFound] if absent.
+	// The returned Entry is caller-owned: Metadata and other mutable
+	// fields MUST NOT alias the store's internal state (deep-clone or
+	// re-decode before return). Logger.Get does not re-clone.
 	Get(ctx context.Context, id string) (Entry, error)
 
 	// List returns entries matching q, ordered by OccurredAt
@@ -363,6 +366,7 @@ type Store interface {
 	// keyset pagination on (OccurredAt, ID) so total list size is
 	// bounded by the caller's cursor follow, not by [Query.Limit].
 	// The returned cursor is empty when no more rows match.
+	// Each returned Entry is caller-owned (same detachment contract as Get).
 	List(ctx context.Context, q Query) ([]Entry, string, error)
 
 	// RangeByTenantSeq calls fn for every entry for tenantID in Seq ASC
@@ -682,7 +686,7 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 			}
 			entry.PrevHash = h
 		}
-		if err := validate(entry); err != nil {
+		if err := validateExceptMetadata(entry); err != nil {
 			return Entry{}, err
 		}
 		sig, err := computeSignature(entry, secret)
@@ -809,6 +813,9 @@ func SignEntry(ctx context.Context, e Entry, secrets SecretSource) (signature, k
 	if secrets == nil {
 		return "", "", ErrInvalidStore
 	}
+	if !validMetadata(e.Metadata) {
+		return "", "", ErrInvalidEntry
+	}
 	keyID, err = secrets.CurrentKeyID(ctx)
 	if err != nil {
 		return "", "", redact.WrapError("actionlog: resolve current key id", err)
@@ -845,6 +852,9 @@ func SignEntry(ctx context.Context, e Entry, secrets SecretSource) (signature, k
 func VerifyEntry(ctx context.Context, e Entry, secrets SecretSource) error {
 	if secrets == nil {
 		return ErrInvalidStore
+	}
+	if !validMetadata(e.Metadata) {
+		return ErrInvalidEntry
 	}
 	if e.SignatureKeyID == "" {
 		return ErrSignatureInvalid
@@ -904,6 +914,19 @@ const (
 // (invalid byte sequence) — so [validID] rejects them at the boundary
 // like every other caller-supplied text field.
 func validate(e Entry) error {
+	if err := validateExceptMetadata(e); err != nil {
+		return err
+	}
+	if !validMetadata(e.Metadata) {
+		return ErrInvalidEntry
+	}
+	return nil
+}
+
+// validateExceptMetadata is used on the Append hot path after
+// validMetadata has already run outside the per-tenant lock, so we do
+// not re-marshal Metadata (up to 8 KiB) while holding the lock.
+func validateExceptMetadata(e Entry) error {
 	if e.ID == "" {
 		return ErrInvalidEntry
 	}
@@ -918,8 +941,7 @@ func validate(e Entry) error {
 		!validTextField(e.Action, MaxActionLen, true) ||
 		!validTextField(e.Resource, MaxResourceLen, false) ||
 		!validTextField(e.SignatureKeyID, MaxSignatureKeyIDLen, true) ||
-		!validReason(e.Reason) ||
-		!validMetadata(e.Metadata) {
+		!validReason(e.Reason) {
 		return ErrInvalidEntry
 	}
 	switch e.Outcome {

@@ -462,3 +462,24 @@ func TestProbeFailureDetailsDoNotReflectURLOrHeaderValues(t *testing.T) {
 	assert.NotContains(t, detail, "secret-token")
 	assert.NotContains(t, detail, "secret-value")
 }
+
+// runAll is a test helper that builds probeConfig with the same default
+// paths as parseConfig's flag defaults so tests exercise runAllWithConfig.
+func runAll(hc *http.Client, base string) []Result {
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return []Result{{
+			Probe:  "configuration",
+			Status: StatusFail,
+			Detail: "parse base URL failed",
+		}}
+	}
+	return runAllWithConfig(hc, probeConfig{
+		base:          parsed,
+		readinessPath: "/ready",
+		headersPath:   "/",
+		jwtPath:       "/api/v1/whoami",
+		csrfPath:      "/api/v1/state",
+		rateLimitPath: "/",
+	})
+}

@@ -44,6 +44,9 @@ const (
 	MaxMessageTypeBytes = 256
 	// DefaultMaxPayloadBytes is the safe default payload cap for queue backends.
 	DefaultMaxPayloadBytes = 1 << 20
+	// UnlimitedPayloadBytes disables the payload size check in [ValidateMessage].
+	// Pass this explicit sentinel rather than 0 — zero means "use the default".
+	UnlimitedPayloadBytes = -1
 	// MaxBatchMessages caps batch enqueue operations so callers cannot build
 	// unbounded backend command batches.
 	MaxBatchMessages = 1024
@@ -89,10 +92,23 @@ func ValidateName(name, kind string) error {
 }
 
 // ValidateMessage checks generic queue metadata and payload size before a
-// backend persists the job. Pass maxPayloadBytes=0 to disable the payload cap.
+// backend persists the job.
+//
+// maxPayloadBytes semantics:
+//   - 0: apply [DefaultMaxPayloadBytes] (fail-closed default; zero is the
+//     natural unset config value and must not silently disable the cap)
+//   - [UnlimitedPayloadBytes] (-1): disable the payload size check
+//   - >0: enforce that exact limit
+//   - any other negative value: invalid
 func ValidateMessage(msg Message, maxPayloadBytes int) error {
-	if maxPayloadBytes < 0 {
-		return fmt.Errorf("%w: max payload bytes must be >= 0", ErrInvalidMessage)
+	limit := maxPayloadBytes
+	switch {
+	case limit == 0:
+		limit = DefaultMaxPayloadBytes
+	case limit == UnlimitedPayloadBytes:
+		limit = 0 // no payload size check below
+	case limit < 0:
+		return fmt.Errorf("%w: max payload bytes must be >= 0 or UnlimitedPayloadBytes", ErrInvalidMessage)
 	}
 	if msg.Type == "" {
 		return fmt.Errorf("%w: type must not be empty", ErrInvalidMessage)
@@ -109,8 +125,8 @@ func ValidateMessage(msg Message, maxPayloadBytes int) error {
 	if containsInvalidStringBytes(msg.ID) {
 		return fmt.Errorf("%w: id contains invalid characters", ErrInvalidMessage)
 	}
-	if maxPayloadBytes > 0 && len(msg.Payload) > maxPayloadBytes {
-		return &MessageTooLargeError{Size: len(msg.Payload), Limit: maxPayloadBytes}
+	if limit > 0 && len(msg.Payload) > limit {
+		return &MessageTooLargeError{Size: len(msg.Payload), Limit: limit}
 	}
 	return nil
 }
@@ -139,5 +155,8 @@ type Publisher interface {
 // Consumer processes messages from a queue.
 type Consumer interface {
 	// Consume blocks and processes messages until ctx is cancelled.
+	// Fatal backend failures are currently logged by implementations and
+	// surface as a return without error; a v3 signature will return error
+	// so lifecycle runners can detect terminal exits (see V3_BREAKING_PROPOSALS).
 	Consume(ctx context.Context, queue string, handler Handler)
 }

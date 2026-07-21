@@ -120,10 +120,27 @@ func writeKnownHostsFile(host, port string) (string, error) {
 		return "", fmt.Errorf("capture sftp host key: server did not present a key")
 	}
 
-	path := filepath.Join(os.TempDir(), "rho-kit-sftp-known-hosts-"+port)
+	// O_EXCL + random name under os.TempDir so a co-tenant cannot
+	// pre-create a predictable path (symlink clobber) (review-18).
+	f, err := os.CreateTemp("", "rho-kit-sftp-known-hosts-*")
+	if err != nil {
+		return "", fmt.Errorf("create sftp known_hosts file: %w", err) // kit:ok-fmt-errorf-wrap
+	}
+	path := f.Name()
 	line := knownhosts.Line([]string{addr}, hostKey) + "\n"
-	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+	if _, err := f.Write([]byte(line)); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
 		return "", fmt.Errorf("write sftp known_hosts file: %w", err) // kit:ok-fmt-errorf-wrap
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("chmod sftp known_hosts file: %w", err) // kit:ok-fmt-errorf-wrap
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("close sftp known_hosts file: %w", err) // kit:ok-fmt-errorf-wrap
 	}
 	return path, nil
 }

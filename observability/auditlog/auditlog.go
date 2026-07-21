@@ -599,6 +599,9 @@ func (l *Logger) List(ctx context.Context, filter Filter, cursor string, limit i
 		return nil, "", err
 	}
 	signed := l.cursors.encodeCursor(next)
+	// Defensive clone: Store contract says Query returns owned copies, but
+	// a hostile/buggy Store that returns shared metadata maps must not let
+	// mutations leak to callers (pinned by TestLogger_QueryClonesMetadataFromStore).
 	return cloneEvents(events), signed, nil
 }
 

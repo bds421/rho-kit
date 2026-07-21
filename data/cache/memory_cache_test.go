@@ -540,7 +540,8 @@ func TestValidateKey_TooLong(t *testing.T) {
 
 func TestValidateKeyPrefix(t *testing.T) {
 	assert.NoError(t, ValidateKeyPrefix(""))
-	assert.NoError(t, ValidateKeyPrefix(strings.Repeat("x", MaxKeyPrefixLen)))
+	assert.NoError(t, ValidateKeyPrefix(strings.Repeat("x", MaxKeyPrefixLen-1)+":"))
+	assert.ErrorIs(t, ValidateKeyPrefix("users"), ErrKeyInvalidChars)
 
 	err := ValidateKeyPrefix(strings.Repeat("x", MaxKeyPrefixLen+1))
 	assert.Error(t, err)

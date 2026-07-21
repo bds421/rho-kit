@@ -37,6 +37,10 @@ const (
 	// remove cold buckets that have refilled fully.
 	defaultSweepInterval = 5 * time.Minute
 
+	// defaultMaxKeys bounds per-key map cardinality between sweeps so an
+	// attacker-controlled key space cannot grow unbounded (review-12).
+	defaultMaxKeys = 100_000
+
 	maxRetryAfter                = time.Duration(1<<63 - 1)
 	minRepresentableRefillPerSec = float64(time.Second) / float64(maxRetryAfter)
 )
@@ -55,6 +59,7 @@ type Limiter struct {
 	capacity float64
 	refill   float64
 	now      clock.Func
+	maxKeys  int
 
 	mu      sync.Mutex
 	buckets map[string]*bucket
@@ -99,6 +104,18 @@ func WithoutSweeper() Option {
 	return func(l *Limiter) { l.sweepInterval = 0 }
 }
 
+// WithMaxKeys sets the hard cardinality cap for the per-key map.
+// When the map is full, Allow force-evicts cold (full-capacity) buckets
+// and, if still full, drops an arbitrary entry to make room. The default
+// is 100_000. Pass 0 to disable the cap (not recommended for attacker-
+// controlled key spaces).
+func WithMaxKeys(n int) Option {
+	if n < 0 {
+		panic("tokenbucket: WithMaxKeys requires n >= 0")
+	}
+	return func(l *Limiter) { l.maxKeys = n }
+}
+
 // New constructs a Limiter where each key has a bucket of `capacity`
 // tokens that refills at `refillPerSec` tokens per second. capacity
 // must be finite and >= 1; refillPerSec must be finite, > 0, and high
@@ -129,6 +146,7 @@ func New(capacity, refillPerSec float64, opts ...Option) *Limiter {
 		capacity:      capacity,
 		refill:        refillPerSec,
 		now:           time.Now,
+		maxKeys:       defaultMaxKeys,
 		buckets:       make(map[string]*bucket),
 		sweepInterval: defaultSweepInterval,
 		stopCh:        make(chan struct{}),
@@ -222,12 +240,31 @@ func (l *Limiter) sweep() {
 		return
 	}
 	now := l.now()
-	full := float64(int(l.capacity))
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.sweepExpiredLocked(now)
+}
+
+// sweepExpiredLocked removes full-capacity buckets. Caller holds l.mu.
+func (l *Limiter) sweepExpiredLocked(now time.Time) {
+	full := float64(int(l.capacity))
 	for k, b := range l.buckets {
 		if b.lim.TokensAt(now) >= full {
 			delete(l.buckets, k)
+		}
+	}
+}
+
+// ensureRoomLocked enforces maxKeys. Caller holds l.mu.
+func (l *Limiter) ensureRoomLocked(now time.Time) {
+	if l.maxKeys <= 0 || len(l.buckets) < l.maxKeys {
+		return
+	}
+	l.sweepExpiredLocked(now)
+	for len(l.buckets) >= l.maxKeys {
+		for k := range l.buckets {
+			delete(l.buckets, k)
+			break
 		}
 	}
 }
@@ -257,10 +294,11 @@ func (l *Limiter) newBucket() *bucket {
 // Sweeper race: dropping the map lock before [rate.Limiter.AllowN]
 // lets the background sweeper delete this bucket between the unlock
 // and the admit decision. The sweeper only removes buckets at full
-// capacity, so any racing admission would have been admitted anyway;
-// the user-visible effect is at most one extra admission per
-// sweep-cycle-per-key, far cheaper than the contention removed by
-// finer-grained locking.
+// capacity, so any in-flight holders of the deleted *bucket can still
+// drain up to that bucket's full capacity after unlock, while new
+// arrivals create a fresh full bucket — bounded by ~capacity extra
+// admissions (only when the key was not being rate-limited). Far
+// cheaper than the contention removed by finer-grained locking.
 //
 // Deny path deliberately avoids ReserveN+CancelAt: under concurrent
 // denies on the same empty bucket, CancelAt only fully restores the
@@ -287,6 +325,7 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 	}
 	b, ok := l.buckets[key]
 	if !ok {
+		l.ensureRoomLocked(now)
 		b = l.newBucket()
 		l.buckets[key] = b
 	}

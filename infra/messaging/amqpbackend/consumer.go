@@ -258,49 +258,49 @@ func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler
 
 	c.logger.Info("consumer started", redact.String("queue", b.ConsumerGroup))
 
+	handleOne := func(delivery amqp.Delivery, isShutdown bool) {
+		// Always give the handler a bounded context. During normal
+		// operation the parent ctx is still live and provides natural
+		// cancellation. During shutdown the parent ctx is already
+		// cancelled, so we use a detached context with a grace period.
+		//
+		// Handlers that need to detect shutdown must call IsShutdown(ctx)
+		// — a true return means "the consumer is winding down; finish
+		// quickly".
+		base := ctx
+		if isShutdown {
+			base = context.WithoutCancel(ctx)
+			base = context.WithValue(base, shutdownSignalKey{}, struct{}{})
+		}
+		handlerCtx, handlerCancel := context.WithTimeout(base, handlerTimeout)
+		c.handleDelivery(handlerCtx, delivery, handler, b)
+		handlerCancel()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			c.logger.Info("consumer stopping", redact.String("queue", b.ConsumerGroup))
-			return ctx.Err()
+			// Explicit drain of prefetched deliveries so the documented
+			// shutdown-grace path runs deterministically rather than only
+			// when select races delivery over ctx.Done() (review-17).
+			for {
+				select {
+				case delivery, ok := <-deliveries:
+					if !ok {
+						return ctx.Err()
+					}
+					handleOne(delivery, true)
+				default:
+					return ctx.Err()
+				}
+			}
 
 		case delivery, ok := <-deliveries:
 			if !ok {
 				return fmt.Errorf("delivery channel closed")
 			}
-			// Always give the handler a bounded context. During normal
-			// operation the parent ctx is still live and provides natural
-			// cancellation. During shutdown the parent ctx is already
-			// cancelled, so we use a detached context with a grace period.
-			//
-			// Shutdown semantics: when ctx is cancelled, the handler receives
-			// a context with a cancelled parent but a fresh deadline
-			// (handlerTimeout). Handlers should check ctx.Err() if
-			// they need to know whether the service is shutting down.
-			//
-			// Always apply a timeout to handler execution, both during
-			// normal operation and shutdown. This prevents a stuck handler
-			// from permanently stalling the consumer goroutine.
-			//
-			// During shutdown (parent ctx already cancelled) we use
-			// context.WithoutCancel as the base so the handler ctx still
-			// has its own deadline (the shutdown grace period) but
-			// inherits values from the parent (request IDs, tracing).
-			// The previous code used context.Background() which dropped
-			// every value carried by the consumer ctx. Handlers that need
-			// to detect shutdown must call IsShutdown(ctx) — a true return
-			// means "the consumer is winding down; finish quickly".
-			base := ctx
-			isShutdown := ctx.Err() != nil
-			if isShutdown {
-				base = context.WithoutCancel(ctx)
-			}
-			if isShutdown {
-				base = context.WithValue(base, shutdownSignalKey{}, struct{}{})
-			}
-			handlerCtx, handlerCancel := context.WithTimeout(base, handlerTimeout)
-			c.handleDelivery(handlerCtx, delivery, handler, b)
-			handlerCancel()
+			handleOne(delivery, ctx.Err() != nil)
 		}
 	}
 }

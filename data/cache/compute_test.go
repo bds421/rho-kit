@@ -1059,25 +1059,15 @@ func TestComputeCache_OverflowingTTL_Rejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "exceeds maximum")
 }
 
-// TestComputeCache_StaleTTLOverflow_Rejected guards the same overflow
-// at construction time: staleTTL above the 10-year cap is rejected
-// when the first GetOrCompute fires (the cap is enforced inside the
-// compute path so the existing WithStaleTTL panic-on-negative
-// validation is preserved).
+// TestComputeCache_StaleTTLOverflow_Rejected guards overflow at
+// construction: staleTTL above the 10-year cap panics in WithStaleTTL
+// so a misconfigured service fails at startup rather than on every miss.
 func TestComputeCache_StaleTTLOverflow_Rejected(t *testing.T) {
-	backend := newTestBackend(t)
-	cc, err := NewComputeCache[string](backend, "ovfs:",
-		WithStaleTTL(11*365*24*time.Hour),
-	)
-	require.NoError(t, err)
-	defer func() { _ = cc.Close() }()
-
-	fn := func(ctx context.Context) (string, time.Duration, error) {
-		return "v", time.Hour, nil
-	}
-
-	_, err = cc.GetOrCompute(context.Background(), "k", fn)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "staleTTL")
-	assert.Contains(t, err.Error(), "exceeds maximum")
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected WithStaleTTL over max to panic")
+		}
+	}()
+	_ = WithStaleTTL(11 * 365 * 24 * time.Hour)
 }

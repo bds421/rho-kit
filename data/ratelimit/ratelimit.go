@@ -50,22 +50,25 @@ type Limiter interface {
 	//   - allowed=true: the event is allowed; retryAfter is 0.
 	//   - allowed=false: the event is throttled; retryAfter is the
 	//     suggested wait before retrying. Zero retryAfter means "the
-	//     limiter has no opinion" (e.g. token-bucket implementations
-	//     that only know "denied").
+	//     limiter has no opinion" (implementations that cannot compute
+	//     a wait). Kit in-memory backends (tokenbucket, gcra) always
+	//     return a positive retryAfter on denial when possible.
 	//   - err: backend or argument error. allowed must be false.
 	Allow(ctx context.Context, key string) (allowed bool, retryAfter time.Duration, err error)
 }
 
 // ValidateKey checks that a rate-limit key is safe for all limiter backends.
+// Each failure branch wraps [ErrInvalidKey] with a descriptive message so
+// callers and logs can distinguish empty, oversized, and charset failures.
 func ValidateKey(key string) error {
 	if key == "" {
-		return ErrInvalidKey
+		return fmt.Errorf("%w: key must not be empty", ErrInvalidKey)
 	}
 	if len(key) > MaxKeyLen {
 		return fmt.Errorf("%w: key exceeds maximum length", ErrInvalidKey)
 	}
 	if containsInvalidKeyRune(key) {
-		return ErrInvalidKey
+		return fmt.Errorf("%w: key contains invalid characters", ErrInvalidKey)
 	}
 	return nil
 }

@@ -223,8 +223,10 @@ func Chain(validators ...Validator) Validator {
 			meta = updated
 		}
 		// Final rewind so the caller's persistence step sees the body.
-		_, err := body.Seek(0, io.SeekStart)
-		return meta, err
+		if _, err := body.Seek(0, io.SeekStart); err != nil {
+			return meta, redact.WrapError("uploadsec: rewind body", err)
+		}
+		return meta, nil
 	})
 }
 
@@ -514,9 +516,12 @@ func AllowSVG(sanitizer SVGSanitizer) Validator {
 		if _, err := body.Seek(0, io.SeekStart); err != nil {
 			return meta, redact.WrapError("uploadsec: rewind for SVG sanitise", err)
 		}
-		original, err := io.ReadAll(body)
+		original, err := io.ReadAll(io.LimitReader(body, svgBodyReadLimit+1))
 		if err != nil {
 			return meta, redact.WrapError("uploadsec: read SVG body", err)
+		}
+		if int64(len(original)) > svgBodyReadLimit {
+			return meta, fmt.Errorf("%w: SVG body exceeds %d bytes", ErrInvalidImage, svgBodyReadLimit)
 		}
 		sanitised, err := sanitizer.SanitizeSVG(bytes.NewReader(original))
 		if err != nil {
@@ -576,11 +581,15 @@ func AllowExtensions(allowed ...string) Validator {
 }
 
 // imageHeaderReadLimit caps the bytes read for image.DecodeConfig.
-// Standard image headers (PNG, JPEG, GIF) parse within the first ~1 KiB;
-// 64 KiB is generous for exotic format variants while keeping memory use
-// bounded regardless of upload size. Reading the full body would let a
-// 100 MiB upload buffer 100 MiB in RAM before any size check runs.
-const imageHeaderReadLimit = 64 << 10
+// Align with storage.ImageDimensions (imageDimensionReadLimit=512 KiB)
+// so metadata-heavy JPEGs are not rejected by one path and accepted by
+// the other (review-18). Standard image headers parse within ~1 KiB;
+// 512 KiB covers multi-segment XMP/MPF camera metadata.
+const imageHeaderReadLimit = 512 << 10
+
+// svgBodyReadLimit bounds SVG buffering in [AllowSVG], mirroring the
+// raster path's [imageBodyReadLimit] defense against memory exhaustion.
+const svgBodyReadLimit = imageBodyReadLimit
 
 // MaxImageDimensions returns a Validator that rejects images whose
 // width × height exceeds maxWidth × maxHeight. Only the image header
@@ -588,7 +597,7 @@ const imageHeaderReadLimit = 64 << 10
 // allocated, so a 100,000 × 100,000 PNG decompression bomb is rejected
 // without ever materialising the megabytes of pixels.
 //
-// Memory use is bounded by [imageHeaderReadLimit] (64 KiB) regardless of
+// Memory use is bounded by [imageHeaderReadLimit] (512 KiB) regardless of
 // the upload size — only the header is read into memory, the body is left
 // at its current offset for downstream validators / persistence.
 //
@@ -1013,7 +1022,6 @@ func peekWebPDimensions(body []byte) (int, int, error) {
 		return 0, 0, ErrInvalidImage
 	}
 }
-
 
 // AsStorageValidator adapts an uploadsec [Validator] (ReadSeeker-based)
 // to a streaming [storage.Validator] suitable for

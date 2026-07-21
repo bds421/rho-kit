@@ -170,7 +170,10 @@ func processMultipartParts(ctx context.Context, mr *multipart.Reader, r *http.Re
 			if limit > remainingBudget {
 				limit = remainingBudget
 			}
-			n, _ := io.Copy(io.Discard, io.LimitReader(part, limit+1))
+			n, copyErr := io.Copy(io.Discard, io.LimitReader(part, limit+1))
+			if copyErr != nil {
+				return UploadResult{}, storage.WrapSafe("storagehttp: read non-file part", copyErr)
+			}
 			totalSkippedBytes += n
 			if n > limit {
 				if limit < maxPartDiscard {

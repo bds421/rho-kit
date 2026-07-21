@@ -3,6 +3,7 @@ package azurebackend
 import (
 	"fmt"
 	"log/slog"
+	"regexp"
 
 	"github.com/bds421/rho-kit/core/v2/config"
 	"github.com/bds421/rho-kit/infra/v2/storage"
@@ -86,9 +87,17 @@ func (c Config) validateTokenCredential(environment string) error {
 	return c.validateCommon(environment)
 }
 
+// azureAccountNameRE matches Azure storage account names: 3–24 lowercase
+// letters and digits only. Prevents AccountName from being interpolated
+// into the default endpoint host as an open redirect/SSRF (review-19).
+var azureAccountNameRE = regexp.MustCompile(`^[a-z0-9]{3,24}$`)
+
 func (c Config) validateCommon(environment string) error {
 	if c.AccountName == "" {
 		return fmt.Errorf("STORAGE_AZURE_ACCOUNT_NAME is required")
+	}
+	if !azureAccountNameRE.MatchString(c.AccountName) {
+		return fmt.Errorf("STORAGE_AZURE_ACCOUNT_NAME must be 3-24 lowercase alphanumeric characters")
 	}
 	if c.ContainerName == "" {
 		return fmt.Errorf("STORAGE_AZURE_CONTAINER_NAME is required")

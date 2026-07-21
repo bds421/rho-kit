@@ -226,8 +226,16 @@ func (p *Pool) Reset() error {
 }
 
 // Ping issues a no-op query to verify the pool is live. Use in
-// readiness probes.
+// readiness probes. Prefer [Pool.PingContext] when wiring into
+// [sqldb.HealthCheckContext] / [sqldb.ContextPinger].
 func (p *Pool) Ping(ctx context.Context) error {
+	return p.PingContext(ctx)
+}
+
+// PingContext implements [sqldb.ContextPinger] so the canonical pgx pool
+// plugs into [sqldb.HealthCheckContext] without a caller-written shim
+// (review-20).
+func (p *Pool) PingContext(ctx context.Context) error {
 	if p == nil || p.pool == nil {
 		return errors.New("pgx: pool is closed")
 	}

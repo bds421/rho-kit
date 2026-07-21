@@ -117,3 +117,17 @@ func TestValidateMessage(t *testing.T) {
 	}, 4)
 	assert.True(t, errors.Is(err, queue.ErrMessageTooLarge), "err=%v", err)
 }
+
+func TestValidateMessage_ZeroMeansDefaultCap(t *testing.T) {
+	// Zero must apply DefaultMaxPayloadBytes, not disable the cap (review-12).
+	msg := queue.Message{
+		Type:    "email.send",
+		Payload: make([]byte, queue.DefaultMaxPayloadBytes+1),
+	}
+	err := queue.ValidateMessage(msg, 0)
+	assert.ErrorIs(t, err, queue.ErrMessageTooLarge)
+
+	// Explicit unlimited sentinel still disables the cap.
+	msg.Payload = make([]byte, queue.DefaultMaxPayloadBytes+1)
+	assert.NoError(t, queue.ValidateMessage(msg, queue.UnlimitedPayloadBytes))
+}

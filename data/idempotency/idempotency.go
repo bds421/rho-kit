@@ -269,13 +269,13 @@ func GenerateToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// memoryStoreMaxEntries is the size threshold at which Set and TryLock force a
-// lazy eviction pass instead of waiting for the periodic interval. It is NOT a
-// hard cap: eviction only reclaims *expired* entries, so a working set of live
-// long-TTL entries (or in-flight locks) can still grow past this number. It
-// bounds memory only against the expired-but-not-yet-swept backlog, which is
-// the realistic failure mode in long-running tests or misuse outside test
-// environments. Operators with high live-key cardinality should run
+// memoryStoreMaxEntries is the size threshold at which TryLock forces a
+// lazy lock-eviction pass instead of waiting for the periodic interval.
+// Set relies only on the periodic evictInterval + [MemoryStore.Run] so a
+// live-heavy working set does not pay a fruitless scan under the write
+// lock on every write (review-12). Eviction only reclaims *expired*
+// entries, so a working set of live long-TTL entries can still grow past
+// this number. Operators with high live-key cardinality should run
 // [MemoryStore.Run] and rely on a real backend ([pgstore]/[redisstore]) in
 // production, where TTL expiry caps memory at the datastore.
 const memoryStoreMaxEntries = 10_000
@@ -355,7 +355,6 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 
 func (m *MemoryStore) now() time.Time { return m.clock() }
 
-
 func ctxErr(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("idempotency: nil context")
@@ -383,11 +382,21 @@ func (m *MemoryStore) Get(ctx context.Context, key string, fingerprint []byte) (
 	}
 	if m.now().After(entry.expiresAt) {
 		m.mu.Lock()
-		if e, still := m.items[key]; still && m.now().After(e.expiresAt) {
-			delete(m.items, key)
+		e, still := m.items[key]
+		if !still {
+			m.mu.Unlock()
+			return nil, false, nil
 		}
+		if m.now().After(e.expiresAt) {
+			delete(m.items, key)
+			m.mu.Unlock()
+			return nil, false, nil
+		}
+		// A concurrent Set replaced the expired entry with a fresh one
+		// between our RUnlock and this write-lock recheck. Return the
+		// live entry instead of a spurious miss (review-12).
+		entry = e
 		m.mu.Unlock()
-		return nil, false, nil
 	}
 	if fingerprint != nil && (entry.fingerprint == nil || len(entry.fingerprint) != len(fingerprint) || subtle.ConstantTimeCompare(entry.fingerprint, fingerprint) != 1) {
 		// Same Idempotency-Key, different request body fingerprint.
@@ -472,7 +481,12 @@ func (m *MemoryStore) Set(ctx context.Context, key, token string, resp CachedRes
 	}
 
 	m.setCount++
-	if len(m.items) >= memoryStoreMaxEntries || m.setCount%evictInterval == 0 {
+	// Only the periodic evictInterval path runs under Set: when the working
+	// set is entirely live long-TTL keys, a len>=maxEntries trigger would
+	// scan up to evictBudget entries under the write lock on every write
+	// and reclaim nothing (review-12). Background Run() + the interval tick
+	// still bound amortized expired-entry cost.
+	if m.setCount%evictInterval == 0 {
 		m.sweepExpiredLocked(evictBudget)
 	}
 
@@ -697,7 +711,6 @@ func copyResponseForStorage(resp CachedResponse) CachedResponse {
 	}
 	return cp
 }
-
 
 // cloneBytes returns an independent copy of b that preserves nil-vs-empty
 // distinction. A non-nil empty fingerprint ([]byte{}) must stay non-nil:

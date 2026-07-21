@@ -35,6 +35,12 @@ const MaxCursorLen = 4096
 // security and signal a misconfiguration.
 const MinCursorSigningKeyBytes = 32
 
+// cursorMACDomain separates actionlog cursor MACs from sibling packages
+// (approval, auditlog) that share a byte-identical payload shape. Without
+// it, a cursor minted on one surface verifies under another when the
+// same key is reused.
+const cursorMACDomain = "actionlog-cursor:v1\x00"
+
 // CursorSigner produces HMAC-SHA256-signed keyset cursors and
 // constant-time-verifies them on read. Construction binds a per-deployment
 // signing key (typically rotated together with other admin-API secrets)
@@ -93,6 +99,7 @@ func (s *CursorSigner) Encode(occurredAt time.Time, id string) string {
 	var sum []byte
 	s.key.Use(func(k []byte) {
 		mac := hmac.New(sha256.New, k)
+		mac.Write([]byte(cursorMACDomain))
 		mac.Write([]byte(payload))
 		sum = mac.Sum(nil)
 	})
@@ -129,6 +136,7 @@ func (s *CursorSigner) Decode(cursor string) (time.Time, string, error) {
 	var match bool
 	s.key.Use(func(k []byte) {
 		expected := hmac.New(sha256.New, k)
+		expected.Write([]byte(cursorMACDomain))
 		expected.Write(payload)
 		match = subtle.ConstantTimeCompare(sig, expected.Sum(nil)) == 1
 	})

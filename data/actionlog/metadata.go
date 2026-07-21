@@ -144,7 +144,10 @@ func validMetadataKey(key string) bool {
 }
 
 func validMetadataString(value string) bool {
-	if !utf8.ValidString(value) {
+	// Cap individual strings at MaxMetadataBytes so a multi-hundred-MB
+	// value cannot force a large transient allocation in canonicalJSON
+	// before the size check rejects it.
+	if len(value) > MaxMetadataBytes || !utf8.ValidString(value) {
 		return false
 	}
 	for _, r := range value {

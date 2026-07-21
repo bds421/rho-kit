@@ -83,14 +83,32 @@ func WithContext(ctx context.Context, logger *slog.Logger) context.Context {
 
 // FromContext retrieves the logger from the context. Returns slog.Default()
 // if no logger was stored or if a nil was stored (FR-084).
+//
+// Prefer [FromContextOK] when the caller needs to distinguish an
+// explicitly stored logger from the package default — [FromContext]
+// alone cannot tell them apart when the stored value happens to be
+// slog.Default().
 func FromContext(ctx context.Context) *slog.Logger {
+	l, _ := FromContextOK(ctx)
+	return l
+}
+
+// FromContextOK retrieves the logger from the context and reports whether
+// one was explicitly stored. ok is false (and the logger is slog.Default())
+// when no non-nil logger was stored — including when ctx is nil.
+//
+// This is the presence-based alternative to identity-comparing
+// FromContext's result against slog.Default(), which is racy against
+// concurrent slog.SetDefault and silently drops a deliberately-stored
+// default logger.
+func FromContextOK(ctx context.Context) (*slog.Logger, bool) {
 	if ctx == nil {
-		return slog.Default()
+		return slog.Default(), false
 	}
 	if l, ok := ctx.Value(contextKey{}).(*slog.Logger); ok && l != nil {
-		return l
+		return l, true
 	}
-	return slog.Default()
+	return slog.Default(), false
 }
 
 // WithAttrs returns a new logger with additional attributes, stored in the context.

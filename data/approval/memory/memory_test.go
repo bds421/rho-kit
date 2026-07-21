@@ -41,7 +41,7 @@ func TestCreate_StartsPending(t *testing.T) {
 func TestStore_CopiesPayloadOnPublicBoundaries(t *testing.T) {
 	store := New(testCursorSigner(t))
 	r := newReq("copy-payload")
-	r.Payload = []byte("original")
+	r.Payload = []byte(`"original"`)
 
 	created, err := store.Create(context.Background(), r)
 	require.NoError(t, err)
@@ -50,12 +50,12 @@ func TestStore_CopiesPayloadOnPublicBoundaries(t *testing.T) {
 	created.Payload[0] = 'c'
 	got, err := store.Get(context.Background(), "copy-payload")
 	require.NoError(t, err)
-	assert.Equal(t, "original", string(got.Payload))
+	assert.Equal(t, `"original"`, string(got.Payload))
 
 	got.Payload[0] = 'g'
 	gotAgain, err := store.Get(context.Background(), "copy-payload")
 	require.NoError(t, err)
-	assert.Equal(t, "original", string(gotAgain.Payload))
+	assert.Equal(t, `"original"`, string(gotAgain.Payload))
 
 	listed, _, err := store.List(context.Background(), approval.Query{TenantID: "tenant"})
 	require.NoError(t, err)
@@ -63,21 +63,21 @@ func TestStore_CopiesPayloadOnPublicBoundaries(t *testing.T) {
 	listed[0].Payload[0] = 'l'
 	gotAgain, err = store.Get(context.Background(), "copy-payload")
 	require.NoError(t, err)
-	assert.Equal(t, "original", string(gotAgain.Payload))
+	assert.Equal(t, `"original"`, string(gotAgain.Payload))
 
 	decided, err := store.Approve(context.Background(), "copy-payload", "approver", "ok")
 	require.NoError(t, err)
 	decided.Payload[0] = 'd'
 	gotAgain, err = store.Get(context.Background(), "copy-payload")
 	require.NoError(t, err)
-	assert.Equal(t, "original", string(gotAgain.Payload))
+	assert.Equal(t, `"original"`, string(gotAgain.Payload))
 
 	executed, err := store.MarkExecuted(context.Background(), "copy-payload")
 	require.NoError(t, err)
 	executed.Payload[0] = 'e'
 	gotAgain, err = store.Get(context.Background(), "copy-payload")
 	require.NoError(t, err)
-	assert.Equal(t, "original", string(gotAgain.Payload))
+	assert.Equal(t, `"original"`, string(gotAgain.Payload))
 }
 
 func TestCreate_RejectsDuplicate(t *testing.T) {

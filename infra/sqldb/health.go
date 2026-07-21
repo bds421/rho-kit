@@ -15,10 +15,7 @@ import (
 // framework's cancellation context is threaded through the ping; otherwise a
 // hung ping keeps holding a DB connection after the kubelet probe has given
 // up. *sql.DB satisfies [ContextPinger] via PingContext. The pgx adapter
-// (infra/sqldb/pgx) does not satisfy it directly because its method is named
-// Ping(ctx) rather than PingContext; wrap it in a [ContextPinger] shim (e.g.
-// a closure that calls pool.Ping(ctx)) so the cancellation context is still
-// threaded through.
+// (infra/sqldb/pgx.Pool) implements PingContext directly.
 type Pinger interface {
 	Ping() error
 }
