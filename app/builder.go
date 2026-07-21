@@ -648,26 +648,32 @@ func (b *Builder) RunContext(ctx context.Context) error {
 			internalHandler = wrap.WrapInternalHandler(internalHandler, healthChecker)
 		}
 	}
-	internalSrv := httpx.NewServer(b.cfg.Internal.Addr(), internalHandler, serverErrorLogOpt)
+	internalSrvOpts := []httpx.ServerOption{serverErrorLogOpt}
+	if serverTLS != nil {
+		internalSrvOpts = append(internalSrvOpts, httpx.WithTLSConfig(serverTLS))
+	}
+	internalSrv := httpx.NewServer(b.cfg.Internal.Addr(), internalHandler, internalSrvOpts...)
 	// Adapter modules may mutate the internal server post-construction
-	// (e.g., app/grpc enables UnencryptedHTTP2 so the gRPC health
-	// service rides the same listener without the deprecated
-	// h2c.NewHandler wrapper).
+	// (e.g., app/grpc enables HTTP/2 or h2c, according to whether the
+	// resolved kit-level TLS configuration is active, so the gRPC health
+	// service rides the same listener without the deprecated h2c.NewHandler
+	// wrapper).
 	for _, m := range allModules {
 		if cfg, ok := m.(InternalServerConfigurator); ok {
 			cfg.ConfigureInternalServer(internalSrv)
 		}
 	}
+	internalServerComponent := lifecycle.NewHTTPServer(internalSrv)
 	internalErrCh := make(chan error, 1)
 	go func() {
-		if srvErr := internalSrv.ListenAndServe(); srvErr != nil && !errors.Is(srvErr, http.ErrServerClosed) {
+		if srvErr := internalServerComponent.Start(ctx); srvErr != nil && !errors.Is(srvErr, http.ErrServerClosed) {
 			internalErrCh <- srvErr
 		}
 	}()
 	defer func() {
 		shutdownCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
 		defer cancel()
-		if shutdownErr := internalSrv.Shutdown(shutdownCtx); shutdownErr != nil {
+		if shutdownErr := internalServerComponent.Stop(shutdownCtx); shutdownErr != nil {
 			logger.Warn("internal server shutdown error", redact.Error(shutdownErr))
 		}
 	}()

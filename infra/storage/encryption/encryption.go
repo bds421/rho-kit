@@ -3,10 +3,12 @@ package encryption
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"runtime"
+	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/crypto/v2/encrypt"
@@ -112,6 +114,9 @@ type EncryptedStorage struct {
 	// [DefaultMaxOpenPlaintextReaders]; override with
 	// [WithMaxOpenPlaintextReaders].
 	openSem chan struct{}
+
+	// metrics is optional; set via [WithMetricsRegisterer].
+	metrics *Metrics
 }
 
 // Option configures an EncryptedStorage.
@@ -470,12 +475,24 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	// Released on Close; error paths free it immediately.
 	var releaseOpen func()
 	if e.openSem != nil {
+		acquireStart := time.Now()
 		select {
 		case e.openSem <- struct{}{}:
+			if e.metrics != nil {
+				e.metrics.observeOpenReaderAcquire("ok", time.Since(acquireStart))
+			}
 			releaseOpen = func() { <-e.openSem }
 		case <-ctx.Done():
+			err := ctx.Err()
+			if e.metrics != nil {
+				result := "canceled"
+				if errors.Is(err, context.DeadlineExceeded) {
+					result = "timeout"
+				}
+				e.metrics.observeOpenReaderAcquire(result, time.Since(acquireStart))
+			}
 			zeroBytes(plaintext)
-			return nil, storage.ObjectMeta{}, redact.WrapError("encryption", ctx.Err())
+			return nil, storage.ObjectMeta{}, redact.WrapError("encryption", err)
 		}
 	}
 	return &cleaningReader{

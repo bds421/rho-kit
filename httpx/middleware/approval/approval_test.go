@@ -385,8 +385,20 @@ func TestMiddleware_BodyAtCapAccepted(t *testing.T) {
 	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, newRequest(http.MethodPost, "/v1/x", "01234567"))
+	h.ServeHTTP(rec, newRequest(http.MethodPost, "/v1/x", `{"x":12}`))
 	assert.Equal(t, http.StatusAccepted, rec.Code)
+}
+
+func TestMiddleware_400WhenBodyIsInvalidJSON(t *testing.T) {
+	store := newApprovalStore(t)
+	mw := Middleware(store, headerActor())
+	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, newRequest(http.MethodPost, "/v1/x", `{"x":`))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	requireApprovalCount(t, store, 0)
 }
 
 func TestMiddleware_ActorExtraction(t *testing.T) {

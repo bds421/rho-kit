@@ -248,6 +248,18 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		holdErr := e.holdLeadership(ctx, handle, cb)
 		e.leader.Store(false)
 		lostErr := e.runOnLost(cb)
+		// A drain timeout leaves OnAcquired running in this process. Do not
+		// block on, or actively release, the Redis lock: returning promptly is
+		// the terminal contract, and releasing would let another replica enter
+		// leadership while the orphan still runs. Let the lease TTL expire and
+		// require the orchestrator to restart this process (L-141).
+		if holdErr != nil && errors.Is(holdErr, ErrCallbackDrainTimeout) {
+			e.logger.Error("leader-election: OnAcquired drain timed out; refusing to re-acquire — restart the process",
+				redact.String("key", e.key),
+				redact.Error(holdErr),
+			)
+			return errors.Join(holdErr, lostErr)
+		}
 		// Bound Release: a hung Redis must not pin this goroutine
 		// indefinitely and starve the elector loop.
 		releaseCtx, releaseCancel := leaderReleaseContext(ctx, 5*time.Second)
@@ -270,20 +282,6 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 				redact.String("key", e.key),
 				redact.Error(lostErr),
 			)
-		}
-		// A drain-timeout means an OnAcquired goroutine from the
-		// previous term is still running inside this process. We have
-		// no way to interrupt it (Go has no goroutine kill), so
-		// retrying acquire would risk a within-process double-leader:
-		// the new term could call OnAcquired again while the orphan
-		// goroutine still holds resources. Bail out and let the
-		// orchestrator restart the process (L-141).
-		if holdErr != nil && errors.Is(holdErr, ErrCallbackDrainTimeout) {
-			e.logger.Error("leader-election: OnAcquired drain timed out; refusing to re-acquire — restart the process",
-				redact.String("key", e.key),
-				redact.Error(holdErr),
-			)
-			return holdErr
 		}
 		if holdErr == nil {
 			e.logger.Info("leader-election: leadership callback returned; retrying",

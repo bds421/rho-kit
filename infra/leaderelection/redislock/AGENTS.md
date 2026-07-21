@@ -22,4 +22,4 @@ Same `New / Run / IsLeader` surface. Wraps `data/lock/redislock` in a renew loop
 
 ## Observability
 
-Same `leaderelection_callback_drain_seconds` / `_warn_total` metric shape.
+Shared `leaderelection_callback_drain_seconds{backend,target,state}` / `_warn_total{backend,target}` shape. Here `backend="redislock"` and `target` is the operator-supplied election key.

@@ -91,9 +91,10 @@ func TestPublisherConsumer_Roundtrip(t *testing.T) {
 	d, ok := received.Load().(messaging.Delivery)
 	require.True(t, ok, "Consume must hand a Delivery to the handler")
 	assert.Equal(t, "user.created", d.Message.Type)
-	// The routing key is carried in the message headers per redisbackend's
-	// wire convention.
-	assert.NotEmpty(t, d.Message.Headers)
+	// Transport routing metadata is surfaced on Delivery, not leaked into
+	// application-visible Message.Headers.
+	assert.Equal(t, "users.create", d.RoutingKey)
+	assert.Empty(t, d.Message.Headers)
 }
 
 // WithMaxMessageBytes refuses payloads above the configured cap before the

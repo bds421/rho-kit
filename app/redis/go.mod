@@ -7,6 +7,7 @@ require (
 	github.com/bds421/rho-kit/core/v2 v2.4.0
 	github.com/bds421/rho-kit/infra/redis/v2 v2.4.0
 	github.com/bds421/rho-kit/observability/v2 v2.4.0
+	github.com/bds421/rho-kit/security/v2 v2.4.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/stretchr/testify v1.11.1
 )
@@ -16,7 +17,6 @@ require (
 	github.com/bds421/rho-kit/infra/v2 v2.4.0 // indirect
 	github.com/bds421/rho-kit/resilience/v2 v2.4.0 // indirect
 	github.com/bds421/rho-kit/runtime/v2 v2.4.0 // indirect
-	github.com/bds421/rho-kit/security/v2 v2.4.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

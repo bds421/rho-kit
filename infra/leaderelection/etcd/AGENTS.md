@@ -28,5 +28,5 @@
 
 ## Observability
 
-- Metrics: `leaderelection_callback_drain_seconds{election,state}` and `leaderelection_callback_drain_warn_total{election}` — only when `WithMetrics` is wired. `election` label is the configured key prefix, validated as a static label at construction.
+- Metrics: `leaderelection_callback_drain_seconds{backend,target,state}` and `leaderelection_callback_drain_warn_total{backend,target}` — only when `WithMetrics` is wired. Here `backend="etcd"` and `target` is the validated election key prefix.
 - OTel spans: not currently emitted (the Run loop is long-lived; per-term spans would inflate exporter load).

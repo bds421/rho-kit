@@ -272,6 +272,7 @@ func TestValidateEventRejectsInvalidFields(t *testing.T) {
 		ID:        "1",
 		Timestamp: time.Now(),
 		Actor:     "alice",
+		Tenant:    "acme",
 		Action:    "login",
 		Resource:  "sessions",
 		Status:    "success",
@@ -286,6 +287,7 @@ func TestValidateEventRejectsInvalidFields(t *testing.T) {
 		"empty id":       func(e *Event) { e.ID = "" },
 		"id too long":    func(e *Event) { e.ID = strings.Repeat("i", MaxEventIDBytes+1) },
 		"actor newline":  func(e *Event) { e.Actor = "alice\nbob" },
+		"tenant newline": func(e *Event) { e.Tenant = "acme\nbad" },
 		"empty action":   func(e *Event) { e.Action = "" },
 		"resource space": func(e *Event) { e.Resource = "orders 1" },
 		"bad status":     func(e *Event) { e.Status = "ok" },
@@ -310,6 +312,19 @@ func TestValidateEventRejectsInvalidFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestQuery_FilterByTenant(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+	require.NoError(t, l.LogE(ctx, Event{Tenant: "acme", Actor: "alice", Action: "read", Resource: "orders/1", Status: StatusSuccess}))
+	require.NoError(t, l.LogE(ctx, Event{Tenant: "globex", Actor: "alice", Action: "read", Resource: "orders/2", Status: StatusSuccess}))
+
+	events, _, err := l.List(ctx, Filter{Tenant: "acme"}, "", 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.Equal(t, "acme", events[0].Tenant)
 }
 
 func TestLogger_LogERejectsInvalidEventBeforeStore(t *testing.T) {
@@ -764,6 +779,19 @@ func TestCanonicalEvent_OnDiskFormatGolden(t *testing.T) {
 		fmt.Sprintf("%x", computeHMAC(testChainKey, ev)),
 		fmt.Sprintf("%x", computeHMAC(testChainKey, other)),
 		"PrevHMAC must be covered by the canonical HMAC")
+}
+
+func TestCanonicalEvent_TenantIsAuthenticatedWithoutBreakingLegacyEmptyTenant(t *testing.T) {
+	base := Event{
+		ID: "tenant-chain", Timestamp: time.Unix(1, 0).UTC(), Actor: "alice",
+		Action: "read", Resource: "orders/1", Status: StatusSuccess,
+	}
+	legacy := computeHMAC(testChainKey, base)
+	withTenant := base
+	withTenant.Tenant = "acme"
+	assert.NotEqual(t, legacy, computeHMAC(testChainKey, withTenant), "tenant must be covered by the chain HMAC")
+	withTenant.Tenant = "globex"
+	assert.NotEqual(t, legacy, computeHMAC(testChainKey, withTenant), "changing tenant must invalidate the chain HMAC")
 }
 
 // TestAppend_TamperedRecordDetected makes the threat-model claim concrete:

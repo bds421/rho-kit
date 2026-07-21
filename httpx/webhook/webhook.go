@@ -226,20 +226,6 @@ func (d *Dispatcher) Send(ctx context.Context, del Delivery) error {
 	}, retry.WithRetryIf(isRetryable))
 }
 
-// validateURL is the SSRF guard for Delivery.URL: only http(s) schemes are
-// accepted, and the host must resolve to a public (non-private, non-
-// link-local, non-metadata) address via [netutil.ResolveAndValidate].
-// A signed body must never be POSTed to 169.254.169.254 or an internal
-// admin API by accident.
-//
-// Callers that deliberately deliver to private networks (local e2e,
-// VPC-internal receivers) must set Config.AllowPrivateDestinations.
-// Pair with an SSRF-aware transport ([netutil.SSRFSafeTransport]) when
-// the destination is fully untrusted and DNS may rebind after this check.
-func validateURL(raw string) error {
-	return validateURLWithOpts(raw, false)
-}
-
 func validateURLWithOpts(raw string, allowPrivate bool) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -422,10 +408,7 @@ func isPermanentTransportError(err error) bool {
 		return true
 	}
 	var sre x509.SystemRootsError
-	if errors.As(err, &sre) {
-		return true
-	}
-	return false
+	return errors.As(err, &sre)
 }
 
 // logURL returns scheme://host only so capability tokens embedded in

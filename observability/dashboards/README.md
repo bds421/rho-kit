@@ -155,11 +155,6 @@ rule_files:
 generated tree pointing at this same content. The generated service's
 CI runs `promtool check rules` on the alert files.
 
-### Helm
-
-A `helm/rho-kit-observability/` chart (TODO) wraps these files for
-orgs that want centralized rollout.
-
 ## What to do when an alert fires
 
 Each alert's `runbook_url` annotation links to a runbook under

@@ -90,7 +90,7 @@ func TestCrossHop_RequirePermission_UsesPropagatedEntitlements(t *testing.T) {
 
 	authB := interceptor.MTLSAuthUnary(provider,
 		interceptor.WithAllowedCNs("svc-a"),
-		interceptor.WithS2SImpersonationGuard(func(context.Context, string, string) error { return nil }),
+		interceptor.WithS2SImpersonationGuard(func(context.Context, string, string, string) error { return nil }),
 	)
 	requirePerm := interceptor.RequirePermissionUnary("orders:write")
 
@@ -129,7 +129,7 @@ func TestCrossHop_RequirePermission_DeniesWithoutPropagatedEntitlements(t *testi
 
 	authB := interceptor.MTLSAuthUnary(provider,
 		interceptor.WithAllowedCNs("svc-a"),
-		interceptor.WithS2SImpersonationGuard(func(context.Context, string, string) error { return nil }),
+		interceptor.WithS2SImpersonationGuard(func(context.Context, string, string, string) error { return nil }),
 	)
 	requirePerm := interceptor.RequirePermissionUnary("orders:write")
 
@@ -181,7 +181,7 @@ func TestCrossHop_RequireScope_UsesPropagatedScopes(t *testing.T) {
 
 	authB := interceptor.MTLSAuthUnary(provider,
 		interceptor.WithAllowedCNs("svc-a"),
-		interceptor.WithS2SImpersonationGuard(func(context.Context, string, string) error { return nil }),
+		interceptor.WithS2SImpersonationGuard(func(context.Context, string, string, string) error { return nil }),
 	)
 	requireScope := interceptor.RequireScopeUnary("api:write")
 

@@ -157,11 +157,12 @@ func (m *grpcModule) WrapInternalHandler(base http.Handler, checker *health.Chec
 }
 
 // ConfigureInternalServer implements [app.InternalServerConfigurator]. The
-// gRPC health service rides the kit's internal-ops listener as cleartext
-// HTTP/2 (h2c) so internal probes can dial either HTTP /ready or the gRPC
-// Health.Check RPC on the same port. Go 1.24 introduced http.Server.Protocols
-// as the supported way to opt into unencrypted HTTP/2; this replaces the
-// previous h2c.NewHandler wrapper (deprecated in Go 1.26).
+// gRPC health service rides the kit's internal-ops listener over HTTP/2 so
+// internal probes can dial either HTTP /ready or the gRPC Health.Check RPC on
+// the same port. TLS-enabled listeners use HTTP/2 over TLS; reviewed plaintext
+// configurations use h2c. Go 1.24 introduced http.Server.Protocols as the
+// supported way to select both modes; this replaces the previous h2c.NewHandler
+// wrapper (deprecated in Go 1.26).
 func (m *grpcModule) ConfigureInternalServer(srv *http.Server) {
 	if srv == nil {
 		return
@@ -171,7 +172,8 @@ func (m *grpcModule) ConfigureInternalServer(srv *http.Server) {
 		protocols = &http.Protocols{}
 	}
 	protocols.SetHTTP1(true)
-	protocols.SetUnencryptedHTTP2(true)
+	protocols.SetHTTP2(srv.TLSConfig != nil)
+	protocols.SetUnencryptedHTTP2(srv.TLSConfig == nil)
 	srv.Protocols = protocols
 }
 
@@ -298,16 +300,15 @@ func (m *grpcModule) serve() error {
 	return nil
 }
 
-// withInternalGRPCHealth layers the gRPC health-checking protocol over h2c
+// withInternalGRPCHealth layers the gRPC health-checking protocol over HTTP/2
 // onto the kit's internal-ops listener so callers may probe via either
 // HTTP /ready or the gRPC Health.Check RPC.
 //
-// The h2c surface is opted-in on the *http.Server itself via
-// [grpcModule.ConfigureInternalServer] (http.Server.Protocols replaced the
-// deprecated h2c.NewHandler wrapper in Go 1.24+). This function returns a
-// plain handler that dispatches gRPC requests (recognized by the
-// application/grpc Content-Type) to the gRPC mux and everything else to
-// the base /ready handler.
+// The HTTP/2 surface is opted-in on the *http.Server itself via
+// [grpcModule.ConfigureInternalServer], selecting TLS or h2c from the server's
+// TLSConfig. This function returns a plain handler that dispatches gRPC
+// requests (recognized by the application/grpc Content-Type) to the gRPC mux
+// and everything else to the base /ready handler.
 func withInternalGRPCHealth(base http.Handler, checker *health.Checker) http.Handler {
 	if base == nil {
 		panic("grpc: internal handler must not be nil")

@@ -316,6 +316,11 @@ requires them, and always use a small hop limit with `WithFollowRedirects` or
 the option is created; later mutation of the original `*tls.Config` does not
 change the server or resilient client.
 
+Package-level `websocket.Handle` tracks upgraded connections for graceful
+shutdown. Drain them with `websocket.Shutdown(ctx)` alongside the HTTP server;
+use `websocket.NewHub` plus `Hub.Shutdown` only when separate listeners or test
+fixtures need isolated connection registries.
+
 ## Safe Redirects
 
 Validate untrusted redirect targets before passing them to `http.Redirect`.

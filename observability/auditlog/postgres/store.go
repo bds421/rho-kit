@@ -147,6 +147,9 @@ func (s *Store) Query(ctx context.Context, filter auditlog.Filter, cursor string
 	if filter.Actor != "" {
 		add("actor = $%d", filter.Actor)
 	}
+	if filter.Tenant != "" {
+		add("tenant = $%d", filter.Tenant)
+	}
 	if filter.Action != "" {
 		add("action = $%d", filter.Action)
 	}
@@ -346,7 +349,7 @@ var (
 	_ auditlog.RetentionStore = (*Store)(nil)
 )
 
-const selectColumns = `SELECT id, occurred_at, actor, action, resource, status,
+const selectColumns = `SELECT id, occurred_at, actor, tenant, action, resource, status,
        ip_address, trace_id, metadata, prev_hmac, hmac`
 
 func selectTailHMACForUpdate(ctx context.Context, tx pgx.Tx) ([]byte, error) {
@@ -371,15 +374,15 @@ func insertEvent(ctx context.Context, tx pgx.Tx, e auditlog.Event) error {
 	}
 	const q = `
 INSERT INTO audit_log_events
-(id, occurred_at, actor, action, resource, status, ip_address, trace_id,
+(id, occurred_at, actor, tenant, action, resource, status, ip_address, trace_id,
  metadata, prev_hmac, hmac)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`
 	prev := e.PrevHMAC
 	if prev == nil {
 		prev = []byte{}
 	}
 	if _, err := tx.Exec(ctx, q,
-		e.ID, e.Timestamp.UTC(), e.Actor, e.Action, e.Resource, e.Status,
+		e.ID, e.Timestamp.UTC(), e.Actor, e.Tenant, e.Action, e.Resource, e.Status,
 		e.IPAddress, e.TraceID, metaRaw, prev, e.HMAC,
 	); err != nil {
 		return fmt.Errorf("auditlog/postgres: insert event: %w", err)
@@ -399,7 +402,7 @@ func scanEvent(s scannable) (auditlog.Event, error) {
 		hmac     []byte
 	)
 	if err := s.Scan(
-		&e.ID, &e.Timestamp, &e.Actor, &e.Action, &e.Resource, &e.Status,
+		&e.ID, &e.Timestamp, &e.Actor, &e.Tenant, &e.Action, &e.Resource, &e.Status,
 		&e.IPAddress, &e.TraceID, &metaRaw, &prevHMAC, &hmac,
 	); err != nil {
 		return auditlog.Event{}, err

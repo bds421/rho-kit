@@ -75,16 +75,17 @@ func TestBudget_RefundRestoresAndClampsAtCap(t *testing.T) {
 
 	ctx := context.Background()
 	key := uniqueKey(t, "refund")
+	chargedAt := time.Now()
 
 	_, _, _, err := b.Consume(ctx, key, 5)
 	require.NoError(t, err)
 
-	rem, err := b.Refund(ctx, key, 3)
+	rem, err := b.Refund(ctx, key, 3, chargedAt)
 	require.NoError(t, err)
 	assert.Equal(t, int64(8), rem, "refund of 3 against 5-consumed cap-10 should give 8")
 
 	// Refunding past cap must clamp.
-	rem, err = b.Refund(ctx, key, 100)
+	rem, err = b.Refund(ctx, key, 100, chargedAt)
 	require.NoError(t, err)
 	assert.Equal(t, int64(10), rem, "Refund must clamp at cap")
 }

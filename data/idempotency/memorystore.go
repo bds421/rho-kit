@@ -112,22 +112,11 @@ func (m *MemoryStore) Get(ctx context.Context, key string, fingerprint []byte) (
 		return nil, false, nil
 	}
 	if m.now().After(entry.expiresAt) {
-		m.mu.Lock()
-		e, still := m.items[key]
-		if !still {
-			m.mu.Unlock()
+		var stillLive bool
+		entry, stillLive = m.recheckExpiredEntry(key)
+		if !stillLive {
 			return nil, false, nil
 		}
-		if m.now().After(e.expiresAt) {
-			delete(m.items, key)
-			m.mu.Unlock()
-			return nil, false, nil
-		}
-		// A concurrent Set replaced the expired entry with a fresh one
-		// between our RUnlock and this write-lock recheck. Return the
-		// live entry instead of a spurious miss (review-12).
-		entry = e
-		m.mu.Unlock()
 	}
 	if fingerprint != nil && (entry.fingerprint == nil || len(entry.fingerprint) != len(fingerprint) || subtle.ConstantTimeCompare(entry.fingerprint, fingerprint) != 1) {
 		// Same Idempotency-Key, different request body fingerprint.
@@ -145,6 +134,24 @@ func (m *MemoryStore) Get(ctx context.Context, key string, fingerprint []byte) (
 		return nil, false, err
 	}
 	return cloneResponse(entry.resp), false, nil
+}
+
+// recheckExpiredEntry resolves the race between Get's read snapshot and its
+// expired-entry cleanup. A concurrent Set may have replaced the snapshot; in
+// that case the fresh entry must be returned rather than deleted or reported
+// as a miss.
+func (m *MemoryStore) recheckExpiredEntry(key string) (memEntry, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.items[key]
+	if !ok {
+		return memEntry{}, false
+	}
+	if m.now().After(e.expiresAt) {
+		delete(m.items, key)
+		return memEntry{}, false
+	}
+	return e, true
 }
 
 // evictInterval controls how often Set() scans for expired entries.

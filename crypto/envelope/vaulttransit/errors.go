@@ -16,13 +16,19 @@ import (
 // Vault surfaces transport-class errors as *vaultapi.ResponseError with
 // the HTTP status code; this is the only reliable classification surface
 // (the body messages vary by Vault version and plugin).
-func classifyVaultError(_ string, err error) error {
+func (k *KEK) classifyVaultError(operation string, err error) error {
 	if err == nil {
 		return nil
 	}
 	var respErr *vaultapi.ResponseError
 	if !errors.As(err, &respErr) {
+		if k != nil {
+			k.metrics.recordError(operation, "unknown")
+		}
 		return err
+	}
+	if k != nil {
+		k.metrics.recordError(operation, statusString(respErr.StatusCode))
 	}
 	switch respErr.StatusCode {
 	case 429:
@@ -41,6 +47,12 @@ func classifyVaultError(_ string, err error) error {
 	default:
 		return err
 	}
+}
+
+// classifyVaultError is retained for focused classification tests. Production
+// calls the KEK method so every provider error is counted.
+func classifyVaultError(operation string, err error) error {
+	return (*KEK)(nil).classifyVaultError(operation, err)
 }
 
 func statusString(code int) string {

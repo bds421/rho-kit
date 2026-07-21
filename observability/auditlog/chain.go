@@ -56,7 +56,7 @@ func canonicalEvent(event Event) []byte {
 	// Estimate the buffer size to avoid reallocs on the hot path. PrevHMAC
 	// is counted twice because it appears in two positions of the encoding.
 	approx := hmacSize +
-		len(event.ID) + len(event.Actor) + len(event.Action) +
+		len(event.ID) + len(event.Actor) + len(event.Tenant) + len(event.Action) +
 		len(event.Resource) + len(event.Status) + len(event.IPAddress) +
 		len(event.TraceID) + len(event.Metadata) + 2*len(event.PrevHMAC) +
 		11*4 + 8 // length headers + timestamp
@@ -72,6 +72,12 @@ func canonicalEvent(event Event) []byte {
 	buf = appendLenPrefixed(buf, []byte(event.TraceID))
 	buf = appendLenPrefixed(buf, event.Metadata)
 	buf = appendLenPrefixed(buf, event.PrevHMAC)
+	// Tenant was added after the original chain format shipped. Omitting the
+	// suffix for an empty tenant preserves verification of existing records;
+	// non-empty tenant identity is still covered by the event HMAC.
+	if event.Tenant != "" {
+		buf = appendLenPrefixed(buf, []byte(event.Tenant))
+	}
 	return buf
 }
 

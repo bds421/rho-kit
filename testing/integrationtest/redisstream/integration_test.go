@@ -213,12 +213,13 @@ func TestConsumer_LiveRedis_DeadLetter_MaxRetries(t *testing.T) {
 		redisstream.WithConsumerLogger(slog.Default()),
 		redisstream.WithBlockDuration(500*time.Millisecond),
 		redisstream.WithMaxRetries(3),
-		redisstream.WithClaimMinIdle(500*time.Millisecond),
+		redisstream.WithHandlerTimeout(100*time.Millisecond),
+		redisstream.WithClaimMinIdle(11*time.Second),
 		redisstream.WithClaimInterval(500*time.Millisecond),
 	)
 	require.NoError(t, err)
 
-	consumeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	consumeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
 	go consumer.Consume(consumeCtx, stream, func(_ context.Context, _ redisstream.Message) error {
@@ -230,7 +231,7 @@ func TestConsumer_LiveRedis_DeadLetter_MaxRetries(t *testing.T) {
 	require.Eventually(t, func() bool {
 		dlMsgs, err := client.XRange(ctx, dlStream, "-", "+").Result()
 		return err == nil && len(dlMsgs) > 0
-	}, 15*time.Second, 200*time.Millisecond)
+	}, 45*time.Second, 200*time.Millisecond)
 
 	cancel()
 

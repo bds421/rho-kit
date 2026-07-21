@@ -903,27 +903,20 @@ upstream layer or a major redesign.
 
 ## 8. Known mitigation gaps
 
-Items the threat model lists as a **gap** (i.e., a real threat
-without a clear in-kit mitigation). Each becomes a follow-up audit
-item. Severity uses the standard scale (CRITICAL / HIGH / MEDIUM / LOW).
+Items the threat model lists as a **gap** are real threats without a clear
+in-kit mitigation. They must be resolved or explicitly scoped out before a
+release. Severity uses the standard scale (CRITICAL / HIGH / MEDIUM / LOW).
 
 GAP-01 (cost budgets), GAP-02 (safe redirects), GAP-03 (gRPC
 default deadline), GAP-04 (internal gRPC health), GAP-05 (tenant
 scaffold), GAP-06 (JWT revocation), GAP-07 (message-size overrides),
 GAP-08 (`storagehttp/uploadsec` AV adapter), GAP-09 (outbox retention
 cleanup), and GAP-10 (dependency allowlist plus heavy SDK boundary
-gate) are closed in v2.0.0.
-
-New gaps belong in the table below with severity and owner before
-they are worked. Items below are doc-fidelity follow-ups surfaced by
-audit round 4 (Agent J): the runtime mitigations are in place, but a
-small code-level enhancement would strengthen the surface area.
-
-| ID | Gap | Severity | Owner / next step |
-|---|---|---|---|
-| GAP-11 | `observability/auditlog.Event` has no first-class `Tenant` field; tenant identity is encoded by callers into `Actor` / `Metadata`. Consider promoting it to a typed field so `ValidateEvent` and queries can reason about tenant scope. | LOW | auditlog maintainer / next audit pass |
-| GAP-12 | `infra/messaging/buffered_publisher.go` returns a plain `fmt.Errorf` for buffer-full back-pressure. Exporting an `ErrBufferFull` sentinel would let services match the condition with `errors.Is` without string comparisons. | LOW | messaging maintainer / next audit pass |
-| GAP-13 | `core/secret.String` implements `encoding.TextMarshaler` but not `encoding.BinaryMarshaler`. Adding the binary marshaler would close the (small) hole where a serialiser consults the binary contract before falling back to text. | LOW | core/secret maintainer / next audit pass |
+gate), GAP-11 (typed audit tenant identity), GAP-12 (matchable buffered-
+publisher back-pressure), and GAP-13 (binary secret redaction) are closed
+in v2.0.0. There are no known in-scope mitigation gaps at this release
+candidate. New verified gaps belong here with severity and owner before
+release.
 
 ---
 
@@ -1036,7 +1029,7 @@ considered through every STRIDE lens.
 | 2026-04 | (pre-Theme-5 audit) | Original audit landed as per-package implementation notes; threat surface implicit, no consolidated doc. |
 | 2026-05 | Theme 5 | This document created. STRIDE coverage matrix populated from §4. Initial gap list (GAP-01..GAP-10) filed. |
 | 2026-05 | Theme 6+ hardening | GAP-01, GAP-02, GAP-03, GAP-04, GAP-05, GAP-06, GAP-07, GAP-08, GAP-09, and GAP-10 closed by cost-budget primitives, `httpx.SafeRedirect`, `grpcx` default deadlines, internal-only gRPC health, `cmd/kit-new -tenant`, `jwtutil` revocation checks, cross-backend message-size limits, `uploadsec/clamav`, outbox self-managed retention cleanup, direct dependency allowlist CI, and heavy optional SDK boundary CI. |
-| 2026-05 | Audit round 4 doc-fidelity sweep | Aligned §4.1 H-04, §4.1 H-14, §4.4 D-04, §4.5 R-07, §4.5 R-09, §4.7 T-02, §4.10 L-05, §5.1, §5.2, §5.3, §5.5, and §6.1 prose with the implementing code (function names, struct fields, opt-out shapes); filed GAP-11 (`auditlog` first-class tenant field), GAP-12 (export `ErrBufferFull`), and GAP-13 (secret `BinaryMarshaler`) as LOW-severity follow-ups. |
+| 2026-05 | Audit round 4 doc-fidelity sweep | Aligned §4.1 H-04, §4.1 H-14, §4.4 D-04, §4.5 R-07, §4.5 R-09, §4.7 T-02, §4.10 L-05, §5.1, §5.2, §5.3, §5.5, and §6.1 prose with the implementing code (function names, struct fields, opt-out shapes); identified GAP-11 through GAP-13, subsequently closed before v2.0.0. |
 | 2026-05 | External-auditor reclassification | Added the "Mitigation type" column to every §4 table (kit-enforced / kit-enforced via panic / caller-must-cooperate / operator-must-configure) so the kit-enforced vs caller-cooperative split is explicit on every row; reworded §4.7 T-06 to reflect that runtime PASETO key material lives in `V4PublicSigner`/`V4PublicVerifier` for the construct's lifetime (rotation is caller-must-cooperate by design). |
 
 Future updates: amend this table whenever §4 acquires a new threat

@@ -116,6 +116,14 @@ func TestMarshalText_Redacted(t *testing.T) {
 	assert.Equal(t, redactedValue, string(b))
 }
 
+func TestMarshalBinary_Redacted(t *testing.T) {
+	s := NewFromString(plain)
+	b, err := s.MarshalBinary()
+	require.NoError(t, err)
+	assert.Equal(t, redactedValue, string(b))
+	assert.NotContains(t, string(b), plain)
+}
+
 func TestSlogLogValue_Redacted(t *testing.T) {
 	s := NewFromString(plain)
 	var buf strings.Builder

@@ -24,22 +24,15 @@
 // term. Backend packages document any weaker guarantees such as Redis
 // TTL overlap windows.
 //
-// # Callback-drain metrics label sets
+// # Callback-drain metrics
 //
 // Each backend registers leaderelection_callback_drain_seconds and
-// leaderelection_callback_drain_warn_total, but with backend-specific
-// variable labels (deliberately not shared):
-//
-//   - redislock / pgadvisory: {key, state} / {key}
-//   - etcd: {election, state} / {election}
-//   - k8slease: {namespace, name, state} / {namespace, name}
-//
-// Do not construct Metrics for two different backends against the same
-// Prometheus registerer: same FQName with incompatible label sets panics
-// at registration (descriptor inconsistency). Use distinct registerers
-// during a backend migration, or scrape only one backend's metrics per
-// process. Aligning labels across backends would break existing dashboards
-// and is reserved for a future major version.
+// leaderelection_callback_drain_warn_total with the shared labels
+// {backend,target,state} and {backend,target}, respectively. target is the
+// backend's validated static election coordinate (for Kubernetes,
+// "namespace/name"). The common descriptor shape allows multiple backends to
+// share one Prometheus registerer during migrations without a registration
+// panic.
 package leaderelection
 
 import "context"

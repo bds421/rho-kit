@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io/fs"
 	"net"
 	"net/url"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/data/saga/pgstore/v2"
@@ -27,23 +29,12 @@ func testDB(t *testing.T) *sql.DB {
 	db, err := sql.Open("pgx", postgresDSN(cfg))
 	require.NoError(t, err, "open postgres")
 	waitForPostgres(t, db)
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS saga_instances (
-			id            VARCHAR(64)  PRIMARY KEY,
-			definition    VARCHAR(128) NOT NULL,
-			state         VARCHAR(32)  NOT NULL,
-			current_step  INT          NOT NULL DEFAULT 0,
-			compensated   JSONB        NOT NULL DEFAULT '[]'::jsonb,
-			input         BYTEA,
-			step_results  JSONB        NOT NULL DEFAULT '[]'::jsonb,
-			last_error    TEXT         NOT NULL DEFAULT '',
-			created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
-			updated_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
-		)`)
-	require.NoError(t, err, "create table")
-	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_saga_instances_resumable
-		ON saga_instances (state, updated_at)
-		WHERE state IN ('pending', 'running', 'compensating')`)
+	sub, err := fs.Sub(pgstore.Migrations, "migrations")
+	require.NoError(t, err)
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, sub)
+	require.NoError(t, err)
+	_, err = provider.Up(context.Background())
+	require.NoError(t, err, "apply saga migrations")
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }

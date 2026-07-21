@@ -24,4 +24,4 @@ Same `New / Run / IsLeader` surface as the other leader-election adapters. Wraps
 
 ## Observability
 
-Same `leaderelection_callback_drain_seconds` / `_warn_total` metric shape as the other adapters. Label set: `key` (the operator-supplied election key).
+Shared `leaderelection_callback_drain_seconds{backend,target,state}` / `_warn_total{backend,target}` shape. Here `backend="pgadvisory"` and `target` is the operator-supplied election key.

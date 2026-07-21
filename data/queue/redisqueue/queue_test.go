@@ -181,7 +181,7 @@ func TestQueue_InvalidReceiverReturnsError(t *testing.T) {
 			assert.ErrorIs(t, err, kitqueue.ErrInvalidQueue)
 
 			assert.Panics(t, func() {
-				tc.q.Process(ctx, "test-queue", func(context.Context, Message) error { return nil })
+				_ = tc.q.Process(ctx, "test-queue", func(context.Context, Message) error { return nil })
 			})
 		})
 	}
@@ -429,7 +429,7 @@ func TestProcess_PanicsOnEmptyQueue(t *testing.T) {
 	q := NewQueue(client)
 	t.Cleanup(func() { _ = q.Close() })
 	assert.Panics(t, func() {
-		q.Process(context.TODO(), "", nil) //nolint:staticcheck // intentionally testing panic with empty queue name
+		_ = q.Process(context.TODO(), "", nil) //nolint:staticcheck // intentionally testing panic with empty queue name
 	})
 }
 
@@ -508,7 +508,7 @@ func TestProcess_PanicsOnNilHandler(t *testing.T) {
 	assert.PanicsWithValue(t,
 		"redisqueue: Process requires a non-nil handler",
 		func() {
-			q.Process(context.TODO(), "test-queue", nil)
+			_ = q.Process(context.TODO(), "test-queue", nil)
 		},
 	)
 }
@@ -535,7 +535,7 @@ func TestProcess_DoubleProcessPanicsOnSameQueue(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		q.Process(ctx, queueName, func(context.Context, Message) error { return nil })
+		_ = q.Process(ctx, queueName, func(context.Context, Message) error { return nil })
 	}()
 	require.Eventually(t, func() bool {
 		q.activeQueuesMu.Lock()
@@ -555,7 +555,7 @@ func TestProcess_DoubleProcessPanicsOnSameQueue(t *testing.T) {
 	assert.PanicsWithValue(t,
 		"redisqueue: Process queue already has an active Process goroutine",
 		func() {
-			q.Process(context.Background(), queueName, func(context.Context, Message) error { return nil })
+			_ = q.Process(context.Background(), queueName, func(context.Context, Message) error { return nil })
 		},
 	)
 }

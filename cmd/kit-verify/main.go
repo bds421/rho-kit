@@ -152,7 +152,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	if cfg.format == "json" {
 		if err := json.NewEncoder(stdout).Encode(results); err != nil {
-			fmt.Fprintf(stderr, "kit-verify: encode results: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "kit-verify: encode results: %v\n", err)
 			return 1
 		}
 	} else {

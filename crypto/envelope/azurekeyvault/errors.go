@@ -2,6 +2,7 @@ package azurekeyvault
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 
@@ -17,13 +18,19 @@ import (
 // code plus an "ErrorCode" string. Status codes give us the throttle /
 // outage classification; ErrorCodes such as "KeyNotFound" / "Forbidden"
 // give us the permanent-key signal.
-func classifyAzureError(_ string, err error) error {
+func (k *KEK) classifyAzureError(operation string, err error) error {
 	if err == nil {
 		return nil
 	}
 	var respErr *azcore.ResponseError
 	if !errors.As(err, &respErr) {
+		if k != nil {
+			k.metrics.recordError(operation, "unknown")
+		}
 		return err
+	}
+	if k != nil {
+		k.metrics.recordError(operation, strconv.Itoa(respErr.StatusCode))
 	}
 	switch respErr.StatusCode {
 	case 429:
@@ -40,4 +47,10 @@ func classifyAzureError(_ string, err error) error {
 	default:
 		return err
 	}
+}
+
+// classifyAzureError is retained for focused classification tests. Production
+// calls the KEK method so every provider error is counted.
+func classifyAzureError(operation string, err error) error {
+	return (*KEK)(nil).classifyAzureError(operation, err)
 }

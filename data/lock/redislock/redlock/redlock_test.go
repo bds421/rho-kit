@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	redislock "github.com/bds421/rho-kit/data/lock/redislock/v2"
 	"github.com/bds421/rho-kit/data/lock/redislock/v2/redlock"
 	"github.com/bds421/rho-kit/data/v2/lock"
 	"github.com/bds421/rho-kit/data/v2/lock/locktest"
@@ -64,6 +65,27 @@ func TestNewQuorumLocker_PanicsOnBadOptions(t *testing.T) {
 	assert.Panics(t, func() {
 		redlock.NewQuorumLocker(clients, nil)
 	})
+}
+
+func TestOptionSurfaceMatchesRedislock(t *testing.T) {
+	// Both packages intentionally alias the same Option type. Passing each
+	// package's options to the other constructor pins both directions so the
+	// public surfaces cannot silently drift.
+	clients := setupQuorum(t, 3)
+	assert.NotNil(t, redlock.NewQuorumLocker(clients,
+		redislock.WithTTL(time.Second),
+		redislock.WithRetry(time.Millisecond, 1),
+		redislock.WithMaxWait(time.Second),
+		redislock.WithLogger(nil),
+		redislock.WithKeyPrefix("shared:"),
+	))
+	assert.NotNil(t, redislock.NewLocker(clients[0],
+		redlock.WithTTL(time.Second),
+		redlock.WithRetry(time.Millisecond, 1),
+		redlock.WithMaxWait(time.Second),
+		redlock.WithLogger(nil),
+		redlock.WithKeyPrefix("shared:"),
+	))
 }
 
 func TestQuorumLocker_AcquireAndRelease(t *testing.T) {
@@ -338,4 +360,37 @@ func TestQuorumLocker_WithLock_PropagatesFnError(t *testing.T) {
 		return bodyErr
 	})
 	require.ErrorIs(t, err, bodyErr)
+}
+
+func TestLockerWithValue(t *testing.T) {
+	clients := setupQuorum(t, 3)
+	q := redlock.NewQuorumLocker(clients, redlock.WithTTL(5*time.Second))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	got, err := redlock.LockerWithValue(ctx, q, "kit/redlock/test/withvalue", func(_ context.Context) (int, error) {
+		return 42, nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 42, got)
+}
+
+func TestLockerWithValue_Contention(t *testing.T) {
+	clients := setupQuorum(t, 3)
+	q := redlock.NewQuorumLocker(clients, redlock.WithTTL(5*time.Second))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	first, ok, err := q.Acquire(ctx, "kit/redlock/test/withvalue-contention")
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer func() { _ = first.Release(ctx) }()
+
+	_, err = redlock.LockerWithValue(ctx, q, "kit/redlock/test/withvalue-contention", func(context.Context) (int, error) {
+		t.Fatal("contended LockerWithValue must not run callback")
+		return 0, nil
+	})
+	require.ErrorIs(t, err, lock.ErrNotAcquired)
 }

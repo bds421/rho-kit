@@ -65,5 +65,5 @@ to `httpx/middleware/signedrequest` (receiver).
   Signer + Secret for self-tests.
 - `crypto/signing` — the HMAC primitive.
 - `resilience/retry` — the retry policy machinery.
-- v2.x roadmap: queue-backed async dispatch (Enqueue + worker) is a
-  follow-up; the synchronous Send path covers the common case.
+- `infra/outbox` — durable asynchronous dispatch when delivery must
+  survive process crashes; `Dispatcher.Send` remains the synchronous path.

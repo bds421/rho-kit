@@ -162,6 +162,7 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 		c.logger = slog.Default()
 	}
 	if c.httpClient == nil {
+		// kit-doctor:allow default-http-client reason="OAuth2 keeps its module dependency-light and applies an explicit timeout; callers can inject a hardened client with WithHTTPClient"
 		c.httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
 

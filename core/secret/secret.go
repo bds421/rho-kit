@@ -302,6 +302,12 @@ func (s String) MarshalText() ([]byte, error) {
 	return []byte(redacted), nil
 }
 
+// MarshalBinary implements encoding.BinaryMarshaler. Serializers that prefer
+// the binary contract over text still receive only the redaction marker.
+func (s String) MarshalBinary() ([]byte, error) {
+	return []byte(redacted), nil
+}
+
 // LogValue implements [log/slog.LogValuer] so structured logs that pass
 // the String as a value (slog.Any) emit the redacted literal.
 //

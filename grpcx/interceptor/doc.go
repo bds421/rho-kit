@@ -23,8 +23,9 @@
 //  1. Authentication interceptor — AuthUnary (JWT only) or MTLSAuthUnary
 //     (JWT or mTLS S2S). Populates ctx with userID + permissions + scopes.
 //     MTLSAuthUnary stamps a trusted-S2S marker on the mTLS branch after
-//     WithS2SImpersonationGuard approves x-user-id, and adopts optional
-//     x-permissions / x-scopes metadata forwarded by an upstream hop.
+//     WithS2SImpersonationGuard approves x-user-id for the target FullMethod,
+//     and adopts optional x-permissions / x-scopes metadata forwarded by an
+//     upstream hop.
 //  2. RequirePermissionUnary / RequireScopeUnary — applied per-method (or
 //     to all methods via grpc.ChainUnaryInterceptor). These fail closed:
 //     a request without matching permissions/scopes is rejected with

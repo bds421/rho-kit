@@ -7,6 +7,7 @@ require (
 	github.com/bds421/rho-kit/core/v2 v2.4.0
 	github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 v2.4.0
 	github.com/bds421/rho-kit/infra/v2 v2.4.0
+	github.com/bds421/rho-kit/observability/v2 v2.4.0
 	github.com/bds421/rho-kit/security/v2 v2.4.0
 	github.com/nats-io/nats.go v1.52.0
 	github.com/stretchr/testify v1.11.1
@@ -15,7 +16,6 @@ require (
 require (
 	github.com/bds421/rho-kit/httpx/v2 v2.4.0 // indirect
 	github.com/bds421/rho-kit/io/v2 v2.4.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.4.0 // indirect
 	github.com/bds421/rho-kit/resilience/v2 v2.4.0 // indirect
 	github.com/bds421/rho-kit/runtime/v2 v2.4.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect

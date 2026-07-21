@@ -27,7 +27,7 @@ the orchestrator MUST restart the process.
 ## First Checks
 
 1. Open the leader-election dashboard and filter to the alerting
-   `namespace`, `service`, and `election` key.
+   `namespace`, `service`, `backend`, and `target`.
 2. Look at the warn-tick rate — is one election particularly bad, or
    are all of them sticky?
 3. Cross-check `outbox_pending_count`, `redis_command_duration_seconds`,
@@ -69,14 +69,15 @@ the orchestrator MUST restart the process.
 
 ## Metric Contract
 
-- `leaderelection_callback_drain_seconds{election,state}` —
+- `leaderelection_callback_drain_seconds{backend,target,state}` —
   histogram, buckets `[1, 5, 10, 30, 60, 120, 300]`. `state` is
   one of `pending` (snapshot during drain), `drained` (terminal,
   callback returned), `timeout` (terminal, drain-timeout fired).
-  `election` is the configured key prefix and is validated as a
-  static label at construction.
-- `leaderelection_callback_drain_warn_total{election}` — counter,
+  `backend` identifies the adapter and `target` is its configured,
+  statically validated election coordinate (`namespace/name` for a
+  Kubernetes Lease).
+- `leaderelection_callback_drain_warn_total{backend,target}` — counter,
   ticks once per warn interval per stuck drain.
 
-The `election` label is intentionally bounded: misconfiguration
+The `target` label is intentionally bounded: misconfiguration
 surfaces at `New(...)` rather than at first emission.

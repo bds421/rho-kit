@@ -84,12 +84,14 @@ func TestStore_AddGetList(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, s.Add(ctx, pgstore.ScheduleRecord{
-		Name: "nightly-cleanup",
-		Spec: "0 3 * * *",
+		Name:    "nightly-cleanup",
+		Spec:    "0 3 * * *",
+		Enabled: true,
 	}))
 	require.NoError(t, s.Add(ctx, pgstore.ScheduleRecord{
 		Name:        "hourly-report",
 		Spec:        "@hourly",
+		Enabled:     true,
 		Description: "Hourly metric roll-up",
 	}))
 

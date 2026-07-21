@@ -17,11 +17,6 @@
 // still allowing old envelopes to unwrap with their recorded versions.
 //
 // asvs: V6.2.1, V6.4.1
-//
-// Observability: request-error Prometheus metrics and NewKEK opts ...Option
-// currently ship in awskms and gcpkms. azurekeyvault intentionally defers the same
-// Option/Metrics surface until a shared envelope-level metrics hook lands;
-// error classification already mirrors awskms via classify* helpers.
 package azurekeyvault
 
 import (
@@ -56,6 +51,19 @@ type KEK struct {
 	keyID      string
 	keyHost    string
 	algorithm  azkeys.EncryptionAlgorithm
+	metrics    *Metrics
+}
+
+// Option configures [NewKEK].
+type Option func(*KEK)
+
+// WithMetrics installs a custom [Metrics] for this KEK. When unset, the
+// package's DefaultRegisterer-backed metrics are used.
+func WithMetrics(m *Metrics) Option {
+	if m == nil {
+		panic("azurekeyvault: WithMetrics requires non-nil metrics (omit the option for the package default)")
+	}
+	return func(k *KEK) { k.metrics = m }
 }
 
 // Config bundles the kit's Azure Key Vault knobs.
@@ -113,7 +121,7 @@ func (c Config) LogValue() slog.Value {
 }
 
 // NewKEK builds a KEK from cfg using the given Azure Key Vault client.
-func NewKEK(c KeyClient, cfg Config) (*KEK, error) {
+func NewKEK(c KeyClient, cfg Config, opts ...Option) (*KEK, error) {
 	if c == nil {
 		return nil, errors.New("azurekeyvault: client must not be nil")
 	}
@@ -125,14 +133,24 @@ func NewKEK(c KeyClient, cfg Config) (*KEK, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &KEK{
+	k := &KEK{
 		c:          c,
 		keyName:    keyName,
 		keyVersion: keyVersion,
 		keyID:      keyID,
 		keyHost:    keyHost,
 		algorithm:  algorithm,
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt == nil {
+			return nil, errors.New("azurekeyvault: NewKEK option must not be nil")
+		}
+		opt(k)
+	}
+	if k.metrics == nil {
+		k.metrics = packageDefaultMetrics()
+	}
+	return k, nil
 }
 
 // KeyID implements [envelope.KEK]. It returns the configured key identity for
@@ -157,7 +175,7 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 		Value:     dek,
 	}, nil)
 	if err != nil {
-		return "", nil, fmt.Errorf("azurekeyvault: wrap key: %w", classifyAzureError("wrap", err))
+		return "", nil, fmt.Errorf("azurekeyvault: wrap key: %w", k.classifyAzureError("wrap", err))
 	}
 	if resp.KID == nil || string(*resp.KID) == "" {
 		return "", nil, errors.New("azurekeyvault: wrap response missing KID")
@@ -206,7 +224,7 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 		Value:     wrapped,
 	}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("azurekeyvault: unwrap key: %w", classifyAzureError("unwrap", err))
+		return nil, fmt.Errorf("azurekeyvault: unwrap key: %w", k.classifyAzureError("unwrap", err))
 	}
 	if len(resp.Result) == 0 {
 		return nil, errors.New("azurekeyvault: unwrap response missing result")

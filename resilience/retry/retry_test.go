@@ -893,7 +893,9 @@ func TestLoop_RedactsWorkerErrorsInLogs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	secret := "password=super-secret-dsn"
 	n := 0
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		Loop(ctx, logger, "worker", func(context.Context) error {
 			n++
 			if n >= 2 {
@@ -902,16 +904,13 @@ func TestLoop_RedactsWorkerErrorsInLogs(t *testing.T) {
 			return errors.New(secret)
 		}, WithMaxRetries(5), WithBaseDelay(time.Millisecond), WithMaxDelay(time.Millisecond), WithJitter(0))
 	}()
-	// Wait for cancel
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if ctx.Err() != nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("Loop did not stop after cancellation")
 	}
-	// Allow final log lines to flush
-	time.Sleep(20 * time.Millisecond)
 	out := buf.String()
 	if strings.Contains(out, secret) {
 		t.Fatalf("Loop logs leaked raw worker error: %q", out)

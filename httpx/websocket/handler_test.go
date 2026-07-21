@@ -714,6 +714,7 @@ func TestHub_ShutdownCancelsOpenConnection(t *testing.T) {
 	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
 	require.NoError(t, err)
 	defer func() { _ = conn.Close(coderws.StatusNormalClosure, "") }()
+	clientDone := conn.CloseRead(ctx)
 
 	select {
 	case <-handlerEntered:
@@ -724,6 +725,11 @@ func TestHub_ShutdownCancelsOpenConnection(t *testing.T) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer shutdownCancel()
 	require.NoError(t, hub.Shutdown(shutdownCtx))
+	select {
+	case <-clientDone.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("client did not complete the Hub close handshake")
+	}
 
 	select {
 	case <-handlerDone:
@@ -734,4 +740,157 @@ func TestHub_ShutdownCancelsOpenConnection(t *testing.T) {
 
 func TestNewHub_PanicsWithoutHandler(t *testing.T) {
 	assert.Panics(t, func() { websocket.NewHub() })
+}
+
+// TestHandle_ShutdownCancelsOpenConnection pins package-level Handle
+// participation in graceful shutdown: WithoutCancel severs request-context
+// cancellation, but websocket.Shutdown cancels tracked Handle conns.
+func TestHandle_ShutdownCancelsOpenConnection(t *testing.T) {
+	handlerEntered := make(chan struct{})
+	handlerDone := make(chan struct{})
+
+	handler := websocket.Handle(
+		websocket.WithHandler(func(ctx context.Context, c *websocket.Conn) error {
+			close(handlerEntered)
+			<-c.Context().Done()
+			close(handlerDone)
+			return nil
+		}),
+		websocket.WithReadDrain(),
+	)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(coderws.StatusNormalClosure, "") }()
+	readErrCh := make(chan error, 1)
+	go func() {
+		_, _, readErr := conn.Read(ctx)
+		readErrCh <- readErr
+	}()
+
+	select {
+	case <-handlerEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, websocket.Shutdown(shutdownCtx))
+	readErr := <-readErrCh
+	require.Error(t, readErr)
+	assert.Equal(t, coderws.StatusGoingAway, coderws.CloseStatus(readErr))
+
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not observe context cancel after websocket.Shutdown")
+	}
+}
+
+// TestHub_IndependentOfPackageShutdown asserts Hub-tracked connections are
+// not cancelled by package-level Shutdown (and package Handle conns are not
+// cancelled by Hub.Shutdown).
+func TestHub_IndependentOfPackageShutdown(t *testing.T) {
+	pkgEntered := make(chan struct{})
+	pkgDone := make(chan struct{})
+	hubEntered := make(chan struct{})
+	hubDone := make(chan struct{})
+
+	pkgHandler := websocket.Handle(
+		websocket.WithHandler(func(ctx context.Context, c *websocket.Conn) error {
+			close(pkgEntered)
+			<-c.Context().Done()
+			close(pkgDone)
+			return nil
+		}),
+		websocket.WithReadDrain(),
+	)
+	hub := websocket.NewHub(
+		websocket.WithHandler(func(ctx context.Context, c *websocket.Conn) error {
+			close(hubEntered)
+			<-c.Context().Done()
+			close(hubDone)
+			return nil
+		}),
+		websocket.WithReadDrain(),
+	)
+
+	pkgSrv := httptest.NewServer(pkgHandler)
+	defer pkgSrv.Close()
+	hubSrv := httptest.NewServer(hub.Handler())
+	defer hubSrv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pkgConn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(pkgSrv.URL, "http"), nil)
+	require.NoError(t, err)
+	defer func() { _ = pkgConn.Close(coderws.StatusNormalClosure, "") }()
+	pkgClientDone := pkgConn.CloseRead(ctx)
+
+	hubConn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(hubSrv.URL, "http"), nil)
+	require.NoError(t, err)
+	defer func() { _ = hubConn.Close(coderws.StatusNormalClosure, "") }()
+	hubClientDone := hubConn.CloseRead(ctx)
+
+	select {
+	case <-pkgEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("package Handle handler did not start")
+	}
+	select {
+	case <-hubEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Hub handler did not start")
+	}
+
+	// Package Shutdown must cancel Handle conns only.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, websocket.Shutdown(shutdownCtx))
+	select {
+	case <-pkgClientDone.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("package Handle client did not complete close handshake")
+	}
+	select {
+	case <-hubClientDone.Done():
+		t.Fatal("Hub client must remain open during package-level Shutdown")
+	default:
+	}
+
+	select {
+	case <-pkgDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("package Handle did not observe websocket.Shutdown")
+	}
+	select {
+	case <-hubDone:
+		t.Fatal("Hub conn must not be cancelled by package-level Shutdown")
+	case <-time.After(150 * time.Millisecond):
+		// expected: still open
+	}
+
+	// Hub.Shutdown drains only Hub conns.
+	hubShutdownCtx, hubShutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer hubShutdownCancel()
+	require.NoError(t, hub.Shutdown(hubShutdownCtx))
+	select {
+	case <-hubClientDone.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Hub client did not complete close handshake")
+	}
+
+	select {
+	case <-hubDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Hub handler did not observe Hub.Shutdown")
+	}
 }

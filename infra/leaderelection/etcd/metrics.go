@@ -5,6 +5,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/bds421/rho-kit/infra/v2/leaderelection/metricscontract"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
@@ -28,12 +29,9 @@ type callbackDrainMetrics interface {
 // waiting for [leaderelection.Callbacks.OnAcquired] to drain after
 // leadership ended.
 //
-// The label set is intentionally bounded to (election, state). The
-// `election` label is the operator-configured key prefix; it is
-// validated via [promutil.ValidateStaticLabelValue] at construction
-// time when [WithMetrics] is used so a misconfigured caller cannot
-// inflate cardinality. The `state` label is a fixed enum
-// (`pending` / `drained` / `timeout`).
+// All leader-election backends share the labels {backend,target,state} so
+// multiple adapters can register against the same Prometheus registry.
+// target is the validated operator-configured election prefix.
 type Metrics struct {
 	drainDuration *prometheus.HistogramVec
 	drainWarns    *prometheus.CounterVec
@@ -56,8 +54,8 @@ func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	return func(c *metricsConfig) { c.registerer = reg }
 }
 
-// NewMetrics creates and registers callback-drain metrics (labels {election,state}; incompatible with redislock/pgadvisory/k8slease on the same registerer — see package leaderelection docs).
-// Pass
+// NewMetrics creates and registers callback-drain metrics using the shared
+// {backend,target,state} family shape. Pass
 // [WithRegisterer] to use a non-default registry. Repeated calls
 // reuse already-registered collectors on the same registry.
 func NewMetrics(opts ...MetricsOption) *Metrics {
@@ -68,21 +66,8 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 		}
 		opt(&cfg)
 	}
-	m := &Metrics{
-		drainDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: "leaderelection",
-			Name:      "callback_drain_seconds",
-			Help:      "Time waiting for the OnAcquired callback to return after leadership ended, by election key and drain state (pending snapshot, terminal drained observation, or timeout).",
-			Buckets:   []float64{1, 5, 10, 30, 60, 120, 300},
-		}, []string{"election", "state"}),
-		drainWarns: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: "leaderelection",
-			Name:      "callback_drain_warn_total",
-			Help:      "Total warn ticks emitted while waiting for the OnAcquired callback to drain after leadership ended.",
-		}, []string{"election"}),
-	}
-	m.drainDuration = promutil.MustRegisterOrGet(cfg.registerer, m.drainDuration)
-	m.drainWarns = promutil.MustRegisterOrGet(cfg.registerer, m.drainWarns)
+	duration, warns := metricscontract.New(cfg.registerer)
+	m := &Metrics{drainDuration: duration, drainWarns: warns}
 	return m
 }
 
@@ -90,14 +75,14 @@ func (m *Metrics) observeDrainDuration(d time.Duration, election, state string) 
 	if m == nil {
 		return
 	}
-	m.drainDuration.WithLabelValues(election, state).Observe(d.Seconds())
+	m.drainDuration.WithLabelValues("etcd", election, state).Observe(d.Seconds())
 }
 
 func (m *Metrics) observeDrainWarn(election string) {
 	if m == nil {
 		return
 	}
-	m.drainWarns.WithLabelValues(election).Inc()
+	m.drainWarns.WithLabelValues("etcd", election).Inc()
 }
 
 // validateMetricLabel panics if value would fail

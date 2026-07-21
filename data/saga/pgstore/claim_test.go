@@ -19,10 +19,10 @@ func TestListResumable_ClaimsExclusivelyAcrossStores(t *testing.T) {
 	// Both stores share the same fake driver store via the registered name.
 	db1, err := sql.Open(driverName, "")
 	require.NoError(t, err)
-	defer db1.Close()
+	t.Cleanup(func() { _ = db1.Close() })
 	db2, err := sql.Open(driverName, "")
 	require.NoError(t, err)
-	defer db2.Close()
+	t.Cleanup(func() { _ = db2.Close() })
 
 	s1 := pgstore.New(db1)
 	s2 := pgstore.New(db2)

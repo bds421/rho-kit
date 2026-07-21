@@ -57,10 +57,12 @@ func TestMiddleware_MidStreamFlushDeliversDecodableGzipPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gzip.NewReader: %v", err)
 	}
-	defer gr.Close()
 	got, err := io.ReadAll(gr)
 	if err != nil {
 		t.Fatalf("read gzip: %v", err)
+	}
+	if err := gr.Close(); err != nil {
+		t.Fatalf("close gzip reader: %v", err)
 	}
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("decoded body mismatch: got %d bytes, want %d", len(got), len(payload))

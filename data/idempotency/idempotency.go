@@ -67,6 +67,7 @@ const TenantStorageKeyPrefix = "tns:"
 //   - "tenant:" — length-prefixed form from [core/tenant.KeyFor]
 //   - "tns:"    — opaque tenant-wrapper storage keys ([TenantStorageKeyPrefix])
 var reservedUserKeyPrefixes = []string{
+	// kit-doctor:allow tenant-key-prefix reason="this literal is rejected by validation; it never constructs a storage key"
 	"tenant:",
 	TenantStorageKeyPrefix,
 }

@@ -315,18 +315,8 @@ func (b *Backend) walkDir(
 	return nil
 }
 
-// toKey converts a remote absolute path back to a storage key (relative to root).
-// Paths that escape RootPath return empty string; prefer [toKeyOK] when the
-// escape must be distinguished from a root-relative empty key.
-func (b *Backend) toKey(remotePath string) string {
-	rel, ok := b.toKeyOK(remotePath)
-	if !ok {
-		return ""
-	}
-	return rel
-}
-
-// toKeyOK is like toKey but reports whether the path stayed under RootPath.
+// toKeyOK converts a remote absolute path to a root-relative storage key and
+// reports whether the path stayed under RootPath.
 func (b *Backend) toKeyOK(remotePath string) (string, bool) {
 	rel, err := relPath(b.cfg.RootPath, remotePath)
 	if err != nil {

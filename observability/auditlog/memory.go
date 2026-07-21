@@ -237,6 +237,9 @@ func matchesFilter(e Event, f Filter) bool {
 	if f.Actor != "" && e.Actor != f.Actor {
 		return false
 	}
+	if f.Tenant != "" && e.Tenant != f.Tenant {
+		return false
+	}
 	if f.Action != "" && e.Action != f.Action {
 		return false
 	}

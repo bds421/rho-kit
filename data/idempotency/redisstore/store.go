@@ -17,7 +17,6 @@ package redisstore
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -568,12 +567,4 @@ func containsInvalidStringBytes(s string) bool {
 		}
 	}
 	return false
-}
-
-// tokenEqual compares owner tokens in constant time when lengths match.
-func tokenEqual(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

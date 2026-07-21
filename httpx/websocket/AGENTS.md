@@ -16,6 +16,8 @@
 ## Key APIs
 
 - `Handle(opts...)` — returns `http.HandlerFunc`. Compose with any kit middleware exactly like any other handler.
+- `Shutdown(ctx)` — drains every open connection created through package-level `Handle`; call it during process shutdown alongside the HTTP server shutdown.
+- `NewHub(opts...)` — creates an isolated connection registry when independent listeners or tests must not participate in package-level `Shutdown`; drain it with `Hub.Shutdown(ctx)`.
 - `WithHandler(fn)` — REQUIRED. Application callback signature `func(ctx Context, conn *Conn) error`.
 - `WithMaxConnections(n)` — caps concurrent connections per handler. Beyond cap returns `503` + `Retry-After: 1`.
 - `WithPingInterval(d)` + `WithPongTimeout(d)` — idle keepalive heartbeat. Defaults: 30s ping / 10s pong. Opt out with `WithNoHeartbeat()`.

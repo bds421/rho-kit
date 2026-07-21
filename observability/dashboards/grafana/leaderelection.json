@@ -23,10 +23,19 @@
         "refresh": 2
       },
       {
-        "name": "election",
+        "name": "backend",
         "type": "query",
         "datasource": "Prometheus",
-        "query": "label_values(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\"}, election)",
+        "query": "label_values(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\"}, backend)",
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      },
+      {
+        "name": "target",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\", backend=~\"$backend\"}, target)",
         "includeAll": true,
         "allValue": ".*",
         "refresh": 2
@@ -40,16 +49,16 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le, election) (rate(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\", election=~\"$election\", state=\"drained\"}[5m])))",
-          "legendFormat": "{{election}} p50"
+          "expr": "histogram_quantile(0.50, sum by (le, backend, target) (rate(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\", backend=~\"$backend\", target=~\"$target\", state=\"drained\"}[5m])))",
+          "legendFormat": "{{backend}} {{target}} p50"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le, election) (rate(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\", election=~\"$election\", state=\"drained\"}[5m])))",
-          "legendFormat": "{{election}} p95"
+          "expr": "histogram_quantile(0.95, sum by (le, backend, target) (rate(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\", backend=~\"$backend\", target=~\"$target\", state=\"drained\"}[5m])))",
+          "legendFormat": "{{backend}} {{target}} p95"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le, election) (rate(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\", election=~\"$election\", state=\"drained\"}[5m])))",
-          "legendFormat": "{{election}} p99"
+          "expr": "histogram_quantile(0.99, sum by (le, backend, target) (rate(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\", backend=~\"$backend\", target=~\"$target\", state=\"drained\"}[5m])))",
+          "legendFormat": "{{backend}} {{target}} p99"
         }
       ],
       "fieldConfig": { "defaults": { "unit": "s" } },
@@ -61,8 +70,8 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "60 * rate(leaderelection_callback_drain_warn_total{namespace=\"$namespace\", service=\"$service\", election=~\"$election\"}[5m])",
-          "legendFormat": "{{election}} warns/min"
+          "expr": "60 * rate(leaderelection_callback_drain_warn_total{namespace=\"$namespace\", service=\"$service\", backend=~\"$backend\", target=~\"$target\"}[5m])",
+          "legendFormat": "{{backend}} {{target}} warns/min"
         }
       ],
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
@@ -73,8 +82,8 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum by (election) (increase(leaderelection_callback_drain_seconds_count{namespace=\"$namespace\", service=\"$service\", election=~\"$election\", state=\"timeout\"}[10m]))",
-          "legendFormat": "{{election}} timeouts (10m)"
+          "expr": "sum by (backend, target) (increase(leaderelection_callback_drain_seconds_count{namespace=\"$namespace\", service=\"$service\", backend=~\"$backend\", target=~\"$target\", state=\"timeout\"}[10m]))",
+          "legendFormat": "{{backend}} {{target}} timeouts (10m)"
         }
       ],
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
@@ -85,8 +94,8 @@
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "rate(leaderelection_callback_drain_seconds_count{namespace=\"$namespace\", service=\"$service\", election=~\"$election\", state=\"pending\"}[5m])",
-          "legendFormat": "{{election}} pending obs/s"
+          "expr": "rate(leaderelection_callback_drain_seconds_count{namespace=\"$namespace\", service=\"$service\", backend=~\"$backend\", target=~\"$target\", state=\"pending\"}[5m])",
+          "legendFormat": "{{backend}} {{target}} pending obs/s"
         }
       ],
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }

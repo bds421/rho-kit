@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -991,10 +990,6 @@ func validTextField(s string, maxLen int, required bool) bool {
 		}
 	}
 	return true
-}
-
-func validFreeText(s string) bool {
-	return utf8.ValidString(s) && !strings.ContainsRune(s, '\x00')
 }
 
 // validReason rejects control characters (newline/ANSI/ESC) so freeform

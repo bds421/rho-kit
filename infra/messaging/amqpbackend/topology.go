@@ -215,12 +215,12 @@ func declareRetryTopology(ch *amqp.Channel, b messaging.BindingSpec, db messagin
 func retryQueueArgs(b messaging.BindingSpec) amqp.Table {
 	// RabbitMQ TTLs are whole milliseconds. Floor sub-millisecond delays
 	// at 1ms so truncation to 0 cannot create an immediate-bounce loop.
-	ttlMs := b.Retry.Delay / time.Millisecond
-	if b.Retry.Delay > 0 && ttlMs < 1 {
-		ttlMs = 1
+	ttlMillis := int64(b.Retry.Delay / time.Millisecond)
+	if b.Retry.Delay > 0 && ttlMillis < 1 {
+		ttlMillis = 1
 	}
 	return amqp.Table{
-		"x-message-ttl":             int64(ttlMs),
+		"x-message-ttl":             ttlMillis,
 		"x-dead-letter-exchange":    "",
 		"x-dead-letter-routing-key": b.ConsumerGroup,
 	}

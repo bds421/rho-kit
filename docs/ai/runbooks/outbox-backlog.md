@@ -52,8 +52,10 @@ outbox table is growing toward bloat.
    AMQP `connection.close`, NATS auth-revoked, Redis OOM.
 4. If publish rate ≈ normal and the backlog is purely from a
    workload spike: raise relay concurrency (the kit's outbox relay
-   accepts a `MaxParallel` option). Confirm broker can absorb the
-   throughput before scaling.
+   accepts `outbox.WithMaxConcurrentPublishes(n)`). Confirm the broker
+   can absorb the throughput before scaling. Values above 1 do not
+   preserve FIFO publish/mark ordering, so keep the default for routes
+   whose consumers require strict ordering.
 5. For the critical alert (pending > 10k): consider draining a
    subset of consumers if delivery order isn't strictly required,
    or page the team responsible for downstream consumers.
@@ -63,7 +65,8 @@ outbox table is growing toward bloat.
 - Add an SLO on `outbox_pending_count` (e.g. p95 < 100 over 1h)
   and a Grafana panel showing the trend over 7d.
 - Pre-warm relay capacity for predictable spikes (e.g. nightly
-  batch). Schedule a higher `MaxParallel` during the window.
+  batch). Schedule a higher `WithMaxConcurrentPublishes` value during
+  the window only when the route's ordering contract permits it.
 - Periodically vacuum/archive the outbox table so the relay's
   claim query stays fast even after a long backlog episode.
 

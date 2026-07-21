@@ -161,13 +161,14 @@ process crashes between commit and publish.
 
 ## What's NOT in this example
 
-- **Persistent durability.** A process restart mid-saga loses
-  the in-flight state. Production wires the saga state into a
-  `saga_runs` table (one row per saga, status column) so a
-  recovery loop can resume after a crash. The kit's
-  `runtime/saga` package preamble documents this as a planned
-  extension; until then, consumers compose outbox +
-  idempotency + advisory lock as shown.
+- **Durable executor wiring.** This example deliberately demonstrates
+  the smaller in-memory `saga.Run` composition, so a process restart
+  loses its in-flight state. The durable implementation is already
+  available: production services that require crash recovery use
+  `runtime/saga.DurableExecutor` with `data/saga/pgstore.New`. That
+  store persists run and step state, and the executor resumes incomplete
+  runs after a restart. Keep the outbox and advisory-lock composition
+  shown above for atomic downstream dispatch and single-owner execution.
 - **Per-step retry policies.** Each step uses the saga's
   outer retry behaviour (or none). For step-level retry, wrap
   the Forward callable with `resilience/retry.DoWith`.

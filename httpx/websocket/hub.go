@@ -5,24 +5,25 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	coderws "github.com/coder/websocket"
 )
 
 // Hub tracks open kit Conns created through its [Hub.Handler] so
 // [Hub.Shutdown] can cancel their per-connection contexts and send
-// StatusGoingAway. Use Hub when the process must drain WebSocket
-// handlers on graceful shutdown; the package-level [Handle] helper
-// remains for fire-and-forget endpoints that do not need coordinated
-// teardown.
+// StatusGoingAway.
 //
-// Background: [Handle] derives each connection context via
+// Prefer package-level [Handle] + [Shutdown] for a single process that
+// drains all WebSocket handlers on stop. Use Hub when multiple
+// independent servers or test fixtures must isolate connection
+// registries so package [Shutdown] does not affect them (and vice
+// versa).
+//
+// Background: both [Handle] and Hub derive each connection context via
 // [context.WithoutCancel] on the request context so the upgrade
 // handler's stdlib timeout does not kill long-lived sockets. That also
 // severs http.Server.BaseContext cancellation, and coder/websocket
 // hijacks the TCP connection so http.Server.Shutdown does not close
-// them either. Hub is the non-breaking escape hatch for that gap
-// (review-09).
+// them either. Package [Shutdown] / [Hub.Shutdown] is the drain path
+// for that gap (review-09).
 type Hub struct {
 	opts []Option
 
@@ -32,7 +33,9 @@ type Hub struct {
 
 // NewHub returns a Hub configured with the same options accepted by
 // [Handle]. Options are validated eagerly so wiring bugs surface at
-// construction time, matching [Handle].
+// construction time, matching [Handle]. The Hub's connection registry
+// is independent of the package-level registry used by [Handle]/
+// [Shutdown].
 func NewHub(opts ...Option) *Hub {
 	_ = buildConfig(opts...)
 	return &Hub{
@@ -71,8 +74,7 @@ func (h *Hub) untrack(c *Conn) {
 // Shutdown cancels every tracked connection context and closes the
 // underlying sockets with StatusGoingAway. It returns when all
 // registered handlers have untracked, or when ctx is done. Safe to
-// call more than once; concurrent Shutdowns are serialised by the
-// connection map mutex.
+// call more than once or concurrently.
 //
 // Handlers parked on conn.Context().Done() should return promptly so
 // Shutdown can complete within the process termination budget.
@@ -84,33 +86,29 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	h.mu.Lock()
-	conns := make([]*Conn, 0, len(h.conns))
-	for c := range h.conns {
-		conns = append(conns, c)
-	}
-	h.mu.Unlock()
-
-	for _, c := range conns {
-		c.cancelCtx()
-		if !c.closed.Load() {
-			c.closeOnce.Do(func() {
-				c.closed.Store(true)
-				c.closeCode.CompareAndSwap(0, int64(StatusGoingAway))
-				_ = c.inner.Close(coderws.StatusGoingAway, "server shutdown")
-				c.metrics.connClosed(int(c.closeCode.Load()))
-			})
-		}
-	}
-
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
+	closing := make(map[*Conn]struct{})
 	for {
 		h.mu.Lock()
-		n := len(h.conns)
+		conns := make([]*Conn, 0, len(h.conns))
+		for c := range h.conns {
+			conns = append(conns, c)
+		}
 		h.mu.Unlock()
-		if n == 0 {
+		if len(conns) == 0 {
 			return nil
+		}
+		for _, c := range conns {
+			if _, started := closing[c]; started {
+				continue
+			}
+			closing[c] = struct{}{}
+			// Keep the shutdown close path identical to the exported Conn API:
+			// cancel first, send 1001, close once, and emit close metrics once.
+			// Close may wait for an unresponsive peer's handshake, so never let
+			// that wait prevent Shutdown from honoring its own context deadline.
+			go func(conn *Conn) { _ = conn.Close(StatusGoingAway, "server shutdown") }(c)
 		}
 		select {
 		case <-ctx.Done():

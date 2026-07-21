@@ -117,10 +117,9 @@ func TestEncryptedStorage_WithoutMaxOpenPlaintextReaders_NoBound(t *testing.T) {
 
 	backend := membackend.New()
 	enc := New(backend, StaticKey(testKey(t)),
-		WithMaxOpenPlaintextReaders(1), // overridden by Without below if order last
+		WithMaxOpenPlaintextReaders(1), // overridden by Without because it is last
+		WithoutMaxOpenPlaintextReaders(),
 	)
-	// Reconstruct with explicit without after a bound option to pin last-wins.
-	enc = New(backend, StaticKey(testKey(t)), WithoutMaxOpenPlaintextReaders())
 
 	require.NoError(t, enc.Put(ctx, "file.txt", bytes.NewReader([]byte("payload")), storage.ObjectMeta{}))
 	rc1, _, err := enc.Get(ctx, "file.txt")

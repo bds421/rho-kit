@@ -299,6 +299,10 @@ func Middleware(store approval.Store, opts ...Option) func(http.Handler) http.Ha
 				httpx.WriteError(w, http.StatusBadRequest, "could not read request body")
 				return
 			}
+			if len(body) > 0 && !json.Valid(body) {
+				httpx.WriteError(w, http.StatusBadRequest, "request body must be valid JSON")
+				return
+			}
 
 			id, ok := safeIDFunc(cfg.logger, cfg.idFunc)
 			if !ok {

@@ -160,10 +160,8 @@ type Header struct {
 	Schema      *jsonschema.Schema `json:"schema,omitempty"`
 }
 
-// MediaType is the `mediaType` object. The kit currently emits the
-// `schema` field via the request/response options; the `Example`
-// field is reserved for a future option (no [RouteOption] surfaces
-// it yet).
+// MediaType is the `mediaType` object. The kit emits `schema` and
+// optional `example` fields through request/response route options.
 type MediaType struct {
 	Schema  *jsonschema.Schema `json:"schema,omitempty"`
 	Example any                `json:"example,omitempty"`
@@ -182,13 +180,13 @@ type Components struct {
 // can be wired in by callers that need them via [SecurityScheme.Extensions],
 // which [SecurityScheme.MarshalJSON] inlines into the emitted object.
 type SecurityScheme struct {
-	Type             string          `json:"type"`
-	Description      string          `json:"description,omitempty"`
-	Name             string          `json:"name,omitempty"`
-	In               string          `json:"in,omitempty"`
-	Scheme           string          `json:"scheme,omitempty"`
-	BearerFormat     string          `json:"bearerFormat,omitempty"`
-	OpenIDConnectURL string          `json:"openIdConnectUrl,omitempty"`
+	Type             string `json:"type"`
+	Description      string `json:"description,omitempty"`
+	Name             string `json:"name,omitempty"`
+	In               string `json:"in,omitempty"`
+	Scheme           string `json:"scheme,omitempty"`
+	BearerFormat     string `json:"bearerFormat,omitempty"`
+	OpenIDConnectURL string `json:"openIdConnectUrl,omitempty"`
 	// Extensions is a JSON object whose members are inlined into the
 	// securityScheme object on marshal (e.g. oauth2 `flows`). Must be a
 	// JSON object when non-empty; keys must not collide with modelled fields.

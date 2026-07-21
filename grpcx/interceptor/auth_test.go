@@ -65,7 +65,7 @@ func testKeyAndProvider(t *testing.T) (*jwtutil.Provider, *ecdsa.PrivateKey) {
 }
 
 func allowS2SImpersonationForTest() interceptor.MTLSIdentityOption {
-	return interceptor.WithS2SImpersonationGuard(func(context.Context, string, string) error {
+	return interceptor.WithS2SImpersonationGuard(func(context.Context, string, string, string) error {
 		return nil
 	})
 }
@@ -774,7 +774,7 @@ func TestMTLSAuthUnary_GuardPanicRejects(t *testing.T) {
 	provider, _ := testKeyAndProvider(t)
 	ic := interceptor.MTLSAuthUnary(provider,
 		interceptor.WithAllowedCNs("svc-a"),
-		interceptor.WithS2SImpersonationGuard(func(context.Context, string, string) error {
+		interceptor.WithS2SImpersonationGuard(func(context.Context, string, string, string) error {
 			panic("guard failed")
 		}),
 	)
@@ -805,10 +805,11 @@ func TestMTLSAuthUnary_GuardErrorRejectsAndReceivesIdentity(t *testing.T) {
 	guardCalled := false
 	ic := interceptor.MTLSAuthUnary(provider,
 		interceptor.WithAllowedCNs("svc-a"),
-		interceptor.WithS2SImpersonationGuard(func(_ context.Context, identity, userID string) error {
+		interceptor.WithS2SImpersonationGuard(func(_ context.Context, identity, userID, fullMethod string) error {
 			guardCalled = true
 			assert.Equal(t, "cn:svc-a", identity)
 			assert.Equal(t, "11111111-1111-1111-1111-111111111111", userID)
+			assert.Equal(t, noopUnaryInfo.FullMethod, fullMethod)
 			return errors.New("not allowed")
 		}),
 	)
@@ -1044,12 +1045,13 @@ func TestMTLSAuthUnary_MTLSPath_Success(t *testing.T) {
 	provider, _ := testKeyAndProvider(t)
 
 	const wantUserID = "11111111-1111-1111-1111-111111111111"
-	var guardIdentity, guardUserID string
+	var guardIdentity, guardUserID, guardMethod string
 	ic := interceptor.MTLSAuthUnary(provider,
 		interceptor.WithAllowedCNs("svc-a"),
-		interceptor.WithS2SImpersonationGuard(func(_ context.Context, identity, userID string) error {
+		interceptor.WithS2SImpersonationGuard(func(_ context.Context, identity, userID, fullMethod string) error {
 			guardIdentity = identity
 			guardUserID = userID
+			guardMethod = fullMethod
 			return nil
 		}),
 	)
@@ -1079,6 +1081,7 @@ func TestMTLSAuthUnary_MTLSPath_Success(t *testing.T) {
 	assert.Equal(t, wantUserID, observedUserID, "UserID must equal the impersonated UUID")
 	assert.Equal(t, "cn:svc-a", guardIdentity, "guard receives the matched client identity")
 	assert.Equal(t, wantUserID, guardUserID, "guard receives the impersonated UUID")
+	assert.Equal(t, noopUnaryInfo.FullMethod, guardMethod, "guard receives the target FullMethod")
 }
 
 // TestMTLSAuthStream_MTLSPath_Success mirrors the unary success path for the
@@ -1088,9 +1091,13 @@ func TestMTLSAuthStream_MTLSPath_Success(t *testing.T) {
 	provider, _ := testKeyAndProvider(t)
 
 	const wantUserID = "11111111-1111-1111-1111-111111111111"
+	var guardMethod string
 	ic := interceptor.MTLSAuthStream(provider,
 		interceptor.WithAllowedCNs("svc-a"),
-		allowS2SImpersonationForTest(),
+		interceptor.WithS2SImpersonationGuard(func(_ context.Context, _, _, fullMethod string) error {
+			guardMethod = fullMethod
+			return nil
+		}),
 	)
 	cert := &x509.Certificate{
 		Subject:     pkix.Name{CommonName: "svc-a"},
@@ -1114,6 +1121,7 @@ func TestMTLSAuthStream_MTLSPath_Success(t *testing.T) {
 		"contextStream must carry the trusted-S2S marker into the handler")
 	assert.Equal(t, wantUserID, observedUserID,
 		"contextStream must carry the impersonated UUID into the handler")
+	assert.Equal(t, noopStreamInfo.FullMethod, guardMethod, "stream guard receives FullMethod")
 }
 
 // TestMTLSAuthUnary_MTLSPath_TrustedS2SBypassesPermissionCheck composes the

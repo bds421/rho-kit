@@ -1185,7 +1185,9 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - `.github/workflows/supply-chain.yml` — `govulncheck` + license check on PR / push / weekly
 - `docs/audit/dependency-allowlist.txt` + `make check-dependency-allowlist` — exact source ledger for direct external Go dependencies
 - `make check-dependency-boundaries` — keeps Redis, pgx, cloud, messaging, KMS, OpenFGA, Temporal, River, and Testcontainers deps behind adapter/test boundaries
-- `docs/audit/THREAT_MODEL.md` — STRIDE threat ledger tracking shipped mitigations. GAP-01 through GAP-10 are closed in v2.0.0; three LOW residual doc-fidelity follow-ups (GAP-11 typed auditlog tenant field, GAP-12 messaging buffer-full sentinel, GAP-13 binary marshaler on secret.String) remain open and are tracked in §8 of the threat model.
+- `docs/audit/THREAT_MODEL.md` — STRIDE threat ledger tracking shipped
+  mitigations. GAP-01 through GAP-13 are closed in v2.0.0; §8 contains no
+  known in-scope mitigation gap at the release candidate.
 - `security/asvs.Lookup` uses stable unknown-control errors instead of echoing
   the rejected control ID.
 

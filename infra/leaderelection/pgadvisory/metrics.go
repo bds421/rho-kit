@@ -5,6 +5,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/bds421/rho-kit/infra/v2/leaderelection/metricscontract"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
@@ -28,11 +29,9 @@ type callbackDrainMetrics interface {
 // waiting for [leaderelection.Callbacks.OnAcquired] to drain after
 // leadership ends.
 //
-// The label set is deliberately small: key is the operator-chosen
-// leadership key (validated via [promutil.ValidateStaticLabelValue] at
-// construction time so a misconfigured caller cannot inflate
-// cardinality), state is "pending" for the periodic warn snapshot or
-// "drained" for the terminal observation.
+// All leader-election backends share the labels {backend,target,state} so
+// multiple adapters can register against the same Prometheus registry.
+// target is the validated operator-chosen advisory-lock key.
 type Metrics struct {
 	drainDuration *prometheus.HistogramVec
 	drainWarns    *prometheus.CounterVec
@@ -55,8 +54,8 @@ func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	return func(c *metricsConfig) { c.registerer = reg }
 }
 
-// NewMetrics creates and registers callback-drain metrics (labels {key,state}; incompatible with etcd/k8slease on the same registerer — see package leaderelection docs).
-// Pass
+// NewMetrics creates and registers callback-drain metrics using the shared
+// {backend,target,state} family shape. Pass
 // [WithRegisterer] to use a non-default registry. Repeated
 // calls reuse already-registered collectors on the same registry.
 func NewMetrics(opts ...MetricsOption) *Metrics {
@@ -67,21 +66,8 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 		}
 		opt(&cfg)
 	}
-	m := &Metrics{
-		drainDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: "leaderelection",
-			Name:      "callback_drain_seconds",
-			Help:      "Time waiting for the OnAcquired callback to return after leadership ended, by key and state (pending snapshot or terminal drained observation).",
-			Buckets:   []float64{1, 5, 10, 30, 60, 120, 300},
-		}, []string{"key", "state"}),
-		drainWarns: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: "leaderelection",
-			Name:      "callback_drain_warn_total",
-			Help:      "Total warn ticks emitted while waiting for the OnAcquired callback to drain after leadership ended.",
-		}, []string{"key"}),
-	}
-	m.drainDuration = promutil.MustRegisterOrGet(cfg.registerer, m.drainDuration)
-	m.drainWarns = promutil.MustRegisterOrGet(cfg.registerer, m.drainWarns)
+	duration, warns := metricscontract.New(cfg.registerer)
+	m := &Metrics{drainDuration: duration, drainWarns: warns}
 	return m
 }
 
@@ -89,14 +75,14 @@ func (m *Metrics) observeDrainDuration(d time.Duration, key, state string) {
 	if m == nil {
 		return
 	}
-	m.drainDuration.WithLabelValues(key, state).Observe(d.Seconds())
+	m.drainDuration.WithLabelValues("pgadvisory", key, state).Observe(d.Seconds())
 }
 
 func (m *Metrics) observeDrainWarn(key string) {
 	if m == nil {
 		return
 	}
-	m.drainWarns.WithLabelValues(key).Inc()
+	m.drainWarns.WithLabelValues("pgadvisory", key).Inc()
 }
 
 // validateMetricKeyLabel guards the operator-supplied leader-election

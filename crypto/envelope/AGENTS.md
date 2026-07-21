@@ -33,9 +33,15 @@ Each adapter is a separate go.mod so the heavy SDK only lands in services that u
 - **Reusing AAD across blobs** — AAD is bound to the ciphertext; mixing AADs is a confused-deputy class of bug. Use a stable, blob-specific AAD (e.g. `"users/v1/" + userID`).
 - **Storing the AAD inside the blob** — the v3 length-prefixed format stores ciphertext + wrapped DEK; AAD is supplied at decrypt time. If you can't reconstruct the AAD without the blob, you've defeated the binding.
 - **Downgrading a reader to pre-v3 envelope format** — v3 blobs are NOT readable by older code. The migration path is forward-only.
-- **Not pinning the wrapping key version (where the adapter supports it)** — by default an adapter wraps with the key's current primary version. To pin wrapping to a specific version, set the adapter's `Config.KeyVersion` (e.g. `azurekeyvault.Config.KeyVersion`, `vaulttransit.Config.KeyVersion`); for `gcpkms` the version is encoded in the key resource path. Unwrapping always uses the keyID embedded in the blob.
+- **Not understanding wrapping-version selection** — Azure Key Vault and
+  Vault Transit can pin wrapping with `Config.KeyVersion`; otherwise the
+  provider's current primary version is used. GCP KMS requires the parent
+  CryptoKey path and returns the selected version-qualified resource from
+  Wrap. Unwrapping always authorizes the key ID embedded in the blob.
 
 ## Observability
 
-- Metrics: KMS-side latencies + outcomes per adapter. Each adapter exposes its own metric set.
-- No envelope-level spans yet (could be a v2.x follow-up; per-encrypt span overhead would be high).
+- Each managed adapter exposes `NewMetrics(WithRegisterer(reg))` and
+  `WithMetrics(metrics)`, recording bounded provider request-error counters
+  by operation and provider status/error code. The envelope layer itself
+  emits no Prometheus collectors.

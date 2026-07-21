@@ -3,6 +3,7 @@ package grpc
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -42,6 +43,30 @@ func TestModule_PanicsOnNilOption(t *testing.T) {
 func TestModule_Name(t *testing.T) {
 	m := Module(func(_ *googrpc.Server) {}, ":50051")
 	assert.Equal(t, "grpc", m.Name())
+}
+
+func TestModule_ConfigureInternalServerSelectsHTTP2Transport(t *testing.T) {
+	m := Module(func(_ *googrpc.Server) {}, ":50051").(*grpcModule)
+
+	t.Run("TLS", func(t *testing.T) {
+		srv := &http.Server{TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
+		m.ConfigureInternalServer(srv)
+
+		require.NotNil(t, srv.Protocols)
+		assert.True(t, srv.Protocols.HTTP1())
+		assert.True(t, srv.Protocols.HTTP2())
+		assert.False(t, srv.Protocols.UnencryptedHTTP2())
+	})
+
+	t.Run("plaintext", func(t *testing.T) {
+		srv := &http.Server{}
+		m.ConfigureInternalServer(srv)
+
+		require.NotNil(t, srv.Protocols)
+		assert.True(t, srv.Protocols.HTTP1())
+		assert.False(t, srv.Protocols.HTTP2())
+		assert.True(t, srv.Protocols.UnencryptedHTTP2())
+	})
 }
 
 func TestModule_ClonesOptions(t *testing.T) {

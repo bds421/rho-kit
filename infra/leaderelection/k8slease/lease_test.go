@@ -186,7 +186,7 @@ func TestAwaitCallbackDrain_LongCallbackEmitsWarnAndMetric(t *testing.T) {
 	}()
 
 	require.Eventually(t, func() bool {
-		return testutil.ToFloat64(metrics.drainWarns.WithLabelValues("kit-system", "tenant-sweeper")) >= 2
+		return testutil.ToFloat64(metrics.drainWarns.WithLabelValues("k8slease", "kit-system/tenant-sweeper")) >= 2
 	}, time.Second, 5*time.Millisecond, "expected drain warn metric to increment at least twice")
 
 	require.Contains(t, logBuf.String(), "OnAcquired callback still draining")

@@ -86,7 +86,12 @@ func TestRun_DrainTimeoutReturnsImmediatelyWithoutReacquire(t *testing.T) {
 	// Once the callback is running, revoke the lock externally so the
 	// renew tick reports `extend ok = false` → triggers the drain
 	// path. miniredis lets us delete the key directly.
-	mr.Del("test-l141")
+	// Delete the exact Redis key created by redsync. Deriving it from the
+	// server keeps this test pinned to observable lock loss even if redsync's
+	// internal key encoding changes.
+	keys := mr.Keys()
+	require.Len(t, keys, 1, "expected exactly one acquired lock key")
+	mr.Del(keys[0])
 
 	// Run must return ErrCallbackDrainTimeout (no retry).
 	select {

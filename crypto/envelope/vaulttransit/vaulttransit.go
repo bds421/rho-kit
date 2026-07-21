@@ -16,11 +16,6 @@
 // decrypting with the old KEK and writing new envelopes under a new KEK.
 //
 // asvs: V6.2.1, V6.4.1
-//
-// Observability: request-error Prometheus metrics and NewKEK opts ...Option
-// currently ship in awskms and gcpkms. vaulttransit intentionally defers the same
-// Option/Metrics surface until a shared envelope-level metrics hook lands;
-// error classification already mirrors awskms via classify* helpers.
 package vaulttransit
 
 import (
@@ -49,6 +44,19 @@ type KEK struct {
 	keyID      string
 	contextAAD []byte
 	keyVersion int
+	metrics    *Metrics
+}
+
+// Option configures [NewKEK].
+type Option func(*KEK)
+
+// WithMetrics installs a custom [Metrics] for this KEK. When unset, the
+// package's DefaultRegisterer-backed metrics are used.
+func WithMetrics(m *Metrics) Option {
+	if m == nil {
+		panic("vaulttransit: WithMetrics requires non-nil metrics (omit the option for the package default)")
+	}
+	return func(k *KEK) { k.metrics = m }
 }
 
 // Config bundles the kit's Vault Transit knobs.
@@ -88,7 +96,7 @@ func (c Config) LogValue() slog.Value {
 }
 
 // NewKEK builds a KEK from cfg using the given Vault client.
-func NewKEK(c *vaultapi.Client, cfg Config) (*KEK, error) {
+func NewKEK(c *vaultapi.Client, cfg Config, opts ...Option) (*KEK, error) {
 	if c == nil {
 		return nil, errors.New("vaulttransit: client must not be nil")
 	}
@@ -103,14 +111,24 @@ func NewKEK(c *vaultapi.Client, cfg Config) (*KEK, error) {
 		return nil, errors.New("vaulttransit: Config.KeyVersion must not be negative")
 	}
 	keyID := "vault://" + mountPath + "/keys/" + cfg.KeyName
-	return &KEK{
+	k := &KEK{
 		c:          c,
 		mountPath:  mountPath,
 		keyName:    cfg.KeyName,
 		keyID:      keyID,
 		contextAAD: append([]byte(nil), cfg.Context...),
 		keyVersion: cfg.KeyVersion,
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt == nil {
+			return nil, errors.New("vaulttransit: NewKEK option must not be nil")
+		}
+		opt(k)
+	}
+	if k.metrics == nil {
+		k.metrics = packageDefaultMetrics()
+	}
+	return k, nil
 }
 
 // KeyID implements [envelope.KEK]. Returns the Vault Transit key identity
@@ -140,7 +158,7 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 
 	secret, err := k.c.Logical().WriteWithContext(ctx, k.encryptPath(), data)
 	if err != nil {
-		return "", nil, fmt.Errorf("vaulttransit: encrypt: %w", classifyVaultError("encrypt", err))
+		return "", nil, fmt.Errorf("vaulttransit: encrypt: %w", k.classifyVaultError("encrypt", err))
 	}
 	ciphertext, err := secretString(secret, "ciphertext")
 	if err != nil {
@@ -174,7 +192,7 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 
 	secret, err := k.c.Logical().WriteWithContext(ctx, k.decryptPath(), data)
 	if err != nil {
-		return nil, fmt.Errorf("vaulttransit: decrypt: %w", classifyVaultError("decrypt", err))
+		return nil, fmt.Errorf("vaulttransit: decrypt: %w", k.classifyVaultError("decrypt", err))
 	}
 	plaintext, err := secretString(secret, "plaintext")
 	if err != nil {

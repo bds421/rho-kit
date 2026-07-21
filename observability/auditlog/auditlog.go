@@ -38,6 +38,7 @@ type Event struct {
 	ID        string          `json:"id"`
 	Timestamp time.Time       `json:"timestamp"`
 	Actor     string          `json:"actor"`                // user ID, service name, "system"
+	Tenant    string          `json:"tenant,omitempty"`     // stable tenant identifier when applicable
 	Action    string          `json:"action"`               // "create", "update", "delete", custom
 	Resource  string          `json:"resource"`             // "users/123", "orders/456"
 	Status    string          `json:"status"`               // "success", "failure", "denied"
@@ -58,6 +59,8 @@ const (
 	MaxEventIDBytes = 36
 	// MaxActorBytes caps the actor principal identifier.
 	MaxActorBytes = 255
+	// MaxTenantBytes caps the optional tenant identifier.
+	MaxTenantBytes = 255
 	// MaxActionBytes caps the action verb.
 	MaxActionBytes = 255
 	// MaxResourceBytes caps the resource identifier/path.
@@ -143,6 +146,11 @@ func ValidateEvent(event Event) error {
 	}
 	if err := validateRequiredToken("actor", event.Actor, MaxActorBytes); err != nil {
 		return err
+	}
+	if event.Tenant != "" {
+		if err := validateRequiredToken("tenant", event.Tenant, MaxTenantBytes); err != nil {
+			return err
+		}
 	}
 	if err := validateRequiredToken("action", event.Action, MaxActionBytes); err != nil {
 		return err
@@ -240,6 +248,7 @@ type Store interface {
 // Filter controls which events are returned by Query.
 type Filter struct {
 	Actor     string
+	Tenant    string
 	Action    string
 	Resource  string
 	Since     time.Time

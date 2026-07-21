@@ -408,7 +408,7 @@ type mtlsIdentityConfig struct {
 	// impersonationGuard is consulted before stamping the trusted-S2S
 	// marker. Returning an error rejects the impersonation attempt;
 	// returning nil accepts it.
-	impersonationGuard func(ctx context.Context, identity, userID string) error
+	impersonationGuard func(ctx context.Context, identity, userID, fullMethod string) error
 	// skipMethods bypasses both JWT and mTLS authentication for the
 	// listed gRPC method names (audit FR-066). Use for unauthenticated
 	// health endpoints under a combined JWT/mTLS interceptor.
@@ -435,10 +435,19 @@ func WithMTLSSkipMethods(methods ...string) MTLSIdentityOption {
 
 // WithS2SImpersonationGuard installs a callback that decides whether
 // `identity` (the verified client certificate's matched SAN/CN) is
-// allowed to impersonate `userID`. Return an error to reject the
-// impersonation; the interceptor returns codes.PermissionDenied to
-// the caller.
-func WithS2SImpersonationGuard(fn func(ctx context.Context, identity, userID string) error) MTLSIdentityOption {
+// allowed to impersonate `userID` on the given gRPC method. fullMethod
+// is the server method path from [grpc.UnaryServerInfo.FullMethod] /
+// [grpc.StreamServerInfo.FullMethod] (e.g. "/pkg.Service/Method"), so
+// guards can enforce per-RPC delegation policy. Return an error to
+// reject the impersonation; the interceptor returns
+// codes.PermissionDenied to the caller.
+//
+// The `identity` value is the matched certificate identity prefixed with
+// the SAN/CN kind that matched, NOT the bare service name:
+//   - "cn:<common-name>"  — e.g. "cn:backend"
+//   - "dns:<dns-san>"     — e.g. "dns:svc-a.internal"
+//   - "uri:<uri-san>"     — e.g. "uri:spiffe://example.org/svc-a"
+func WithS2SImpersonationGuard(fn func(ctx context.Context, identity, userID, fullMethod string) error) MTLSIdentityOption {
 	if fn == nil {
 		panic("grpcx/interceptor: WithS2SImpersonationGuard requires a non-nil callback")
 	}
@@ -574,7 +583,7 @@ func MTLSAuthUnary(provider *jwtutil.Provider, opts ...MTLSIdentityOption) grpc.
 		if _, skip := cfg.skipMethods[info.FullMethod]; skip {
 			return handler(ctx, req)
 		}
-		newCtx, err := authenticateMTLSOrJWT(ctx, provider, cfg)
+		newCtx, err := authenticateMTLSOrJWT(ctx, provider, cfg, info.FullMethod)
 		if err != nil {
 			return nil, err
 		}
@@ -605,7 +614,7 @@ func MTLSAuthStream(provider *jwtutil.Provider, opts ...MTLSIdentityOption) grpc
 		if _, skip := cfg.skipMethods[info.FullMethod]; skip {
 			return handler(srv, ss)
 		}
-		newCtx, err := authenticateMTLSOrJWT(ss.Context(), provider, cfg)
+		newCtx, err := authenticateMTLSOrJWT(ss.Context(), provider, cfg, info.FullMethod)
 		if err != nil {
 			return err
 		}
@@ -631,6 +640,7 @@ func authenticateMTLSOrJWT(
 	ctx context.Context,
 	provider *jwtutil.Provider,
 	cfg mtlsIdentityConfig,
+	fullMethod string,
 ) (context.Context, error) {
 	// Try JWT first. Malformed or duplicated authorization metadata is
 	// rejected before mTLS fallback so callers cannot smuggle a bad bearer
@@ -665,7 +675,7 @@ func authenticateMTLSOrJWT(
 	if cfg.impersonationGuard == nil {
 		return ctx, status.Error(codes.PermissionDenied, "impersonation guard not configured")
 	}
-	if err := callImpersonationGuard(ctx, cfg.impersonationGuard, identity, userID); err != nil {
+	if err := callImpersonationGuard(ctx, cfg.impersonationGuard, identity, userID, fullMethod); err != nil {
 		// user_id / client_identity are tenant- or topology-carrying
 		// identifiers; the HTTP path redacts them
 		// (httpx/middleware/auth.go) and the gRPC path must match so
@@ -673,6 +683,7 @@ func authenticateMTLSOrJWT(
 		slog.WarnContext(ctx, "grpc s2s impersonation rejected by guard",
 			redact.String("user_id", userID),
 			redact.String("client_identity", identity),
+			slog.String("grpc.method", fullMethod),
 			redact.Error(err),
 		)
 		return ctx, status.Error(codes.PermissionDenied, "impersonation not permitted")
@@ -681,6 +692,7 @@ func authenticateMTLSOrJWT(
 	slog.InfoContext(ctx, "grpc s2s user impersonation",
 		redact.String("user_id", userID),
 		redact.String("client_identity", identity),
+		slog.String("grpc.method", fullMethod),
 	)
 
 	// Stamp trust + subject, then adopt optional entitlement metadata
@@ -693,19 +705,20 @@ func authenticateMTLSOrJWT(
 
 var errImpersonationGuardPanicked = errors.New("impersonation guard panicked")
 
-func callImpersonationGuard(ctx context.Context, guard func(context.Context, string, string) error, identity, userID string) (err error) {
+func callImpersonationGuard(ctx context.Context, guard func(context.Context, string, string, string) error, identity, userID, fullMethod string) (err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			slog.ErrorContext(ctx, "grpc s2s impersonation guard panicked",
 				redact.String("user_id", userID),
 				redact.String("client_identity", identity),
+				slog.String("grpc.method", fullMethod),
 				redact.Panic(rec),
 				slog.String("stack", string(debug.Stack())),
 			)
 			err = errImpersonationGuardPanicked
 		}
 	}()
-	return guard(ctx, identity, userID)
+	return guard(ctx, identity, userID, fullMethod)
 }
 
 // verifyClientCertGRPC checks that the gRPC peer presented a fully verified

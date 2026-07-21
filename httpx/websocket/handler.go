@@ -11,6 +11,12 @@ import (
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
+// defaultHub tracks connections opened via package-level [Handle] so
+// [Shutdown] can drain them on process stop without forcing callers to
+// construct a [Hub]. Isolated servers that must not share the global
+// set still use [NewHub].
+var defaultHub = &Hub{conns: make(map[*Conn]struct{})}
+
 // Handle constructs an [http.HandlerFunc] that upgrades the request to
 // a WebSocket connection and dispatches to the configured handler.
 //
@@ -23,11 +29,24 @@ import (
 // WebSocket endpoint with no handler is always a wiring bug rather
 // than a runtime condition to absorb.
 //
-// Handle does not participate in process-level graceful shutdown of
-// open sockets — use [NewHub] + [Hub.Shutdown] when connection
-// contexts must cancel on service stop (review-09).
+// Connections opened through Handle are registered on a package-level
+// registry. Call [Shutdown] from lifecycle/app stop to cancel them and
+// send StatusGoingAway. For multi-server isolation (tests, multiple
+// independent listeners that must not share drain), use [NewHub]
+// instead — Hub registries are independent of package [Shutdown].
 func Handle(opts ...Option) http.HandlerFunc {
-	return handleWithHooks(opts, nil, nil)
+	return handleWithHooks(opts, defaultHub.track, defaultHub.untrack)
+}
+
+// Shutdown cancels every connection opened via package-level [Handle]
+// and closes those sockets with StatusGoingAway. It returns when all
+// such handlers have untracked, or when ctx is done.
+//
+// Wire this from lifecycle/app stop (alongside http.Server.Shutdown).
+// Connections created through a [Hub] are not affected — drain those
+// with [Hub.Shutdown].
+func Shutdown(ctx context.Context) error {
+	return defaultHub.Shutdown(ctx)
 }
 
 // buildConfig applies options and validates the resulting config.
@@ -120,6 +139,10 @@ func handleWithHooks(opts []Option, onOpen, onClose func(*Conn)) http.HandlerFun
 		// request context so the connection lifetime is not bounded
 		// by the upgrade handler's stdlib timeout (the handshake is
 		// done — further reads happen on the hijacked TCP connection).
+		//
+		// Graceful process shutdown is not linked through the request
+		// context: call package [Shutdown] (for [Handle]) or
+		// [Hub.Shutdown] (for isolated hubs) to cancel open conns.
 		ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
 		defer cancel()
 
@@ -146,12 +169,15 @@ func handleWithHooks(opts []Option, onOpen, onClose func(*Conn)) http.HandlerFun
 		// independent of the heartbeat; it is not silently dropped when
 		// WithPingInterval is unset.
 		//
-		// coder/websocket's CloseRead cancels only the *derived* context
-		// it returns — not the kit's per-connection parent. Watch that
-		// derived context and cancel the kit Conn so push handlers parked
-		// on conn.Context().Done() observe peer disconnect promptly.
+		// coder/websocket's CloseRead closes the raw socket when its input
+		// context is cancelled. Do not bind that input to conn.ctx: Conn.Close
+		// intentionally cancels conn.ctx before sending its close frame, and a
+		// bound CloseRead could otherwise win that race and turn graceful 1001
+		// shutdown into an abnormal EOF. The drain still exits when the raw
+		// connection closes; its derived context then cancels conn.ctx for peer
+		// disconnects.
 		if readDrain {
-			drainCtx := raw.CloseRead(ctx)
+			drainCtx := raw.CloseRead(context.WithoutCancel(ctx))
 			go func() {
 				<-drainCtx.Done()
 				// Cancel promptly so push handlers parked on

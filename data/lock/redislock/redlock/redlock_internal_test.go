@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bds421/rho-kit/data/lock/redislock/v2/internal/redsyncutil"
 	"github.com/bds421/rho-kit/data/v2/lock"
 )
 
@@ -101,16 +102,16 @@ func TestReleaseAndJoin_NilLoggerFallsBackToDefault(t *testing.T) {
 func TestWithLogger_PlumbedIntoLocker(t *testing.T) {
 	custom := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 
-	o := options{}
+	o := redsyncutil.Config{}
 	WithLogger(custom)(&o)
-	if o.logger != custom {
+	if o.Logger != custom {
 		t.Fatalf("WithLogger must set the configured logger")
 	}
 
 	// nil must be ignored so a later default fallback can apply.
-	o2 := options{logger: custom}
+	o2 := redsyncutil.Config{Logger: custom}
 	WithLogger(nil)(&o2)
-	if o2.logger != custom {
+	if o2.Logger != custom {
 		t.Fatalf("WithLogger(nil) must not clobber an existing logger")
 	}
 }

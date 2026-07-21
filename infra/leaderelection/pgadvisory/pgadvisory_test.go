@@ -282,7 +282,7 @@ func TestHoldLeadership_LongCallbackEmitsWarnAndMetric(t *testing.T) {
 
 	// Wait long enough for multiple warn ticks to fire on a stuck callback.
 	require.Eventually(t, func() bool {
-		return testutil.ToFloat64(metrics.drainWarns.WithLabelValues("tenant-sweeper")) >= 2
+		return testutil.ToFloat64(metrics.drainWarns.WithLabelValues("pgadvisory", "tenant-sweeper")) >= 2
 	}, time.Second, 5*time.Millisecond, "expected drain warn metric to increment at least twice")
 
 	require.Contains(t, logBuf.String(), "OnAcquired callback still draining")
@@ -313,7 +313,7 @@ func TestHoldLeadership_LongCallbackEmitsWarnAndMetric(t *testing.T) {
 			var key, state string
 			for _, lp := range out.Label {
 				switch lp.GetName() {
-				case "key":
+				case "target":
 					key = lp.GetValue()
 				case "state":
 					state = lp.GetValue()

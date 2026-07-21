@@ -81,7 +81,6 @@ func TestWithLogger_NilPanics(t *testing.T) {
 	WithLogger(nil)
 }
 
-
 func TestMiddleware_ResponseOverflowLogRedactsRawKey(t *testing.T) {
 	store := idem.NewMemoryStore()
 	buf := &bytes.Buffer{}
@@ -1887,9 +1886,6 @@ func TestInformationalWriteHeaderForwardsStagedHeaders(t *testing.T) {
 	}
 	// Final status still latches independently.
 	rc.WriteHeader(http.StatusCreated)
-	if rec.Code != http.StatusCreated && rc.statusCode != http.StatusCreated {
-		// ResponseRecorder may not see final if we only latched capture status
-	}
 	if rc.statusCode != http.StatusCreated {
 		t.Fatalf("final status = %d, want 201", rc.statusCode)
 	}

@@ -166,7 +166,9 @@ Wrappers compose transparently — each implements `Storage` and forwards option
 base, _ := s3backend.New(cfg)
 retried := retry.New(base, retry.WithMaxAttempts(3))
 breaker := circuitbreaker.New(retried, circuitbreaker.WithThreshold(5))
-enc := encryption.New(breaker, encryption.StaticKey(key32))
+enc := encryption.New(breaker, encryption.StaticKey(key32),
+    encryption.WithMetricsRegisterer(nil), // optional open-plaintext budget metrics
+)
 hooked := storage.WithHooks(enc, storage.Hooks{
     AfterPut:    func(ctx context.Context, key string, meta storage.ObjectMeta) { /* CDN invalidation */ },
     AfterDelete: func(ctx context.Context, key string) { /* cache purge */ },
@@ -332,8 +334,7 @@ a shared user-writable tree.
   Envelope encryption ships AWS KMS, Azure Key Vault, Google Cloud KMS, and
   HashiCorp Vault Transit KEK adapters under `crypto/envelope/awskms`,
   `crypto/envelope/azurekeyvault`, `crypto/envelope/gcpkms`, and
-  `crypto/envelope/vaulttransit`; other provider adapters remain v2.x
-  follow-ups.
+  `crypto/envelope/vaulttransit`. Other managed-key providers are not shipped.
 
 ## Retry Notes
 

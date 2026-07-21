@@ -17,54 +17,31 @@ import (
 	"github.com/bds421/rho-kit/data/v2/lock"
 )
 
-// Option configures a [QuorumLocker]. The shape mirrors
-// [redislock.Option] so callers swapping a single-instance locker for
-// a quorum locker see the same tuning surface.
-type Option func(*options)
-
-type options struct {
-	ttl           time.Duration
-	retryInterval time.Duration
-	maxAttempts   int
-	maxWait       time.Duration
-	logger        *slog.Logger
-	prefix        string
-}
+// Option configures a [QuorumLocker]. Type-identical to
+// [github.com/bds421/rho-kit/data/lock/redislock.Option] (shared
+// redsyncutil.Option) so callers swapping a single-instance locker for
+// a quorum locker keep the same tuning surface without conversion.
+type Option = redsyncutil.Option
 
 // WithTTL sets the lock expiration duration. Defaults to 30 seconds.
 // Choose a TTL comfortably longer than the worst-case critical
 // section AND the worst-case Acquire latency across instances —
 // Redlock is only safe when TTL >> RTT.
 func WithTTL(d time.Duration) Option {
-	if d <= 0 {
-		panic("redlock: WithTTL requires a positive duration")
-	}
-	return func(o *options) { o.ttl = d }
+	return redsyncutil.WithTTL("redlock", d)
 }
 
 // WithRetry configures contention-retry polling with the same shape
 // as [redislock.WithRetry]: maxAttempts of jittered ±25% delay around
 // interval.
 func WithRetry(interval time.Duration, maxAttempts int) Option {
-	if interval <= 0 {
-		panic("redlock: WithRetry requires a positive interval")
-	}
-	if maxAttempts < 0 {
-		panic("redlock: WithRetry requires maxAttempts >= 0")
-	}
-	return func(o *options) {
-		o.retryInterval = interval
-		o.maxAttempts = maxAttempts
-	}
+	return redsyncutil.WithRetry("redlock", interval, maxAttempts)
 }
 
 // WithMaxWait caps the total wall-clock retry duration for Acquire.
 // Useful when no ctx deadline is configured; omit to disable the cap.
 func WithMaxWait(d time.Duration) Option {
-	if d <= 0 {
-		panic("redlock: WithMaxWait requires a positive duration")
-	}
-	return func(o *options) { o.maxWait = d }
+	return redsyncutil.WithMaxWait("redlock", d)
 }
 
 // WithLogger sets the *slog.Logger the locker uses for the
@@ -73,17 +50,13 @@ func WithMaxWait(d time.Duration) Option {
 // callers swapping a single-instance locker for a quorum locker keep
 // the same observability surface.
 func WithLogger(l *slog.Logger) Option {
-	return func(o *options) {
-		if l != nil {
-			o.logger = l
-		}
-	}
+	return redsyncutil.WithLogger("redlock", l)
 }
 
 // WithKeyPrefix sets the Redis key namespace prepended to every lock key.
 // Default is "lock:" so co-tenant cache keys cannot overwrite quorum tokens.
 func WithKeyPrefix(p string) Option {
-	return func(o *options) { o.prefix = p }
+	return redsyncutil.WithKeyPrefix("redlock", p)
 }
 
 // MaxLockKeyLen mirrors [redislock.MaxLockKeyLen] — the same key
@@ -105,7 +78,7 @@ func validateLockKey(key string) error {
 type QuorumLocker struct {
 	pools []redis.Pool
 	rs    *redsync.Redsync
-	opts  options
+	opts  redsyncutil.Config
 }
 
 // NewQuorumLocker constructs a QuorumLocker over the supplied Redis
@@ -129,18 +102,8 @@ func NewQuorumLocker(clients []goredislib.UniversalClient, opts ...Option) *Quor
 		}
 		pools = append(pools, goredis.NewPool(c))
 	}
-	o := options{ttl: 30 * time.Second,
-		prefix: "lock:",
-	}
-	for _, fn := range opts {
-		if fn == nil {
-			panic("redlock: NewQuorumLocker option must not be nil")
-		}
-		fn(&o)
-	}
-	if o.logger == nil {
-		o.logger = slog.Default()
-	}
+	o := redsyncutil.DefaultConfig()
+	redsyncutil.Apply("redlock", &o, opts...)
 	return &QuorumLocker{
 		pools: pools,
 		rs:    redsync.New(pools...),
@@ -166,19 +129,19 @@ func (q *QuorumLocker) doAcquire(ctx context.Context, key string) (lock.Lock, bo
 	}
 
 	rkey := key
-	if q.opts.prefix != "" {
-		rkey = q.opts.prefix + key
+	if q.opts.Prefix != "" {
+		rkey = q.opts.Prefix + key
 	}
 	mutex := q.rs.NewMutex(rkey,
-		redsync.WithExpiry(q.opts.ttl),
-		redsync.WithTries(redsyncutil.TryCount(q.opts.maxAttempts)),
-		redsync.WithRetryDelayFunc(redsyncutil.JitteredBackoff(q.opts.retryInterval)),
+		redsync.WithExpiry(q.opts.TTL),
+		redsync.WithTries(redsyncutil.TryCount(q.opts.MaxAttempts)),
+		redsync.WithRetryDelayFunc(redsyncutil.JitteredBackoff(q.opts.RetryInterval)),
 	)
 
 	lockCtx := ctx
 	var cancelMaxWait context.CancelFunc
-	if q.opts.maxWait > 0 {
-		lockCtx, cancelMaxWait = context.WithTimeout(ctx, q.opts.maxWait)
+	if q.opts.MaxWait > 0 {
+		lockCtx, cancelMaxWait = context.WithTimeout(ctx, q.opts.MaxWait)
 		defer cancelMaxWait()
 	}
 
@@ -219,7 +182,23 @@ func (q *QuorumLocker) WithLock(ctx context.Context, key string, fn func(ctx con
 	if !ok {
 		return lock.ErrNotAcquired
 	}
-	defer releaseAndJoin(ctx, l, &retErr, q.opts.logger)
+	defer releaseAndJoin(ctx, l, &retErr, q.opts.Logger)
+	return fn(ctx)
+}
+
+// LockerWithValue acquires the lock for `key`, runs fn, releases the
+// lock, and returns the value fn produced. Mirrors
+// [redislock.LockerWithValue] for quorum lockers — surfaces
+// [lock.ErrLockLost] joined with fn's error if the TTL expired during fn.
+func LockerWithValue[T any](ctx context.Context, q *QuorumLocker, key string, fn func(context.Context) (T, error)) (value T, retErr error) {
+	l, ok, err := q.Acquire(ctx, key)
+	if err != nil {
+		return value, err
+	}
+	if !ok {
+		return value, lock.ErrNotAcquired
+	}
+	defer releaseAndJoin(ctx, l, &retErr, q.opts.Logger)
 	return fn(ctx)
 }
 

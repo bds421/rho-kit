@@ -26,4 +26,4 @@
 
 ## Observability
 
-Same as etcd adapter: `leaderelection_callback_drain_seconds{namespace,name,state}` + `leaderelection_callback_drain_warn_total{namespace,name}`. The label set uses `(namespace, name)` because that matches the operator's mental model for Kubernetes objects.
+Same shared family as the other adapters: `leaderelection_callback_drain_seconds{backend,target,state}` + `leaderelection_callback_drain_warn_total{backend,target}`. Here `backend="k8slease"` and `target="<namespace>/<name>"`.

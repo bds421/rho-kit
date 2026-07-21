@@ -12,7 +12,7 @@ for API-freeze, migration, and final tag evidence.
 
 | File | Purpose |
 |---|---|
-| [THREAT_MODEL.md](THREAT_MODEL.md) | STRIDE-style threat surface; assets, adversaries, mitigations, shipped gap closures, and remaining follow-up list. Updated whenever a new threat ID lands. |
+| [THREAT_MODEL.md](THREAT_MODEL.md) | STRIDE-style threat surface; assets, adversaries, mitigations, and shipped gap closures. Updated whenever a new threat ID lands. |
 | [dependency-allowlist.txt](dependency-allowlist.txt) | Exact review ledger for direct external Go module dependencies; enforced by `make check-dependency-allowlist`. |
 
 Supply-chain policy lives in the code that enforces it:

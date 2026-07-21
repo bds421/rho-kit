@@ -49,7 +49,7 @@ func TestConsumer_InvalidReceiverReturnsError(t *testing.T) {
 			assert.ErrorIs(t, err, kitstream.ErrInvalidStream)
 
 			assert.Panics(t, func() {
-				tc.consumer.Consume(ctx, "test:stream", func(context.Context, Message) error { return nil })
+				_ = tc.consumer.Consume(ctx, "test:stream", func(context.Context, Message) error { return nil })
 			})
 		})
 	}
@@ -186,7 +186,7 @@ func TestConsume_PanicsOnEmptyStream(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Panics(t, func() {
-		c.Consume(context.TODO(), "", nil) //nolint:staticcheck // intentionally testing panic with empty stream name
+		_ = c.Consume(context.TODO(), "", nil) //nolint:staticcheck // intentionally testing panic with empty stream name
 	})
 }
 
@@ -202,13 +202,13 @@ func TestConsumer_PanicsOnSecondConsume(t *testing.T) {
 	// quickly. (RunWithBackoff observes ctx.Err() and exits.)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	c.Consume(ctx, "stream-a", func(_ context.Context, _ Message) error { return nil })
+	_ = c.Consume(ctx, "stream-a", func(_ context.Context, _ Message) error { return nil })
 
 	// Second call: must panic, even with a different stream.
 	assert.PanicsWithValue(t,
 		"redisstream: Consumer.Consume called for a second stream — create a separate Consumer per stream (see StartConsumers)",
 		func() {
-			c.Consume(ctx, "stream-b", func(_ context.Context, _ Message) error { return nil })
+			_ = c.Consume(ctx, "stream-b", func(_ context.Context, _ Message) error { return nil })
 		},
 	)
 }
@@ -236,7 +236,7 @@ func TestConsume_PanicsOnNilHandler(t *testing.T) {
 	assert.PanicsWithValue(t,
 		"redisstream: Consumer.Consume requires a non-nil handler",
 		func() {
-			c.Consume(context.TODO(), "stream-x", nil)
+			_ = c.Consume(context.TODO(), "stream-x", nil)
 		},
 	)
 }

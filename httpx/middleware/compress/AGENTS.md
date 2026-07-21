@@ -2,9 +2,10 @@
 
 ## Purpose
 
-HTTP response-compression middleware (gzip in-tree, brotli sub-module
-planned). Negotiation-driven, content-type allowlist, min-size
-threshold, Vary header.
+HTTP response-compression middleware (gzip in-tree; external brotli or
+zstd encoders can implement the pluggable `Encoder` interface).
+Negotiation-driven, content-type allowlist, min-size threshold, Vary
+header.
 
 ## Public API
 

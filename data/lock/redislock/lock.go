@@ -15,24 +15,14 @@ import (
 	"github.com/bds421/rho-kit/data/v2/lock"
 )
 
-// Option configures a Lock or Locker.
-type Option func(*options)
-
-type options struct {
-	ttl           time.Duration
-	retryInterval time.Duration
-	maxAttempts   int
-	maxWait       time.Duration
-	logger        *slog.Logger
-	prefix        string
-}
+// Option configures a Lock or Locker. Shared shape with
+// [github.com/bds421/rho-kit/data/lock/redislock/redlock.Option] via
+// redsyncutil so TTL/retry/max-wait/prefix cannot drift.
+type Option = redsyncutil.Option
 
 // WithTTL sets the lock expiration duration. Defaults to 30 seconds.
 func WithTTL(d time.Duration) Option {
-	if d <= 0 {
-		panic("redislock: WithTTL requires a positive duration")
-	}
-	return func(o *options) { o.ttl = d }
+	return redsyncutil.WithTTL("redislock", d)
 }
 
 // WithRetry configures polling when the lock is held by another process.
@@ -48,16 +38,7 @@ func WithTTL(d time.Duration) Option {
 // previous fixed-interval polling, eliminating synchronised retry
 // spikes under thundering-herd contention.
 func WithRetry(interval time.Duration, maxAttempts int) Option {
-	if interval <= 0 {
-		panic("redislock: WithRetry requires a positive interval")
-	}
-	if maxAttempts < 0 {
-		panic("redislock: WithRetry requires maxAttempts >= 0")
-	}
-	return func(o *options) {
-		o.retryInterval = interval
-		o.maxAttempts = maxAttempts
-	}
+	return redsyncutil.WithRetry("redislock", interval, maxAttempts)
 }
 
 // WithLogger sets the *slog.Logger the locker uses for the
@@ -65,11 +46,7 @@ func WithRetry(interval time.Duration, maxAttempts int) Option {
 // falls back to [slog.Default]. Matches the kit's per-package
 // [WithLogger] convention.
 func WithLogger(l *slog.Logger) Option {
-	return func(o *options) {
-		if l != nil {
-			o.logger = l
-		}
-	}
+	return redsyncutil.WithLogger("redislock", l)
 }
 
 // WithMaxWait caps the total wall-clock time Acquire is willing to
@@ -83,12 +60,7 @@ func WithLogger(l *slog.Logger) Option {
 // fires before redsync exhausts retries, Acquire returns
 // (nil, false, nil) so the contract matches pre-migration behaviour.
 func WithMaxWait(d time.Duration) Option {
-	if d <= 0 {
-		panic("redislock: WithMaxWait requires a positive duration")
-	}
-	return func(o *options) {
-		o.maxWait = d
-	}
+	return redsyncutil.WithMaxWait("redislock", d)
 }
 
 // WithKeyPrefix sets the Redis key namespace prepended to every lock key.
@@ -96,7 +68,7 @@ func WithMaxWait(d time.Duration) Option {
 // cannot overwrite a redsync token. Pass "" only for deliberate flat-key
 // migration of existing deployments.
 func WithKeyPrefix(p string) Option {
-	return func(o *options) { o.prefix = p }
+	return redsyncutil.WithKeyPrefix("redislock", p)
 }
 
 // Locker is a long-lived factory for per-key distributed locks. It implements
@@ -109,7 +81,7 @@ func WithKeyPrefix(p string) Option {
 type Locker struct {
 	client goredislib.UniversalClient
 	rs     *redsync.Redsync
-	opts   options
+	opts   redsyncutil.Config
 }
 
 // MaxLockKeyLen caps the byte length of a lock key passed to
@@ -137,16 +109,8 @@ func NewLocker(client goredislib.UniversalClient, opts ...Option) *Locker {
 	if client == nil {
 		panic("redislock: NewLocker requires a non-nil Redis client")
 	}
-	o := options{ttl: 30 * time.Second, prefix: "lock:"}
-	for _, fn := range opts {
-		if fn == nil {
-			panic("redislock: NewLocker option must not be nil")
-		}
-		fn(&o)
-	}
-	if o.logger == nil {
-		o.logger = slog.Default()
-	}
+	o := redsyncutil.DefaultConfig()
+	redsyncutil.Apply("redislock", &o, opts...)
 	rs := redsync.New(goredis.NewPool(client))
 	return &Locker{client: client, rs: rs, opts: o}
 }
@@ -177,19 +141,19 @@ func (lc *Locker) doAcquire(ctx context.Context, key string) (lock.Lock, bool, e
 	}
 
 	rkey := key
-	if lc.opts.prefix != "" {
-		rkey = lc.opts.prefix + key
+	if lc.opts.Prefix != "" {
+		rkey = lc.opts.Prefix + key
 	}
 	mutex := lc.rs.NewMutex(rkey,
-		redsync.WithExpiry(lc.opts.ttl),
-		redsync.WithTries(redsyncutil.TryCount(lc.opts.maxAttempts)),
-		redsync.WithRetryDelayFunc(redsyncutil.JitteredBackoff(lc.opts.retryInterval)),
+		redsync.WithExpiry(lc.opts.TTL),
+		redsync.WithTries(redsyncutil.TryCount(lc.opts.MaxAttempts)),
+		redsync.WithRetryDelayFunc(redsyncutil.JitteredBackoff(lc.opts.RetryInterval)),
 	)
 
 	lockCtx := ctx
 	var cancelMaxWait context.CancelFunc
-	if lc.opts.maxWait > 0 {
-		lockCtx, cancelMaxWait = context.WithTimeout(ctx, lc.opts.maxWait)
+	if lc.opts.MaxWait > 0 {
+		lockCtx, cancelMaxWait = context.WithTimeout(ctx, lc.opts.MaxWait)
 		defer cancelMaxWait()
 	}
 
@@ -239,7 +203,7 @@ func (lc *Locker) WithLock(ctx context.Context, key string, fn func(ctx context.
 		return lock.ErrNotAcquired
 	}
 
-	defer releaseAndJoin(ctx, l, &retErr, lc.opts.logger)
+	defer releaseAndJoin(ctx, l, &retErr, lc.opts.Logger)
 	return fn(ctx)
 }
 
@@ -269,7 +233,7 @@ func LockerWithValue[T any](ctx context.Context, lc *Locker, key string, fn func
 		return value, lock.ErrNotAcquired
 	}
 
-	defer releaseAndJoin(ctx, l, &retErr, lc.opts.logger)
+	defer releaseAndJoin(ctx, l, &retErr, lc.opts.Logger)
 	return fn(ctx)
 }
 
