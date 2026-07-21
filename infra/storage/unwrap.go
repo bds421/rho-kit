@@ -122,3 +122,11 @@ func AsTagger(s Storage) (Tagger, bool) {
 func AsVersioner(s Storage) (Versioner, bool) {
 	return asImpl[Versioner](s)
 }
+
+
+// AsStatter walks the Unwrap chain to find a Statter implementation.
+// Returns (nil, false) if no backend in the chain implements Statter, or if
+// traversal hits an [OpaqueDecorator] that does not itself implement Statter.
+func AsStatter(s Storage) (Statter, bool) {
+	return asImpl[Statter](s)
+}

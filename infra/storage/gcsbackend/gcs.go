@@ -99,13 +99,15 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Backend, error) {
 		bucket:   client.Bucket(cfg.Bucket),
 		cfg:      cfg,
 		instance: "default",
-		metrics:  defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
 			panic("gcsbackend: New option must not be nil")
 		}
 		o(b)
+	}
+	if b.metrics == nil {
+		b.metrics = defaultMetrics()
 	}
 	return b, nil
 }
@@ -123,13 +125,15 @@ func NewWithClient(client *gcsstorage.Client, cfg Config, opts ...Option) *Backe
 		bucket:   client.Bucket(cfg.Bucket),
 		cfg:      cfg,
 		instance: "default",
-		metrics:  defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
 			panic("gcsbackend: NewWithClient option must not be nil")
 		}
 		o(b)
+	}
+	if b.metrics == nil {
+		b.metrics = defaultMetrics()
 	}
 	return b
 }

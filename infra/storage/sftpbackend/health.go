@@ -25,7 +25,12 @@ func healthCheck(b *Backend, critical bool) health.DependencyCheck {
 	}
 	return health.DependencyCheck{
 		Name: health.OpaqueCheckName("sftp", b.cfg.Host, strconv.Itoa(b.cfg.Port)),
-		Check: func(_ context.Context) string {
+		Check: func(ctx context.Context) string {
+			// Honour the readiness framework deadline: Healthy already
+			// bounds its Stat probe, and a cancelled ctx fails closed.
+			if ctx.Err() != nil {
+				return "unhealthy"
+			}
 			if !b.Healthy() {
 				return "unhealthy"
 			}

@@ -65,6 +65,12 @@ func (b *Backend) PresignGetURL(ctx context.Context, key string, ttl time.Durati
 // When meta.Size > 0 it is signed as Content-Length, so the URL holder
 // cannot upload a body larger than the caller authorized. A meta.Size of 0
 // means unknown and leaves the upload unbounded up to S3's single-PUT limit.
+//
+// SECURITY: server-side validators (including ClamAV malware scanning, MIME
+// sniffing, size caps configured via storage.WithValidators) do NOT run for
+// presigned uploads — the client writes straight to S3. When validators are
+// security-relevant, pair presigned PUT with a post-upload scan/quarantine
+// flow rather than assuming Put-path validators apply.
 func (b *Backend) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "s3.PresignPut")
 	defer span.End()

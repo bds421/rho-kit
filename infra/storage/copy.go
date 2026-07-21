@@ -101,7 +101,7 @@ func genericCopy(ctx context.Context, src Storage, srcKey string, dst Storage, d
 	// Pass through metadata from the source. Size is preserved so backends
 	// can set Content-Length on the destination object.
 	//
-	// FR-081 [LOW]: deep-copy meta.Custom so destination validators or
+	// Deep-copy meta.Custom so destination validators or
 	// backends mutating the map cannot corrupt the source's view —
 	// the same fix already applied in the encryption + migration copy
 	// paths, brought to the generic Copy.

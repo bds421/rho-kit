@@ -1,6 +1,9 @@
 // Package uploadsec provides composable validators for HTTP file
-// uploads. Use these alongside storagehttp's upload pipeline to reject
-// content the server should never accept:
+// uploads. Wire them into storagehttp's upload pipeline via
+// [AsStorageValidator], which spools a non-seekable multipart part so
+// [Validator] (io.ReadSeeker) can run, then replays the clean body.
+//
+// Built-in validators reject content the server should never accept:
 //
 //   - [AllowMIMETypes] sniffs the actual bytes and rejects anything
 //     outside the allowlist. Defends against the
@@ -78,10 +81,12 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"os"
 	"path"
 	"strings"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
 // Sentinel errors. Validators return these (or values that wrap them)
@@ -179,6 +184,11 @@ func ScanWith(scanner Scanner) Validator {
 func normalizeScannerError(err error) error {
 	if err == nil {
 		return nil
+	}
+	// Preserve caller cancellation/deadline so handlers can distinguish
+	// "client went away" from a genuine scanner outage (503).
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
 	}
 	if errors.Is(err, ErrMalwareDetected) {
 		var detected *MalwareDetectedError
@@ -1001,5 +1011,73 @@ func peekWebPDimensions(body []byte) (int, int, error) {
 		return w + 1, h + 1, nil
 	default:
 		return 0, 0, ErrInvalidImage
+	}
+}
+
+
+// AsStorageValidator adapts an uploadsec [Validator] (ReadSeeker-based)
+// to a streaming [storage.Validator] suitable for
+// [storagehttp.UploadOptions.Validators] / ParseAndStore. The stream is
+// spooled to a bounded temp file (default 256 MiB), validated, then
+// replayed from the start.
+//
+// Panics if v is nil or maxSpoolBytes is negative. Pass maxSpoolBytes=0
+// for the default cap.
+func AsStorageValidator(v Validator, maxSpoolBytes int64) storage.Validator {
+	if v == nil {
+		panic("uploadsec: AsStorageValidator requires a non-nil Validator")
+	}
+	if maxSpoolBytes < 0 {
+		panic("uploadsec: AsStorageValidator maxSpoolBytes must be >= 0")
+	}
+	if maxSpoolBytes == 0 {
+		maxSpoolBytes = 256 << 20
+	}
+	return func(ctx context.Context, r io.Reader, meta *storage.ObjectMeta) (io.Reader, error) {
+		if r == nil {
+			return nil, fmt.Errorf("%w: nil upload reader", storage.ErrValidation)
+		}
+		if meta == nil {
+			return nil, fmt.Errorf("%w: nil object metadata", storage.ErrValidation)
+		}
+		tmp, err := os.CreateTemp("", "rho-kit-uploadsec-*")
+		if err != nil {
+			return nil, redact.WrapError("uploadsec: create spool", err)
+		}
+		remove := true
+		defer func() {
+			if remove {
+				_ = tmp.Close()
+				_ = os.Remove(tmp.Name())
+			}
+		}()
+		limited := io.LimitReader(r, maxSpoolBytes+1)
+		n, err := io.Copy(tmp, limited)
+		if err != nil {
+			return nil, redact.WrapError("uploadsec: spool body", err)
+		}
+		if n > maxSpoolBytes {
+			return nil, fmt.Errorf("%w: upload exceeds spool budget", storage.ErrValidation)
+		}
+		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+			return nil, redact.WrapError("uploadsec: rewind spool", err)
+		}
+		in := Meta{
+			Filename:    "",
+			ContentType: meta.ContentType,
+			Size:        meta.Size,
+		}
+		out, err := v.Validate(ctx, tmp, in)
+		if err != nil {
+			return nil, err
+		}
+		if out.ContentType != "" {
+			meta.ContentType = out.ContentType
+		}
+		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+			return nil, redact.WrapError("uploadsec: rewind clean spool", err)
+		}
+		remove = false
+		return tmp, nil
 	}
 }

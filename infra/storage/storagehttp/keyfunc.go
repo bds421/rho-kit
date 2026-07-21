@@ -23,13 +23,15 @@ type KeyFunc = func(r *http.Request, filename string, meta storage.ObjectMeta) (
 // extension (alphanumeric + dot only, length-limited to 8 chars). If the
 // fallback yields no usable extension, the key has none.
 //
+// Panics if prefix is not a valid storage prefix (see [storage.ValidatePrefix]).
+//
 // Example:
 //
 //	UUIDKeyFunc("avatars") → "avatars/550e8400-e29b-41d4-a716-446655440000.jpg"
 //	UUIDKeyFunc("")        → "550e8400-e29b-41d4-a716-446655440000.jpg"
 func UUIDKeyFunc(prefix string) KeyFunc {
 	if err := storage.ValidatePrefix(prefix); err != nil {
-		panic("storagehttp: UUIDKeyFunc invalid UUIDKeyFunc prefix")
+		panic("storagehttp: UUIDKeyFunc: invalid prefix: " + err.Error())
 	}
 	prefix = strings.TrimSuffix(prefix, "/")
 

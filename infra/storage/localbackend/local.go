@@ -319,6 +319,43 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 	return f, meta, nil
 }
 
+// Stat returns object metadata without opening the body for reading.
+// Honours context cancellation: ctx.Err is checked at entry.
+func (b *Backend) Stat(ctx context.Context, key string) (storage.ObjectMeta, error) {
+	if err := ctxErr(ctx); err != nil {
+		return storage.ObjectMeta{}, err
+	}
+	if err := storage.ValidateKey(key); err != nil {
+		return storage.ObjectMeta{}, err
+	}
+	rel, err := b.keyRel(key)
+	if err != nil {
+		return storage.ObjectMeta{}, err
+	}
+	root, err := b.openRoot()
+	if err != nil {
+		return storage.ObjectMeta{}, redact.WrapError("localbackend: unsafe root", err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := b.ensureRegular(root, rel); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return storage.ObjectMeta{}, fmt.Errorf("localbackend: stat: %w", storage.ErrObjectNotFound)
+		}
+		return storage.ObjectMeta{}, err
+	}
+	info, err := root.Lstat(rel)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return storage.ObjectMeta{}, fmt.Errorf("localbackend: stat: %w", storage.ErrObjectNotFound)
+		}
+		return storage.ObjectMeta{}, localFileError("stat object", err)
+	}
+	return storage.ObjectMeta{
+		Size:         info.Size(),
+		LastModified: info.ModTime(),
+	}, nil
+}
+
 // Delete removes <root>/<key>. Returns nil if the file does not exist (idempotent).
 // The unlink is performed through an [os.Root], so a key whose path traverses a
 // symlink escaping the root cannot unlink a file outside the root.

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"path"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
@@ -18,7 +17,9 @@ import (
 // ServeOptions configures [ServeFile] behavior.
 type ServeOptions struct {
 	// ContentDisposition controls the Content-Disposition header.
-	// "inline" (default) displays in-browser; "attachment" forces download.
+	// "attachment" (default) forces download and avoids stored-XSS when
+	// user-influenced Content-Type is served. "inline" displays in-browser
+	// and should only be used for types the operator trusts to render.
 	ContentDisposition string
 
 	// Filename overrides the filename in the Content-Disposition header.
@@ -72,11 +73,27 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 		return err
 	}
 
-	rc, meta, err := backend.Get(r.Context(), key)
-	if err != nil {
-		return err
+	// Prefer Stat/Head for conditional-GET so a 304 does not open the body.
+	var (
+		rc   io.ReadCloser
+		meta storage.ObjectMeta
+	)
+	if st, ok := storage.AsStatter(backend); ok {
+		meta, err = st.Stat(r.Context(), key)
+		if err != nil {
+			return err
+		}
+	} else {
+		rc, meta, err = backend.Get(r.Context(), key)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if rc != nil {
+				_ = rc.Close()
+			}
+		}()
 	}
-	defer func() { _ = rc.Close() }()
 
 	contentType := responseContentType(meta.ContentType, serveCfg.filename, key)
 
@@ -93,11 +110,11 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 	if meta.ETag != "" {
 		etag := meta.ETag
 		// Reject ETags containing control characters (CR, LF, NUL) or internal
-		// double quotes to prevent HTTP header injection and malformed ETags.
-		// Per RFC 7232 §2.3, etagc excludes DQUOTE: ETags are DQUOTE *etagc DQUOTE.
-		// While Go's net/http sanitizes headers since 1.17, defense-in-depth
-		// requires validating at the application layer.
+		// double quotes. Weak ETags (W/"...") are accepted per RFC 7232.
 		stripped := etag
+		if len(stripped) >= 2 && (stripped[0] == 'W' || stripped[0] == 'w') && stripped[1] == '/' {
+			stripped = stripped[2:]
+		}
 		if len(stripped) >= 2 && stripped[0] == '"' && stripped[len(stripped)-1] == '"' {
 			stripped = stripped[1 : len(stripped)-1]
 		}
@@ -105,19 +122,35 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 			slog.Warn("storagehttp: ETag contains invalid characters, skipping",
 				redact.String("key", key))
 		} else {
-			// Ensure ETag is quoted per RFC 7232.
-			if len(etag) < 2 || etag[0] != '"' || etag[len(etag)-1] != '"' {
-				etag = `"` + etag + `"`
+			emit := etag
+			weak := false
+			if len(emit) >= 2 && (emit[0] == 'W' || emit[0] == 'w') && emit[1] == '/' {
+				weak = true
+				emit = emit[2:]
 			}
+			if len(emit) < 2 || emit[0] != '"' || emit[len(emit)-1] != '"' {
+				emit = `"` + emit + `"`
+			}
+			if weak {
+				emit = "W/" + emit
+			}
+			etag = emit
 			w.Header().Set("ETag", etag)
 
-			// Check If-None-Match for conditional-GET (304 Not Modified).
-			// Handles the common single-ETag case and the multi-value/W/ prefix cases.
 			if inm := strings.Join(r.Header.Values("If-None-Match"), ","); inm != "" && etagMatch(inm, etag) {
 				w.WriteHeader(http.StatusNotModified)
 				return nil
 			}
 		}
+	}
+
+	// Body needed: open via Get when we only Stat'ed above.
+	if rc == nil {
+		rc, meta, err = backend.Get(r.Context(), key)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rc.Close() }()
 	}
 
 	// User-uploaded content is served back with the metadata-recorded
@@ -130,11 +163,7 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 	// http.ServeContent handles If-Modified-Since and Range internally.
 	if rs, ok := rc.(io.ReadSeeker); ok {
 		w.Header().Set("Content-Type", contentType)
-		modTime := meta.LastModified
-		if modTime.IsZero() {
-			modTime = time.Time{}
-		}
-		http.ServeContent(w, r, serveCfg.filename, modTime, rs)
+		http.ServeContent(w, r, serveCfg.filename, meta.LastModified, rs)
 		return nil
 	}
 
@@ -160,8 +189,13 @@ type serveConfig struct {
 
 func normalizeServeOptions(key string, opts ServeOptions) (serveConfig, error) {
 	disposition := opts.ContentDisposition
+	// Default to attachment: user-influenced Content-Type served
+	// Content-Disposition: inline is a stored-XSS vector for
+	// text/html, image/svg+xml, text/xml, etc. Callers that need
+	// browser rendering (PDFs, images they trust) must opt in with
+	// ContentDisposition: "inline".
 	if disposition != "inline" && disposition != "attachment" {
-		disposition = "inline"
+		disposition = "attachment"
 	}
 	filename := safeDownloadFilename(opts.Filename, path.Base(key))
 	cacheControl := strings.TrimSpace(opts.CacheControl)
@@ -234,16 +268,28 @@ func etagMatch(inm, serverETag string) bool {
 			break
 		}
 		candidate := stripWeakPrefix(inm)
-		// Find the closing quote.
+		// Find the closing quote. Malformed tokens are skipped so a later
+		// well-formed match still yields 304 (RFC 7232 §3.2 allows lists).
 		if len(candidate) < 2 || candidate[0] != '"' {
-			break // malformed
+			// Advance past this token to the next comma/end.
+			i := 0
+			for i < len(inm) && inm[i] != ',' {
+				i++
+			}
+			inm = inm[i:]
+			continue
 		}
 		end := 1
 		for end < len(candidate) && candidate[end] != '"' {
 			end++
 		}
 		if end >= len(candidate) {
-			break // no closing quote
+			i := 0
+			for i < len(inm) && inm[i] != ',' {
+				i++
+			}
+			inm = inm[i:]
+			continue
 		}
 		tag := candidate[:end+1]
 		if tag == serverStrong {

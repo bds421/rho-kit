@@ -2,14 +2,12 @@ package s3backend
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/smithy-go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -77,19 +75,9 @@ func (b *Backend) Copy(ctx context.Context, srcKey, dstKey string) error {
 }
 
 // isCopySourceNotFound reports whether a CopyObject error indicates the
-// source object does not exist. It matches both the typed not-found shapes
-// (handled by isS3NotFound) and the generic smithy.APIError codes that S3
-// returns for CopyObject, where NoSuchKey is not modeled as a typed error.
+// source object does not exist. Delegates to [isS3NotFound], which already
+// matches typed not-found shapes and generic smithy.APIError codes
+// ("NoSuchKey", "NotFound") that S3 returns for CopyObject.
 func isCopySourceNotFound(err error) bool {
-	if isS3NotFound(err) {
-		return true
-	}
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
-		switch apiErr.ErrorCode() {
-		case "NoSuchKey", "NotFound":
-			return true
-		}
-	}
-	return false
+	return isS3NotFound(err)
 }

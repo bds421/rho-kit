@@ -9,6 +9,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"math"
 	"mime"
 	"net/url"
 	"strings"
@@ -202,6 +203,12 @@ func AllowedMIMETypes(allowed ...string) Validator {
 		}
 		for _, prefix := range wildcards {
 			if strings.HasPrefix(detected, prefix) {
+				// image/* must not silently admit scriptable image/svg+xml —
+				// callers that want SVG must list it explicitly (and pair
+				// with uploadsec.AllowSVG).
+				if prefix == "image/" && detected == "image/svg+xml" {
+					continue
+				}
 				return prependReader(header, r), nil
 			}
 		}
@@ -242,9 +249,8 @@ func normalizeDetectedMIMEType(value string) string {
 // immediately without reading any content. Otherwise, a limit-enforcing
 // reader wraps the stream so the limit is checked during consumption.
 //
-// FR-080 [MED]: panics on maxBytes <= 0 — a zero or negative limit
-// would either reject every upload or behave unpredictably under
-// direct use of [limitReader].
+// Panics on maxBytes <= 0 — a zero or negative limit would either reject
+// every upload or behave unpredictably under direct use of [limitReader].
 func MaxFileSize(maxBytes int64) Validator {
 	if maxBytes <= 0 {
 		panic("storage: MaxFileSize requires maxBytes > 0")
@@ -254,7 +260,7 @@ func MaxFileSize(maxBytes int64) Validator {
 			return nil, fmt.Errorf("%w: declared size exceeds maximum", ErrValidation)
 		}
 
-		return &limitReader{r: r, remaining: maxBytes, max: maxBytes}, nil
+		return &limitReader{r: r, remaining: maxBytes}, nil
 	}
 }
 
@@ -262,7 +268,6 @@ func MaxFileSize(maxBytes int64) Validator {
 type limitReader struct {
 	r         io.Reader
 	remaining int64
-	max       int64
 	overflow  bool
 }
 
@@ -270,11 +275,24 @@ func (lr *limitReader) Read(p []byte) (int, error) {
 	if lr.overflow {
 		return 0, fmt.Errorf("%w: content exceeds maximum size", ErrValidation)
 	}
+	if lr.remaining <= 0 {
+		// remaining is 0 only after a prior read consumed the budget
+		// exactly; treat as overflow on any further read attempt.
+		if lr.remaining < 0 {
+			lr.overflow = true
+			return 0, fmt.Errorf("%w: content exceeds maximum size", ErrValidation)
+		}
+	}
 
 	// Cap the read to remaining+1 so we can detect overflow without
-	// returning excess bytes to the caller.
-	if int64(len(p)) > lr.remaining+1 {
-		p = p[:lr.remaining+1]
+	// returning excess bytes to the caller. Guard remaining+1 against
+	// int64 overflow when MaxFileSize is math.MaxInt64.
+	limit := lr.remaining
+	if limit < math.MaxInt64 {
+		limit++
+	}
+	if int64(len(p)) > limit {
+		p = p[:limit]
 	}
 
 	n, err := lr.r.Read(p)

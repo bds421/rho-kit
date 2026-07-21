@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
@@ -142,7 +143,7 @@ func WithMetricsRegisterer(reg prometheus.Registerer) Option {
 // resolve credentials remotely should call [NewContext] with a
 // bounded ctx instead.
 //
-// Panics if cfg.Bucket is empty.
+// Returns an error if cfg.Bucket is empty (matching sibling backends).
 func New(cfg Config, opts ...Option) (*Backend, error) {
 	return NewContext(context.Background(), cfg, opts...)
 }
@@ -153,10 +154,10 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 // when the SDK may perform remote I/O during startup (EC2 metadata,
 // STS AssumeRole, SSO token exchange, web-identity tokens).
 //
-// Panics if cfg.Bucket is empty.
+// Returns an error if cfg.Bucket is empty (matching sibling backends).
 func NewContext(ctx context.Context, cfg Config, opts ...Option) (*Backend, error) {
 	if cfg.Bucket == "" {
-		panic("s3backend: Config.Bucket is required")
+		return nil, fmt.Errorf("s3backend: Config.Bucket is required")
 	}
 	if err := cfg.Validate(""); err != nil {
 		return nil, err
@@ -340,9 +341,10 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 // back to the generic translation.
 //
 // EntityTooLarge — the object exceeded the per-object cap (5 GiB single
-// PUT, 5 TiB multipart). InvalidRequest with a non-zero declared size is
-// the S3 response when a request-body length header overflows the
-// streaming limit.
+// PUT, 5 TiB multipart). InvalidRequest is only treated as capacity when
+// the error message references size/length limits — S3 uses InvalidRequest
+// for many non-capacity conditions (SSE conflicts, transfer acceleration,
+// multipart misuse) that must not trip STORAGE_FULL runbooks.
 //
 // Generic ServiceUnavailable (503) is deliberately NOT mapped here. AWS
 // returns it for regional outage, throttling, partial maintenance, and
@@ -362,11 +364,21 @@ func translateS3Capacity(err error, size int64) error {
 	case "EntityTooLarge":
 		return fmt.Errorf("s3backend: object exceeds bucket size limit: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
 	case "InvalidRequest":
-		if size > 0 {
+		if size > 0 && invalidRequestLooksLikeCapacity(apiErr.ErrorMessage()) {
 			return fmt.Errorf("s3backend: request rejected for size: %w (cause: %w)", storage.ErrInsufficientCapacity, err) // kit:ok-fmt-errorf-wrap
 		}
 	}
 	return nil
+}
+
+func invalidRequestLooksLikeCapacity(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, needle := range []string{"size", "length", "entity", "too large", "content-length", "payload"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // Get downloads object content. Caller must close the returned ReadCloser.
@@ -442,6 +454,47 @@ func (b *Backend) Delete(ctx context.Context, key string) error {
 		return opErr
 	}
 	return nil
+}
+
+// Stat returns object metadata via HeadObject without downloading the body.
+func (b *Backend) Stat(ctx context.Context, key string) (storage.ObjectMeta, error) {
+	ctx, span := otel.Tracer(tracerName).Start(ctx, "s3.Stat")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("storage.bucket", b.bucket),
+		attribute.Int("storage.key_len", len(key)),
+	)
+	if err := storage.ValidateKey(key); err != nil {
+		return storage.ObjectMeta{}, err
+	}
+	start := now()
+	out, err := b.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(b.bucket),
+		Key:    aws.String(key),
+	})
+	b.metrics.observeOp(b.instance, "stat", start, s3MetricErr(err))
+	if err != nil {
+		if isS3NotFound(err) {
+			return storage.ObjectMeta{}, fmt.Errorf("s3backend: stat: %w", storage.ErrObjectNotFound)
+		}
+		opErr := storage.WrapSafe("s3backend: stat failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return storage.ObjectMeta{}, opErr
+	}
+	meta := storage.ObjectMeta{}
+	if out.ContentLength != nil {
+		meta.Size = *out.ContentLength
+	}
+	if out.ContentType != nil {
+		meta.ContentType = *out.ContentType
+	}
+	if out.ETag != nil {
+		meta.ETag = *out.ETag
+	}
+	if out.LastModified != nil {
+		meta.LastModified = *out.LastModified
+	}
+	return meta, nil
 }
 
 // Exists checks presence using HeadObject.
@@ -526,34 +579,45 @@ func validateSSEConfig(cfg Config) error {
 	return nil
 }
 
-func applySSE(input *s3.PutObjectInput, cfg Config) error {
+// sseFields returns the (encryption mode, optional KMS key id) pair for
+// the configured SSE policy. Empty mode means opt-out (bucket policy only).
+func sseFields(cfg Config) (types.ServerSideEncryption, *string, error) {
 	if err := validateSSEConfig(cfg); err != nil {
-		return err
+		return "", nil, err
 	}
 	switch cfg.SSE {
 	case "":
-		// Opt-out: don't set anything, rely on bucket policy.
+		return "", nil, nil
 	case "AES256":
-		input.ServerSideEncryption = types.ServerSideEncryptionAes256
+		return types.ServerSideEncryptionAes256, nil, nil
 	case "aws:kms":
-		input.ServerSideEncryption = types.ServerSideEncryptionAwsKms
-		input.SSEKMSKeyId = aws.String(cfg.SSEKMSKeyID)
+		return types.ServerSideEncryptionAwsKms, aws.String(cfg.SSEKMSKeyID), nil
+	default:
+		// validateSSEConfig already rejects unknown values; defensive.
+		return "", nil, fmt.Errorf("STORAGE_S3_SSE must be one of empty, AES256, or aws:kms")
+	}
+}
+
+func applySSE(input *s3.PutObjectInput, cfg Config) error {
+	mode, keyID, err := sseFields(cfg)
+	if err != nil {
+		return err
+	}
+	if mode != "" {
+		input.ServerSideEncryption = mode
+		input.SSEKMSKeyId = keyID
 	}
 	return nil
 }
 
 func applyCopySSE(input *s3.CopyObjectInput, cfg Config) error {
-	if err := validateSSEConfig(cfg); err != nil {
+	mode, keyID, err := sseFields(cfg)
+	if err != nil {
 		return err
 	}
-	switch cfg.SSE {
-	case "":
-		// Opt-out: don't set anything, rely on bucket policy.
-	case "AES256":
-		input.ServerSideEncryption = types.ServerSideEncryptionAes256
-	case "aws:kms":
-		input.ServerSideEncryption = types.ServerSideEncryptionAwsKms
-		input.SSEKMSKeyId = aws.String(cfg.SSEKMSKeyID)
+	if mode != "" {
+		input.ServerSideEncryption = mode
+		input.SSEKMSKeyId = keyID
 	}
 	return nil
 }

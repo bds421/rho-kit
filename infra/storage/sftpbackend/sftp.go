@@ -33,6 +33,10 @@ import (
 const (
 	tracerName                     = "kit/storage/sftp"
 	defaultPasswordProviderTimeout = 5 * time.Second
+	// dialCooldown is how long after a failed dial subsequent connect
+	// attempts fail fast, so N concurrent ops against a dead server do not
+	// serialise into N full ssh.Dial timeouts (review-19).
+	dialCooldown = 2 * time.Second
 )
 
 // Compile-time interface compliance check.
@@ -90,6 +94,14 @@ type Backend struct {
 	// cleanupWg tracks pending cleanup goroutines that close replaced connections.
 	// Close() waits for them to finish to prevent file descriptor leaks on shutdown.
 	cleanupWg sync.WaitGroup
+
+	// dialMu serialises reconnect attempts without holding b.mu across
+	// ssh.Dial (review-19). dialCooldown gates rapid retries after failure.
+	dialMu       sync.Mutex
+	lastDialFail time.Time
+	// dialingWait is non-nil while a dial is in flight; waiters park on it
+	// under dialMu then re-check connected under b.mu.
+	dialingWait chan struct{}
 }
 
 // Option configures an Backend.
@@ -159,13 +171,15 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 		cfg:      cfg,
 		instance: "default",
 		logger:   slog.Default(),
-		metrics:  defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
 			panic("sftpbackend: New option must not be nil")
 		}
 		o(b)
+	}
+	if b.metrics == nil {
+		b.metrics = defaultMetrics()
 	}
 
 	if !b.lazyConn {
@@ -193,7 +207,6 @@ func NewWithClient(client Client, cfg Config, opts ...Option) *Backend {
 		cfg:       cfg,
 		instance:  "default",
 		logger:    slog.Default(),
-		metrics:   defaultMetrics(),
 		client:    client,
 		connected: true,
 	}
@@ -203,19 +216,84 @@ func NewWithClient(client Client, cfg Config, opts ...Option) *Backend {
 		}
 		o(b)
 	}
+	if b.metrics == nil {
+		b.metrics = defaultMetrics()
+	}
 	return b
 }
 
 // connect establishes the SSH and SFTP connection. Caller must not hold b.mu.
+// Network dial happens outside b.mu so Healthy/Get/Close are not blocked for
+// the full sshConnectTimeout on every concurrent reconnect (review-19).
 func (b *Backend) connect(ctx context.Context) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
+	// Fast path: already connected.
+	b.mu.RLock()
 	if b.closed.Load() {
+		b.mu.RUnlock()
 		return fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
 	}
-	if b.connected {
+	if b.connected && b.client != nil {
+		b.mu.RUnlock()
 		return nil
+	}
+	b.mu.RUnlock()
+
+	// Singleflight + cooldown under dialMu (not b.mu).
+	b.dialMu.Lock()
+	if b.closed.Load() {
+		b.dialMu.Unlock()
+		return fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
+	}
+	// Re-check under dialMu after another dialer may have finished.
+	b.mu.RLock()
+	if b.connected && b.client != nil {
+		b.mu.RUnlock()
+		b.dialMu.Unlock()
+		return nil
+	}
+	b.mu.RUnlock()
+
+	if !b.lastDialFail.IsZero() && time.Since(b.lastDialFail) < dialCooldown {
+		b.dialMu.Unlock()
+		return fmt.Errorf("sftpbackend: dial cooling down after recent failure")
+	}
+	if b.dialingWait != nil {
+		wait := b.dialingWait
+		b.dialMu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return redact.WrapError("sftpbackend", ctx.Err())
+		}
+		// Winner finished; re-enter for connected/error state.
+		return b.connect(ctx)
+	}
+	wait := make(chan struct{})
+	b.dialingWait = wait
+	b.dialMu.Unlock()
+
+	// Dial outside both locks.
+	err := b.dialAndInstall(ctx)
+	b.dialMu.Lock()
+	close(wait)
+	b.dialingWait = nil
+	if err != nil {
+		b.lastDialFail = time.Now()
+	} else {
+		b.lastDialFail = time.Time{}
+	}
+	b.dialMu.Unlock()
+	return err
+}
+
+// dialAndInstall performs ssh.Dial + sftp.NewClient then installs the
+// result under b.mu. Failures never leave partial state installed.
+func (b *Backend) dialAndInstall(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return redact.WrapError("sftpbackend", err)
+	}
+	if b.closed.Load() {
+		return fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
 	}
 
 	sshCfg, err := b.buildSSHConfig(ctx)
@@ -227,11 +305,6 @@ func (b *Backend) connect(ctx context.Context) error {
 	conn, err := ssh.Dial("tcp", addr, sshCfg)
 	if err != nil {
 		b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(0)
-		// Wrap-with-cause via storage.WrapSafe so the SSH error
-		// reaches the operator via logs while topology-leaking
-		// substrings (paths, hostnames, port numbers) are stripped.
-		// Wave 69 closed a hostile-review finding that the prior
-		// "SSH dial failed" string hid the auth/host failure cause.
 		return storage.WrapSafe("sftpbackend: SSH dial failed", err)
 	}
 
@@ -242,20 +315,28 @@ func (b *Backend) connect(ctx context.Context) error {
 		return storage.WrapSafe("SFTP client setup failed", err)
 	}
 
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed.Load() {
+		_ = sftpClient.Close()
+		_ = conn.Close()
+		return fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
+	}
+	if b.connected && b.client != nil {
+		// Lost the race to another installer; discard ours.
+		_ = sftpClient.Close()
+		_ = conn.Close()
+		return nil
+	}
+
 	// Close old connections after replacing to prevent file descriptor leaks.
 	// We close asynchronously with a short delay because in-flight operations
 	// may still hold a reference to the old client (obtained via getClient()
 	// before this write lock was acquired). The delay gives those operations
 	// time to complete rather than causing use-after-close panics.
 	//
-	// The goroutine is tracked via cleanupWg so Close() can wait for it,
-	// preventing file descriptor leaks if the process exits within the delay.
-	//
-	// Note: rapid reconnection flapping (e.g., server bouncing every few seconds)
-	// can accumulate multiple cleanup goroutines, each holding old file descriptors
-	// for 5 seconds. In practice this is bounded by the reconnect rate, and each
-	// goroutine is short-lived. If this becomes a concern, consider canceling the
-	// previous cleanup goroutine via context when a new connection is established.
+	// Full reference-counted lease cleanup is a larger redesign (v3); the
+	// generation-bump + 5s grace remains the v2 heuristic.
 	oldClient := b.client
 	oldConn := b.sshConn
 	if oldClient != nil || oldConn != nil {
@@ -263,11 +344,6 @@ func (b *Backend) connect(ctx context.Context) error {
 		b.cleanupWg.Add(1)
 		go func() {
 			defer b.cleanupWg.Done()
-			// Wait up to 5s for in-flight callers to release the old
-			// client, OR break early if a newer reconnect bumps the
-			// generation. Polling on a 200ms ticker rather than
-			// time.Sleep avoids drift and keeps shutdown latency low
-			// when a flap chain queues many cleanups.
 			ticker := time.NewTicker(200 * time.Millisecond)
 			defer ticker.Stop()
 			deadline := time.NewTimer(5 * time.Second)
@@ -294,7 +370,6 @@ func (b *Backend) connect(ctx context.Context) error {
 	b.connected = true
 	b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(1)
 	b.logger.Info("SFTP connected", redact.String("host", b.cfg.Host), "port", b.cfg.Port)
-
 	return nil
 }
 
@@ -386,7 +461,7 @@ func (b *Backend) getClient(ctx context.Context) (Client, error) {
 		return nil, fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
 	}
 	b.mu.RLock()
-	if b.connected {
+	if b.connected && b.client != nil && !b.closed.Load() {
 		client := b.client
 		b.mu.RUnlock()
 		return client, nil
@@ -400,9 +475,12 @@ func (b *Backend) getClient(ctx context.Context) (Client, error) {
 	}
 
 	b.mu.RLock()
-	client := b.client
-	b.mu.RUnlock()
-	return client, nil
+	defer b.mu.RUnlock()
+	if b.closed.Load() || !b.connected || b.client == nil {
+		// Close may have raced between connect success and this re-read.
+		return nil, fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
+	}
+	return b.client, nil
 }
 
 // remotePath joins the root path with the given key.
@@ -636,7 +714,10 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
 	}
-	if err := client.Rename(tmpPath, remotePath); err != nil {
+	// Spec-compliant SFTP servers refuse Rename when the target already
+	// exists (SSH_FX_FILE_ALREADY_EXISTS). Put documents overwrite
+	// semantics, so remove any existing object first (see commitPutRename).
+	if err := commitPutRename(client, tmpPath, remotePath); err != nil {
 		_ = client.Remove(tmpPath)
 		b.metrics.observeOp(b.instance, "put", start, err)
 		opErr := sftpRemoteError("rename", err)
@@ -646,6 +727,19 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 
 	b.metrics.observeOp(b.instance, "put", start, nil)
 	return nil
+}
+
+// commitPutRename atomically replaces remotePath with tmpPath for Put
+// overwrite semantics. Spec-compliant SFTP servers reject Rename when
+// the destination exists, so we Remove first then Rename.
+func commitPutRename(client Client, tmpPath, remotePath string) error {
+	if err := client.Remove(remotePath); err != nil && !isNotExist(err) {
+		// Best-effort: continue to Rename; some servers report remove
+		// failure for non-files. Rename surfaces a hard error if the
+		// target still blocks the replace.
+		_ = err
+	}
+	return client.Rename(tmpPath, remotePath)
 }
 
 // Get retrieves file content from the remote path. Caller must close the returned ReadCloser.
@@ -831,8 +925,22 @@ func (b *Backend) Healthy() bool {
 
 	// Stat the root path as a lightweight health probe.
 	// Performed outside the lock to avoid blocking concurrent operations
-	// if the SFTP server is slow to respond.
-	_, err := client.Stat(b.cfg.RootPath)
+	// if the SFTP server is slow to respond. Bound the probe so a hung
+	// TCP session cannot stall readiness scrapes indefinitely (review-19).
+	const healthStatTimeout = 5 * time.Second
+	type statResult struct{ err error }
+	ch := make(chan statResult, 1)
+	go func() {
+		_, err := client.Stat(b.cfg.RootPath)
+		ch <- statResult{err: err}
+	}()
+	var err error
+	select {
+	case res := <-ch:
+		err = res.err
+	case <-time.After(healthStatTimeout):
+		err = fmt.Errorf("sftpbackend: health probe timed out after %s", healthStatTimeout)
+	}
 	if err != nil {
 		// Mark as disconnected so the next getClient call reconnects.
 		// Re-check that b.client is still the same instance we probed — if

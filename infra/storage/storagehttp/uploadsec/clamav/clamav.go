@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/infra/v2/storage/storagehttp/uploadsec"
 )
@@ -147,6 +148,14 @@ func WithMetricsValidatorName(name string) Option {
 	if name == "" {
 		panic("clamav: WithMetricsValidatorName requires a non-empty name")
 	}
+	// Prometheus label values may not contain raw newlines or NULs that
+	// would corrupt exposition format; keep the value operator-safe.
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c < 0x20 || c == 0x7f {
+			panic("clamav: WithMetricsValidatorName rejects control characters")
+		}
+	}
 	return func(s *Scanner) {
 		s.metricsValidator = name
 	}
@@ -205,7 +214,10 @@ func StorageValidator(scanner uploadsec.Scanner, opts ...StorageValidatorOption)
 			if errors.Is(err, uploadsec.ErrMalwareDetected) {
 				return nil, fmt.Errorf("%w: %w", storage.ErrValidation, err) // kit:ok-fmt-errorf-wrap
 			}
-			return nil, uploadsec.ErrScannerUnavailable
+			// Preserve errors.Is(ErrScannerUnavailable) and the underlying
+			// cause for triage, but redact cause text so Error() never
+			// reflects scanner/backend details across the trust boundary.
+			return nil, redact.WrapSentinel(uploadsec.ErrScannerUnavailable, err)
 		}
 		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
 			return nil, fmt.Errorf("%w: rewind clean spool failed", uploadsec.ErrScannerUnavailable)
@@ -393,6 +405,11 @@ func copyBounded(dst io.Writer, src io.Reader, maxBytes int64) error {
 	lr := io.LimitReader(src, limit)
 	n, err := io.Copy(dst, lr)
 	if err != nil {
+		// Preserve cancellation/deadline identity for callers; do not
+		// reflect underlying I/O error text (may include path fragments).
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		return fmt.Errorf("%w: spool upload failed", uploadsec.ErrScannerUnavailable)
 	}
 	if n > maxBytes {
@@ -413,29 +430,27 @@ type removeOnEOF struct {
 }
 
 func (r *removeOnEOF) Read(p []byte) (int, error) {
-	n, err := r.File.Read(p)
-	if errors.Is(err, io.EOF) {
-		r.cleanup()
-	}
-	return n, err
+	// Do NOT clean up on EOF: AWS SDK and other clients rewind seekable
+	// bodies to retry transient Put failures. Deleting the spool on first
+	// EOF makes Seek fail and converts a retryable error into a permanent
+	// failure. Cleanup is Close + finalizer only.
+	return r.File.Read(p)
 }
 
 func (r *removeOnEOF) Close() error {
-	closeErr := r.File.Close()
-	r.cleanupAfterClose()
+	var closeErr error
+	r.once.Do(func() {
+		closeErr = r.File.Close()
+		runtime.SetFinalizer(r, nil)
+		_ = os.Remove(r.path)
+	})
+	// Second Close is a no-op (sync.Once); do not surface "file already closed".
 	return closeErr
 }
 
 func (r *removeOnEOF) cleanup() {
 	r.once.Do(func() {
 		_ = r.File.Close()
-		runtime.SetFinalizer(r, nil)
-		_ = os.Remove(r.path)
-	})
-}
-
-func (r *removeOnEOF) cleanupAfterClose() {
-	r.once.Do(func() {
 		runtime.SetFinalizer(r, nil)
 		_ = os.Remove(r.path)
 	})

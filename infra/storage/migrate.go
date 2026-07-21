@@ -79,7 +79,7 @@ func Migrate(ctx context.Context, src, dst Storage, opts MigrateOptions) (Migrat
 		return MigrateResult{}, redact.WrapError("storage.Migrate", err)
 	}
 
-	// FR-082 [LOW]: use AsLister so decorated backends (encryption,
+	// Use AsLister so decorated backends (encryption,
 	// metrics, retry) that wrap a Lister-implementing inner expose
 	// the capability via Unwrap. The pre-fix `src.(Lister)` cast
 	// failed for all decorators and caused Migrate to refuse
@@ -194,7 +194,7 @@ func (r *MigrateResult) recordError(key string, err error) {
 // MigrateCount counts the number of objects matching the prefix in src.
 // Useful for showing a progress bar before starting Migrate.
 //
-// FR-082 [LOW]: uses AsLister so decorated backends are supported.
+// Uses AsLister so decorated backends are supported.
 func MigrateCount(ctx context.Context, src Storage, prefix string) (int64, error) {
 	if src == nil {
 		return 0, fmt.Errorf("storage.MigrateCount: source backend is required")

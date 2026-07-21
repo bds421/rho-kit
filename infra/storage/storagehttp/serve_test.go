@@ -68,9 +68,26 @@ func TestServeFile(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, "application/pdf", resp.Header.Get("Content-Type"))
-		assert.Contains(t, resp.Header.Get("Content-Disposition"), "inline")
+		// Default disposition is attachment (stored-XSS mitigation for
+		// user-influenced Content-Type). Opt into inline explicitly.
+		assert.Contains(t, resp.Header.Get("Content-Disposition"), "attachment")
 		assert.Contains(t, resp.Header.Get("Content-Disposition"), "filename=")
 		assert.Contains(t, resp.Header.Get("Content-Disposition"), "report.pdf")
+	})
+
+	t.Run("inline disposition allows in-browser render", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		require.NoError(t, backend.Put(ctx, "report.pdf", bytes.NewReader([]byte("pdf content")), storage.ObjectMeta{
+			ContentType: "application/pdf",
+		}))
+
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/files/report.pdf", nil)
+
+		err := ServeFile(w, r, backend, "report.pdf", ServeOptions{ContentDisposition: "inline"})
+		require.NoError(t, err)
+		assert.Contains(t, w.Header().Get("Content-Disposition"), "inline")
 	})
 
 	t.Run("attachment disposition forces download", func(t *testing.T) {

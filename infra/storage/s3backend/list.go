@@ -89,8 +89,14 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 			if !aws.ToBool(out.IsTruncated) {
 				return
 			}
-
-			input.ContinuationToken = out.NextContinuationToken
+			// S3-compatible endpoints occasionally return IsTruncated=true
+			// without a continuation token; without this guard the loop
+			// would re-fetch the same page forever.
+			next := out.NextContinuationToken
+			if next == nil || aws.ToString(next) == "" {
+				return
+			}
+			input.ContinuationToken = next
 		}
 	}
 }

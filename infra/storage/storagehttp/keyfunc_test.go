@@ -1,6 +1,7 @@
 package storagehttp
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -148,9 +149,21 @@ func TestUUIDKeyFunc(t *testing.T) {
 
 	t.Run("invalid prefix panic does not reflect prefix", func(t *testing.T) {
 		t.Parallel()
-		assert.PanicsWithValue(t, "storagehttp: UUIDKeyFunc invalid UUIDKeyFunc prefix", func() {
+		assert.Panics(t, func() {
 			UUIDKeyFunc("secret-token/..")
 		})
+		// Recover the message to assert shape without reflecting the secret.
+		var msg string
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					msg = fmt.Sprint(r)
+				}
+			}()
+			UUIDKeyFunc("secret-token/..")
+		}()
+		assert.Contains(t, msg, "storagehttp: UUIDKeyFunc: invalid prefix:")
+		assert.NotContains(t, msg, "secret-token")
 	})
 }
 

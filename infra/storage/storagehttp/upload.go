@@ -3,6 +3,7 @@ package storagehttp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -107,19 +108,30 @@ func ParseAndStore(ctx context.Context, r *http.Request, backend storage.Storage
 	// http.MaxBytesReader cuts the request stream at the configured
 	// limit so a slow attacker streaming gigabytes of bogus data is
 	// stopped at the wire, not after the multipart parser has read
-	// past it. The cap is MaxFileSize plus a generous overhead for
-	// headers + form metadata; cap at MaxFileSize+1MiB.
+	// past it. The cap covers MaxFileSize + MaxTotalSkippedBytes plus
+	// a small multipart framing overhead so legitimate non-file parts
+	// within the documented skipped-parts budget are not rejected early.
 	if opts.MaxFileSize > 0 {
-		const overhead = 1 << 20 // 1 MiB
-		r.Body = http.MaxBytesReader(nil, r.Body, opts.MaxFileSize+overhead)
+		const overhead = 1 << 20 // 1 MiB framing/headers
+		r.Body = http.MaxBytesReader(nil, r.Body, opts.MaxFileSize+opts.MaxTotalSkippedBytes+overhead)
 	}
 
 	mr, err := r.MultipartReader()
 	if err != nil {
-		return UploadResult{}, storage.WrapSafe("storagehttp: parse multipart failed", err)
+		return UploadResult{}, wrapUploadError("storagehttp: parse multipart failed", err)
 	}
 
 	return processMultipartParts(ctx, mr, r, backend, opts)
+}
+
+// wrapUploadError classifies transport-level size limit failures as
+// [storage.ErrValidation] (4xx) and redacts other causes.
+func wrapUploadError(message string, err error) error {
+	var maxBytes *http.MaxBytesError
+	if errors.As(err, &maxBytes) {
+		return fmt.Errorf("%w: %s: request body too large", storage.ErrValidation, message)
+	}
+	return storage.WrapSafe(message, err)
 }
 
 // maxSkippedParts limits the number of non-target multipart parts we consume
@@ -135,7 +147,7 @@ func processMultipartParts(ctx context.Context, mr *multipart.Reader, r *http.Re
 			break
 		}
 		if err != nil {
-			return UploadResult{}, storage.WrapSafe("storagehttp: read multipart part failed", err)
+			return UploadResult{}, wrapUploadError("storagehttp: read multipart part failed", err)
 		}
 
 		if part.FormName() != opts.FormField {

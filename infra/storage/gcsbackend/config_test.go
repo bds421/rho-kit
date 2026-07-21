@@ -120,3 +120,11 @@ func TestNewRejectsInsecureEndpointWithoutOptIn(t *testing.T) {
 		t.Fatal("expected insecure endpoint error, got nil")
 	}
 }
+
+func TestConfigValidate_ProjectIDOptional(t *testing.T) {
+	t.Parallel()
+	cfg := Config{Bucket: "bucket"} // ProjectID empty
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("empty ProjectID must be allowed: %v", err)
+	}
+}

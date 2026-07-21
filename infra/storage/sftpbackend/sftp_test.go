@@ -669,7 +669,7 @@ func TestSFTPBackend_List(t *testing.T) {
 		assert.Len(t, results, 2)
 	})
 
-	t.Run("rejects symlink objects", func(t *testing.T) {
+	t.Run("skips symlink objects without aborting list", func(t *testing.T) {
 		t.Parallel()
 		mock := newMockSFTPClient("/data")
 		mock.readFn = func(p string) ([]os.FileInfo, error) {
@@ -678,19 +678,24 @@ func TestSFTPBackend_List(t *testing.T) {
 			}
 			return []os.FileInfo{
 				fakeFileInfo{name: "secret-token-link", mode: os.ModeSymlink | 0o777},
+				fakeFileInfo{name: "ok.txt", size: 2},
 			}, nil
 		}
+		mock.store["/data/ok.txt"] = []byte("ok")
 		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
 
+		var results []storage.ObjectInfo
 		var errs []error
-		for _, err := range b.List(ctx, "", storage.ListOptions{}) {
+		for info, err := range b.List(ctx, "", storage.ListOptions{}) {
 			if err != nil {
 				errs = append(errs, err)
+				continue
 			}
+			results = append(results, info)
 		}
-		require.NotEmpty(t, errs)
-		assert.Contains(t, errs[0].Error(), "symlink")
-		assert.NotContains(t, errs[0].Error(), "secret-token")
+		require.Empty(t, errs, "symlink entries must be skipped, not abort the list")
+		require.Len(t, results, 1)
+		assert.Equal(t, "ok.txt", results[0].Key)
 	})
 
 	t.Run("rejects symlink root before reading", func(t *testing.T) {
@@ -1125,4 +1130,155 @@ func TestCloseIsTerminal(t *testing.T) {
 	if _, _, err := b.Get(ctx, "anything"); !errors.Is(err, storage.ErrBackendClosed) {
 		t.Fatalf("Get after Close: err = %v, want ErrBackendClosed", err)
 	}
+}
+
+// TestSFTPBackend_List_StopAfterWalkErrorDoesNotPanic is the
+// regression pin for review-19: when the consumer stops on a mid-walk
+// error yield (yield returns false), List must not continue the sorted
+// pass and re-call yield (range-over-func panic).
+func TestSFTPBackend_List_StopAfterWalkErrorDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mock := newMockSFTPClient("/data")
+	// First ReadDir succeeds with a file; a nested dir ReadDir fails so
+	// walk yields an error the consumer can stop on.
+	calls := 0
+	mock.readFn = func(p string) ([]os.FileInfo, error) {
+		calls++
+		if p == "/data" {
+			return []os.FileInfo{
+				fakeFileInfo{name: "a.txt", size: 1},
+				fakeFileInfo{name: "nested", mode: os.ModeDir | 0o755},
+			}, nil
+		}
+		return nil, errors.New("readdir boom secret-token")
+	}
+	mock.store["/data/a.txt"] = []byte("a")
+	b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
+
+	require.NotPanics(t, func() {
+		for _, err := range b.List(ctx, "", storage.ListOptions{}) {
+			if err != nil {
+				break
+			}
+		}
+	})
+}
+
+// TestCommitPutRename_OverwritesExistingKey is the regression pin for
+// review-19 Put: Rename alone fails when the destination exists on
+// spec-compliant SFTP; commitPutRename must Remove first.
+func TestCommitPutRename_OverwritesExistingKey(t *testing.T) {
+	t.Parallel()
+	mock := newMockSFTPClient("/data")
+	// Spec-compliant Rename: refuse when target exists.
+	origRename := mock.Rename
+	_ = origRename
+	targetExists := true
+	mock.store["/data/final"] = []byte("old")
+	mock.store["/data/final.tmp-x"] = []byte("new")
+
+	// Override Rename via a wrapper client.
+	w := &renameGateClient{mockSFTPClient: mock, refuseIfExists: true}
+	err := commitPutRename(w, "/data/final.tmp-x", "/data/final")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("new"), w.store["/data/final"])
+	_, ok := w.store["/data/final.tmp-x"]
+	assert.False(t, ok, "tmp must be gone after rename")
+	assert.True(t, w.removedFinal, "must Remove existing destination before Rename")
+	_ = targetExists
+}
+
+// renameGateClient refuses Rename onto an existing key (spec-compliant).
+type renameGateClient struct {
+	*mockSFTPClient
+	refuseIfExists bool
+	removedFinal   bool
+}
+
+func (r *renameGateClient) Remove(p string) error {
+	if p == "/data/final" {
+		r.removedFinal = true
+	}
+	return r.mockSFTPClient.Remove(p)
+}
+
+func (r *renameGateClient) Rename(oldpath, newpath string) error {
+	if r.refuseIfExists {
+		if _, ok := r.store[newpath]; ok {
+			return &sftp.StatusError{Code: 11} // SSH_FX_FILE_ALREADY_EXISTS
+		}
+	}
+	return r.mockSFTPClient.Rename(oldpath, newpath)
+}
+
+// TestSFTPBackend_List_RejectsPathAscentEntries pins review-19: a hostile
+// server returning ".." must not walk above RootPath or emit absolute keys.
+func TestSFTPBackend_List_RejectsPathAscentEntries(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mock := newMockSFTPClient("/data")
+	mock.readFn = func(p string) ([]os.FileInfo, error) {
+		if p != "/data" {
+			return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+		}
+		return []os.FileInfo{
+			fakeFileInfo{name: "..", mode: os.ModeDir | 0o755},
+			fakeFileInfo{name: ".", mode: os.ModeDir | 0o755},
+			fakeFileInfo{name: "safe.txt", size: 3},
+		}, nil
+	}
+	mock.store["/data/safe.txt"] = []byte("ok")
+	b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
+
+	var results []storage.ObjectInfo
+	for info, err := range b.List(ctx, "", storage.ListOptions{}) {
+		require.NoError(t, err)
+		results = append(results, info)
+	}
+	require.Len(t, results, 1)
+	assert.Equal(t, "safe.txt", results[0].Key)
+	assert.NotContains(t, results[0].Key, "..")
+}
+
+// TestSFTPBackend_List_ContextCancelSurfacesError pins review-19: a cancelled
+// ctx mid-list must yield an error, not a silently truncated complete listing.
+func TestSFTPBackend_List_ContextCancelSurfacesError(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	mock := newMockSFTPClient("/data")
+	mock.readFn = func(p string) ([]os.FileInfo, error) {
+		cancel() // cancel as soon as walk starts
+		if p != "/data" {
+			return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+		}
+		return []os.FileInfo{
+			fakeFileInfo{name: "a.txt", size: 1},
+			fakeFileInfo{name: "b.txt", size: 1},
+		}, nil
+	}
+	b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
+
+	var sawErr error
+	for _, err := range b.List(ctx, "", storage.ListOptions{}) {
+		if err != nil {
+			sawErr = err
+			break
+		}
+	}
+	require.Error(t, sawErr)
+	assert.ErrorIs(t, sawErr, context.Canceled)
+}
+
+// TestGetClient_NilAfterCloseRace pins review-19: after Close races a
+// successful connect, getClient must return ErrBackendClosed not (nil, nil).
+func TestGetClient_NilAfterCloseRace(t *testing.T) {
+	t.Parallel()
+	mock := newMockSFTPClient("/data")
+	b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
+	require.NoError(t, b.Close())
+
+	client, err := b.getClient(context.Background())
+	require.ErrorIs(t, err, storage.ErrBackendClosed)
+	assert.Nil(t, client)
 }

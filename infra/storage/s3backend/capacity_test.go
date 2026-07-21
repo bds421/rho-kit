@@ -36,7 +36,8 @@ func TestTranslateCapacity(t *testing.T) {
 		{"nil", nil, 0, false, false},
 		{"non-smithy", errors.New("plain"), 0, false, false},
 		{"EntityTooLarge", &smithyErr{code: "EntityTooLarge"}, 100, true, true},
-		{"InvalidRequest with size", &smithyErr{code: "InvalidRequest"}, 100, true, true},
+		{"InvalidRequest with size but no capacity wording", &smithyErr{code: "InvalidRequest", message: "SSE parameter conflict"}, 100, false, false},
+		{"InvalidRequest size wording", &smithyErr{code: "InvalidRequest", message: "content-length too large"}, 100, true, true},
 		{"InvalidRequest no size", &smithyErr{code: "InvalidRequest"}, 0, false, false},
 		// Generic 503 (ServiceUnavailable) is no longer mapped to
 		// ErrInsufficientCapacity: AWS uses it for regional outage,

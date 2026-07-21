@@ -334,6 +334,14 @@ func TestStorageValidatorScansAndReplaysCleanBody(t *testing.T) {
 	if string(replayed) != "clean body" {
 		t.Fatalf("replayed body = %q, want clean body", replayed)
 	}
+	// Spool cleanup is on Close (not EOF) so SDK body rewind/retry works.
+	if c, ok := reader.(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			t.Fatalf("close replayed body: %v", err)
+		}
+	} else {
+		t.Fatal("replay reader must be Closeable for spool cleanup")
+	}
 	assertDirEmpty(t, dir)
 }
 

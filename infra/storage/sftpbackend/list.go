@@ -1,6 +1,7 @@
 package sftpbackend
 
 import (
+	"container/heap"
 	"context"
 	"errors"
 	"fmt"
@@ -33,6 +34,11 @@ var _ storage.Lister = (*Backend)(nil)
 // (StartAfter) never skips objects — the remote pkg/sftp ReadDir returns entries
 // in an arbitrary order, so the StartAfter cursor and MaxKeys truncation are only
 // meaningful against a sorted result. This matches localbackend and membackend.
+//
+// When MaxKeys > 0 the walk retains at most MaxKeys candidates that sort after
+// StartAfter (bounded max-heap), so a page request does not buffer the entire
+// remote tree. When MaxKeys is 0 (unbounded), the full matching set is still
+// buffered — prefer an explicit MaxKeys for large roots.
 func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
 		if err := storage.ValidatePrefix(prefix); err != nil {
@@ -66,11 +72,15 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 		}
 
 		start := now()
-		objects, walkErr := b.collectObjects(ctx, client, b.cfg.RootPath, prefix, yield, 0)
+		objects, walkErr := b.collectObjects(ctx, client, b.cfg.RootPath, prefix, opts, yield, 0)
 
-		// Don't report the sentinel as a real error.
+		// Consumer stopped iteration mid-walk (e.g. broke on a symlink
+		// error yield). Must NOT clear the sentinel and continue to the
+		// sorted pass — Go's range-over-func panics if yield is called
+		// again after it returned false.
 		if errors.Is(walkErr, errIterStopped) {
-			walkErr = nil
+			b.metrics.observeOp(b.instance, "list", start, nil)
+			return
 		}
 		b.metrics.observeOp(b.instance, "list", start, walkErr)
 
@@ -80,21 +90,20 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 		}
 
 		// Sort so StartAfter pagination is deterministic and never skips keys.
+		// (When MaxKeys > 0 collectObjects already filtered StartAfter.)
 		sort.Slice(objects, func(i, j int) bool { return objects[i].Key < objects[j].Key })
 
-		count := 0
 		for _, info := range objects {
-			if ctx.Err() != nil {
+			if err := ctx.Err(); err != nil {
+				// Cancellation mid-yield must surface as an error so callers
+				// cannot treat a truncated listing as complete (review-19).
+				yield(storage.ObjectInfo{}, err)
 				return
 			}
 			if opts.StartAfter != "" && info.Key <= opts.StartAfter {
 				continue
 			}
-			count++
 			if !yield(info, nil) {
-				return
-			}
-			if opts.MaxKeys > 0 && count >= opts.MaxKeys {
 				return
 			}
 		}
@@ -109,26 +118,86 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 // hierarchy while a hard stop short of stack exhaustion.
 const maxWalkDepth = 32
 
-// collectObjects recursively walks a remote directory, appending ObjectInfo for
-// files matching the prefix to out. It does not apply StartAfter/MaxKeys —
-// those are applied by List after the collected keys are sorted, because the
-// remote ReadDir order is arbitrary and an inline cursor/limit would skip keys.
-// Walk-level errors (symlink objects, readdir failures, depth overflow) are
-// surfaced via yield and abort the walk. Returns an error if the walk was
-// aborted; [errIterStopped] signals the consumer stopped iteration. depth tracks
-// recursion level so an attacker-controlled tree cannot exhaust the goroutine
-// stack.
+// collectObjects recursively walks a remote directory, collecting ObjectInfo for
+// files matching the prefix. When opts.MaxKeys > 0 only the MaxKeys smallest
+// keys after StartAfter are retained (max-heap), bounding memory for paged
+// listings. When MaxKeys is 0 the full matching set is buffered.
+// Walk-level errors are surfaced via yield and abort the walk. Returns an
+// error if the walk was aborted; [errIterStopped] signals the consumer stopped
+// iteration. depth tracks recursion level so an attacker-controlled tree cannot
+// exhaust the goroutine stack.
 func (b *Backend) collectObjects(
 	ctx context.Context,
 	client Client,
 	dir string,
 	prefix string,
+	opts storage.ListOptions,
 	yield func(storage.ObjectInfo, error) bool,
 	depth int,
 ) ([]storage.ObjectInfo, error) {
-	var out []storage.ObjectInfo
-	err := b.walkDir(ctx, client, dir, prefix, yield, depth, &out)
-	return out, err
+	acc := &listAccumulator{
+		maxKeys:    opts.MaxKeys,
+		startAfter: opts.StartAfter,
+	}
+	err := b.walkDir(ctx, client, dir, prefix, yield, depth, acc)
+	if err != nil {
+		return nil, err
+	}
+	return acc.snapshot(), nil
+}
+
+// listAccumulator collects matching objects. With maxKeys > 0 it keeps only
+// the maxKeys smallest keys > startAfter via a max-heap.
+type listAccumulator struct {
+	maxKeys    int
+	startAfter string
+	// unbounded path
+	all []storage.ObjectInfo
+	// bounded path: max-heap by Key (largest at root)
+	top objectMaxHeap
+}
+
+func (a *listAccumulator) add(info storage.ObjectInfo) {
+	if a.startAfter != "" && info.Key <= a.startAfter {
+		return
+	}
+	if a.maxKeys <= 0 {
+		a.all = append(a.all, info)
+		return
+	}
+	if a.top.Len() < a.maxKeys {
+		heap.Push(&a.top, info)
+		return
+	}
+	// Heap is full: only keep this key if it sorts before the current max.
+	if info.Key < a.top[0].Key {
+		heap.Pop(&a.top)
+		heap.Push(&a.top, info)
+	}
+}
+
+func (a *listAccumulator) snapshot() []storage.ObjectInfo {
+	if a.maxKeys <= 0 {
+		return a.all
+	}
+	out := make([]storage.ObjectInfo, len(a.top))
+	copy(out, a.top)
+	return out
+}
+
+// objectMaxHeap is a max-heap of ObjectInfo ordered by Key.
+type objectMaxHeap []storage.ObjectInfo
+
+func (h objectMaxHeap) Len() int           { return len(h) }
+func (h objectMaxHeap) Less(i, j int) bool { return h[i].Key > h[j].Key } // max-heap
+func (h objectMaxHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *objectMaxHeap) Push(x any)        { *h = append(*h, x.(storage.ObjectInfo)) }
+func (h *objectMaxHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
 }
 
 func (b *Backend) walkDir(
@@ -138,10 +207,13 @@ func (b *Backend) walkDir(
 	prefix string,
 	yield func(storage.ObjectInfo, error) bool,
 	depth int,
-	out *[]storage.ObjectInfo,
+	acc *listAccumulator,
 ) error {
-	if ctx.Err() != nil {
-		return nil
+	if err := ctx.Err(); err != nil {
+		// Surface cancellation so List does not return a partial listing
+		// that looks complete (review-19).
+		yield(storage.ObjectInfo{}, err)
+		return err
 	}
 	if depth >= maxWalkDepth {
 		err := fmt.Errorf("sftpbackend: directory walk exceeded depth %d at %q", maxWalkDepth, dir)
@@ -170,35 +242,63 @@ func (b *Backend) walkDir(
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 
 	for _, entry := range entries {
-		entryPath := path.Join(dir, entry.Name())
-		if entry.Mode()&fs.ModeSymlink != 0 {
-			err := fmt.Errorf("sftpbackend: refusing symlink object")
-			if !yield(storage.ObjectInfo{}, err) {
-				return errIterStopped
-			}
-			return err
+		name := entry.Name()
+		// Never trust server-supplied "." / ".." (or path.Base-reduced
+		// equivalents): a hostile SFTP server can return ".." to walk above
+		// RootPath (review-19 path-ascent).
+		if name == "." || name == ".." || name == "" {
+			continue
+		}
+		if strings.ContainsAny(name, `/\`) {
+			// Refuse path separators in entry names — containment relies on
+			// single-component joins under RootPath.
+			continue
+		}
+		entryPath := path.Join(dir, name)
+		if err := b.ensureRemotePathUnderRoot(entryPath); err != nil {
+			// Escaped path: skip rather than emit absolute keys via toKey.
+			continue
 		}
 
+		// Prefix prune before symlink handling so an unrelated symlink
+		// elsewhere in the tree cannot abort listings for other prefixes.
 		if entry.IsDir() {
-			// Only descend if the directory could contain matching keys.
-			dirKey := b.toKey(entryPath) + "/"
+			dirKey, ok := b.toKeyOK(entryPath)
+			if !ok {
+				continue
+			}
+			dirKey = dirKey + "/"
 			if prefix != "" && !strings.HasPrefix(dirKey, prefix) && !strings.HasPrefix(prefix, dirKey) {
 				continue
 			}
-			if err := b.walkDir(ctx, client, entryPath, prefix, yield, depth+1, out); err != nil {
+		} else {
+			key, ok := b.toKeyOK(entryPath)
+			if !ok {
+				continue
+			}
+			if prefix != "" && !strings.HasPrefix(key, prefix) {
+				continue
+			}
+		}
+
+		if entry.Mode()&fs.ModeSymlink != 0 {
+			// Skip symlinks rather than aborting the whole List: a single
+			// legacy symlink must not deny listing of unrelated keys.
+			continue
+		}
+
+		if entry.IsDir() {
+			if err := b.walkDir(ctx, client, entryPath, prefix, yield, depth+1, acc); err != nil {
 				return err
 			}
 			continue
 		}
 
-		key := b.toKey(entryPath)
-
-		// Apply prefix filter.
-		if prefix != "" && !strings.HasPrefix(key, prefix) {
+		key, ok := b.toKeyOK(entryPath)
+		if !ok {
 			continue
 		}
-
-		*out = append(*out, storage.ObjectInfo{
+		acc.add(storage.ObjectInfo{
 			Key:     key,
 			Size:    entry.Size(),
 			ModTime: entry.ModTime(),
@@ -209,9 +309,26 @@ func (b *Backend) walkDir(
 }
 
 // toKey converts a remote absolute path back to a storage key (relative to root).
+// Paths that escape RootPath return empty string; prefer [toKeyOK] when the
+// escape must be distinguished from a root-relative empty key.
 func (b *Backend) toKey(remotePath string) string {
-	rel, _ := relPath(b.cfg.RootPath, remotePath)
+	rel, ok := b.toKeyOK(remotePath)
+	if !ok {
+		return ""
+	}
 	return rel
+}
+
+// toKeyOK is like toKey but reports whether the path stayed under RootPath.
+func (b *Backend) toKeyOK(remotePath string) (string, bool) {
+	rel, err := relPath(b.cfg.RootPath, remotePath)
+	if err != nil {
+		return "", false
+	}
+	if rel == ".." || strings.HasPrefix(rel, "../") || path.IsAbs(rel) {
+		return "", false
+	}
+	return rel, true
 }
 
 // relPath returns the relative path from base to target using path (POSIX) semantics.

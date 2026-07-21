@@ -186,7 +186,7 @@ func ValidateListOptions(opts ListOptions) error {
 		return fmt.Errorf("%w: storage list MaxKeys must be >= 0", ErrValidation)
 	}
 	if opts.MaxKeys > MaxListPageSize {
-		// Wave 68 added an upper cap so a hostile or buggy caller
+		// An upper cap so a hostile or buggy caller
 		// cannot make ListPage allocate ~MaxKeys * ObjectInfo bytes
 		// per request, and so MaxKeys+1 (used to detect truncation)
 		// never overflows.

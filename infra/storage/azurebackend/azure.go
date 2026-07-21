@@ -47,7 +47,6 @@ type BlobPager interface {
 type Backend struct {
 	client     BlobClient
 	container  string
-	cfg        Config
 	instance   string
 	validators []storage.Validator
 	metrics    *Metrics
@@ -127,15 +126,16 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 	b := &Backend{
 		client:    &azureBlobClient{client: client, container: cfg.ContainerName},
 		container: cfg.ContainerName,
-		cfg:       cfg,
 		instance:  "default",
-		metrics:   defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
 			panic("azurebackend: New option must not be nil")
 		}
 		o(b)
+	}
+	if b.metrics == nil {
+		b.metrics = defaultMetrics()
 	}
 	return b, nil
 }
@@ -168,15 +168,16 @@ func NewWithTokenCredential(cfg Config, cred azcore.TokenCredential, opts ...Opt
 	b := &Backend{
 		client:    &azureBlobClient{client: client, container: cfg.ContainerName},
 		container: cfg.ContainerName,
-		cfg:       cfg,
 		instance:  "default",
-		metrics:   defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
 			panic("azurebackend: NewWithTokenCredential option must not be nil")
 		}
 		o(b)
+	}
+	if b.metrics == nil {
+		b.metrics = defaultMetrics()
 	}
 	return b, nil
 }
@@ -193,13 +194,15 @@ func NewWithClient(client BlobClient, containerName string, opts ...Option) *Bac
 		client:    client,
 		container: containerName,
 		instance:  "default",
-		metrics:   defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
 			panic("azurebackend: NewWithClient option must not be nil")
 		}
 		o(b)
+	}
+	if b.metrics == nil {
+		b.metrics = defaultMetrics()
 	}
 	return b
 }

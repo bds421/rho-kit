@@ -43,6 +43,10 @@ func TestValidateKey(t *testing.T) {
 		{name: "rtl override", key: "uploads/file\u202e.txt", wantErr: "invalid characters"},
 		{name: "zero-width space", key: "uploads/fi\u200ble.txt", wantErr: "invalid characters"},
 		{name: "byte order mark", key: "uploads/\ufefffile.txt", wantErr: "invalid characters"},
+		// Reserved atomic-write temp namespace (localbackend List filters these).
+		{name: "tmp prefix basename", key: ".tmp-notes.txt", wantErr: "reserved .tmp- prefix"},
+		{name: "tmp prefix nested", key: "docs/.tmp-notes.txt", wantErr: "reserved .tmp- prefix"},
+		{name: "tmp mid name ok", key: "docs/not-tmp-notes.txt"},
 	}
 
 	for _, tt := range tests {

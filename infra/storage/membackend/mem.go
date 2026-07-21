@@ -127,6 +127,24 @@ func (b *Backend) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// Stat returns object metadata without copying the body.
+// Honours context cancellation: ctx.Err is checked at entry.
+func (b *Backend) Stat(ctx context.Context, key string) (storage.ObjectMeta, error) {
+	if err := ctxErr(ctx); err != nil {
+		return storage.ObjectMeta{}, err
+	}
+	if err := storage.ValidateKey(key); err != nil {
+		return storage.ObjectMeta{}, err
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	obj, ok := b.objects[key]
+	if !ok {
+		return storage.ObjectMeta{}, fmt.Errorf("membackend: stat: %w", storage.ErrObjectNotFound)
+	}
+	return storage.CloneObjectMeta(obj.meta), nil
+}
+
 // Exists reports whether the key exists.
 // Honours context cancellation: ctx.Err is checked at entry.
 func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {

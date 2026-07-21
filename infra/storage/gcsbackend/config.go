@@ -16,6 +16,10 @@ type Config struct {
 	Bucket string
 
 	// ProjectID is the Google Cloud project ID.
+	// Optional: the kit addresses buckets by name and does not pass
+	// ProjectID into the storage client. Retained for operator metadata /
+	// LogValue and for deployments that set STORAGE_GCS_PROJECT_ID for
+	// consistency with other GCP tooling.
 	ProjectID string
 
 	// CredentialsFile is the path to a service account JSON key file.
@@ -57,7 +61,7 @@ func (c Config) LogValue() slog.Value {
 //
 // Environment variables:
 //   - STORAGE_GCS_BUCKET (required)
-//   - STORAGE_GCS_PROJECT_ID (required)
+//   - STORAGE_GCS_PROJECT_ID (optional; unused by the client, kept for metadata)
 //   - STORAGE_GCS_CREDENTIALS_FILE (optional, path to service account JSON)
 //   - STORAGE_GCS_ENDPOINT (optional, for testing)
 //   - STORAGE_GCS_ALLOW_INSECURE_ENDPOINT (optional bool, default false)
@@ -87,9 +91,6 @@ func LoadConfig() (Config, error) {
 func (c Config) Validate() error {
 	if c.Bucket == "" {
 		return fmt.Errorf("STORAGE_GCS_BUCKET is required")
-	}
-	if c.ProjectID == "" {
-		return fmt.Errorf("STORAGE_GCS_PROJECT_ID is required")
 	}
 	if c.AllowInsecureEndpoint {
 		if err := storage.ValidateEndpointURLAllowingInsecure("STORAGE_GCS_ENDPOINT", c.Endpoint); err != nil {

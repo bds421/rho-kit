@@ -79,6 +79,12 @@ func ValidateKey(key string) error {
 		if seg == ".." || seg == "." {
 			return fmt.Errorf("%w: storage key must not contain path traversal components", ErrValidation)
 		}
+		// ".tmp-*" basenames are reserved for atomic-write temporaries in
+		// localbackend (and filtered from List). Rejecting them as keys keeps
+		// Put/Get/List/Migrate consistent: no storable-but-invisible objects.
+		if strings.HasPrefix(seg, ".tmp-") {
+			return fmt.Errorf("%w: storage key must not use reserved .tmp- prefix", ErrValidation)
+		}
 	}
 	return nil
 }
@@ -182,6 +188,19 @@ type Storage interface {
 
 	// Exists reports whether the key exists without downloading content.
 	Exists(ctx context.Context, key string) (bool, error)
+}
+
+// Statter is an optional capability for metadata-only lookups (HeadObject
+// equivalent). Prefer [AsStatter] over a type assert so decorator chains
+// are walked consistently.
+//
+// [storagehttp.ServeFile] uses Stat for conditional-GET (If-None-Match)
+// before opening the body, so 304 responses avoid a full Get round trip
+// on backends that implement it.
+type Statter interface {
+	// Stat returns object metadata without opening the body.
+	// Returns an error wrapping [ErrObjectNotFound] when the key is absent.
+	Stat(ctx context.Context, key string) (ObjectMeta, error)
 }
 
 // Close releases any resources held by the backend (HTTP clients with

@@ -1,6 +1,7 @@
 package localbackend
 
 import (
+	"container/heap"
 	"context"
 	"errors"
 	"fmt"
@@ -63,7 +64,7 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 		// below still narrows results to keys that start with prefix.
 		walkRoot := prefixWalkRoot(prefix)
 
-		objects, walkErr := b.collectObjects(ctx, root, walkRoot, prefix, yield)
+		objects, walkErr := b.collectObjects(ctx, root, walkRoot, prefix, opts, yield)
 		if walkErr != nil {
 			// A yield(...) inside the walk callback already returned the error
 			// to the caller and signalled stop; nothing more to do.
@@ -72,20 +73,12 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 
 		sort.Slice(objects, func(i, j int) bool { return objects[i].Key < objects[j].Key })
 
-		count := 0
 		for _, obj := range objects {
 			if err := ctxErr(ctx); err != nil {
 				yield(storage.ObjectInfo{}, err)
 				return
 			}
-			if opts.StartAfter != "" && obj.Key <= opts.StartAfter {
-				continue
-			}
-			count++
 			if !yield(obj, nil) {
-				return
-			}
-			if opts.MaxKeys > 0 && count >= opts.MaxKeys {
 				return
 			}
 		}
@@ -116,17 +109,20 @@ func prefixWalkRoot(prefix string) string {
 }
 
 // collectObjects walks walkRoot within root, returning ObjectInfos for regular
-// files whose keys start with prefix. Walk-level errors (e.g. permission
-// denied) and symlink-object refusals are surfaced via yield; if the caller
-// stops or an error is yielded, collectObjects returns a non-nil error so List
-// exits.
+// files whose keys start with prefix. When MaxKeys > 0, only the MaxKeys
+// lexicographically-smallest keys after StartAfter are retained (bounded
+// max-heap), so memory scales with the page size rather than the whole tree.
+// Walk-level errors and symlink-object refusals are surfaced via yield.
 func (b *Backend) collectObjects(
 	ctx context.Context,
 	root *os.Root,
 	walkRoot, prefix string,
+	opts storage.ListOptions,
 	yield func(storage.ObjectInfo, error) bool,
 ) ([]storage.ObjectInfo, error) {
 	var objects []storage.ObjectInfo
+	var top objectMaxHeap
+	bound := opts.MaxKeys > 0
 	err := fs.WalkDir(root.FS(), walkRoot, func(p string, d fs.DirEntry, walkErr error) error {
 		if ctx.Err() != nil {
 			// Surface cancellation as an error rather than ending the walk
@@ -135,16 +131,25 @@ func (b *Backend) collectObjects(
 			return ctx.Err()
 		}
 		if walkErr != nil {
-			// If the walk root doesn't exist, return no results.
+			// Walk root missing → empty listing (prefix has no objects yet).
+			// Any other root-level Stat failure (permission, EIO, ELOOP) must
+			// surface; fs.WalkDir sets d==nil for all root Stat errors, not
+			// only ErrNotExist.
 			if d == nil {
-				return fs.SkipAll
+				if errors.Is(walkErr, fs.ErrNotExist) {
+					return fs.SkipAll
+				}
+				if !yield(storage.ObjectInfo{}, localFileError("walk object", walkErr)) {
+					return errStopWalk
+				}
+				return errStopWalk
 			}
-			// Surface permission errors and other non-trivial walk errors
-			// so callers can distinguish "no results" from "access denied".
+			// Mid-walk errors: surface once and stop (Lister contract:
+			// iteration stops on first error).
 			if !yield(storage.ObjectInfo{}, localFileError("walk object", walkErr)) {
 				return errStopWalk
 			}
-			return nil
+			return errStopWalk
 		}
 
 		// Skip directories — only yield files.
@@ -155,7 +160,7 @@ func (b *Backend) collectObjects(
 			if !yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: refusing symlink object")) {
 				return errStopWalk
 			}
-			return nil
+			return errStopWalk
 		}
 
 		// fs.WalkDir over the os.Root FS yields root-relative slash paths,
@@ -178,16 +183,40 @@ func (b *Backend) collectObjects(
 			return localFileError("inspect object", err)
 		}
 
-		objects = append(objects, storage.ObjectInfo{
+		obj := storage.ObjectInfo{
 			Key:     key,
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
-		})
+		}
+		if opts.StartAfter != "" && obj.Key <= opts.StartAfter {
+			return nil
+		}
+		if !bound {
+			objects = append(objects, obj)
+			return nil
+		}
+		// Bound to MaxKeys smallest keys via a max-heap (largest of the
+		// kept set at the root). When full, drop candidates larger than
+		// the current max.
+		if top.Len() < opts.MaxKeys {
+			heap.Push(&top, obj)
+			return nil
+		}
+		if obj.Key < top[0].Key {
+			heap.Pop(&top)
+			heap.Push(&top, obj)
+		}
 		return nil
 	})
 
 	switch {
 	case err == nil:
+		if bound {
+			objects = make([]storage.ObjectInfo, top.Len())
+			for i := len(objects) - 1; i >= 0; i-- {
+				objects[i] = heap.Pop(&top).(storage.ObjectInfo)
+			}
+		}
 		return objects, nil
 	case errors.Is(err, errStopWalk):
 		// Caller stopped iteration after a yielded error.
@@ -203,3 +232,20 @@ func (b *Backend) collectObjects(
 // errStopWalk is a sentinel returned from the WalkDir callback to stop the
 // walk after an error has already been yielded to the caller.
 var errStopWalk = errors.New("localbackend: stop walk")
+
+
+// objectMaxHeap is a max-heap of ObjectInfo ordered by Key (largest root).
+// Used to retain only the MaxKeys smallest keys while walking.
+type objectMaxHeap []storage.ObjectInfo
+
+func (h objectMaxHeap) Len() int           { return len(h) }
+func (h objectMaxHeap) Less(i, j int) bool { return h[i].Key > h[j].Key } // max-heap
+func (h objectMaxHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *objectMaxHeap) Push(x any)        { *h = append(*h, x.(storage.ObjectInfo)) }
+func (h *objectMaxHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
+}

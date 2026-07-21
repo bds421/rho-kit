@@ -3,6 +3,7 @@ package localbackend
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -138,6 +139,53 @@ func TestList_MidWalkCancellationYieldsError(t *testing.T) {
 	}
 	require.ErrorIs(t, sawErr, context.Canceled, "mid-walk cancellation must surface ctx.Err()")
 	assert.Positive(t, seen, "expected at least one item before cancellation, so this exercises the mid-listing path")
+}
+
+// TestList_RootPermissionErrorSurfaces pins: a non-Exist walk-root Stat
+// failure (e.g. permission denied) must not look like an empty successful
+// listing — only fs.ErrNotExist is SkipAll'd.
+func TestList_RootPermissionErrorSurfaces(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := newBackend(t)
+
+	denied := filepath.Join(b.root, "secret")
+	require.NoError(t, os.Mkdir(denied, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(denied, "a.txt"), []byte("x"), 0o600))
+	require.NoError(t, os.Chmod(denied, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(denied, 0o700) })
+
+	// Walk root is "secret" for prefix "secret/" — Stat on the unreadable
+	// dir should surface, not yield zero objects with no error.
+	_, err := collectList(t, b, ctx, "secret/", storage.ListOptions{})
+	require.Error(t, err, "permission error on walk root must not look like empty success")
+	assert.False(t, errors.Is(err, os.ErrNotExist))
+}
+
+// TestList_StopsAfterFirstWalkError pins the Lister contract: after a
+// mid-walk error is yielded, iteration does not continue with later objects.
+func TestList_StopsAfterFirstWalkError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := newBackend(t)
+
+	require.NoError(t, b.Put(ctx, "a.txt", bytes.NewReader([]byte("a")), storage.ObjectMeta{}))
+	// Plant a symlink object; collectObjects yields an error and must stop.
+	require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(b.root, "link.txt")))
+	require.NoError(t, b.Put(ctx, "z.txt", bytes.NewReader([]byte("z")), storage.ObjectMeta{}))
+
+	var keys []string
+	var sawErr error
+	for obj, err := range b.List(ctx, "", storage.ListOptions{}) {
+		if err != nil {
+			sawErr = err
+			// Keep ranging to detect contract violations (objects after error).
+			continue
+		}
+		keys = append(keys, obj.Key)
+	}
+	require.Error(t, sawErr, "symlink object must yield an error")
+	assert.NotContains(t, keys, "z.txt", "must not yield objects after the first error")
 }
 
 // TestList_SkipsTempFiles pins finding #4: in-flight ".tmp-*" temp files (and

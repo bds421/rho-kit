@@ -90,14 +90,14 @@ type EncryptedStorage struct {
 	// with [WithMaxConcurrentEncryptions].
 	putSem chan struct{}
 
-	// getSem caps concurrent Get decryptions to bound peak memory under
-	// load. A Get holds up to MaxEncryptableSize+overhead bytes of
-	// ciphertext plus a full plaintext buffer that is retained until the
-	// returned reader is Closed (~512 MiB at the default cap), so the OOM
-	// profile matches Put — and download endpoints typically fan out wider
-	// than uploads. The slot is held for the lifetime of the returned
-	// reader and released on its Close. Sized to runtime.NumCPU() by
-	// default; override with [WithMaxConcurrentDecryptions].
+	// getSem caps concurrent Get *decryption work* (read ciphertext +
+	// decrypt) so fan-out from download endpoints cannot run unbounded
+	// concurrent AES-GCM operations. The slot is released once plaintext
+	// is materialised into the returned reader — not held until Close —
+	// so a leaked ReadCloser cannot permanently starve every subsequent
+	// encrypted download (review-18). Callers must still Close to zero the
+	// plaintext buffer. Sized to runtime.NumCPU() by default; override
+	// with [WithMaxConcurrentDecryptions].
 	getSem chan struct{}
 }
 
@@ -125,11 +125,14 @@ func WithoutMaxConcurrentEncryptions() Option {
 	}
 }
 
-// WithMaxConcurrentDecryptions caps the number of in-flight Get decryptions.
-// Default: runtime.NumCPU(). The value must be positive; use
-// [WithoutMaxConcurrentDecryptions] only when an external admission
-// controller already bounds download concurrency. A slot is held for the
-// lifetime of the [io.ReadCloser] returned by Get and released on its Close.
+// WithMaxConcurrentDecryptions caps the number of concurrent Get decryption
+// operations (ciphertext read + AES-GCM decrypt). Default: runtime.NumCPU().
+// The value must be positive; use [WithoutMaxConcurrentDecryptions] only when
+// an external admission controller already bounds download concurrency.
+//
+// The slot is released after plaintext is materialised, not on reader Close,
+// so a leaked ReadCloser does not permanently exhaust the cap. Close still
+// zeros the plaintext buffer and remains required for secret hygiene.
 func WithMaxConcurrentDecryptions(n int) Option {
 	if n <= 0 {
 		panic("storage/encryption: WithMaxConcurrentDecryptions requires n > 0")
@@ -326,10 +329,18 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 // while decrypting; the plaintext buffer is retained by the returned reader
 // until Close. Concurrent Get calls are bounded by the semaphore set in [New]
 // (default runtime.NumCPU()) — a public download endpoint without this cap can
-// exhaust memory under fan-out. The slot is held for the lifetime of the
-// returned reader and released on its Close; on any error before the reader is
-// returned the slot is released immediately. ctx cancellation during the wait
-// returns ctx.Err().
+// exhaust memory under fan-out.
+//
+// Semaphore lifetime: the slot is acquired before the backend read/decrypt
+// and transferred to the returned reader, which releases it only in Close
+// (error paths before return release immediately). This intentionally bounds
+// peak retained plaintext memory, not just concurrent decrypt work: the full
+// buffer is already materialised before the reader is handed out, so releasing
+// at decrypt-complete would let unbounded readers pin MaxEncryptableSize each.
+// Callers MUST Close the ReadCloser (prefer defer) — a leaked reader
+// permanently consumes one slot and, after NumCPU leaks, starves every
+// subsequent encrypted Get until process restart. ctx cancellation during
+// the acquire wait returns ctx.Err().
 func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
 	if ctx == nil {
 		// Normalise a nil context up front so the semaphore acquire and
@@ -341,9 +352,9 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	}
 
 	// Acquire the decryption slot before pulling ciphertext into memory so
-	// the peak-memory bound covers the read+decrypt window. The slot is
-	// released either on an error path below or by the returned reader's
-	// Close. release is nil when the cap is disabled.
+	// concurrent decrypt work is bounded. The slot is released when decrypt
+	// finishes (success or error), not when the caller Closes the reader —
+	// a leaked ReadCloser must not permanently starve the download path.
 	var release func()
 	if e.getSem != nil {
 		select {
@@ -353,8 +364,8 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 			return nil, storage.ObjectMeta{}, redact.WrapError("encryption", ctx.Err())
 		}
 	}
-	// releaseOnError frees the slot on any early return; cleared once the
-	// reader takes ownership of the release on success.
+	// releaseOnError frees the slot on any early return; on success we
+	// release immediately after materialising plaintext (below).
 	releaseOnError := release
 	defer func() {
 		if releaseOnError != nil {
@@ -407,30 +418,26 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	}
 
 	meta.Size = int64(len(plaintext))
-	// Hand the slot release to the returned reader: the plaintext buffer is
-	// retained until Close, so the memory bound must persist until then.
-	releaseOnError = nil
-	return &cleaningReader{Reader: bytes.NewReader(plaintext), buf: plaintext, release: release}, meta, nil
+	// Decrypt complete: free the concurrency slot now. Plaintext zeroing
+	// still happens on Close (hygiene), but Close discipline must not gate
+	// admission of subsequent Gets (review-18).
+	if releaseOnError != nil {
+		releaseOnError()
+		releaseOnError = nil
+	}
+	return &cleaningReader{Reader: bytes.NewReader(plaintext), buf: plaintext}, meta, nil
 }
 
 // cleaningReader wraps a bytes.Reader and zeros the underlying plaintext
 // buffer when Close is called, preventing decrypted data from lingering
-// in memory after the caller is done reading. It also releases the Get
-// decryption semaphore slot (if any) so the peak-memory bound is held for
-// the full lifetime of the buffer.
+// in memory after the caller is done reading.
 type cleaningReader struct {
 	*bytes.Reader
-	buf     []byte
-	release func()
+	buf []byte
 }
 
 func (c *cleaningReader) Close() error {
 	zeroBytes(c.buf)
-	if c.release != nil {
-		c.release()
-		// Guard against a double release if Close is called more than once.
-		c.release = nil
-	}
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"math"
 	"bytes"
 	"context"
 	"errors"
@@ -215,6 +216,22 @@ func TestAllowedMIMETypes(t *testing.T) {
 		got, err := io.ReadAll(r)
 		require.NoError(t, err)
 		assert.Equal(t, pngData, got)
+	})
+
+	// Regression pin for review MEDIUM: image/* must not admit
+	// image/svg+xml (scriptable XML). Callers who want SVG list it
+	// explicitly. Removing the image/svg+xml continue-guard would
+	// make this test fail.
+	t.Run("image wildcard rejects SVG", func(t *testing.T) {
+		t.Parallel()
+		svg := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`)
+		meta := ObjectMeta{}
+		v := AllowedMIMETypes("image/*")
+
+		_, err := v(context.Background(), bytes.NewReader(svg), &meta)
+		require.Error(t, err, "image/* must reject image/svg+xml")
+		assert.True(t, errors.Is(err, ErrValidation))
+		assert.Equal(t, "image/svg+xml", meta.ContentType, "sniffed type must still be recorded")
 	})
 
 	t.Run("rejects non-matching wildcard", func(t *testing.T) {
@@ -734,4 +751,15 @@ func createTestPNG(t *testing.T, width, height int) []byte {
 	var buf bytes.Buffer
 	require.NoError(t, png.Encode(&buf, img))
 	return buf.Bytes()
+}
+
+
+func TestMaxFileSize_MaxInt64NoPanic(t *testing.T) {
+	v := MaxFileSize(math.MaxInt64)
+	r, err := v(context.Background(), strings.NewReader("hello"), &ObjectMeta{})
+	require.NoError(t, err)
+	buf := make([]byte, 8)
+	n, err := r.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, 5, n)
 }

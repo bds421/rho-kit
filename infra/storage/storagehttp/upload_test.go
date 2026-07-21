@@ -355,6 +355,16 @@ func TestParseAndStore(t *testing.T) {
 		assert.NotContains(t, err.Error(), "secret-token")
 	})
 
+	t.Run("MaxBytesReader overflow is ErrValidation", func(t *testing.T) {
+		t.Parallel()
+		// Unit-test the classification helper: *http.MaxBytesError must wrap
+		// ErrValidation so callers map it to 4xx rather than 500.
+		err := wrapUploadError("storagehttp: read multipart part failed", &http.MaxBytesError{Limit: 10})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, storage.ErrValidation)
+		assert.Contains(t, err.Error(), "too large")
+	})
+
 	t.Run("returns stable error on malformed multipart part", func(t *testing.T) {
 		t.Parallel()
 		backend := newLocalBackend(t)
@@ -557,4 +567,34 @@ func (failingPutBackend) Delete(context.Context, string) error {
 
 func (failingPutBackend) Exists(context.Context, string) (bool, error) {
 	return false, nil
+}
+
+
+func TestParseAndStore_WireCapIncludesSkippedBudget(t *testing.T) {
+	// MaxFileSize + MaxTotalSkippedBytes + overhead must fit legitimate
+	// non-file parts within the documented skipped-parts budget.
+	backend, err := localbackend.New(t.TempDir())
+	require.NoError(t, err)
+	// 2 MiB skipped field + 1 MiB file, MaxFileSize=1MiB, skipped budget 4MiB.
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	fw, err := w.CreateFormField("note")
+	require.NoError(t, err)
+	_, err = fw.Write(bytes.Repeat([]byte("x"), 2<<20))
+	require.NoError(t, err)
+	part, err := w.CreateFormFile("file", "a.bin")
+	require.NoError(t, err)
+	_, err = part.Write(bytes.Repeat([]byte("y"), 1<<20))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	req := httptest.NewRequest(http.MethodPost, "/upload", &body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	res, err := ParseAndStore(context.Background(), req, backend, UploadOptions{
+		KeyFunc:              UUIDKeyFunc("u"),
+		MaxFileSize:          1 << 20,
+		MaxTotalSkippedBytes: 4 << 20,
+	})
+	require.NoError(t, err, "wire cap must admit MaxFileSize + MaxTotalSkippedBytes")
+	assert.Equal(t, int64(1<<20), res.Size)
 }
