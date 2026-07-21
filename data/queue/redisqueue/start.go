@@ -82,7 +82,15 @@ func StartProcessors(
 					}
 				}
 			}()
-			queue.Process(ctx, binding.Queue, binding.Handler)
+			if err := queue.Process(ctx, binding.Queue, binding.Handler); err != nil && ctx.Err() == nil {
+				logger.Error("queue processor permanently failed",
+					redact.String("queue", binding.Queue),
+					redact.Error(err),
+				)
+				if shutdownFn != nil {
+					shutdownFn()
+				}
+			}
 		}()
 	}
 	return nil

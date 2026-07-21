@@ -90,7 +90,15 @@ func StartConsumers(
 					}
 				}
 			}()
-			bound.Consume(ctx, binding.Stream, binding.Handler)
+			if err := bound.Consume(ctx, binding.Stream, binding.Handler); err != nil && ctx.Err() == nil {
+				logger.Error("stream consumer permanently failed",
+					redact.String("stream", binding.Stream),
+					redact.Error(err),
+				)
+				if shutdownFn != nil {
+					shutdownFn()
+				}
+			}
 		}()
 	}
 	return nil

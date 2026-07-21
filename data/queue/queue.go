@@ -154,9 +154,12 @@ type Publisher interface {
 
 // Consumer processes messages from a queue.
 type Consumer interface {
-	// Consume blocks and processes messages until ctx is cancelled.
-	// Fatal backend failures are currently logged by implementations and
-	// surface as a return without error; a v3 signature will return error
-	// so lifecycle runners can detect terminal exits (see V3_BREAKING_PROPOSALS).
-	Consume(ctx context.Context, queue string, handler Handler)
+	// Consume blocks and processes messages until ctx is cancelled or a
+	// terminal backend failure occurs.
+	//
+	// On clean cancellation return ctx.Err() (typically context.Canceled).
+	// A non-context error means the consumer abandoned reconnection (auth
+	// revoked, configuration error, permanent backend failure) so lifecycle
+	// runners can shut the process down instead of running without a worker.
+	Consume(ctx context.Context, queue string, handler Handler) error
 }

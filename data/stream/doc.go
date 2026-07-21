@@ -13,6 +13,9 @@
 // [Producer] / [Consumer] remain exported for external adapters. Prefer
 // redisstream's concrete API until an adapter bridges the shapes.
 //
+// [Consumer.Consume] returns error (ctx.Err() on clean cancel; non-nil on
+// terminal backend failure) so lifecycle runners can detect silent exits.
+//
 // [Producer.Produce] returns the backend-assigned message ID (empty when
 // the backend does not assign one).
 package stream

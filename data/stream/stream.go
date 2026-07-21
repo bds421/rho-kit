@@ -50,11 +50,13 @@ type Producer interface {
 
 // Consumer reads messages from a stream with consumer group support.
 type Consumer interface {
-	// Consume blocks and processes messages until ctx is cancelled.
-	// Fatal backend failures are currently logged by implementations and
-	// surface as a return without error; a v3 signature will return error
-	// so lifecycle runners can detect terminal exits (see V3_BREAKING_PROPOSALS).
-	Consume(ctx context.Context, stream string, handler Handler)
+	// Consume blocks and processes messages until ctx is cancelled or a
+	// terminal backend failure occurs.
+	//
+	// On clean cancellation return ctx.Err() (typically context.Canceled).
+	// A non-context error means the consumer abandoned reconnection so
+	// lifecycle runners can detect a silent worker death.
+	Consume(ctx context.Context, stream string, handler Handler) error
 }
 
 // ValidateName checks that a stream name is safe for backend keys and metric

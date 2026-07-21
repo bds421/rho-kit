@@ -87,7 +87,7 @@ func (c *Consumer) Consume(ctx context.Context, b messaging.Binding, handler mes
 		return fmt.Errorf("redisbackend: Consumer already consumed; construct a separate Consumer per stream: %w", messaging.ErrInvalidConsumer)
 	}
 	streamName := b.Exchange
-	c.consumer.Consume(ctx, streamName, func(ctx context.Context, sm stream.Message) error {
+	err := c.consumer.Consume(ctx, streamName, func(ctx context.Context, sm stream.Message) error {
 		d, err := toDelivery(sm, streamName)
 		if err != nil {
 			// Permanent: invalid transport values must not be retried forever.
@@ -95,6 +95,9 @@ func (c *Consumer) Consume(ctx context.Context, b messaging.Binding, handler mes
 		}
 		return handler(ctx, d)
 	})
+	if err != nil {
+		return err
+	}
 	return ctx.Err()
 }
 

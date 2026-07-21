@@ -758,12 +758,14 @@ func (q *Queue) enqueueOpts(queue, msgID string) []asynq.Option {
 // optional per-handler run timeout ([WithInvisibilityTimeout]) is failed and
 // retried. Either path can deliver the same task more than once.
 //
-// Panics if queue name is empty, handler is nil, another Process call is
-// already active for the same queue name on this Queue instance, or the
-// underlying asynq server fails to start — fail fast at startup rather than on
-// the first message. Under [StartProcessors] a Start-failure panic is caught
-// and routed to shutdownFn so the app does not keep running without a consumer.
-func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
+// Returns ctx.Err() on clean cancellation after a successful Start. Returns a
+// wrapped error when the underlying asynq server fails to start so lifecycle
+// runners (and [StartProcessors]) can detect a worker that never came up.
+//
+// Panics if queue name is empty, handler is nil, or another Process call is
+// already active for the same queue name on this Queue instance — those are
+// programming errors that fail fast at startup.
+func (q *Queue) Process(ctx context.Context, queue string, handler Handler) error {
 	if err := q.ready(); err != nil {
 		panic("redisqueue: Process requires an initialised queue")
 	}
@@ -803,19 +805,16 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	// kit's lifecycle (StartProcessors + waitgroup) keeps working
 	// unchanged: Process returns when ctx is cancelled.
 	//
-	// A Start failure means the consumer never came up — a startup failure
-	// indistinguishable, from the caller's point of view, from the other
-	// fail-fast conditions above. We log (with the kit's redact discipline,
-	// since the panic value below is a fixed string) and then panic so
-	// StartProcessors' recover path engages and invokes shutdownFn; a silent
-	// return would leave the app running with no consumer and no signal.
+	// A Start failure means the consumer never came up — return a redacted
+	// error so StartProcessors (and other lifecycle runners) can shut the
+	// process down instead of running without a worker.
 	if err := srv.Start(asynqHandler); err != nil {
 		q.logger.Error("asynq server failed to start",
 			redact.String("queue", queue),
 			redact.String("consumer_id", q.consumerID),
 			redact.Error(err),
 		)
-		panic("redisqueue: Process failed to start the asynq server")
+		return redact.WrapError("start asynq server", err)
 	}
 	<-ctx.Done()
 	// Shutdown drains in-flight handlers up to ShutdownTimeout. Per
@@ -823,6 +822,7 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	// signal the kit needs (Server.Stop just toggles internal state and
 	// is unused by the wrapper).
 	srv.Shutdown()
+	return ctx.Err()
 }
 
 // buildServerConfig translates kit options into [asynq.Config]. The

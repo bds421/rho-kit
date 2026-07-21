@@ -12,7 +12,9 @@
 //     that need Redis LIST semantics should import redisqueue, not code
 //     against these interfaces expecting a drop-in backend.
 //
-// [Consumer] is exported for external adapters. No in-tree backend
-// currently implements it; prefer the concrete backend's consume path
-// until an adapter ships.
+// [Consumer.Consume] returns error so lifecycle runners can distinguish
+// clean ctx cancel from terminal backend failure. No in-tree backend
+// currently implements the interface type itself; redisqueue exposes
+// [Queue.Process] with the same error contract. Prefer the concrete
+// backend's consume path until an adapter ships.
 package queue

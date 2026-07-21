@@ -511,8 +511,12 @@ func (c *Consumer) ready() error {
 }
 
 // Consume starts reading from the stream and dispatching to handler.
-// It automatically restarts with exponential backoff on errors.
-// Blocks until ctx is cancelled.
+// It automatically restarts with exponential backoff on transient errors.
+// Blocks until ctx is cancelled or a terminal failure stops the loop.
+//
+// Returns ctx.Err() on clean cancellation. A non-context error means the
+// consumer abandoned reconnection (configuration error or permanent
+// backend failure) so lifecycle runners can detect a silent worker death.
 //
 // Each handler invocation receives a context bounded by the consumer's
 // handler timeout (default 30s); a handler that exceeds it has its context
@@ -529,7 +533,7 @@ func (c *Consumer) ready() error {
 // (programming errors), or if Consume has already been called for this
 // Consumer (multi-stream usage). Use [StartConsumers] for multi-stream
 // services.
-func (c *Consumer) Consume(ctx context.Context, stream string, handler Handler) {
+func (c *Consumer) Consume(ctx context.Context, stream string, handler Handler) error {
 	if err := c.ready(); err != nil {
 		panic("redisstream: Consume consumer is invalid")
 	}
@@ -542,7 +546,7 @@ func (c *Consumer) Consume(ctx context.Context, stream string, handler Handler) 
 	if !c.consumed.CompareAndSwap(false, true) {
 		panic("redisstream: Consumer.Consume called for a second stream — create a separate Consumer per stream (see StartConsumers)")
 	}
-	redis.RunWithBackoff(ctx, c.logger, "stream consumer", func(ctx context.Context) error {
+	return redis.RunWithBackoff(ctx, c.logger, "stream consumer", func(ctx context.Context) error {
 		return c.consumeOnce(ctx, stream, handler)
 	})
 }

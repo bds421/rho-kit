@@ -670,3 +670,16 @@ func TestWithShutdownGrace_Default(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, handlerShutdownTimeout, c.shutdownGrace)
 }
+
+func TestConsume_ReturnsCtxErrOnCancel(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	c, err := NewConsumer(client, "test-group")
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = c.Consume(ctx, "stream-cancel", func(_ context.Context, _ Message) error { return nil })
+	assert.ErrorIs(t, err, context.Canceled)
+}

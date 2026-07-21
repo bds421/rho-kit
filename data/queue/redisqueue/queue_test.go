@@ -750,10 +750,11 @@ func TestHandlerForQueue_PermanentErrorSkipsRetryMetric(t *testing.T) {
 		"permanent errors must not increment messages_retried_total")
 }
 
-// TestProcess_StartFailurePanics pins that a server Start failure is treated
-// as a fail-fast startup error: Process panics rather than silently returning.
-// A silent return would leave the app running with no consumer and no signal.
-func TestProcess_StartFailurePanics(t *testing.T) {
+// TestProcess_StartFailureReturnsError pins that a server Start failure is
+// returned as a non-context error so lifecycle runners can detect a worker
+// that never came up (review-12). A silent nil return would leave the app
+// running with no consumer and no signal.
+func TestProcess_StartFailureReturnsError(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
@@ -766,14 +767,16 @@ func TestProcess_StartFailurePanics(t *testing.T) {
 		}
 	}
 
-	assert.Panics(t, func() {
-		q.Process(context.Background(), "test-queue", func(context.Context, Message) error { return nil })
-	}, "a Start failure must panic so the fail-fast startup contract holds")
+	err := q.Process(context.Background(), "test-queue", func(context.Context, Message) error { return nil })
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, context.DeadlineExceeded)
+	assert.Contains(t, err.Error(), "start asynq server")
 }
 
 // TestStartProcessors_StartFailureTriggersShutdown is the end-to-end guard for
-// the Start-failure path: when Process panics because the asynq server cannot
-// start, StartProcessors' per-goroutine recover must invoke shutdownFn so the
+// the Start-failure path: when Process returns a terminal error because the
+// asynq server cannot start, StartProcessors must invoke shutdownFn so the
 // app does not keep running with no consumer.
 func TestStartProcessors_StartFailureTriggersShutdown(t *testing.T) {
 	client := newTestClient(t)

@@ -11,7 +11,7 @@ evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
 | Need | Package | Why |
 |---|---|---|
 | Cache frequently-read data with TTL | `data/cache/rediscache` | Shared across instances, implements `cache.Cache` interface |
-| Scope cache or idempotency keys per tenant | `data/cache/tenant`, `data/idempotency/tenant` | Centralizes the length-prefixed tenant key encoder |
+| Scope cache or idempotency keys per tenant | `data/cache/tenant`, `data/idempotency/tenant` | Centralizes tenant-scoped keys (idempotency stores opaque tns:+sha256 digests) |
 | Fan-out events to multiple consumers | `data/stream/redisstream` | Durable log, consumer groups, ordered delivery |
 | Simple task queue (one consumer per item) | `data/queue/redisqueue` | FIFO with automatic retry, simpler than Streams |
 | Distributed rate limiting | `data/ratelimit/redis` | Atomic GCRA shared across service replicas |
@@ -150,12 +150,15 @@ consumer, err := stream.NewConsumer(conn.Client(), "orders-group",
     stream.WithClaimInterval(30*time.Second),
 )
 
-consumer.Consume(ctx, "orders", func(ctx context.Context, msg stream.Message) error {
+if err := consumer.Consume(ctx, "orders", func(ctx context.Context, msg stream.Message) error {
     // nil → XACK
     // apperror.PermanentError → dead-letter immediately
     // other error → retry (up to MaxRetries) then dead-letter
     return processOrder(ctx, msg)
-})
+}); err != nil && !errors.Is(err, context.Canceled) {
+    // terminal backend failure — lifecycle runner should shut down
+    return err
+}
 
 // Multiple streams:
 stream.StartConsumers(ctx, consumer,
