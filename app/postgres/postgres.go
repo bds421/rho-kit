@@ -24,6 +24,14 @@ type SQLDBProvider interface {
 	SQLDB() *sql.DB
 }
 
+// SQLDBReadyProvider is an optional capability on a postgres module that
+// reports whether [SQLDBProvider.SQLDB] is safe to call. Peer modules
+// registered before postgres use this to surface an actionable ordering
+// error instead of a panic from SQLDB.
+type SQLDBReadyProvider interface {
+	SQLDBReady() bool
+}
+
 // ResourceKey is the Infrastructure.Resource key under which the Module
 // publishes its initialized [*pgxbackend.Pool]. Use [Pool] to retrieve the
 // typed handle.
@@ -117,6 +125,11 @@ func (m *pgxModule) SQLDB() *sql.DB {
 		panic("postgres: SQLDB called before Init completed")
 	}
 	return m.sqlDB
+}
+
+// SQLDBReady reports whether [pgxModule.SQLDB] is safe to call.
+func (m *pgxModule) SQLDBReady() bool {
+	return m != nil && m.sqlDB != nil
 }
 
 func (m *pgxModule) Init(ctx context.Context, mc app.ModuleContext) error {

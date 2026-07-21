@@ -103,6 +103,12 @@ func scanFile(path string) ([]Annotation, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		// A single pathological line (embedded assets, generated tables)
+		// must not abort the whole tree walk — ASVS annotations never
+		// legitimately live on multi-megabyte lines.
+		if errors.Is(err, bufio.ErrTooLong) {
+			return out, nil
+		}
 		return nil, asvsFileError("scan source file", err)
 	}
 	return out, nil

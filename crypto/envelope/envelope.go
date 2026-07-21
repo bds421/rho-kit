@@ -94,6 +94,12 @@ type Encryptor struct {
 }
 
 // NewEncryptor constructs an Encryptor backed by kek.
+//
+// Panics if kek is nil. This matches the kit fail-fast constructor
+// convention for required wiring (a nil KEK is a programmer error, not a
+// recoverable runtime condition). Sibling KEK adapters that open network
+// clients return errors for invalid config; NewEncryptor only composes an
+// already-constructed KEK and therefore panics on nil.
 func NewEncryptor(kek KEK) *Encryptor {
 	if kek == nil {
 		panic("envelope: KEK must not be nil")

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
@@ -146,4 +148,14 @@ func TestMemoryStateStore_TakeIsSingleUse(t *testing.T) {
 	if _, err := s.Take(ctx, "st"); err == nil {
 		t.Fatal("second Take must fail")
 	}
+}
+
+func TestMemoryStateStore_MaxEntries(t *testing.T) {
+	s := NewMemoryStateStore(WithMaxStateEntries(2))
+	require.NoError(t, s.Put(context.Background(), "a", StateEntry{}, time.Minute))
+	require.NoError(t, s.Put(context.Background(), "b", StateEntry{}, time.Minute))
+	err := s.Put(context.Background(), "c", StateEntry{}, time.Minute)
+	require.ErrorIs(t, err, ErrStateStoreFull)
+	// Overwrite existing key still allowed.
+	require.NoError(t, s.Put(context.Background(), "a", StateEntry{}, time.Minute))
 }

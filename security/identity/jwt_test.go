@@ -42,3 +42,30 @@ func TestApplyJWTActor_ActorClaimOverride(t *testing.T) {
 	assert.Equal(t, "operator-1", actor)
 	assert.Equal(t, identity.ActorUser, kind)
 }
+
+func TestApplyJWTActor_RejectsUnsafeActorClaim(t *testing.T) {
+	claims := map[string]string{"client_id": "evil\nactor"}
+	claim := func(name string) (string, bool) {
+		v, ok := claims[name]
+		return v, ok && v != ""
+	}
+	subj, actor, kind, ok := identity.ApplyJWTActor(testUserID, claim, identity.JWTActorMapping{
+		ServiceActorClaim: "client_id",
+	})
+	require.True(t, ok)
+	assert.Equal(t, testUserID, subj)
+	// Falls back to subject; does not stamp service kind on bad claim.
+	assert.Equal(t, testUserID, actor)
+	assert.Equal(t, identity.ActorUser, kind)
+}
+
+func TestApplyJWTActor_AcceptsSanitizedServiceActor(t *testing.T) {
+	claims := map[string]string{"client_id": "payments-svc"}
+	claim := func(name string) (string, bool) { return claims[name], claims[name] != "" }
+	_, actor, kind, ok := identity.ApplyJWTActor(testUserID, claim, identity.JWTActorMapping{
+		ServiceActorClaim: "client_id",
+	})
+	require.True(t, ok)
+	assert.Equal(t, "payments-svc", actor)
+	assert.Equal(t, identity.ActorService, kind)
+}

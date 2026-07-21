@@ -102,6 +102,25 @@ func (s *String) Reveal() []byte {
 	return cp
 }
 
+// Clone returns a new String with an independent copy of the plaintext,
+// performing a single allocation under one RLock. Prefer this over
+// secret.New(s.Reveal()) which allocates and copies twice (review-22).
+func (s *String) Clone() *String {
+	if s == nil || s.inner == nil {
+		return New(nil)
+	}
+	s.inner.mu.RLock()
+	defer s.inner.mu.RUnlock()
+	out := &String{inner: &stringInner{}}
+	if len(s.inner.buf) == 0 {
+		return out
+	}
+	cp := make([]byte, len(s.inner.buf))
+	copy(cp, s.inner.buf)
+	out.inner.buf = cp
+	return out
+}
+
 // RevealString returns the underlying value as a string.
 //
 // Returns "" for a nil receiver, an uninitialised String, or a

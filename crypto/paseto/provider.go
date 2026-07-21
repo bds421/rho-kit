@@ -40,7 +40,7 @@ type Provider struct {
 	onRefreshErr func(error)
 
 	current               atomic.Pointer[V4PublicVerifier]
-	lastSuccessfulRefresh atomic.Int64
+	lastSuccessfulRefresh atomic.Value // time.Time; preserves monotonic reading
 	closed                atomic.Bool
 	stop                  chan struct{}
 	done                  chan struct{}
@@ -217,11 +217,14 @@ func (p *Provider) Verify(token string, now time.Time) (*Claims, error) {
 		return nil, ErrKeySetUnavailable
 	}
 	if p.maxStale > 0 {
-		last := p.lastSuccessfulRefresh.Load()
-		if last == 0 {
+		last, ok := p.lastSuccessfulRefresh.Load().(time.Time)
+		if !ok || last.IsZero() {
 			return nil, ErrKeySetUnavailable
 		}
-		if p.clock().Sub(time.Unix(0, last)) > p.maxStale {
+		// Sub preserves monotonic comparison when both times came from
+		// the same clock source (avoids NTP wall-clock steps extending
+		// or shrinking the stale window via UnixNano round-trip).
+		if p.clock().Sub(last) > p.maxStale {
 			return nil, ErrKeySetUnavailable
 		}
 	}
@@ -306,6 +309,6 @@ func (p *Provider) refresh(ctx context.Context) error {
 		return err
 	}
 	p.current.Store(v)
-	p.lastSuccessfulRefresh.Store(p.clock().UnixNano())
+	p.lastSuccessfulRefresh.Store(p.clock())
 	return nil
 }

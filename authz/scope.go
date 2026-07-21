@@ -22,9 +22,12 @@ import (
 //	    ScopeUsersWrite = authz.MustRegister("users.write", "Create or update users")
 //	)
 //
-// Then pass ScopeUsersRead to httpx middleware constructors — the
-// compiler enforces that you used a real registered scope and not
-// a typo of one.
+// Then pass ScopeUsersRead to httpx middleware constructors. Scope is a
+// distinct named type so call sites cannot mix arbitrary strings with
+// registered constants without an explicit conversion — but conversion
+// from a string literal (or authz.Scope("users.raed")) still compiles.
+// Registration is a process-global catalogue; use [IsRegistered] at
+// startup if you need to assert the expected set is present.
 type Scope string
 
 // scopePattern bounds Scope to safe characters: lowercase ASCII, digits,

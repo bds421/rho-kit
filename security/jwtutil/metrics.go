@@ -83,7 +83,7 @@ func NewMetricsCollector(p *Provider, instance string, opts ...MetricsOption) (*
 		),
 		fetchFailures: prometheus.NewDesc(
 			"jwks_fetch_failures_total",
-			"Cumulative count of JWKS fetch failures by reason (http|parse|stale-rejected).",
+			"Cumulative count of JWKS fetch failures by reason (http|parse|stale-rejected). stale-rejected counts once per stale window, not per verification.",
 			[]string{"reason"}, labels,
 		),
 		staleness: prometheus.NewDesc(

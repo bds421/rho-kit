@@ -4,16 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
 	"github.com/bds421/rho-kit/core/v2/randstr"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/core/v2/secret"
 	"github.com/bds421/rho-kit/crypto/v2/passhash"
 	"github.com/bds421/rho-kit/crypto/v2/passhash/bcryptcompat"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Default scoped-key wire prefixes. Override via [ScopedGenerateOptions.TokenPrefix]
@@ -200,7 +202,23 @@ var (
 	ErrScopedMalformed = errors.New("apikey: malformed scoped token")
 	// ErrScopedNotFound is returned when no active key matches the prefix.
 	ErrScopedNotFound = apperror.NewNotFound("scoped api key", "")
+	// ErrScopedLookup is returned when the prefix repository fails for a
+	// non-auth reason (transport/SQL). Callers should map it to 5xx, not 401.
+	ErrScopedLookup = errors.New("apikey: scoped key lookup failed")
+
+	// scopedDummyHash is a bcrypt cost-4 hash of a fixed secret, used only
+	// to equalize verify work on the not-found path. It must never match a
+	// caller-presented secret in production.
+	scopedDummyHash string
 )
+
+func init() {
+	h, err := bcrypt.GenerateFromPassword([]byte("kit-apikey-scoped-timing-floor"), bcrypt.MinCost)
+	if err != nil {
+		panic("apikey: generate scoped timing-floor hash: " + err.Error())
+	}
+	scopedDummyHash = string(h)
+}
 
 // TokenPrefix returns the wire prefix this resolver accepts.
 func (r *ScopedResolver) TokenPrefix() string { return r.tokenPrefix }
@@ -213,7 +231,15 @@ func (r *ScopedResolver) Resolve(ctx context.Context, presented string) (Princip
 	}
 	key, err := r.repo.ActiveByPrefix(ctx, lookup)
 	if err != nil {
-		return Principal{}, err
+		if errors.Is(err, ErrScopedNotFound) {
+			// Equalize work with the match path: a repository miss must not
+			// return faster than a failed secret verify (prefix-existence
+			// timing oracle). Dummy verify against a fixed bcrypt hash.
+			_, _ = bcryptcompat.Verify(secretPart, scopedDummyHash, r.hashTarget)
+			return Principal{}, ErrScopedNotFound
+		}
+		// Redact backend topology: wrap infra errors in a stable sentinel.
+		return Principal{}, fmt.Errorf("%w: %w", ErrScopedLookup, redact.WrapError("lookup", err))
 	}
 	now := r.now()
 	if !key.RevokedAt.IsZero() && !now.Before(key.RevokedAt) {
@@ -259,11 +285,14 @@ func HasScope(p Principal, scope string) bool {
 }
 
 func parseScopedToken(token, prefix string) (lookupPrefix, secret string, err error) {
-	parts := strings.Split(token, "_")
-	if len(parts) != 3 || parts[0] != prefix || parts[1] == "" || parts[2] == "" {
+	// Share the wire-format invariant with [Parse]; map the generic
+	// malformed sentinel onto the scoped one so Resolve callers keep
+	// errors.Is(ErrScopedMalformed).
+	id, sec, err := Parse(token, prefix)
+	if err != nil {
 		return "", "", ErrScopedMalformed
 	}
-	return parts[1], parts[2], nil
+	return id, sec, nil
 }
 
 // MemoryPrefixRepository is an in-memory [PrefixRepository] for tests.

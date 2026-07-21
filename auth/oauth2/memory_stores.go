@@ -2,6 +2,7 @@ package oauth2
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -132,9 +133,14 @@ func (m *MemorySessionStore) Delete(_ context.Context, id string) error {
 
 // MemoryStateStore is an in-process [StateStore] for tests and
 // single-process services. Production deployments should use Redis.
+//
+// Live entries are capped at [DefaultMaxStateEntries] (overridable via
+// [WithMaxStateEntries]) so unauthenticated GET /login cannot grow the
+// map unboundedly during the state TTL window.
 type MemoryStateStore struct {
-	mu      sync.Mutex
-	entries map[string]memoryStateEntry
+	mu         sync.Mutex
+	entries    map[string]memoryStateEntry
+	maxEntries int
 }
 
 type memoryStateEntry struct {
@@ -142,14 +148,46 @@ type memoryStateEntry struct {
 	expiresAt time.Time
 }
 
+// DefaultMaxStateEntries is the default cap on live CSRF state entries
+// in [MemoryStateStore]. At ~1k logins/s with a 10-minute TTL this is
+// well below the multi-hundred-MB failure mode; raise only when a
+// single-process deployment legitimately needs a larger burst window.
+const DefaultMaxStateEntries = 10_000
+
+// ErrStateStoreFull is returned by [MemoryStateStore.Put] when the live
+// entry cap is reached after sweeping expired entries.
+var ErrStateStoreFull = errors.New("oauth2: state store full")
+
+// MemoryStateStoreOption configures [NewMemoryStateStore].
+type MemoryStateStoreOption func(*MemoryStateStore)
+
+// WithMaxStateEntries sets the maximum number of live state entries.
+// Values <= 0 panic.
+func WithMaxStateEntries(n int) MemoryStateStoreOption {
+	if n <= 0 {
+		panic("oauth2: WithMaxStateEntries requires a positive limit")
+	}
+	return func(m *MemoryStateStore) { m.maxEntries = n }
+}
+
 // NewMemoryStateStore returns a fresh empty store.
-func NewMemoryStateStore() *MemoryStateStore {
-	return &MemoryStateStore{entries: make(map[string]memoryStateEntry)}
+func NewMemoryStateStore(opts ...MemoryStateStoreOption) *MemoryStateStore {
+	m := &MemoryStateStore{
+		entries:    make(map[string]memoryStateEntry),
+		maxEntries: DefaultMaxStateEntries,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(m)
+		}
+	}
+	return m
 }
 
 // Put implements [StateStore]. Opportunistically sweeps already-expired
 // entries so abandoned logins (a callback that never arrives) cannot
-// accumulate without bound.
+// accumulate without bound. Returns [ErrStateStoreFull] when the live
+// entry cap is exceeded after the sweep.
 func (m *MemoryStateStore) Put(_ context.Context, state string, entry StateEntry, ttl time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -158,6 +196,9 @@ func (m *MemoryStateStore) Put(_ context.Context, state string, entry StateEntry
 		if now.After(existing.expiresAt) {
 			delete(m.entries, key)
 		}
+	}
+	if _, exists := m.entries[state]; !exists && len(m.entries) >= m.maxEntries {
+		return ErrStateStoreFull
 	}
 	m.entries[state] = memoryStateEntry{entry: entry, expiresAt: now.Add(ttl)}
 	return nil

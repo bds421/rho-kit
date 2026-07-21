@@ -99,7 +99,7 @@ func TestMetricsCollector_ReportsStaleRejectedFailures(t *testing.T) {
 	p.lastSuccessfulFetch = now.Add(-1 * time.Hour)
 	p.mu.Unlock()
 
-	// Trigger two stale rejections; verify the typed error wraps the umbrella sentinel.
+	// Two stale rejections increment the counter once (transition, not per-request).
 	for i := 0; i < 2; i++ {
 		_, err := p.Verify("any.token.here", now)
 		require.Error(t, err)
@@ -115,7 +115,7 @@ func TestMetricsCollector_ReportsStaleRejectedFailures(t *testing.T) {
 	require.NoError(t, err)
 	got := metricFamilies(families)
 	reasons := counterByLabel(got["jwks_fetch_failures_total"], "reason")
-	assert.Equal(t, 2.0, reasons["stale-rejected"])
+	assert.Equal(t, 1.0, reasons["stale-rejected"])
 	assert.Equal(t, 0.0, reasons["http"])
 	assert.Equal(t, 0.0, reasons["parse"])
 }

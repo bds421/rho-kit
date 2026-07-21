@@ -141,7 +141,7 @@ func TestScanImports_StrongestEvidenceWins(t *testing.T) {
 		{Claim: PackageClaim{Controls: []ID{"V14.1.1"}, Evidence: EvidenceCapability}},
 		{Claim: PackageClaim{Controls: []ID{"V14.1.1"}, Evidence: EvidenceBuilderEnforced}},
 	}
-	report := buildImportReport(imports)
+	report := buildImportReport(imports, nil)
 	assert.Equal(t, EvidenceBuilderEnforced, report.EvidenceByControl["V14.1.1"])
 }
 

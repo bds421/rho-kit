@@ -255,15 +255,22 @@ func (k *KEK) decryptKeyIDFor(keyID string) (string, error) {
 		return "", errors.New("awskms: keyID does not match this KEK")
 	}
 
-	if len(keyID) > len(k.keyID) && hasSuffixSegment(keyID, k.keyID) {
-		if !isKMSKeyARN(keyID) {
+	// Bare key UUID configuration: accept only a well-formed key ARN whose
+	// resource is exactly "key/<configured-id>" (not a loose suffix match that
+	// could accept crafted nested resources). When the client region is known,
+	// pin it; when unknown, reject ARN forms fail-closed rather than forwarding
+	// an attacker-controlled ARN to Decrypt.
+	if isKMSKeyARN(keyID) {
+		resource, ok := kmsARNResource(keyID)
+		if !ok || resource != "key/"+k.keyID {
 			return "", errors.New("awskms: keyID does not match this KEK")
 		}
-		if k.region != "" {
-			region, ok := kmsARNRegion(keyID)
-			if !ok || region != k.region {
-				return "", errors.New("awskms: keyID region does not match this KEK")
-			}
+		if k.region == "" {
+			return "", errors.New("awskms: keyID ARN requires known client region for bare key ID config")
+		}
+		region, ok := kmsARNRegion(keyID)
+		if !ok || region != k.region {
+			return "", errors.New("awskms: keyID region does not match this KEK")
 		}
 		return keyID, nil
 	}
@@ -271,23 +278,6 @@ func (k *KEK) decryptKeyIDFor(keyID string) (string, error) {
 	return "", errors.New("awskms: keyID does not match this KEK")
 }
 
-// hasSuffixSegment reports whether s ends with seg AND seg is
-// preceded by a path separator (":", "/") or a digit/letter
-// boundary that anchors the match at a segment edge — preventing
-// "alias/badkey" from matching when seg is "key".
-func hasSuffixSegment(s, seg string) bool {
-	if len(s) < len(seg) {
-		return false
-	}
-	if s[len(s)-len(seg):] != seg {
-		return false
-	}
-	if len(s) == len(seg) {
-		return true
-	}
-	prev := s[len(s)-len(seg)-1]
-	return prev == '/' || prev == ':'
-}
 
 func isKMSAliasID(s string) bool {
 	return strings.HasPrefix(s, "alias/") || isKMSAliasARN(s)

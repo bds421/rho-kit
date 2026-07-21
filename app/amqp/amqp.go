@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/url"
 	"strings"
 
@@ -298,14 +297,9 @@ func isLoopbackPlaintextURL(amqpURL string) bool {
 }
 
 func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	return ip.IsLoopback()
+	// Share the kit's loopback definition with app validators / redis
+	// (literal path: no DNS at dial-construction time).
+	return netutil.IsLoopbackHostLiteral(host)
 }
 
 // Connection returns the AMQP connection published by [Module] under

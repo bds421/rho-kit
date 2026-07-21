@@ -151,6 +151,22 @@ func (d *loggedDecider) Allow(ctx context.Context, subject, action, resource str
 }
 
 func (c *loggedConfig) emit(ctx context.Context, subject, action, resource string, err error) {
+	// Recover around the entire observability path so a panicking slog
+	// handler or AuditSink cannot turn a successful Allow into a process
+	// crash — mirrors Wave 72's panic containment for the inner decider.
+	defer func() {
+		if rec := recover(); rec != nil {
+			// Best-effort: if the configured logger is itself healthy,
+			// surface the sink panic; otherwise swallow to keep the
+			// authorization result intact.
+			if c != nil && c.logger != nil {
+				c.logger.Error("authz audit sink panicked",
+					slog.Any("panic", rec),
+					slog.String("action", "authz.audit_panic"),
+				)
+			}
+		}
+	}()
 	verb, outcome, reason, level := classify(err)
 	if c.logger != nil {
 		// Identifier-shaped fields (subject SPIFFE/JWT id, resource path,

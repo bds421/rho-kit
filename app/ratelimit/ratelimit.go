@@ -27,6 +27,7 @@ package ratelimit
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/bds421/rho-kit/app/v2"
@@ -43,8 +44,9 @@ const (
 	// limiter handles the public mux baseline).
 	ResourceIPKey = "github.com/bds421/rho-kit/app/ratelimit.ip"
 	// ResourceKeyedMapKey is the [app.Infrastructure.Resource] key
-	// under which every [Keyed] cooperatively appends its
-	// limiter. The value is a map[string]*mwrl.KeyedLimiter.
+	// under which every [Keyed] cooperatively registers its
+	// limiter. The value is a *keyedLimiterRegistry (immutable
+	// published pointer; mutations go through the registry mutex).
 	ResourceKeyedMapKey = "github.com/bds421/rho-kit/app/ratelimit.keyed"
 
 	// ModuleNameIP is the registered Name() for [IP].
@@ -205,26 +207,49 @@ func (m *keyedModule) Init(_ context.Context, mc app.ModuleContext) error {
 	return nil
 }
 
+// keyedLimiterRegistry is the published resource under
+// [ResourceKeyedMapKey]. The registry pointer is set once; limiters
+// are added through synchronized methods so Populate never mutates
+// a published map in place.
+type keyedLimiterRegistry struct {
+	mu       sync.RWMutex
+	limiters map[string]*mwrl.KeyedLimiter
+}
+
+func (r *keyedLimiterRegistry) set(name string, lim *mwrl.KeyedLimiter) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.limiters == nil {
+		r.limiters = make(map[string]*mwrl.KeyedLimiter)
+	}
+	r.limiters[name] = lim
+}
+
+func (r *keyedLimiterRegistry) get(name string) *mwrl.KeyedLimiter {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.limiters == nil {
+		return nil
+	}
+	return r.limiters[name]
+}
+
 func (m *keyedModule) Populate(infra *app.Infrastructure) {
 	if m.limiter == nil {
 		return
 	}
-	// Cooperatively append to the shared resource map so multiple
-	// Keyed registrations stack rather than overwrite each
-	// other. Existing map (if any) is read-mutated; absent map
-	// path creates a fresh one. Module Populate is called
-	// sequentially in registration order, so the read/write race
-	// only exists across modules contributing to the same key,
-	// not within a single Populate call.
-	var m2 map[string]*mwrl.KeyedLimiter
+	// Publish a locked registry once, then add limiters through it.
+	// This keeps SetResource's exclusive-key contract (no double
+	// register, no in-place mutation of a published map).
+	var reg *keyedLimiterRegistry
 	if existing, ok := infra.Resource(ResourceKeyedMapKey); ok {
-		m2, _ = existing.(map[string]*mwrl.KeyedLimiter)
+		reg, _ = existing.(*keyedLimiterRegistry)
 	}
-	if m2 == nil {
-		m2 = make(map[string]*mwrl.KeyedLimiter)
-		infra.SetResource(ResourceKeyedMapKey, m2)
+	if reg == nil {
+		reg = &keyedLimiterRegistry{}
+		infra.SetResource(ResourceKeyedMapKey, reg)
 	}
-	m2[m.name] = m.limiter
+	reg.set(m.name, m.limiter)
 }
 
 // IPLimiter returns the per-IP rate limiter published by
@@ -245,9 +270,9 @@ func KeyedLimiter(infra app.Infrastructure, name string) *mwrl.KeyedLimiter {
 	if !ok {
 		return nil
 	}
-	m, _ := v.(map[string]*mwrl.KeyedLimiter)
-	if m == nil {
+	reg, _ := v.(*keyedLimiterRegistry)
+	if reg == nil {
 		return nil
 	}
-	return m[name]
+	return reg.get(name)
 }

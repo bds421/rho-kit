@@ -67,6 +67,12 @@ type Decider struct {
 // HTTP client (timeouts, mTLS, tracing), and inject required headers without
 // bypassing the kit wrapper. Custom HTTP clients with no redirect policy are
 // shallow-copied and hardened to block redirects.
+//
+// TLS floor / MaxResponseHeaderBytes hardening applies when Transport is nil
+// or a concrete *http.Transport. A custom RoundTripper (tracing/mTLS wrappers
+// that do not expose *http.Transport) is left as-is — only CheckRedirect and
+// Timeout are enforced. Prefer wrapping http.DefaultTransport (or clone it)
+// so the kit can still pin TLS 1.2+.
 type Config struct {
 	APIURL         string
 	StoreID        string

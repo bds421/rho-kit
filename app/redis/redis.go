@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
-	"strings"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -17,6 +15,7 @@ import (
 	"github.com/bds421/rho-kit/core/v2/tlsclone"
 	kitredis "github.com/bds421/rho-kit/infra/redis/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 // ResourceKey is the Infrastructure.Resource key under which the Module
@@ -225,26 +224,15 @@ func optionsHaveCredentials(opts *goredis.Options) bool {
 // "localhost", IPv4 loopback ("127.0.0.0/8"), and IPv6 loopback ("::1").
 // Empty addresses are treated as loopback so that go-redis defaults
 // (localhost:6379) remain dev-safe.
+//
+// Delegates to [netutil.IsLoopbackAddr] so redis, amqp, and app validators
+// share one loopback definition.
 func IsLoopbackAddr(addr string) bool {
-	return isLoopbackAddr(addr)
+	return netutil.IsLoopbackAddr(addr)
 }
 
 func isLoopbackAddr(addr string) bool {
-	if addr == "" {
-		return true
-	}
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = addr
-	}
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	return ip.IsLoopback()
+	return netutil.IsLoopbackAddr(addr)
 }
 
 func cloneOptions(opts *goredis.Options) *goredis.Options {

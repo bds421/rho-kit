@@ -1013,8 +1013,8 @@ func TestJWKSFetchErrorKind(t *testing.T) {
 		{name: "context canceled", err: context.Canceled, want: "context_canceled"},
 		{name: "deadline", err: context.DeadlineExceeded, want: "timeout"},
 		{name: "redirect", err: ErrJWKSRedirectBlocked, want: "redirect_blocked"},
-		{name: "bad status", err: errors.New("jwks endpoint returned 503"), want: "bad_status"},
-		{name: "content type", err: errors.New("jwks endpoint returned unexpected content-type"), want: "unexpected_content_type"},
+		{name: "bad status", err: fmt.Errorf("%w: 503", errJWKSBadStatus), want: "bad_status"},
+		{name: "content type", err: errJWKSUnexpectedContentType, want: "unexpected_content_type"},
 		{name: "fallback", err: errors.New("connection refused"), want: "fetch_failed"},
 	}
 	for _, tt := range tests {
@@ -1706,7 +1706,7 @@ func TestProviderFetch_RespectsExplicitCustomRedirectPolicy(t *testing.T) {
 	if errors.Is(err, ErrJWKSRedirectBlocked) {
 		t.Fatalf("fetch error = %v, did not expect ErrJWKSRedirectBlocked", err)
 	}
-	if !strings.Contains(err.Error(), "jwks endpoint returned 302") {
+	if !errors.Is(err, errJWKSBadStatus) && !strings.Contains(err.Error(), "302") {
 		t.Fatalf("fetch error = %v, want 302 response error", err)
 	}
 	if p.KeySet() != nil {

@@ -180,3 +180,17 @@ func TestLogged_SatisfiesDecider(t *testing.T) {
 		t.Fatalf("Logged did not return an authz.Decider, got %T", d)
 	}
 }
+
+type panickingSink struct{}
+
+func (panickingSink) LogAuthz(context.Context, authz.AuditEvent) {
+	panic("audit sink boom")
+}
+
+func TestLogged_SinkPanicDoesNotPropagate(t *testing.T) {
+	mem := authz.NewMemoryStore()
+	mem.Grant("alice", "read", "doc:1")
+	dec := authz.Logged(mem, authz.WithAuditSink(panickingSink{}))
+	err := dec.Allow(context.Background(), "alice", "read", "doc:1")
+	require.NoError(t, err, "sink panic must not convert allow into crash/error")
+}

@@ -2,72 +2,15 @@
 package app
 
 import (
-	"context"
 	"fmt"
-	"net"
-	"strings"
+
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
-// isLoopbackHost reports whether host resolves exclusively to
-// loopback (127.0.0.0/8 or ::1). Used by the production-safety
-// validator to enforce that the internal ops port (which serves
-// /metrics, /healthz, /ready without authentication) binds only to
-// the loopback interface unless [http.WithInternalNonLoopback]
-// has been registered.
-//
-// FR-010 [HIGH]: pre-2.0 the validator only rejected unspecified
-// (wildcard) hosts, so INTERNAL_HOST=10.0.0.5 (or any other reachable
-// interface) passed silently and exposed /metrics on the network.
-// The new contract is: only loopback binds pass the default check;
-// everything else — wildcard, private-network, public IP, or
-// hostname that resolves outside loopback — requires
-// http.WithInternalNonLoopback.
-//
-// Empty host counts as loopback because [InternalConfig.Addr]
-// defaults empty to "127.0.0.1" at listen time. Bracket-only IPv6
-// forms ("[]", "[", "]") collapse to empty after stripping but DO
-// resolve to the IPv6 wildcard at listen time, so they're flagged
-// as non-loopback.
-//
-// Numeric hosts are checked via net.ParseIP (no DNS). Hostnames are
-// resolved with LookupIPAddr and every returned address must be
-// loopback — a multi-A record that mixes loopback with a routable
-// address fails closed (FR-010).
+// isLoopbackHost delegates to [netutil.IsLoopbackHost] so app validators and
+// transport-safety checks share one definition of loopback (FR-010).
 func isLoopbackHost(host string) bool {
-	if host == "" {
-		// Empty defaults to 127.0.0.1 in the listener config.
-		return true
-	}
-	// Strip square brackets that may wrap an IPv6 literal —
-	// net.JoinHostPort docs explicitly say "host does not contain
-	// square brackets", and passing "[::]" produces "[[::]]:0"
-	// which fails to parse.
-	stripped := strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
-	if stripped == "" {
-		// Bracket-only forms ("[]", "[", "]") strip to empty BUT
-		// net.Listen accepts "[]:port" as the IPv6 wildcard and binds
-		// [::]:port — that's a non-loopback exposure (audit finding
-		// N-10). Treat post-strip empty as non-loopback so the
-		// default validator rejects it.
-		return false
-	}
-	// Numeric IP literal: no DNS, single-address check.
-	if ip := net.ParseIP(stripped); ip != nil {
-		return ip.IsLoopback()
-	}
-	// Hostname: require EVERY resolved address to be loopback so a
-	// multi-A record (loopback + routable) cannot pass the FR-010
-	// guard when Listen later binds the routable address.
-	ips, err := net.DefaultResolver.LookupIPAddr(context.Background(), stripped)
-	if err != nil || len(ips) == 0 {
-		return false
-	}
-	for _, a := range ips {
-		if a.IP == nil || !a.IP.IsLoopback() {
-			return false
-		}
-	}
-	return true
+	return netutil.IsLoopbackHost(host)
 }
 
 // Validate checks for common configuration mistakes before startup.

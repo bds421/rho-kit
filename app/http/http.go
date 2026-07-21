@@ -96,6 +96,12 @@ func WithOptionalClientCertificates() Option {
 // FR-010 [HIGH]: without this opt-in, the validator refuses any
 // internal listener that resolves outside loopback so /metrics
 // cannot be exposed on the network by accident.
+//
+// When kit server TLS is configured, the internal listener reuses
+// that TLS config. Without TLS material the internal ops surface is
+// plaintext — operators who need non-loopback metrics must either
+// configure kit TLS or enforce network-layer encryption (mesh/mTLS
+// sidecar, private network ACLs).
 func WithInternalNonLoopback() Option {
 	return func(c *config) { c.allowInternalNonLoopback = true }
 }

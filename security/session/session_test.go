@@ -135,3 +135,31 @@ func TestValidator_NilSigner(t *testing.T) {
 	_, err := v.Validate(context.Background(), "tok", time.Now())
 	require.ErrorIs(t, err, ErrValidatorNotConfigured)
 }
+
+func TestNewSignerWithRoots_AcceptsPrevious(t *testing.T) {
+	oldRoot := testRoot()
+	newRoot := []byte("fedcba9876543210fedcba9876543210")
+	oldSigner, err := NewSigner(oldRoot, "session")
+	require.NoError(t, err)
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	token, err := oldSigner.Mint(Claims{
+		UserID: "user-1", Tenant: "t", Role: "member",
+		TokenVersion: 1, Exp: now.Add(time.Hour),
+	})
+	require.NoError(t, err)
+
+	rotated, err := NewSignerWithRoots(newRoot, [][]byte{oldRoot}, "session")
+	require.NoError(t, err)
+	got, err := rotated.Verify(token, now)
+	require.NoError(t, err)
+	assert.Equal(t, "user-1", got.UserID)
+
+	// New tokens use the current root only.
+	newTok, err := rotated.Mint(Claims{
+		UserID: "user-2", Tenant: "t", Role: "member",
+		TokenVersion: 1, Exp: now.Add(time.Hour),
+	})
+	require.NoError(t, err)
+	_, err = oldSigner.Verify(newTok, now)
+	assert.ErrorIs(t, err, ErrInvalidToken)
+}

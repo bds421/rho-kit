@@ -123,3 +123,18 @@ func TestPGAdvisoryFromPostgres_InitWiresElector(t *testing.T) {
 	m.Populate(&infra)
 	require.NotNil(t, Elector(infra))
 }
+
+type unreadyPostgresModule struct {
+	stubPostgresModule
+}
+
+func (unreadyPostgresModule) SQLDBReady() bool { return false }
+
+func TestPGAdvisoryFromPostgres_RequiresPostgresInit(t *testing.T) {
+	m := PGAdvisoryFromPostgres("svc")
+	mc, err := app.TestModuleContext(unreadyPostgresModule{})
+	require.NoError(t, err)
+	err = m.Init(context.Background(), mc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires postgres module registered before leader")
+}

@@ -99,9 +99,12 @@ func DeriveKey(root []byte, label string) ([]byte, error) {
 }
 
 // HMACSigner signs session tokens with HMAC-SHA256 over the base64url payload.
+// Signing always uses the first (current) key; verification accepts any key
+// in the ring so root rotation can overlap without force-logging-out users.
 type HMACSigner struct {
-	key []byte
-	now clock.Func
+	key  []byte   // current signing key (also first of keys)
+	keys [][]byte // current + previous verification keys
+	now  clock.Func
 }
 
 // SignerOption configures [NewSigner].
@@ -119,11 +122,28 @@ func WithClock(now clock.Func) SignerOption {
 
 // NewSigner constructs an HMAC session signer from root and label.
 func NewSigner(root []byte, label string, opts ...SignerOption) (*HMACSigner, error) {
-	key, err := DeriveKey(root, label)
+	return NewSignerWithRoots(root, nil, label, opts...)
+}
+
+// NewSignerWithRoots constructs an HMAC session signer that signs with
+// current and accepts previous roots at verify time (rotation overlap).
+// Each root is HKDF-derived with label independently. Empty previous is
+// equivalent to [NewSigner].
+func NewSignerWithRoots(current []byte, previous [][]byte, label string, opts ...SignerOption) (*HMACSigner, error) {
+	key, err := DeriveKey(current, label)
 	if err != nil {
 		return nil, err
 	}
-	s := &HMACSigner{key: key, now: time.Now}
+	keys := make([][]byte, 0, 1+len(previous))
+	keys = append(keys, key)
+	for _, prev := range previous {
+		pk, err := DeriveKey(prev, label)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, pk)
+	}
+	s := &HMACSigner{key: key, keys: keys, now: time.Now}
 	for _, opt := range opts {
 		if opt == nil {
 			panic("session: NewSigner option must not be nil")
@@ -189,8 +209,7 @@ func (s *HMACSigner) Verify(token string, now time.Time) (Claims, error) {
 	if err != nil {
 		return Claims{}, ErrInvalidToken
 	}
-	wantMAC := s.sign([]byte(parts[0]))
-	if subtle.ConstantTimeCompare(gotMAC, wantMAC) != 1 {
+	if !s.macValid([]byte(parts[0]), gotMAC) {
 		return Claims{}, ErrInvalidToken
 	}
 	var w wireClaims
@@ -217,6 +236,21 @@ func (s *HMACSigner) sign(msg []byte) []byte {
 	mac := hmac.New(sha256.New, s.key)
 	_, _ = mac.Write(msg)
 	return mac.Sum(nil)
+}
+
+func (s *HMACSigner) macValid(msg, got []byte) bool {
+	keys := s.keys
+	if len(keys) == 0 && len(s.key) > 0 {
+		keys = [][]byte{s.key}
+	}
+	ok := 0
+	for _, k := range keys {
+		mac := hmac.New(sha256.New, k)
+		_, _ = mac.Write(msg)
+		want := mac.Sum(nil)
+		ok |= subtle.ConstantTimeCompare(got, want)
+	}
+	return ok == 1
 }
 
 // Validator verifies tokens and optionally re-validates ver/role against store.

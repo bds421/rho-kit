@@ -172,6 +172,18 @@ type ImportReport struct {
 	// [Evidence] class observed across the importing packages.
 	// "Strongest" is ranked Runtime > Builder > Capability.
 	EvidenceByControl map[ID]Evidence
+	// SkippedFiles lists .go paths that could not be parsed (syntax
+	// errors under the kit-doctor toolchain). Empty when every file
+	// parsed cleanly; operators should treat non-empty as "report may
+	// understate import evidence".
+	SkippedFiles []string
+}
+
+// EvidenceEntry is one (control, evidence-class) pair from
+// [ImportReport.EvidenceSummary].
+type EvidenceEntry struct {
+	ID       ID
+	Evidence Evidence
 }
 
 // ScanImports walks root looking for kit-namespace imports in .go
@@ -186,6 +198,7 @@ func ScanImports(root string) (ImportReport, error) {
 	registry := buildRegistryIndex()
 
 	var imports []ImportClaim
+	var skipped []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return asvsFileError("inspect source tree", walkErr)
@@ -206,9 +219,12 @@ func ScanImports(root string) (ImportReport, error) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		fileImports, err := scanFileImports(path, registry)
+		fileImports, skip, err := scanFileImports(path, registry)
 		if err != nil {
 			return err
+		}
+		if skip {
+			skipped = append(skipped, path)
 		}
 		imports = append(imports, fileImports...)
 		return nil
@@ -216,7 +232,7 @@ func ScanImports(root string) (ImportReport, error) {
 	if err != nil {
 		return ImportReport{}, asvsFileError("walk source tree", err)
 	}
-	return buildImportReport(imports), nil
+	return buildImportReport(imports, skipped), nil
 }
 
 // PackageRegistry returns a detached copy of the kit's hand-maintained import
@@ -242,15 +258,14 @@ func buildRegistryIndex() map[string]PackageClaim {
 	return out
 }
 
-func scanFileImports(path string, registry map[string]PackageClaim) ([]ImportClaim, error) {
+func scanFileImports(path string, registry map[string]PackageClaim) (claims []ImportClaim, skipped bool, err error) {
 	fset := token.NewFileSet()
 	// ImportsOnly avoids the cost of parsing function bodies.
 	file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
 	if err != nil {
 		// A parse error in user source is not a kit-doctor failure —
-		// surface as an empty result for this file. Returning an error
-		// would abort the whole walk on the first malformed file.
-		return nil, nil
+		// record the skip so operators know evidence may be understated.
+		return nil, true, nil
 	}
 	var out []ImportClaim
 	for _, imp := range file.Imports {
@@ -270,10 +285,10 @@ func scanFileImports(path string, registry map[string]PackageClaim) ([]ImportCla
 			Line:  pos.Line,
 		})
 	}
-	return out, nil
+	return out, false, nil
 }
 
-func buildImportReport(imports []ImportClaim) ImportReport {
+func buildImportReport(imports []ImportClaim, skipped []string) ImportReport {
 	claimedSet := map[ID]struct{}{}
 	evidence := map[ID]Evidence{}
 	for _, ic := range imports {
@@ -293,6 +308,7 @@ func buildImportReport(imports []ImportClaim) ImportReport {
 		Claimed:           sortedIDs(claimedSet),
 		Missing:           sortedIDs(missing),
 		EvidenceByControl: evidence,
+		SkippedFiles:      append([]string(nil), skipped...),
 	}
 }
 
@@ -322,19 +338,10 @@ func rank(e Evidence) int {
 
 // EvidenceSummary returns a sorted list of (ID, Evidence) pairs from
 // an [ImportReport]. kit-doctor uses this for stable rendering.
-func (r ImportReport) EvidenceSummary() []struct {
-	ID       ID
-	Evidence Evidence
-} {
-	out := make([]struct {
-		ID       ID
-		Evidence Evidence
-	}, 0, len(r.EvidenceByControl))
+func (r ImportReport) EvidenceSummary() []EvidenceEntry {
+	out := make([]EvidenceEntry, 0, len(r.EvidenceByControl))
 	for id, ev := range r.EvidenceByControl {
-		out = append(out, struct {
-			ID       ID
-			Evidence Evidence
-		}{id, ev})
+		out = append(out, EvidenceEntry{ID: id, Evidence: ev})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out

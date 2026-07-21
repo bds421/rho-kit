@@ -7,10 +7,13 @@ package jwtutil
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	neturl "net/url"
@@ -221,11 +224,20 @@ func allowsSignatureAlgorithm(k jwk.Key) bool {
 
 // ParseKeySetFromPEM parses a PEM-encoded public key into a KeySet with a
 // single key using the given key ID.
+//
+// Private PEM material is reduced to its public part before retention so a
+// misconfigured signer private key mounted as the verifier input cannot leave
+// live signing material in process memory.
 func ParseKeySetFromPEM(pemData []byte, kid string) (*KeySet, error) {
 	key, err := jwk.ParseKey(pemData, jwk.WithPEM(true))
 	if err != nil {
 		return nil, fmt.Errorf("parse PEM key: %w", err)
 	}
+	publicKey, err := key.PublicKey()
+	if err != nil {
+		return nil, fmt.Errorf("parse PEM public key: %w", err)
+	}
+	key = publicKey
 	if err := key.Set(jwk.KeyIDKey, kid); err != nil {
 		return nil, err
 	}
@@ -505,6 +517,11 @@ type Provider struct {
 	fetchFailHTTP          atomic.Uint64
 	fetchFailParse         atomic.Uint64
 	fetchFailStaleRejected atomic.Uint64
+	// staleRejectionCounted is set when a request first observes a stale
+	// keyset and cleared on the next successful fetch, so
+	// jwks_fetch_failures_total{reason="stale-rejected"} grows at
+	// transition rate rather than request rate.
+	staleRejectionCounted atomic.Bool
 }
 
 // JWKSFetchFailureReason classifies the cause of a JWKS fetch failure for
@@ -684,48 +701,14 @@ func validateJWKSURL(raw string, allowInsecure bool) error {
 // isJSONContentType reports whether ct (a Content-Type header value)
 // designates a JSON-family payload. Accepts the JWKS-specific
 // application/jwk-set+json as well as plain application/json. Strips
-// charset / boundary parameters before comparing.
+// charset / boundary parameters via mime.ParseMediaType.
 func isJSONContentType(ct string) bool {
-	// Take the media type up to ';'.
-	for i := 0; i < len(ct); i++ {
-		if ct[i] == ';' {
-			ct = ct[:i]
-			break
-		}
-	}
-	// Trim spaces.
-	for len(ct) > 0 && ct[0] == ' ' {
-		ct = ct[1:]
-	}
-	for len(ct) > 0 && ct[len(ct)-1] == ' ' {
-		ct = ct[:len(ct)-1]
-	}
-	// Lowercase compare.
-	const a = "application/json"
-	const b = "application/jwk-set+json"
-	if eqIgnoreCase(ct, a) || eqIgnoreCase(ct, b) {
-		return true
-	}
-	return false
-}
-
-func eqIgnoreCase(a, b string) bool {
-	if len(a) != len(b) {
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil {
 		return false
 	}
-	for i := 0; i < len(a); i++ {
-		ac, bc := a[i], b[i]
-		if ac >= 'A' && ac <= 'Z' {
-			ac += 'a' - 'A'
-		}
-		if bc >= 'A' && bc <= 'Z' {
-			bc += 'a' - 'A'
-		}
-		if ac != bc {
-			return false
-		}
-	}
-	return true
+	return strings.EqualFold(mediaType, "application/json") ||
+		strings.EqualFold(mediaType, "application/jwk-set+json")
 }
 
 // NewProvider creates a JWKS provider that fetches public keys from the given URL.
@@ -909,10 +892,10 @@ func jwksFetchErrorKind(err error) string {
 	if errors.As(err, &urlErr) {
 		return "request_failed"
 	}
-	if strings.Contains(err.Error(), "jwks endpoint returned unexpected content-type") {
+	if errors.Is(err, errJWKSUnexpectedContentType) {
 		return "unexpected_content_type"
 	}
-	if strings.Contains(err.Error(), "jwks endpoint returned ") {
+	if errors.Is(err, errJWKSBadStatus) {
 		return "bad_status"
 	}
 	return "fetch_failed"
@@ -1140,7 +1123,9 @@ func (p *Provider) keySetWithReason() (*KeySet, error) {
 			clock = time.Now
 		}
 		if clock().Sub(p.lastSuccessfulFetch) > p.maxStale {
-			p.fetchFailStaleRejected.Add(1)
+			if !p.staleRejectionCounted.Swap(true) {
+				p.fetchFailStaleRejected.Add(1)
+			}
 			return nil, ErrKeySetStale
 		}
 	}
@@ -1263,6 +1248,13 @@ var ErrKeySetStale = fmt.Errorf("%w: stale (last fetch exceeded max-stale window
 // custom redirect policy.
 var ErrJWKSRedirectBlocked = errors.New("jwtutil: JWKS redirects are disabled by default")
 
+// Internal fetch classification sentinels — matched via errors.Is so
+// jwksFetchErrorKind does not depend on Error() string wording.
+var (
+	errJWKSUnexpectedContentType = errors.New("jwtutil: jwks endpoint returned unexpected content-type")
+	errJWKSBadStatus             = errors.New("jwtutil: jwks endpoint returned non-OK status")
+)
+
 func (p *Provider) fetch(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url, nil)
 	if err != nil {
@@ -1284,7 +1276,7 @@ func (p *Provider) fetch(ctx context.Context) error {
 
 	if resp.StatusCode != http.StatusOK {
 		p.fetchFailHTTP.Add(1)
-		return fmt.Errorf("jwks endpoint returned %d", resp.StatusCode)
+		return fmt.Errorf("%w: %d", errJWKSBadStatus, resp.StatusCode)
 	}
 
 	// Reject non-JSON content types — e.g. captive-portal HTML responses.
@@ -1295,7 +1287,7 @@ func (p *Provider) fetch(ctx context.Context) error {
 	}
 	if ct != "" && !isJSONContentType(ct) {
 		p.fetchFailHTTP.Add(1)
-		return fmt.Errorf("jwks endpoint returned unexpected content-type")
+		return errJWKSUnexpectedContentType
 	}
 
 	// 64 KiB is well above any realistic JWKS document (<4 KiB typical)
@@ -1321,6 +1313,7 @@ func (p *Provider) fetch(ctx context.Context) error {
 	p.keyset = ks
 	p.lastSuccessfulFetch = p.clock()
 	p.mu.Unlock()
+	p.staleRejectionCounted.Store(false)
 	return nil
 }
 
@@ -1343,37 +1336,37 @@ func singletonContentType(h http.Header) (string, error) {
 // ErrSignatureInvalid-shaped error so a cross-token-type confusion
 // attack cannot reuse a same-key-signed non-access-token.
 func requireExpectedJWTType(tokenString string) error {
-	msg, err := jws.Parse([]byte(tokenString))
+	// Decode only the protected header segment (first compact-JWS part)
+	// so we do not re-parse payload+signature after jwt.Parse already
+	// verified the token.
+	firstDot := strings.IndexByte(tokenString, '.')
+	if firstDot <= 0 {
+		return errors.New("jwtutil: missing JWS header")
+	}
+	headerB64 := tokenString[:firstDot]
+	raw, err := base64.RawURLEncoding.DecodeString(headerB64)
 	if err != nil {
-		// jwt.Parse already passed, so this should not fail. Treat
-		// re-parse failure as a verification failure rather than a
-		// programmer-visible panic.
-		return fmt.Errorf("jwtutil: re-parse header for typ check: %w", err)
-	}
-	sigs := msg.Signatures()
-	if len(sigs) == 0 {
-		return errors.New("jwtutil: missing JWS signature")
-	}
-	for _, s := range sigs {
-		ph := s.ProtectedHeaders()
-		if ph == nil {
-			continue
-		}
-		raw, ok := ph.Type()
-		if !ok {
-			continue
-		}
-		typ := strings.TrimSpace(raw)
-		if typ == "" {
-			continue
-		}
-		// Compare case-insensitively per RFC 7519 §5.1.
-		switch strings.ToLower(typ) {
-		case "jwt", "at+jwt":
-			// OK
-		default:
-			return fmt.Errorf("jwtutil: unexpected JOSE header typ %q (want JWT or at+jwt)", typ)
+		// Some issuers pad; tolerate standard encoding as a fallback.
+		raw, err = base64.URLEncoding.DecodeString(headerB64)
+		if err != nil {
+			return fmt.Errorf("jwtutil: decode JOSE header: %w", err)
 		}
 	}
-	return nil
+	var hdr struct {
+		Typ string `json:"typ"`
+	}
+	if err := json.Unmarshal(raw, &hdr); err != nil {
+		return fmt.Errorf("jwtutil: parse JOSE header: %w", err)
+	}
+	typ := strings.TrimSpace(hdr.Typ)
+	if typ == "" {
+		return nil
+	}
+	// Compare case-insensitively per RFC 7519 §5.1.
+	switch strings.ToLower(typ) {
+	case "jwt", "at+jwt":
+		return nil
+	default:
+		return fmt.Errorf("jwtutil: unexpected JOSE header typ %q (want JWT or at+jwt)", typ)
+	}
 }

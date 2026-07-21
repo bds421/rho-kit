@@ -74,6 +74,12 @@ func (m *pgAdvisoryModule) Init(ctx context.Context, mc app.ModuleContext) error
 	if pm == nil {
 		return fmt.Errorf("app/leader: PGAdvisoryFromPostgres requires postgres module registered before leader")
 	}
+	// Module map is pre-populated before any Init runs, so presence alone
+	// does not mean postgres.Init completed. Prefer an explicit readiness
+	// check when available; otherwise fall through and let SQLDB panic.
+	if ready, ok := pm.(kitpostgres.SQLDBReadyProvider); ok && !ready.SQLDBReady() {
+		return fmt.Errorf("app/leader: PGAdvisoryFromPostgres requires postgres module registered before leader")
+	}
 	sp, ok := pm.(kitpostgres.SQLDBProvider)
 	if !ok {
 		return fmt.Errorf("app/leader: postgres module does not expose SQLDB")
