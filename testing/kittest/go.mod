@@ -7,9 +7,9 @@ module github.com/bds421/rho-kit/testing/kittest/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 v2.4.0
-	github.com/bds421/rho-kit/infra/storage/storagetest/v2 v2.4.0
+	github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 v2.5.0
+	github.com/bds421/rho-kit/infra/storage/storagetest/v2 v2.5.0
 	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.43.0
 )
 
@@ -35,12 +35,12 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.37.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.44.1 // indirect
 	github.com/aws/smithy-go v1.27.3 // indirect
-	github.com/bds421/rho-kit/core/v2 v2.4.0 // indirect
-	github.com/bds421/rho-kit/infra/storage/s3backend/v2 v2.4.0 // indirect
-	github.com/bds421/rho-kit/infra/storage/sftpbackend/v2 v2.4.0 // indirect
-	github.com/bds421/rho-kit/infra/v2 v2.4.0 // indirect
-	github.com/bds421/rho-kit/io/v2 v2.4.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.4.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.5.0 // indirect
+	github.com/bds421/rho-kit/infra/storage/s3backend/v2 v2.5.0 // indirect
+	github.com/bds421/rho-kit/infra/storage/sftpbackend/v2 v2.5.0 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.5.0 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.5.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.5.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -103,7 +103,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
