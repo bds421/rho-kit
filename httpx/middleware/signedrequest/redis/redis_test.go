@@ -34,12 +34,34 @@ func redisAddr() string {
 // stretching the skip into multiple seconds per test.
 func newClientFor(_ *testing.T) goredis.UniversalClient {
 	return goredis.NewClient(&goredis.Options{
-		Addr:        redisAddr(),
-		Password:    os.Getenv("REDIS_PASSWORD"),
-		DB:          15,
-		MaxRetries:  -1,
-		DialTimeout: 500 * time.Millisecond,
+		Addr:               redisAddr(),
+		Password:           os.Getenv("REDIS_PASSWORD"),
+		DB:                 15,
+		MaxRetries:         -1,
+		DialTimeout:        500 * time.Millisecond,
+		DialerRetries:      1,
+		DialerRetryTimeout: time.Millisecond,
 	})
+}
+
+var (
+	redisProbeOnce sync.Once
+	redisProbeErr  error
+)
+
+// probeTestRedis checks package-level reachability once. When Redis is absent,
+// every real-Redis test skips from the cached result instead of repeating the
+// same network timeout.
+func probeTestRedis(t *testing.T) error {
+	t.Helper()
+	redisProbeOnce.Do(func() {
+		client := newClientFor(t)
+		defer func() { _ = client.Close() }()
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		redisProbeErr = client.Ping(ctx).Err()
+	})
+	return redisProbeErr
 }
 
 // newTestClient returns a Redis client backed by a real server. If
@@ -49,13 +71,13 @@ func newClientFor(_ *testing.T) goredis.UniversalClient {
 // so per-test state is isolated.
 func newTestClient(t *testing.T) goredis.UniversalClient {
 	t.Helper()
-	client := newClientFor(t)
-	pingCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	if err := client.Ping(pingCtx).Err(); err != nil {
-		_ = client.Close()
+	if testing.Short() {
+		t.Skip("requires a real Redis server; covered by the full and integration gates")
+	}
+	if err := probeTestRedis(t); err != nil {
 		t.Skipf("redis not reachable at %s (set REDIS_ADDR/REDIS_PASSWORD to override): %v", redisAddr(), err)
 	}
+	client := newClientFor(t)
 	// Isolate test data.
 	flushCtx, flushCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer flushCancel()
@@ -192,9 +214,9 @@ func TestSeenOrStore_DistinctNoncesIndependent(t *testing.T) {
 
 func TestSeenOrStore_TTLExpiryAllowsReuse(t *testing.T) {
 	client := newTestClient(t)
-	// Short TTL so the test runs quickly. 1s is the smallest unit
-	// SET EX accepts.
-	store := signedredis.New(client, time.Second, signedredis.WithKeyPrefix(uniquePrefix(t)))
+	// Redis SET supports millisecond expiry, so use a short TTL while still
+	// exercising real server-side expiration.
+	store := signedredis.New(client, 100*time.Millisecond, signedredis.WithKeyPrefix(uniquePrefix(t)))
 
 	first, err := store.SeenOrStore(context.Background(), "ttl-nonce")
 	if err != nil {
@@ -213,15 +235,19 @@ func TestSeenOrStore_TTLExpiryAllowsReuse(t *testing.T) {
 		t.Fatal("expected replay inside TTL to return false")
 	}
 
-	// Wait for expiry. 1.5s is enough margin for Redis's resolution.
-	time.Sleep(1500 * time.Millisecond)
-
-	third, err := store.SeenOrStore(context.Background(), "ttl-nonce")
-	if err != nil {
-		t.Fatalf("third: %v", err)
-	}
-	if !third {
-		t.Fatal("expected post-TTL probe to be admitted as fresh")
+	deadline := time.Now().Add(time.Second)
+	for {
+		third, err := store.SeenOrStore(context.Background(), "ttl-nonce")
+		if err != nil {
+			t.Fatalf("third: %v", err)
+		}
+		if third {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected post-TTL probe to be admitted as fresh")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

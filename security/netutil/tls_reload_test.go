@@ -120,7 +120,7 @@ func TestFilesCertificateSource_PollingPicksUpRotation(t *testing.T) {
 	t.Parallel()
 	cfg, rotate := generateRotatableTLSFixture(t)
 
-	src, err := NewFilesCertificateSource(cfg, WithReloadInterval(time.Second))
+	src, err := NewFilesCertificateSource(cfg, withTestReloadInterval(20*time.Millisecond))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = src.Close() })
 
@@ -137,6 +137,22 @@ func TestFilesCertificateSource_PollingPicksUpRotation(t *testing.T) {
 	secondSerial := readSerial(t, mustServerCert(t, src))
 	assert.NotEqual(t, firstSerial, secondSerial,
 		"polling reload must observe the rotated cert without an explicit Reload call")
+}
+
+func TestWithReloadInterval_ClampsSubSecondPolling(t *testing.T) {
+	t.Parallel()
+
+	var opts filesCertificateSourceOpts
+	WithReloadInterval(time.Millisecond)(&opts)
+	require.Equal(t, time.Second, opts.pollEvery)
+}
+
+// withTestReloadInterval bypasses the public one-second safety clamp so the
+// polling behavior can be exercised without making the unit suite sleep for a
+// production-scale interval. TestWithReloadInterval_ClampsSubSecondPolling
+// separately pins the public contract.
+func withTestReloadInterval(d time.Duration) FilesCertificateSourceOption {
+	return func(o *filesCertificateSourceOpts) { o.pollEvery = d }
 }
 
 func TestNewFilesCertificateSource_RejectsPartialConfig(t *testing.T) {

@@ -14,8 +14,9 @@ import (
 func TestThrottledReader_LimitsRate(t *testing.T) {
 	t.Parallel()
 
-	// 10 KiB of data at 10 KiB/s should take ~1 second.
-	data := bytes.Repeat([]byte("x"), 10*1024)
+	// 1 KiB of data at 10 KiB/s should take ~100ms. This is long enough to
+	// prove pacing without making the unit suite sleep for a full second.
+	data := bytes.Repeat([]byte("x"), 1024)
 	tr := NewThrottledReader(bytes.NewReader(data), 10*1024)
 
 	start := time.Now()
@@ -24,8 +25,8 @@ func TestThrottledReader_LimitsRate(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, data, got)
-	// Should take at least ~800ms (allowing some tolerance).
-	assert.Greater(t, elapsed, 800*time.Millisecond)
+	// Allow scheduler tolerance while still rejecting an unthrottled read.
+	assert.Greater(t, elapsed, 70*time.Millisecond)
 }
 
 func TestThrottledReader_ZeroBytesPerSecond(t *testing.T) {
@@ -60,9 +61,9 @@ func TestThrottledReader_ContextCancellation(t *testing.T) {
 	// 1 KiB/s — would take 100 seconds without cancellation.
 	tr := NewThrottledReaderContext(ctx, bytes.NewReader(data), 1024)
 
-	// Cancel after 200ms.
+	// Cancel after 50ms.
 	go func() {
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		cancel()
 	}()
 
@@ -73,7 +74,7 @@ func TestThrottledReader_ContextCancellation(t *testing.T) {
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 	// Should complete quickly after cancellation, not wait 100 seconds.
-	assert.Less(t, elapsed, 2*time.Second)
+	assert.Less(t, elapsed, time.Second)
 }
 
 // TestThrottledReader_IdleResetAllowsFirstChunkBurst pins the documented

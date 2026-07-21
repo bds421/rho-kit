@@ -51,6 +51,7 @@ type Provider struct {
 	allowInsecureURL bool
 	maxStale         time.Duration
 	clock            func() time.Time
+	initialRetry     retry.Policy
 
 	mu                  sync.RWMutex
 	keyset              *KeySet
@@ -282,11 +283,12 @@ func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opt
 		refresh = defaultRefreshInterval
 	}
 	p := &Provider{
-		url:        url,
-		httpClient: httpClient,
-		refresh:    refresh,
-		maxStale:   defaultMaxStale,
-		clock:      time.Now,
+		url:          url,
+		httpClient:   httpClient,
+		refresh:      refresh,
+		maxStale:     defaultMaxStale,
+		clock:        time.Now,
+		initialRetry: initialFetchRetryPolicy(),
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -383,15 +385,9 @@ func (p *Provider) Run(ctx context.Context) error {
 	}
 
 	// Phase 1: initial fetch with retry until success.
-	err := retry.Do(ctx, func(ctx context.Context) error {
+	err := retry.DoWith(ctx, p.initialRetry, func(ctx context.Context) error {
 		return p.fetch(ctx)
-	},
-		retry.WithMaxRetries(-1),
-		retry.WithBaseDelay(2*time.Second),
-		retry.WithMaxDelay(60*time.Second),
-		retry.WithFactor(2.0),
-		retry.WithJitter(0.25),
-	)
+	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil
@@ -413,6 +409,16 @@ func (p *Provider) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func initialFetchRetryPolicy() retry.Policy {
+	policy := retry.DefaultPolicy()
+	policy.MaxRetries = -1
+	policy.BaseDelay = 2 * time.Second
+	policy.MaxDelay = 60 * time.Second
+	policy.Factor = 2
+	policy.Jitter = 0.25
+	return policy
 }
 
 func (p *Provider) logRefreshFailure(err error) {

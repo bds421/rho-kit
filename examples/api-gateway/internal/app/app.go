@@ -149,11 +149,13 @@ const (
 // service this would hold downstream-service clients, the JWT
 // verifier, and connection pools.
 type gateway struct {
-	bearerToken string
-	downstream  downstreamFn
-	bulkhead    *bulkhead.Bulkhead
-	breaker     *circuitbreaker.CircuitBreaker
-	retryPolicy retry.Policy
+	bearerToken         string
+	downstream          downstreamFn
+	bulkhead            *bulkhead.Bulkhead
+	breaker             *circuitbreaker.CircuitBreaker
+	retryPolicy         retry.Policy
+	requestBudget       time.Duration
+	postCallReservation time.Duration
 }
 
 // downstreamFn is the stub shape the example fans out to. A real
@@ -185,6 +187,8 @@ func newGateway(token string, downstream downstreamFn) *gateway {
 			Factor:     2.0,
 			Jitter:     0.25,
 		},
+		requestBudget:       requestBudget,
+		postCallReservation: postCallReservation,
 	}
 }
 
@@ -242,13 +246,13 @@ func (g *gateway) handleListOrders(w http.ResponseWriter, r *http.Request) {
 
 	// Request-scoped time budget. The cancel func releases the
 	// underlying timer when the handler returns.
-	budgetCtx, budget, cancel := timeoutbudget.New(r.Context(), requestBudget)
+	budgetCtx, budget, cancel := timeoutbudget.New(r.Context(), g.requestBudget)
 	defer cancel()
 
 	// Hold back a small slice of the budget for the response-write
 	// + observability emit so a slow downstream cannot consume the
 	// entire allocation and leave the response truncated.
-	restore := budget.WithReservation(postCallReservation)
+	restore := budget.WithReservation(g.postCallReservation)
 	defer restore()
 
 	var result string

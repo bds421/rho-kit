@@ -43,7 +43,6 @@ func newTestJWKSServerFunc(t *testing.T, handler func(http.ResponseWriter, *http
 	return httptest.NewServer(http.HandlerFunc(handler))
 }
 
-
 // allowAnyPolicy marks ks as explicitly opting out of issuer and audience
 // checks so signature/claim-focused unit tests can Verify without pinning
 // iss/aud. Production code must set Expected* or AllowAny* before Verify.
@@ -55,7 +54,6 @@ func allowAnyPolicy(ks *KeySet) *KeySet {
 	ks.AllowAnyAudience = true
 	return ks
 }
-
 
 func ecdsaPublicKeyPEM(t *testing.T, pub *ecdsa.PublicKey) []byte {
 	t.Helper()
@@ -663,7 +661,6 @@ func TestVerify_FreezesPolicyAfterFirstCall(t *testing.T) {
 		t.Fatalf("WithExpectedIssuer copy should verify new issuer: %v", err)
 	}
 }
-
 
 func TestToStringSlice_StringSlice(t *testing.T) {
 	in := []string{"a", "b", "c"}
@@ -1600,6 +1597,10 @@ func TestProvider_Run_RetryOnFailure(t *testing.T) {
 		WithAllowAnyIssuer(),
 		WithAllowAnyAudience(),
 		WithAllowInsecureURL())
+	p.initialRetry.BaseDelay = time.Millisecond
+	p.initialRetry.MaxDelay = time.Millisecond
+	p.initialRetry.Factor = 1
+	p.initialRetry.Jitter = 0
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -1612,13 +1613,13 @@ func TestProvider_Run_RetryOnFailure(t *testing.T) {
 		close(done)
 	}()
 
-	deadline := time.After(12 * time.Second)
+	deadline := time.After(time.Second)
 	for p.KeySet() == nil {
 		select {
 		case <-deadline:
 			t.Fatal("keyset not fetched after retry")
 		default:
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(time.Millisecond)
 		}
 	}
 
@@ -2419,7 +2420,6 @@ func TestJWKSHTTPClient_HardensWrappedTransportBase(t *testing.T) {
 		t.Fatalf("ServerName not preserved: %q", tr.TLSClientConfig.ServerName)
 	}
 }
-
 
 func TestVerify_PolicyRequired_MissingIssuerAndAudience(t *testing.T) {
 	key := testKey(t)

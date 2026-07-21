@@ -229,11 +229,19 @@ func TestFileWatcher_DebouncesRapidWrites(t *testing.T) {
 	// Write rapidly — each should reset the debounce timer.
 	for i := range 5 {
 		writeFile(t, cfgPath, fmt.Sprintf("v%d", i+1))
-		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Wait for debounce to settle.
-	time.Sleep(250 * time.Millisecond)
+	// Wait for the trailing-edge reload, then keep observing beyond another
+	// debounce window. The old per-write sleeps could be stretched past the
+	// debounce interval by a busy CI scheduler, turning the intended burst into
+	// legitimately separate changes and making this assertion flaky.
+	require.Eventually(t, func() bool {
+		return w.Get() == "v5"
+	}, 2*time.Second, 10*time.Millisecond)
+	assert.Never(t, func() bool {
+		return loadCount.Load() > 2
+	}, 150*time.Millisecond, 10*time.Millisecond,
+		"rapid writes must remain coalesced after the final value is visible")
 
 	// Should have loaded only once (or at most a couple of times),
 	// not 5 times.

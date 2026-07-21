@@ -82,9 +82,11 @@ func TestTryLock_TranslatesPoolErrorsToUnavailable(t *testing.T) {
 	// Hit an unroutable address with a quick timeout to force a connection
 	// error without depending on miniredis.
 	client := goredis.NewClient(&goredis.Options{
-		Addr:        "127.0.0.1:1",
-		DialTimeout: 50 * time.Millisecond,
-		MaxRetries:  -1,
+		Addr:               "127.0.0.1:1",
+		DialTimeout:        50 * time.Millisecond,
+		MaxRetries:         -1,
+		DialerRetries:      1,
+		DialerRetryTimeout: time.Millisecond,
 	})
 	t.Cleanup(func() { _ = client.Close() })
 
@@ -99,9 +101,11 @@ func TestTryLock_TranslatesPoolErrorsToUnavailable(t *testing.T) {
 
 func TestGet_TranslatesPoolErrorsToUnavailable(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{
-		Addr:        "127.0.0.1:1",
-		DialTimeout: 50 * time.Millisecond,
-		MaxRetries:  -1,
+		Addr:               "127.0.0.1:1",
+		DialTimeout:        50 * time.Millisecond,
+		MaxRetries:         -1,
+		DialerRetries:      1,
+		DialerRetryTimeout: time.Millisecond,
 	})
 	t.Cleanup(func() { _ = client.Close() })
 
@@ -116,9 +120,11 @@ func TestGet_TranslatesPoolErrorsToUnavailable(t *testing.T) {
 
 func TestSet_TranslatesPoolErrorsToUnavailable(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{
-		Addr:        "127.0.0.1:1",
-		DialTimeout: 50 * time.Millisecond,
-		MaxRetries:  -1,
+		Addr:               "127.0.0.1:1",
+		DialTimeout:        50 * time.Millisecond,
+		MaxRetries:         -1,
+		DialerRetries:      1,
+		DialerRetryTimeout: time.Millisecond,
 	})
 	t.Cleanup(func() { _ = client.Close() })
 
