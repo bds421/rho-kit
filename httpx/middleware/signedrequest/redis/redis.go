@@ -83,19 +83,20 @@ const maxKeyPrefixLen = 128
 // immediately expired context and fail every nonce SET NX call closed,
 // silently turning the verifier into a denial-of-service.
 //
-// Alias of [WithNonceTimeout]; both options exist for callers that
-// prefer one name over the other.
 func WithCallTimeout(d time.Duration) Option {
-	return WithNonceTimeout(d)
-}
-
-// WithNonceTimeout is the canonical name for [WithCallTimeout]. See
-// that option for full semantics.
-func WithNonceTimeout(d time.Duration) Option {
 	if d <= 0 {
-		panic("signedrequest/redis: WithNonceTimeout requires a positive duration")
+		panic("signedrequest/redis: WithCallTimeout requires a positive duration")
 	}
 	return func(s *RedisNonceStore) { s.callTimeout = d }
+}
+
+// WithNonceTimeout is a deprecated alias of [WithCallTimeout] retained
+// for source compatibility. Prefer WithCallTimeout (matches the field
+// and the sibling idempotency WithPostHandlerTimeout naming).
+//
+// Deprecated: use WithCallTimeout.
+func WithNonceTimeout(d time.Duration) Option {
+	return WithCallTimeout(d)
 }
 
 // New constructs a RedisNonceStore.

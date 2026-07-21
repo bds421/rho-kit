@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"path"
 
 	coderws "github.com/coder/websocket"
 
@@ -49,6 +50,14 @@ func buildConfig(opts ...Option) config {
 	// package's other options fail fast on, so reject it at startup.
 	if cfg.pongTimeout > 0 && cfg.pingInterval <= 0 {
 		panic("httpx/websocket: WithPongTimeout requires WithPingInterval (the pong timeout is inert without a heartbeat)")
+	}
+	// WithReadDrain is independent of the heartbeat, but historically
+	// operators paired them; keep the option always honoured (no silent drop).
+	// Invalid origin globs must fail at registration, not as per-request 403s.
+	for _, pat := range cfg.originPatterns {
+		if _, err := path.Match(pat, ""); err != nil {
+			panic("httpx/websocket: WithOriginPatterns: invalid pattern " + pat + ": " + err.Error())
+		}
 	}
 	return cfg
 }
@@ -195,16 +204,9 @@ func handleWithHooks(opts []Option, onOpen, onClose func(*Conn)) http.HandlerFun
 			}
 		}()
 
-		// Use the inner Close directly so the kit Conn's idempotent
-		// Close still works for callers who closed explicitly inside
-		// the handler.
-		if !conn.closed.Load() {
-			conn.closeOnce.Do(func() {
-				conn.closed.Store(true)
-				conn.closeCode.CompareAndSwap(0, int64(closeCode))
-				_ = raw.Close(closeCode, closeReason)
-				metrics.connClosed(int(conn.closeCode.Load()))
-			})
-		}
+		// Delegate to Conn.Close so cancel-before-handshake ordering is
+		// preserved (heartbeat re-check classifies teardown as graceful)
+		// and the close path cannot drift from the exported API.
+		_ = conn.Close(StatusCode(closeCode), closeReason)
 	}
 }

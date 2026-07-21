@@ -13,6 +13,29 @@ import (
 
 var errAuditActorMissing = errors.New("mcp: action log actor not resolved")
 
+// audit identity resolved once in auditPrecheck and reused by
+// recordActionLog so a mid-call extractor failure cannot void the
+// strict-audit invariant after the tool has already executed.
+type auditIdentityKey struct{}
+
+type auditIdentity struct {
+	tenantID string
+	actor    string
+	actorOK  bool
+	// tenantMissing is set in loose mode when the tool runs without a
+	// tenant; recordActionLog then skips the entry without re-extracting.
+	tenantMissing bool
+}
+
+func withAuditIdentity(ctx context.Context, id auditIdentity) context.Context {
+	return context.WithValue(ctx, auditIdentityKey{}, id)
+}
+
+func auditIdentityFrom(ctx context.Context) (auditIdentity, bool) {
+	id, ok := ctx.Value(auditIdentityKey{}).(auditIdentity)
+	return id, ok
+}
+
 // defaultTenantExtractor reads the tenant id from context using the
 // kit's canonical [tenant] package. Returning ok=false leaves the
 // action-log Tenant field empty and the entry is skipped (the
@@ -47,9 +70,12 @@ func defaultTenantExtractor(ctx context.Context) (string, bool) {
 // When no action logger is configured this is a no-op (returns
 // ok=true) — auditing is opt-in so the strict/loose distinction is
 // meaningless.
-func (s *Server) auditPrecheck(ctx context.Context, r *http.Request, tool string) (ok bool) {
+// auditPrecheck returns a context carrying the resolved audit identity
+// (when an action logger is configured) and ok=false when the tool MUST
+// NOT execute (strict mode + missing tenant/actor).
+func (s *Server) auditPrecheck(ctx context.Context, r *http.Request, tool string) (context.Context, bool) {
 	if s.cfg.actionLogger == nil {
-		return true
+		return ctx, true
 	}
 	tenantID, present := s.extractTenant(ctx)
 	if !present || tenantID == "" {
@@ -57,28 +83,35 @@ func (s *Server) auditPrecheck(ctx context.Context, r *http.Request, tool string
 			s.cfg.logger.Error("mcp: refusing tool dispatch; no tenant on context (strict audit mode)",
 				redact.String("tool", tool),
 			)
-			return false
+			return ctx, false
 		}
 		s.cfg.logger.Warn("mcp: skipping action log entry; no tenant on context (loose audit mode)",
 			redact.String("tool", tool),
 		)
-		return true
+		return withAuditIdentity(ctx, auditIdentity{tenantMissing: true}), true
 	}
 
-	if _, actorOK := s.extractActor(r); !actorOK {
+	actor, actorOK := s.extractActor(r)
+	if !actorOK {
 		if s.cfg.strictAudit {
 			s.cfg.logger.Error("mcp: refusing tool dispatch; no actor resolved (strict audit mode)",
 				redact.String("tool", tool),
 				redact.String("tenant_id", tenantID),
 			)
-			return false
+			return ctx, false
 		}
 		s.cfg.logger.Warn("mcp: action log actor unresolved; recording anonymous actor (loose audit mode)",
 			redact.String("tool", tool),
 			redact.String("tenant_id", tenantID),
 		)
+		actor = AnonymousActor
+		actorOK = true
 	}
-	return true
+	return withAuditIdentity(ctx, auditIdentity{
+		tenantID: tenantID,
+		actor:    actor,
+		actorOK:  actorOK,
+	}), true
 }
 
 // recordActionLog writes one [actionlog.Entry] for a tool call.
@@ -113,17 +146,40 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 		return nil
 	}
 
-	tenantID, ok := s.extractTenant(ctx)
-	if !ok || tenantID == "" {
-		return nil
-	}
-
-	actor, actorOK := s.extractActor(r)
-	if !actorOK {
-		if s.cfg.strictAudit {
-			return errAuditActorMissing
+	// Prefer the identity resolved in auditPrecheck so a second extraction
+	// cannot silently drop the audit entry after the tool has executed.
+	var tenantID, actor string
+	if id, ok := auditIdentityFrom(ctx); ok {
+		if id.tenantMissing {
+			return nil
 		}
-		actor = AnonymousActor
+		tenantID = id.tenantID
+		actor = id.actor
+		if !id.actorOK || actor == "" {
+			if s.cfg.strictAudit {
+				return errAuditActorMissing
+			}
+			actor = AnonymousActor
+		}
+	} else {
+		// Fallback for callers that invoke recordActionLog without precheck
+		// (should not happen on the hot path).
+		var ok bool
+		tenantID, ok = s.extractTenant(ctx)
+		if !ok || tenantID == "" {
+			if s.cfg.strictAudit {
+				return errors.New("mcp: action log tenant not resolved")
+			}
+			return nil
+		}
+		var actorOK bool
+		actor, actorOK = s.extractActor(r)
+		if !actorOK {
+			if s.cfg.strictAudit {
+				return errAuditActorMissing
+			}
+			actor = AnonymousActor
+		}
 	}
 
 	outcome := actionlog.OutcomeSuccess

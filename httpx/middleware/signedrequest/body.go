@@ -39,7 +39,7 @@ type spooledBody struct {
 // beyond is appended to a private temp file. Returns ErrBodyTooLarge
 // when r.Body exceeds max. The hash covers exactly the bytes streamed
 // (i.e. up to max bytes when the body fits).
-func readSpooledBody(r *http.Request, max int64, inMemoryMax int64) (*spooledBody, [32]byte, error) {
+func readSpooledBody(r *http.Request, max int64, inMemoryMax int64, spoolDir string) (*spooledBody, [32]byte, error) {
 	if r.Body == nil || r.Body == http.NoBody {
 		return &spooledBody{}, sha256.Sum256(nil), nil
 	}
@@ -72,7 +72,7 @@ func readSpooledBody(r *http.Request, max int64, inMemoryMax int64) (*spooledBod
 	for {
 		n, err := limited.Read(buf)
 		if n > 0 {
-			if perr := sb.appendChunk(buf[:n], inMemoryMax, hasher); perr != nil {
+			if perr := sb.appendChunk(buf[:n], inMemoryMax, spoolDir, hasher); perr != nil {
 				sb.cleanup()
 				return nil, [32]byte{}, perr
 			}
@@ -97,7 +97,7 @@ func readSpooledBody(r *http.Request, max int64, inMemoryMax int64) (*spooledBod
 	return sb, sum, nil
 }
 
-func (sb *spooledBody) appendChunk(chunk []byte, inMemoryMax int64, hasher hash.Hash) error {
+func (sb *spooledBody) appendChunk(chunk []byte, inMemoryMax int64, spoolDir string, hasher hash.Hash) error {
 	if _, err := hasher.Write(chunk); err != nil {
 		return safeWrap("signedrequest: hash body failed", err)
 	}
@@ -120,7 +120,7 @@ func (sb *spooledBody) appendChunk(chunk []byte, inMemoryMax int64, hasher hash.
 	// Spool overflow to a private temp file. We create the file lazily
 	// so small bodies never touch disk.
 	if sb.file == nil {
-		f, err := os.CreateTemp("", "rho-signedrequest-body-*.bin")
+		f, err := os.CreateTemp(spoolDir, "rho-signedrequest-body-*.bin")
 		if err != nil {
 			return safeWrap("signedrequest: spool body failed", err)
 		}

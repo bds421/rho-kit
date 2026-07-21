@@ -221,6 +221,7 @@ type config struct {
 	requiredHeaders []string
 	bodyMaxSize     int64
 	inMemoryBodyMax int64
+	spoolDir        string // empty = os.TempDir(); bodies over inMemoryBodyMax land here
 	now             clock.Func
 	metrics         *Metrics
 	logger          *slog.Logger
@@ -257,6 +258,9 @@ func WithRequiredHeaders(names ...string) Option {
 	}
 	return func(c *config) {
 		c.requiredHeaders = append(c.requiredHeaders, canonical...)
+		// Pre-sort/dedupe once at construction so the verify hot path
+		// does not allocate+sort on every request.
+		c.requiredHeaders = sortedUniqueHeaders(c.requiredHeaders)
 	}
 }
 
@@ -285,6 +289,21 @@ func WithInMemoryBodyMax(n int64) Option {
 		panic("signedrequest: WithInMemoryBodyMax requires a positive byte cap")
 	}
 	return func(c *config) { c.inMemoryBodyMax = n }
+}
+
+// WithSpoolDir sets the directory used when a request body exceeds
+// [WithInMemoryBodyMax] and overflows to disk. Bodies may contain PII
+// or secrets; point this at tmpfs or an encrypted volume in regulated
+// deployments. Empty (default) uses the process temp directory
+// (typically os.TempDir / TMPDIR).
+//
+// Files are created mode 0600 and unlinked immediately on Unix. On
+// Windows the named file persists until Close/cleanup.
+func WithSpoolDir(dir string) Option {
+	if dir == "" {
+		panic("signedrequest: WithSpoolDir requires a non-empty directory")
+	}
+	return func(c *config) { c.spoolDir = dir }
 }
 
 // WithClock overrides the time source for tests.
@@ -493,7 +512,7 @@ func verify(r *http.Request, cfg *config) error {
 	// verifiable MAC can only pin inMemoryBodyMax bytes of heap, not
 	// the full bodyMaxSize cap. Disk usage stays bounded by
 	// bodyMaxSize.
-	spooled, bodyHash, err := readSpooledBody(r, cfg.bodyMaxSize, cfg.inMemoryBodyMax)
+	spooled, bodyHash, err := readSpooledBody(r, cfg.bodyMaxSize, cfg.inMemoryBodyMax, cfg.spoolDir)
 	if err != nil {
 		return err
 	}
@@ -666,13 +685,11 @@ func buildCanonicalFromHash(r *http.Request, ts, nonce string, bodyHash [32]byte
 		nonce,
 		hex.EncodeToString(bodyHash[:]),
 	}
-	if len(requiredHeaders) > 0 {
-		hdrs := append([]string(nil), requiredHeaders...)
-		sort.Strings(hdrs)
-		for _, h := range hdrs {
-			value, _ := requiredSingletonHeader(r, h)
-			parts = append(parts, h+":"+value)
-		}
+	// requiredHeaders is expected pre-sorted/deduped at construction
+	// (WithRequiredHeaders / normalizeHeaders). Iterate directly.
+	for _, h := range requiredHeaders {
+		value, _ := requiredSingletonHeader(r, h)
+		parts = append(parts, h+":"+value)
 	}
 	return []byte(strings.Join(parts, "\n"))
 }
@@ -842,12 +859,30 @@ func SignCanonical(sr SignRequest) (string, error) {
 }
 
 func normalizeHeaders(hs []string) ([]string, error) {
-	out := make([]string, len(hs))
-	for i, h := range hs {
+	out := make([]string, 0, len(hs))
+	for _, h := range hs {
 		if !httpguts.ValidHeaderFieldName(h) {
 			return nil, fmt.Errorf("%w: invalid required header", ErrInvalidRequest)
 		}
-		out[i] = strings.ToLower(h)
+		out = append(out, strings.ToLower(h))
 	}
-	return out, nil
+	return sortedUniqueHeaders(out), nil
+}
+
+// sortedUniqueHeaders returns a sorted, de-duplicated copy of hs.
+func sortedUniqueHeaders(hs []string) []string {
+	if len(hs) == 0 {
+		return nil
+	}
+	out := append([]string(nil), hs...)
+	sort.Strings(out)
+	j := 0
+	for i := 1; i < len(out); i++ {
+		if out[i] == out[j] {
+			continue
+		}
+		j++
+		out[j] = out[i]
+	}
+	return out[:j+1]
 }

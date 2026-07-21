@@ -16,6 +16,13 @@ const maxRequestIDLen = contextutil.MaxCorrelationIDLen
 // WithRequestID ensures every request has a unique identifier.
 // It uses the incoming X-Request-Id header if present and valid, otherwise
 // generates one. The ID is set on the response header and stored in the context.
+//
+// Security note: the inbound header is fully caller-controlled for any
+// unauthenticated client. The token alphabet check prevents CR/LF injection,
+// but an attacker can still choose an ID that collides with a legitimate
+// request to pollute log/SIEM correlation. Strip or re-stamp X-Request-Id
+// at the ingress / trusted proxy if forensic integrity of the ID matters;
+// this middleware does not implement a trusted-proxy gate.
 func WithRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := singletonHeaderValue(r.Header, Header)

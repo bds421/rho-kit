@@ -180,23 +180,40 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 
 // handlePanic does the actual recovery work. Split out for readability and
 // because the deferred body is the hottest path.
+// panicStackCarrier is implemented by re-raised panics that already
+// captured the original handler stack (e.g. timeout middleware).
+type panicStackCarrier interface {
+	StackTrace() []byte
+	UnwrapPanic() any
+}
+
 func handlePanic(rec *recordingWriter, r *http.Request, rv any, cfg *config) {
 	if cfg.metrics != nil {
 		cfg.metrics.panics.WithLabelValues(promutil.HTTPMethodLabel(r.Method)).Inc()
 	}
 
 	requestID := contextutil.RequestID(r.Context())
+	logVal := rv
+	stack := debug.Stack()
+	if c, ok := rv.(panicStackCarrier); ok {
+		if s := c.StackTrace(); len(s) > 0 {
+			stack = s
+		}
+		if v := c.UnwrapPanic(); v != nil {
+			logVal = v
+		}
+	}
 
 	attrs := []any{
 		"method", r.Method,
 		redact.String("path", httpx.RequestPath(r)),
-		redact.Panic(rv),
+		redact.Panic(logVal),
 	}
 	if requestID != "" {
 		attrs = append(attrs, "request_id", requestID)
 	}
 	if cfg.stackTrace {
-		attrs = append(attrs, "stack", string(debug.Stack()))
+		attrs = append(attrs, "stack", string(stack))
 	}
 
 	if rec.hijacked {

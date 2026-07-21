@@ -10,6 +10,7 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2/middleware/compress"
 	mwcorrelationid "github.com/bds421/rho-kit/httpx/v2/middleware/correlationid"
 	mwlogging "github.com/bds421/rho-kit/httpx/v2/middleware/logging"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/maxbody"
 	mwmetrics "github.com/bds421/rho-kit/httpx/v2/middleware/metrics"
 	mwrecover "github.com/bds421/rho-kit/httpx/v2/middleware/recover"
 	mwrequestid "github.com/bds421/rho-kit/httpx/v2/middleware/requestid"
@@ -74,13 +75,26 @@ type Config struct {
 	// span) sees the compressed wire bytes.
 	EnableCompress  bool
 	CompressOptions []compress.Option
+	// MetricsOptions forwards options to [metrics.NewHTTPMetrics] when
+	// metrics are enabled (e.g. metrics.WithRegisterer for test isolation).
+	// When empty, stack uses the package-level Metrics singleton.
+	MetricsOptions []mwmetrics.MetricsOption
+	// MaxBodyBytes, when > 0, wraps the chain with [maxbody.MaxBodySize]
+	// so request bodies larger than the cap are rejected with 413.
+	// Zero (default) leaves body size uncapped — services that read the
+	// full body MUST set this (or mount maxbody themselves).
+	MaxBodyBytes int64
 }
 
 // Option mutates the Config.
 type Option func(*Config)
 
 // Default builds the recommended middleware chain:
-// recover -> outer -> security headers -> metrics -> request ID -> correlation ID -> tracing -> logging -> timeout -> request logger -> inner -> auditlog -> handler.
+// recover -> outer -> security headers -> metrics -> request ID -> correlation ID -> tracing -> logging -> timeout -> request logger -> maxbody(opt) -> compress(opt) -> inner -> auditlog -> handler.
+//
+// Request-body size is NOT limited by default (net/http has no body cap).
+// Use [WithMaxBody] for any route that reads the full body so a single large
+// upload cannot exhaust heap.
 // Additional outer middleware wraps the standard observability/security chain
 // but remains inside recover so panics in custom boundary middleware get the
 // same JSON 500 response, logging, and panic metrics as handler panics.
@@ -164,6 +178,12 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 	if cfg.EnableCompress {
 		h = compress.Middleware(cfg.CompressOptions...)(h)
 	}
+	// Max body wraps outside compress so a oversized request is rejected
+	// before the handler (and before decompression work on the response path
+	// is relevant). Zero leaves the body uncapped.
+	if cfg.MaxBodyBytes > 0 {
+		h = maxbody.MaxBodySize(cfg.MaxBodyBytes)(h)
+	}
 
 	// Both the access-log Logger (via extraAttrs below) and the per-handler
 	// WithRequestLogger emit request_id and correlation_id by design:
@@ -207,7 +227,11 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		h = mwrequestid.WithRequestID(h)
 	}
 	if cfg.EnableMetrics {
-		h = mwmetrics.Metrics(h)
+		if len(cfg.MetricsOptions) > 0 {
+			h = mwmetrics.NewHTTPMetrics(cfg.MetricsOptions...).Middleware(h)
+		} else {
+			h = mwmetrics.Metrics(h)
+		}
 	}
 	if cfg.EnableSecHeaders {
 		shOpts := make([]secheaders.Option, 0, 1+len(cfg.SecHeadersOptions))
@@ -250,6 +274,29 @@ func WithLogger(l *slog.Logger) Option {
 // WithoutMetrics disables metrics middleware.
 func WithoutMetrics() Option {
 	return func(cfg *Config) { cfg.EnableMetrics = false }
+}
+
+// WithMetricsOptions forwards options to [metrics.NewHTTPMetrics] when the
+// metrics stage is enabled (for example metrics.WithRegisterer(reg) in tests
+// or multi-registry binaries). When set, stack builds a dedicated
+// HTTPMetrics instance instead of the package-level singleton.
+func WithMetricsOptions(opts ...mwmetrics.MetricsOption) Option {
+	return func(cfg *Config) {
+		cfg.MetricsOptions = append(cfg.MetricsOptions, opts...)
+	}
+}
+
+// WithMaxBody enables [maxbody.MaxBodySize] on the Default chain with the
+// given byte cap. Default leaves body size uncapped because upload services
+// need much larger limits than JSON APIs; any route that reads the full
+// body should set this (or mount maxbody itself).
+//
+// Panics if n <= 0.
+func WithMaxBody(n int64) Option {
+	if n <= 0 {
+		panic("stack: WithMaxBody requires a positive size")
+	}
+	return func(cfg *Config) { cfg.MaxBodyBytes = n }
 }
 
 // WithoutRequestID disables request ID middleware.

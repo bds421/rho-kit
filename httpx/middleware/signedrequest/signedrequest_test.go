@@ -154,7 +154,7 @@ func TestReadSpooledBodyErrorsAreStable(t *testing.T) {
 	readReq := httptest.NewRequest(http.MethodPost, "/api/x", nil)
 	readReq.Body = readErrorBody{err: readErr}
 
-	sb, _, err := readSpooledBody(readReq, 1024, 0)
+	sb, _, err := readSpooledBody(readReq, 1024, 0, "")
 	require.Error(t, err)
 	assert.Nil(t, sb)
 	assert.Equal(t, "signedrequest: failed to read request body", err.Error())

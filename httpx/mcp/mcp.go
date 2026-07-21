@@ -204,6 +204,8 @@ type serverConfig struct {
 	asyncAuditTimeout           time.Duration
 	destructiveGate             DestructiveGate
 	destructiveGateAcknowledged bool
+	serverName                  string
+	serverVersion               string
 }
 
 // DestructiveGate authorizes a destructive-tool invocation. The
@@ -383,6 +385,23 @@ func WithAsyncAuditTimeout(d time.Duration) ServerOption {
 	return func(c *serverConfig) { c.asyncAuditTimeout = d }
 }
 
+// WithServerInfo overrides the MCP Implementation name/version advertised
+// in the initialize handshake. Defaults are "rho-kit/mcp" and the kit
+// module major path version ("v2"). Empty name or version panics — an
+// empty Implementation is never useful and almost always a wiring bug.
+func WithServerInfo(name, version string) ServerOption {
+	if strings.TrimSpace(name) == "" {
+		panic("mcp: WithServerInfo requires a non-empty name")
+	}
+	if strings.TrimSpace(version) == "" {
+		panic("mcp: WithServerInfo requires a non-empty version")
+	}
+	return func(c *serverConfig) {
+		c.serverName = name
+		c.serverVersion = version
+	}
+}
+
 // Server collects registered tools and serves the MCP Streamable HTTP
 // surface via the modelcontextprotocol/go-sdk.
 //
@@ -433,9 +452,17 @@ func NewServer(opts ...ServerOption) *Server {
 		}
 		o(&cfg)
 	}
+	name := cfg.serverName
+	if name == "" {
+		name = "rho-kit/mcp"
+	}
+	ver := cfg.serverVersion
+	if ver == "" {
+		ver = "v2"
+	}
 	impl := &sdkmcp.Implementation{
-		Name:    "rho-kit/mcp",
-		Version: "v0.1.0",
+		Name:    name,
+		Version: ver,
 	}
 	sdkOpts := &sdkmcp.ServerOptions{
 		Logger: cfg.logger,
@@ -709,7 +736,25 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 		}
 	}
 
-	s.sdk.AddTool(sdkTool, wrapToolHandler[In, Out](s, name, h, cfg.destructive))
+	// Commit kit catalog only after SDK registration succeeds. AddTool
+	// panics on non-object/missing schemas; pre-validation makes that
+	// unreachable today, but a future SDK change must not leave the kit
+	// catalog advertising a tool the SDK never received.
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				s.mu.Lock()
+				delete(s.toolMeta, name)
+				// drop the trailing tools entry we just appended
+				if n := len(s.tools); n > 0 && s.tools[n-1].Name == name {
+					s.tools = s.tools[:n-1]
+				}
+				s.mu.Unlock()
+				panic(rec)
+			}
+		}()
+		s.sdk.AddTool(sdkTool, wrapToolHandler[In, Out](s, name, h, cfg.destructive))
+	}()
 	return nil
 }
 
@@ -965,9 +1010,12 @@ func wrapToolHandler[In any, Out any](s *Server, name string, h Handler[In, Out]
 		}
 		httpReq := (&http.Request{Header: header}).WithContext(ctx)
 
-		if !s.auditPrecheck(ctx, httpReq, name) {
+		var ok bool
+		ctx, ok = s.auditPrecheck(ctx, httpReq, name)
+		if !ok {
 			return errorResult("internal error"), nil
 		}
+		httpReq = httpReq.WithContext(ctx)
 
 		// Decode arguments. The SDK has already validated the JSON
 		// payload against the inputSchema before reaching us; we still
@@ -1133,7 +1181,9 @@ func mapErrorForCaller(s *Server, ctx context.Context, err error) string {
 	switch {
 	case apperror.IsValidation(err):
 		if ve, ok := apperror.AsValidation(err); ok && len(ve.Fields) > 0 {
-			return ve.Error()
+			// Reflect only field names — free-form Messages may embed
+			// caller-supplied bytes or internal detail.
+			return validationFieldNames(ve)
 		}
 		return "invalid request"
 	case apperror.IsNotFound(err):
@@ -1152,6 +1202,31 @@ func mapErrorForCaller(s *Server, ctx context.Context, err error) string {
 	}
 }
 
+
+// validationFieldNames builds a caller-safe validation message that
+// lists only field names (never free-form Field.Message text).
+func validationFieldNames(ve *apperror.ValidationError) string {
+	if ve == nil || len(ve.Fields) == 0 {
+		return "invalid request"
+	}
+	names := make([]string, 0, len(ve.Fields))
+	seen := make(map[string]struct{}, len(ve.Fields))
+	for _, f := range ve.Fields {
+		n := strings.TrimSpace(f.Field)
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		names = append(names, n)
+	}
+	if len(names) == 0 {
+		return "invalid request"
+	}
+	return "invalid request: " + strings.Join(names, ", ")
+}
 // logInternalError records a server-side log entry for an error
 // whose details must not be returned to the caller.
 func (s *Server) logInternalError(ctx context.Context, msg string, err error) {

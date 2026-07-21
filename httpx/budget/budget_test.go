@@ -792,3 +792,26 @@ func TestRoundTrip_EstimateHeaderZeroFallsBackToDefault(t *testing.T) {
 	assert.Equal(t, int64(7), b.consumed[0].amount,
 		"zero estimate header must fall back to the default so it cannot bypass the gate")
 }
+
+func TestRoundTrip_MaxActualClampsInflatedHeader(t *testing.T) {
+	srv := upstream(t, http.Header{"X-Actual-Tokens": {"999999999"}})
+	t.Cleanup(srv.Close)
+	b := &scriptedBudget{
+		consumeResp: []consumeResult{
+			{allowed: true, remaining: 999}, // pre-charge
+			{allowed: true, remaining: 979}, // clamped delta 20 (max 40 - estimate 20)
+		},
+	}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "alice",
+		budget.WithDefaultAmount(20),
+		budget.WithActualHeader("X-Actual-Tokens"),
+		budget.WithMaxActual(40),
+		budget.WithEnforcement(budget.EnforcementAuditOnly),
+	))
+	resp, err := c.Get(srv.URL)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	// Second consume is the reconcile delta: 40-20=20
+	require.Len(t, b.consumed, 2)
+	assert.Equal(t, int64(20), b.consumed[1].amount)
+}

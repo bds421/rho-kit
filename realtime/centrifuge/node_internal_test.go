@@ -189,19 +189,17 @@ func TestExtractBearer(t *testing.T) {
 	cases := []struct {
 		name  string
 		token string
-		data  []byte
 		want  string
 	}{
-		{"empty", "", nil, ""},
-		{"token field", "abc.def", nil, "abc.def"},
-		{"bearer prefix", "Bearer abc.def", nil, "abc.def"},
-		{"data field", "", []byte("xyz.tok"), "xyz.tok"},
-		{"data bearer", "", []byte("Bearer xyz.tok"), "xyz.tok"},
-		{"token wins over data", "from-token", []byte("from-data"), "from-token"},
+		{"empty", "", ""},
+		{"token field", "abc.def", "abc.def"},
+		{"bearer prefix", "Bearer abc.def", "abc.def"},
+		{"bearer lower", "bearer abc.def", "abc.def"},
+		{"whitespace", "  abc.def  ", "abc.def"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := extractBearer(tc.token, tc.data); got != tc.want {
+			if got := extractBearer(tc.token); got != tc.want {
 				t.Fatalf("extractBearer = %q, want %q", got, tc.want)
 			}
 		})

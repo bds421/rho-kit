@@ -196,13 +196,12 @@ func (c *Conn) WriteMessage(typ MessageType, payload []byte) error {
 // choose to send an application-level error frame and continue), but
 // the error is wrapped with [redact.WrapError].
 func (c *Conn) ReadJSON(v any) error {
-	typ, payload, err := c.inner.Read(c.ctx)
+	typ, payload, err := c.ReadMessage()
 	if err != nil {
-		c.recordCloseFromError(err)
+		// ReadMessage already recorded close + redacted; re-prefix for JSON path.
 		return redact.WrapError("httpx/websocket: read json", err)
 	}
-	c.metrics.observeMessage(directionIn, len(payload))
-	if typ != coderws.MessageText {
+	if typ != MessageText {
 		return redact.WrapError("httpx/websocket: read json", errors.New("expected text message"))
 	}
 	if err := json.Unmarshal(payload, v); err != nil {
@@ -221,13 +220,9 @@ func (c *Conn) WriteJSON(v any) error {
 	if err != nil {
 		return redact.WrapError("httpx/websocket: encode json", err)
 	}
-	ctx, cancel := c.writeCtx()
-	defer cancel()
-	if err := c.inner.Write(ctx, coderws.MessageText, payload); err != nil {
-		c.recordCloseFromError(err)
+	if err := c.WriteMessage(MessageText, payload); err != nil {
 		return redact.WrapError("httpx/websocket: write json", err)
 	}
-	c.metrics.observeMessage(directionOut, len(payload))
 	return nil
 }
 
@@ -239,7 +234,26 @@ func (c *Conn) WriteJSON(v any) error {
 // Errors are wrapped with [redact.WrapError]; the inner driver text
 // is not embedded verbatim.
 func (c *Conn) Ping(ctx context.Context) error {
+	// Bound outbound ping by writeTimeout when set, matching WriteMessage.
+	if c.writeTimeout > 0 {
+		var cancel context.CancelFunc
+		if ctx == nil {
+			ctx = c.ctx
+		}
+		ctx, cancel = context.WithTimeout(ctx, c.writeTimeout)
+		defer cancel()
+	} else if ctx == nil {
+		ctx = c.ctx
+	}
 	if err := c.inner.Ping(ctx); err != nil {
+		// context.DeadlineExceeded is a pong-timeout (or write-timeout)
+		// signal for the caller — the connection may still be usable
+		// until they Close. Only cancel Conn.Context for true
+		// connection-death errors so heartbeat can still classify a
+		// pong-deadline as result="timeout" before Close cancels ctx.
+		if !errors.Is(err, context.DeadlineExceeded) {
+			c.recordCloseFromError(err)
+		}
 		return redact.WrapError("httpx/websocket: ping", err)
 	}
 	return nil

@@ -48,6 +48,7 @@ type KeyedLimiter struct {
 	degradation DegradationHandler
 	metrics     *Metrics
 	name        string
+	maxPerShard int
 
 	startMu sync.Mutex
 	started bool
@@ -104,6 +105,18 @@ func WithKeyedLimiterName(name string) KeyedOption {
 	return func(rl *KeyedLimiter) { rl.name = name }
 }
 
+// WithKeyedMaxPerShard sets the per-shard LRU capacity for distinct keys
+// (default 10_000). See [WithMaxPerShard] on Limiter for rationale.
+//
+// Panics if n <= 0.
+func WithKeyedMaxPerShard(n int) KeyedOption {
+	if n <= 0 {
+		panic("middleware/ratelimit: WithKeyedMaxPerShard requires a positive size")
+	}
+	return func(l *KeyedLimiter) { l.maxPerShard = n }
+}
+
+
 // NewKeyedLimiter creates a rate limiter allowing limit requests per window per key.
 // Panics if limit or window are not positive — these indicate misconfiguration.
 func NewKeyedLimiter(limit int, window time.Duration, opts ...KeyedOption) *KeyedLimiter {
@@ -114,10 +127,11 @@ func NewKeyedLimiter(limit int, window time.Duration, opts ...KeyedOption) *Keye
 		panic("middleware/ratelimit: NewKeyedLimiter window must be positive")
 	}
 	rl := &KeyedLimiter{
-		limit:  limit,
-		window: window,
-		now:    time.Now,
-		name:   defaultLimiterName,
+		limit:       limit,
+		window:      window,
+		now:         time.Now,
+		name:        defaultLimiterName,
+		maxPerShard: defaultMaxKeyedPerShard,
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -126,7 +140,11 @@ func NewKeyedLimiter(limit int, window time.Duration, opts ...KeyedOption) *Keye
 		opt(rl)
 	}
 	for i := range rl.shards {
-		cache, _ := lru.New[string, *keyedRateLimitEntry](defaultMaxKeyedPerShard)
+		cap := rl.maxPerShard
+	if cap <= 0 {
+		cap = defaultMaxKeyedPerShard
+	}
+	cache, _ := lru.New[string, *keyedRateLimitEntry](cap)
 		rl.shards[i].entries = cache
 	}
 	// Publish to the active-keys collector only after shards and name are

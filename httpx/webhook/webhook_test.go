@@ -22,9 +22,10 @@ import (
 func newDispatcher(t *testing.T, client *http.Client, opts ...webhook.Option) *webhook.Dispatcher {
 	t.Helper()
 	d, err := webhook.New(webhook.Config{
-		HTTPClient: client,
-		Signer:     signing.NewSigner(),
-		Secret:     signing.Secret("test-secret-32-bytes-padded-12345"),
+		HTTPClient:               client,
+		Signer:                   signing.NewSigner(),
+		Secret:                   signing.Secret("test-secret-32-bytes-padded-12345"),
+		AllowPrivateDestinations: true, // httptest + local receivers
 	}, opts...)
 	require.NoError(t, err)
 	return d

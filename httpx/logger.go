@@ -37,7 +37,10 @@ func Logger(ctx context.Context, fallback *slog.Logger) *slog.Logger {
 			return l
 		}
 		// Fall back to the logging package's context key for interoperability.
-		if l := logging.FromContext(ctx); l != slog.Default() {
+		// Use presence (FromContextOK) rather than identity vs slog.Default()
+		// so a deliberately stored default logger is not dropped and the
+		// lookup is not racy against concurrent slog.SetDefault.
+		if l, ok := logging.FromContextOK(ctx); ok {
 			return l
 		}
 	}

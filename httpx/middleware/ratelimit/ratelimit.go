@@ -133,6 +133,20 @@ func WithLimiterName(name string) LimiterOption {
 	return func(rl *Limiter) { rl.name = name }
 }
 
+// WithMaxPerShard sets the per-shard LRU capacity for distinct client keys
+// (default 10_000; 16 shards → ~160k IPs). Raise only when legitimate
+// client cardinality exceeds the default; under IP-spray the LRU still
+// evicts live counters once full.
+//
+// Panics if n <= 0.
+func WithMaxPerShard(n int) LimiterOption {
+	if n <= 0 {
+		panic("middleware/ratelimit: WithMaxPerShard requires a positive size")
+	}
+	return func(l *Limiter) { l.maxPerShard = n }
+}
+
+
 // NewLimiter creates a rate limiter that allows limit requests per window per IP.
 // Panics if limit or window are not positive — these indicate misconfiguration.
 func NewLimiter(limit int, window time.Duration, opts ...LimiterOption) *Limiter {

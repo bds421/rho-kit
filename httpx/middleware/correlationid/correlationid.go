@@ -21,6 +21,10 @@ const maxCorrelationIDLen = contextutil.MaxCorrelationIDLen
 // WithCorrelationID reads the correlation ID from the X-Correlation-Id header.
 // If absent or invalid, it generates a new one. The ID is stored in the request
 // context and set on the response header.
+//
+// Security note: the inbound X-Correlation-Id is caller-controlled.
+// Token alphabet checks prevent CR/LF injection, but forensic correlation
+// integrity requires the ingress to strip/re-stamp untrusted values.
 func WithCorrelationID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := singletonHeaderValue(r.Header, Header)

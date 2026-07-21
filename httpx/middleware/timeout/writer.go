@@ -36,6 +36,7 @@ type timeoutWriter struct {
 	wroteHeader bool
 	written     bool
 	flushWarned bool
+	truncated  bool // body was cut short by bufferCap; drop Content-Length on flush
 
 	maxBuffer int          // per-instance cap; 0 falls back to defaultMaxBufferSize
 	logger    *slog.Logger // configured logger; nil falls back to slog.Default
@@ -120,10 +121,12 @@ func (tw *timeoutWriter) Write(b []byte) (int, error) {
 	}
 	remaining := tw.bufferCap() - len(tw.buf)
 	if remaining <= 0 {
+		tw.truncated = true
 		return 0, ErrResponseTooLarge
 	}
 	if len(b) > remaining {
 		tw.buf = append(tw.buf, b[:remaining]...)
+		tw.truncated = true
 		return remaining, ErrResponseTooLarge
 	}
 	tw.buf = append(tw.buf, b...)
@@ -154,10 +157,16 @@ func (tw *timeoutWriter) writeToReal() {
 		code = http.StatusOK
 	}
 	buf := tw.buf
+	truncated := tw.truncated
 	tw.mu.Unlock()
 
 	for k, v := range hdrs {
 		tw.w.Header()[k] = v
+	}
+	// Handler-set Content-Length is wrong when Write truncated the body.
+	// Drop it so net/http derives length from the bytes actually sent.
+	if truncated {
+		tw.w.Header().Del("Content-Length")
 	}
 	tw.w.WriteHeader(code)
 	if len(buf) > 0 {

@@ -2,8 +2,11 @@ package timeout
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -24,6 +27,34 @@ type timeoutOptions struct {
 
 type handlerResult struct {
 	panicValue any
+	panicStack []byte
+}
+
+// panicWithStack re-raises a handler panic with the original stack so the
+// outer recover middleware's debug.Stack() is not limited to the timeout
+// re-panic site (mirrors net/http.TimeoutHandler).
+type panicWithStack struct {
+	value any
+	stack []byte
+}
+
+func (p panicWithStack) Error() string {
+	return fmt.Sprintf("timeout: handler panic: %v", p.value)
+}
+
+// StackTrace returns the original handler stack captured at recover.
+// The outer recover middleware prefers this over debug.Stack() at the
+// re-panic site so logs point at the real handler frame.
+func (p panicWithStack) StackTrace() []byte { return p.stack }
+
+// UnwrapPanic returns the original panic value for redaction/logging.
+func (p panicWithStack) UnwrapPanic() any { return p.value }
+
+func (p panicWithStack) Unwrap() error {
+	if err, ok := p.value.(error); ok {
+		return err
+	}
+	return nil
 }
 
 // WithWebSocketUpgradeBypass opts the route into bypassing the timeout
@@ -147,6 +178,7 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 				defer func() {
 					if rv := recover(); rv != nil {
 						result.panicValue = rv
+						result.panicStack = debug.Stack()
 					}
 					done <- result
 				}()
@@ -156,10 +188,33 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 			select {
 			case result := <-done:
 				if result.panicValue != nil {
-					panic(result.panicValue)
+					panic(panicWithStack{value: result.panicValue, stack: result.panicStack})
 				}
 				tw.writeToReal()
 			case <-ctx.Done():
+				// Only emit the TIMEOUT 503 when our deadline fired.
+				// Parent cancellation (client disconnect, server shutdown)
+				// must not be counted/logged as a server timeout.
+				if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					// Best-effort: if the handler finished before we observe
+					// cancellation, still flush its response.
+					select {
+					case result := <-done:
+						if result.panicValue != nil {
+							panic(panicWithStack{value: result.panicValue, stack: result.panicStack})
+						}
+						tw.writeToReal()
+					default:
+						// Handler still running; leave connection without a
+						// forged timeout body. Drain so panics still surface.
+						lateLogger := cfg.logger
+						if lateLogger == nil {
+							lateLogger = slog.Default()
+						}
+						go drainLateHandler(done, lateLogger)
+					}
+					return
+				}
 				tw.writeTimeout()
 				// Drain the late goroutine in the background so a
 				// post-timeout panic still surfaces in logs even
@@ -184,7 +239,7 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 				select {
 				case result := <-done:
 					if result.panicValue != nil {
-						panic(result.panicValue)
+						panic(panicWithStack{value: result.panicValue, stack: result.panicStack})
 					}
 				case <-timer.C:
 					go drainLateHandler(done, lateLogger)

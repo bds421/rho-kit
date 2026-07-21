@@ -248,11 +248,11 @@ func WithWriteTimeout(d time.Duration) Option {
 	return func(c *config) { c.writeTimeout = d }
 }
 
-// WithMetrics registers the kit metric set on reg. Pass nil to fall
-// back to [prometheus.DefaultRegisterer] semantics via
-// [NewMetrics]; the kit convention is for callers to supply an
-// explicit registerer rather than relying on the global, so this
-// option panics on nil to surface miswiring at startup.
+// WithMetrics registers the kit metric set on reg.
+//
+// Omit the option entirely for an unmetered handler. Passing nil
+// panics — supply an explicit registerer (or prometheus.DefaultRegisterer)
+// rather than relying on an implicit global via this option.
 func WithMetrics(reg prometheus.Registerer) Option {
 	if reg == nil {
 		panic("httpx/websocket: WithMetrics requires a non-nil registerer (omit the option for unmetered)")

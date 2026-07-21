@@ -35,6 +35,7 @@ type Node struct {
 	subscribeAuthorizer ChannelAuthorizer
 	publishAuthorizer   ChannelAuthorizer
 	openChannelsUnsafe  bool
+	anonymousUnsafe     bool
 	wsMessageSizeLimit  int
 	wsWriteTimeout      time.Duration
 
@@ -99,6 +100,7 @@ func NewNode(opts ...Option) (*Node, error) {
 		subscribeAuthorizer: c.subscribeAuthorizer,
 		publishAuthorizer:   c.publishAuthorizer,
 		openChannelsUnsafe:  c.openChannelsUnsafe,
+		anonymousUnsafe:     c.anonymousUnsafe,
 		wsMessageSizeLimit:  c.wsMessageSizeLimit,
 		wsWriteTimeout:      c.wsWriteTimeout,
 	}
@@ -226,10 +228,14 @@ func (n *Node) WebsocketHandler() http.Handler {
 func (n *Node) installCallbacks() {
 	n.node.OnConnecting(func(ctx context.Context, e cfg.ConnectEvent) (cfg.ConnectReply, error) {
 		if n.verifier == nil {
+			// Only reachable with WithAnonymousConnectionsUnsafe (NewNode
+			// refuses bare nodes). Count as accepted: the operator opted in.
 			n.metrics.observeConnect(connectOutcomeAccepted)
-			return cfg.ConnectReply{}, nil
+			return cfg.ConnectReply{
+				Credentials: &cfg.Credentials{UserID: ""},
+			}, nil
 		}
-		token := extractBearer(e.Token, e.Data)
+		token := extractBearer(e.Token)
 		if token == "" {
 			n.metrics.observeConnect(connectOutcomeRejected)
 			return cfg.ConnectReply{}, cfg.DisconnectInvalidToken
@@ -248,6 +254,11 @@ func (n *Node) installCallbacks() {
 				)
 			}
 			return cfg.ConnectReply{}, disc
+		}
+		if claims.Subject == "" {
+			n.metrics.observeConnect(connectOutcomeRejected)
+			n.logger.WarnContext(ctx, "centrifuge: connect token missing subject")
+			return cfg.ConnectReply{}, cfg.DisconnectInvalidToken
 		}
 		n.metrics.observeConnect(connectOutcomeAccepted)
 		return cfg.ConnectReply{
@@ -330,16 +341,18 @@ func connectVerifyFailure(err error) (disconnect cfg.Disconnect, outcome string)
 	return cfg.DisconnectInvalidToken, connectOutcomeRejected
 }
 
-func extractBearer(token string, data []byte) string {
-	if token != "" {
-		return strings.TrimPrefix(token, "Bearer ")
-	}
-	if len(data) == 0 {
+func extractBearer(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
 		return ""
 	}
-	// Older centrifuge clients sometimes pass the token in the
-	// Data field as a literal string — accept that path too.
-	return strings.TrimPrefix(string(data), "Bearer ")
+	// Accept an optional "Bearer " prefix on the dedicated Token field only.
+	// Connect Data is an application payload and is never treated as a token.
+	const prefix = "Bearer "
+	if len(token) > len(prefix) && strings.EqualFold(token[:len(prefix)], prefix) {
+		return strings.TrimSpace(token[len(prefix):])
+	}
+	return token
 }
 
 // disconnectReason classifies a centrifuge disconnect for the

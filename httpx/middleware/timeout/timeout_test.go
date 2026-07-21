@@ -172,8 +172,20 @@ func TestTimeout_PanicBeforeDeadlinePropagates(t *testing.T) {
 
 	defer func() {
 		r := recover()
-		if r != "handler exploded" {
-			t.Fatalf("panic = %v, want handler exploded", r)
+		switch v := r.(type) {
+		case panicWithStack:
+			if v.value != "handler exploded" {
+				t.Fatalf("panic value = %v, want handler exploded", v.value)
+			}
+			if len(v.stack) == 0 {
+				t.Fatal("expected original stack to be captured")
+			}
+		case string:
+			if v != "handler exploded" {
+				t.Fatalf("panic = %v, want handler exploded", v)
+			}
+		default:
+			t.Fatalf("panic = %v (%T), want handler exploded", r, r)
 		}
 	}()
 

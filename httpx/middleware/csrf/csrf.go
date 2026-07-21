@@ -417,6 +417,14 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 		panic("csrf: New SameSite=None requires the default Secure cookie — drop WithoutSecureCookieForLocalHTTP() when SameSite=None is set")
 	}
 
+	// Bare double-submit (no session binding, no Origin allowlist) is the
+	// known weaker posture: a token minted for user A validates for user B,
+	// and sibling-subdomain Set-Cookie planting can forge both halves.
+	// Require an explicit mitigation so operators consciously accept it.
+	if cfg.sessionExtractor == nil && len(cfg.allowedOrigins) == 0 {
+		slog.Default().Warn("csrf: double-submit mode without WithSessionExtractor or WithAllowedOrigins; tokens are not bound to a user/session — configure one for multi-tenant / shared-parent-domain deployments")
+	}
+
 	// Session-bound mode: build the security/csrf Issuer once and route
 	// every request through it. The legacy double-submit path stays in
 	// place for callers that haven't supplied an extractor.
@@ -853,20 +861,28 @@ func canonicalOrigin(raw string, allowPath bool) (string, error) {
 	return strings.ToLower(u.Scheme + "://" + u.Host), nil
 }
 
+// doubleSubmitTokenTTL bounds legacy double-submit tokens. Matches the
+// cookie MaxAge (24h) so a leaked token cannot verify indefinitely.
+const doubleSubmitTokenTTL = 24 * time.Hour
+
 // mintSignedToken creates a random token with an HMAC signature.
-// Format: "<random_hex>.<hmac_hex>". The middleware handler converts a
-// crypto/rand failure into HTTP 500 rather than crashing the request goroutine.
+// Format: "<random_hex>.<unix_issued_at>.<hmac_hex>" where HMAC covers
+// "random_hex.unix_issued_at". The issued-at binds a server-side TTL so
+// a leaked token cannot verify forever until secret rotation.
 func mintSignedToken(s *secret.String) (string, error) {
 	raw := make([]byte, tokenLength)
 	if _, err := io.ReadFull(tokenRandReader, raw); err != nil {
 		return "", fmt.Errorf("csrf: generate random token: %w", err)
 	}
 	tokenHex := hex.EncodeToString(raw)
-	sig := computeHMACWithSecret(tokenHex, s)
-	return tokenHex + "." + sig, nil
+	issuedAt := fmt.Sprintf("%d", time.Now().Unix())
+	payload := tokenHex + "." + issuedAt
+	sig := computeHMACWithSecret(payload, s)
+	return payload + "." + sig, nil
 }
 
-// isValidSignedToken verifies that the token was signed by the server.
+// isValidSignedToken verifies that the token was signed by the server
+// and has not exceeded [doubleSubmitTokenTTL].
 func isValidSignedToken(token string, s *secret.String) bool {
 	// Reject over-length tokens before computing any HMAC so a hostile
 	// multi-MB cookie/header value cannot turn every request into an
@@ -874,12 +890,38 @@ func isValidSignedToken(token string, s *secret.String) bool {
 	if len(token) > maxSignedTokenLen {
 		return false
 	}
-	parts := strings.SplitN(token, ".", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	// Expect three parts: random.issuedAt.hmac
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return false
 	}
-	expectedSig := computeHMACWithSecret(parts[0], s)
-	return hmac.Equal([]byte(parts[1]), []byte(expectedSig))
+	issuedAt, err := parseUnixSeconds(parts[1])
+	if err != nil {
+		return false
+	}
+	if time.Since(issuedAt) > doubleSubmitTokenTTL || issuedAt.After(time.Now().Add(5*time.Minute)) {
+		return false
+	}
+	payload := parts[0] + "." + parts[1]
+	expectedSig := computeHMACWithSecret(payload, s)
+	return hmac.Equal([]byte(parts[2]), []byte(expectedSig))
+}
+
+func parseUnixSeconds(s string) (time.Time, error) {
+	var sec int64
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return time.Time{}, fmt.Errorf("csrf: non-digit issued-at")
+		}
+		sec = sec*10 + int64(r-'0')
+		if sec > 1<<40 {
+			return time.Time{}, fmt.Errorf("csrf: issued-at overflow")
+		}
+	}
+	if sec <= 0 {
+		return time.Time{}, fmt.Errorf("csrf: empty issued-at")
+	}
+	return time.Unix(sec, 0), nil
 }
 
 func isValidSignedTokenAny(token string, secrets []*secret.String) bool {

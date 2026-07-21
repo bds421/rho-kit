@@ -1,8 +1,11 @@
 package httpx
 
 import (
+	"context"
 	"log/slog"
 	"testing"
+
+	"github.com/bds421/rho-kit/observability/v2/logging"
 )
 
 func TestLogger_NilContextUsesFallback(t *testing.T) {
@@ -34,5 +37,16 @@ func TestSetLogger_NilContextUsesBackground(t *testing.T) {
 	}
 	if got := Logger(ctx, nil); got != logger {
 		t.Fatal("Logger should return logger stored from nil context")
+	}
+}
+
+func TestLogger_UsesExplicitlyStoredDefaultLogger(t *testing.T) {
+	// Storing slog.Default() must still surface through Logger; presence
+	// is based on FromContextOK, not identity comparison against Default().
+	fallback := slog.Default().With("fallback", true)
+	ctx := logging.WithContext(context.Background(), slog.Default())
+	got := Logger(ctx, fallback)
+	if got == fallback {
+		t.Fatal("Logger should return the context-stored logger even when it is slog.Default()")
 	}
 }

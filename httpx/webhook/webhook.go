@@ -4,6 +4,7 @@ package webhook
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/crypto/v2/signing"
+	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/resilience/v2/circuitbreaker"
 	"github.com/bds421/rho-kit/resilience/v2/retry"
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
@@ -55,6 +58,10 @@ type Config struct {
 	Signer *signing.Signer
 	// Secret is the HMAC key. Required.
 	Secret signing.Secret
+	// AllowPrivateDestinations permits Delivery.URL hosts that resolve to
+	// private/link-local/metadata addresses. Default false (SSRF-safe).
+	// Set true only for VPC-internal receivers or local e2e tests.
+	AllowPrivateDestinations bool
 }
 
 // Dispatcher sends signed outbound webhooks. Safe for concurrent use.
@@ -198,7 +205,7 @@ func (d *Dispatcher) Send(ctx context.Context, del Delivery) error {
 	if del.URL == "" {
 		return errors.New("webhook: Delivery.URL is required")
 	}
-	if err := validateURL(del.URL); err != nil {
+	if err := validateURLWithOpts(del.URL, d.cfg.AllowPrivateDestinations); err != nil {
 		return err
 	}
 	if del.DeliveryID == "" {
@@ -219,29 +226,41 @@ func (d *Dispatcher) Send(ctx context.Context, del Delivery) error {
 	}, retry.WithRetryIf(isRetryable))
 }
 
-// validateURL is a baseline SSRF guard: the dispatcher signs a body and
-// POSTs it to a caller- (often customer-) supplied URL, so it must only
-// ever speak HTTP(S). A non-http(s) scheme (file://, gopher://, ftp://,
-// or a relative/scheme-less value) is rejected before any request is
-// built so the signed payload and X-Kit-* headers never leak to an
-// unexpected transport.
+// validateURL is the SSRF guard for Delivery.URL: only http(s) schemes are
+// accepted, and the host must resolve to a public (non-private, non-
+// link-local, non-metadata) address via [netutil.ResolveAndValidate].
+// A signed body must never be POSTed to 169.254.169.254 or an internal
+// admin API by accident.
 //
-// This is intentionally a scheme-only check. It does NOT block private,
-// link-local, or metadata IP destinations — deployments that dispatch to
-// untrusted customer endpoints should additionally route through an
-// SSRF-aware transport (see security/netutil.SSRFSafeTransport) wired
-// into Config.HTTPClient.
+// Callers that deliberately deliver to private networks (local e2e,
+// VPC-internal receivers) must set Config.AllowPrivateDestinations.
+// Pair with an SSRF-aware transport ([netutil.SSRFSafeTransport]) when
+// the destination is fully untrusted and DNS may rebind after this check.
 func validateURL(raw string) error {
+	return validateURLWithOpts(raw, false)
+}
+
+func validateURLWithOpts(raw string, allowPrivate bool) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return permanent(fmt.Errorf("webhook: parse Delivery.URL: %w", err))
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "http", "https":
-		return nil
 	default:
 		return permanent(fmt.Errorf("webhook: Delivery.URL scheme %q not allowed (must be http or https)", u.Scheme))
 	}
+	host := u.Hostname()
+	if host == "" {
+		return permanent(fmt.Errorf("webhook: Delivery.URL host is empty"))
+	}
+	if allowPrivate {
+		return nil
+	}
+	if _, err := netutil.ResolveAndValidate(context.Background(), host, nil); err != nil {
+		return permanent(fmt.Errorf("webhook: Delivery.URL host rejected: %w", err))
+	}
+	return nil
 }
 
 // errWebhookRedirectRefused is returned from the default CheckRedirect when
@@ -314,6 +333,9 @@ func (d *Dispatcher) attempt(ctx context.Context, del Delivery, signature string
 
 	resp, err := d.cfg.HTTPClient.Do(req)
 	if err != nil {
+		if isPermanentTransportError(err) {
+			return permanent(fmt.Errorf("webhook: do: %w", err))
+		}
 		return retryable(fmt.Errorf("webhook: do: %w", err))
 	}
 	defer func() {
@@ -344,6 +366,16 @@ func (d *Dispatcher) attempt(ctx context.Context, del Delivery, signature string
 		)
 		return retryable(fmt.Errorf("webhook: receiver returned %d", resp.StatusCode))
 	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		// Redirect responses that survived CheckRedirect are permanent —
+		// retrying will observe the same 3xx. Do not mislabel as 4xx.
+		d.logger.Warn("webhook 3xx; giving up",
+			slog.String("url", logURL(del.URL)),
+			slog.String("delivery_id", del.DeliveryID),
+			slog.Int("status", resp.StatusCode),
+		)
+		return permanent(fmt.Errorf("webhook: receiver returned %d", resp.StatusCode))
+	}
 	if resp.StatusCode >= 500 {
 		d.logger.Warn("webhook 5xx; will retry",
 			slog.String("url", logURL(del.URL)),
@@ -352,15 +384,48 @@ func (d *Dispatcher) attempt(ctx context.Context, del Delivery, signature string
 		)
 		return retryable(fmt.Errorf("webhook: receiver returned %d", resp.StatusCode))
 	}
-	// 3xx/4xx: receiver said "don't retry" — give up. (Redirects should be
-	// blocked by CheckRedirect on Config.HTTPClient; if one slips through
-	// it is permanent, not a mislabelled 4xx.)
-	d.logger.Warn("webhook non-success; giving up",
+	// 4xx (and other non-2xx/3xx/5xx): receiver said "don't retry".
+	d.logger.Warn("webhook 4xx; giving up",
 		slog.String("url", logURL(del.URL)),
 		slog.String("delivery_id", del.DeliveryID),
 		slog.Int("status", resp.StatusCode),
 	)
 	return permanent(fmt.Errorf("webhook: receiver returned %d", resp.StatusCode))
+}
+
+// isPermanentTransportError reports Do errors that will not succeed on
+// retry: blocked redirects (kit clients refuse 3xx by default), TLS
+// certificate verification failures, and an open circuit breaker.
+func isPermanentTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, httpx.ErrRedirectBlocked) || errors.Is(err, httpx.ErrRedirectLimitExceeded) {
+		return true
+	}
+	if errors.Is(err, errWebhookRedirectRefused) {
+		return true
+	}
+	if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		return true
+	}
+	var ua x509.UnknownAuthorityError
+	if errors.As(err, &ua) {
+		return true
+	}
+	var he x509.HostnameError
+	if errors.As(err, &he) {
+		return true
+	}
+	var ce x509.CertificateInvalidError
+	if errors.As(err, &ce) {
+		return true
+	}
+	var sre x509.SystemRootsError
+	if errors.As(err, &sre) {
+		return true
+	}
+	return false
 }
 
 // logURL returns scheme://host only so capability tokens embedded in

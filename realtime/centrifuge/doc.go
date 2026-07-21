@@ -29,11 +29,11 @@
 //
 // # Quick start
 //
-//	verifier, _ := jwtutil.NewVerifier(jwtutil.WithJWKSURL("https://issuer/.well-known/jwks.json"))
+//	provider := jwtutil.NewProvider("https://issuer/.well-known/jwks.json", nil, 0)
 //
 //	node, err := centrifuge.NewNode(
 //		centrifuge.WithLogger(slog.Default()),
-//		centrifuge.WithJWTAuth(verifier),
+//		centrifuge.WithJWTAuth(provider),
 //		centrifuge.WithChannelClassifier(func(channel string) string {
 //			if strings.HasPrefix(channel, "user:") { return "user" }
 //			if strings.HasPrefix(channel, "room:") { return "room" }
@@ -65,7 +65,7 @@
 //
 // # Authentication
 //
-// [WithJWTAuth] integrates a kit [jwtutil.Verifier] with centrifuge's
+// [WithJWTAuth] integrates a kit [jwtutil.Provider] with centrifuge's
 // `OnConnecting` callback: the bearer token sent by the centrifuge
 // client is verified, and the verified subject is propagated to the
 // centrifuge connection as the user identifier.

@@ -122,6 +122,7 @@ type config struct {
 	estimateHeader string
 	actualHeader   string
 	defaultAmount  int64
+	maxActual      int64 // 0 = no cap; clamps reported actual-cost header
 	logger         Logger
 	enforcement    Enforcement
 	cleanupTimeout time.Duration
@@ -160,6 +161,18 @@ func WithDefaultAmount(n int64) Option {
 		panic("httpx/budget: WithDefaultAmount requires a positive amount")
 	}
 	return func(c *config) { c.defaultAmount = n }
+}
+
+// WithMaxActual caps the response actual-cost header used during
+// reconciliation. Values above the cap are clamped (and logged) so a
+// compromised or misbehaving upstream cannot drain a tenant budget
+// with a single inflated actual header (e.g. 9e18). Zero (the default)
+// leaves actuals uncapped. Panics on a non-positive max.
+func WithMaxActual(n int64) Option {
+	if n <= 0 {
+		panic("httpx/budget: WithMaxActual requires a positive amount")
+	}
+	return func(c *config) { c.maxActual = n }
 }
 
 // WithLogger sets the logger used for non-fatal reconciliation
@@ -377,6 +390,11 @@ func (t *transport) reconcile(reqCtx context.Context, resp *http.Response, estim
 		t.cfg.logger.Warn("httpx/budget: malformed actual header",
 			"header", t.cfg.actualHeader, redact.String("value", v))
 		return nil
+	}
+	if t.cfg.maxActual > 0 && actual > t.cfg.maxActual {
+		t.cfg.logger.Warn("httpx/budget: actual header exceeds max; clamping",
+			"header", t.cfg.actualHeader, "actual", actual, "max", t.cfg.maxActual)
+		actual = t.cfg.maxActual
 	}
 	delta := actual - estimate
 	if delta == 0 {
