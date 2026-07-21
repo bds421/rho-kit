@@ -37,6 +37,22 @@ func f() auth.Identity {
 	assert.Empty(t, (authIdentityActorRule{}).Run(fset, file))
 }
 
+func TestAuthIdentityActorRule_IgnoresLocalIdentityType(t *testing.T) {
+	// Bare Identity{} is a local type when auth is imported under a name —
+	// must not flag or offer a Fix that would corrupt the local struct.
+	const src = `package svc
+import auth "github.com/bds421/rho-kit/httpx/v2/middleware/auth"
+type Identity struct{ UserID string }
+func f() Identity {
+	_ = auth.Identity{}
+	return Identity{UserID: "local"}
+}`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "svc.go", src, 0)
+	require.NoError(t, err)
+	assert.Empty(t, (authIdentityActorRule{}).Run(fset, file))
+}
+
 func TestFixAuthIdentityDrift_AddsSubjectActorKind(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "svc.go")

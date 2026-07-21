@@ -248,10 +248,13 @@ func TestExitNonZero_PassNeverFails(t *testing.T) {
 }
 
 func TestContainsFold(t *testing.T) {
-	assert.True(t, containsFold("Cache-Control: no-store", "no-store"))
+	// Whole-token match (comma/semicolon split), case-insensitive.
+	assert.True(t, containsFold("private, no-store", "no-store"))
 	assert.True(t, containsFold("nosniff", "NOSNIFF"))
+	assert.False(t, containsFold("x-nosniff-off", "nosniff"), "must not substring-match tokens")
 	assert.False(t, containsFold("DENY", "ALLOW"))
 	assert.True(t, containsFold("anything", ""))
+	assert.True(t, containsFold("DENY, SAMEORIGIN", "deny"))
 }
 
 func TestJWTProbe_404IsUnknown(t *testing.T) {

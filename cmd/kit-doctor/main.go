@@ -72,20 +72,29 @@ func main() {
 		fmt.Print(formatFindings(findings))
 	}
 
-	// Interactive mode runs additional repo-level checks whose
-	// findings carry Fix functions. These do NOT appear in the
-	// standard text/json output so the non-interactive contract
-	// stays byte-for-byte identical.
+	// Interactive mode prompts for every finding that carries a Fix —
+	// AST-rule findings from scan() (e.g. auth-identity drift) plus
+	// repo-level checkers. Repo findings without a prior text/json
+	// appearance still print at the prompt so operators see them.
 	if *interactive {
-		repoFindings := runRepoCheckers(path, repoCheckers())
-		res := runInteractiveSession(os.Stdin, os.Stdout, repoFindings)
-		// Only the repo findings the operator did NOT resolve count
-		// toward the exit code: a missing CODEOWNERS entry the operator
-		// declined (or failed) to fix is surfaced through exit-1, but
-		// one they applied must not. See interactiveResult.
-		if exitCode(res.unresolved, floor) == 1 {
-			os.Exit(1)
+		var fixable []rules.Finding
+		for _, f := range findings {
+			if f.Fix != nil {
+				fixable = append(fixable, f)
+			}
 		}
+		repoFindings := runRepoCheckers(path, repoCheckers())
+		fixable = append(fixable, repoFindings...)
+		res := runInteractiveSession(os.Stdin, os.Stdout, fixable)
+		// Unresolved fixable findings + remaining non-fixable scan
+		// findings drive the exit code.
+		remaining := append([]rules.Finding{}, res.unresolved...)
+		for _, f := range findings {
+			if f.Fix == nil {
+				remaining = append(remaining, f)
+			}
+		}
+		os.Exit(exitCode(remaining, floor))
 	}
 	os.Exit(exitCode(findings, floor))
 }

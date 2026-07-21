@@ -3,6 +3,7 @@ package rules
 import (
 	"go/ast"
 	"go/token"
+	"strconv"
 	"strings"
 )
 
@@ -25,12 +26,18 @@ func (r authIdentityActorRule) Run(fset *token.FileSet, file *ast.File) []Findin
 		return nil
 	}
 	aliases := map[string]struct{}{}
+	dotImport := false
 	for _, imp := range authMiddlewareImports {
 		for name := range importAliasesFor(file, imp) {
 			aliases[name] = struct{}{}
 		}
+		if hasDotImport(file, imp) {
+			dotImport = true
+		}
 	}
-	if len(aliases) == 0 {
+	// Bare Identity{} only resolves to auth when the package is
+	// dot-imported; otherwise the selector form (auth.Identity) is required.
+	if len(aliases) == 0 && !dotImport {
 		return nil
 	}
 	var findings []Finding
@@ -39,7 +46,7 @@ func (r authIdentityActorRule) Run(fset *token.FileSet, file *ast.File) []Findin
 		if !ok {
 			return true
 		}
-		if !isAuthIdentityType(lit.Type, aliases) {
+		if !isAuthIdentityType(lit.Type, aliases, dotImport) {
 			return true
 		}
 		hasUserID, hasSubject, hasActor := identityLiteralFields(lit)
@@ -65,10 +72,13 @@ func (r authIdentityActorRule) Run(fset *token.FileSet, file *ast.File) []Findin
 	return findings
 }
 
-func isAuthIdentityType(expr ast.Expr, aliases map[string]struct{}) bool {
+func isAuthIdentityType(expr ast.Expr, aliases map[string]struct{}, dotImport bool) bool {
 	switch t := expr.(type) {
 	case *ast.Ident:
-		return t.Name == "Identity"
+		// Bare Identity only denotes auth.Identity under a dot import.
+		// A service-local type named Identity must not be flagged (or
+		// auto-fixed into auth field shapes).
+		return dotImport && t.Name == "Identity"
 	case *ast.SelectorExpr:
 		if t.Sel.Name != "Identity" {
 			return false
@@ -82,6 +92,23 @@ func isAuthIdentityType(expr ast.Expr, aliases map[string]struct{}) bool {
 	default:
 		return false
 	}
+}
+
+// hasDotImport reports whether file imports importPath with a "." name.
+func hasDotImport(file *ast.File, importPath string) bool {
+	if file == nil {
+		return false
+	}
+	for _, imp := range file.Imports {
+		if imp.Name == nil || imp.Name.Name != "." {
+			continue
+		}
+		raw, err := strconv.Unquote(imp.Path.Value)
+		if err == nil && raw == importPath {
+			return true
+		}
+	}
+	return false
 }
 
 func identityLiteralFields(lit *ast.CompositeLit) (hasUserID, hasSubject, hasActor bool) {

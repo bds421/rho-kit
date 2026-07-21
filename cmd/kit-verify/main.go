@@ -148,7 +148,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	results := runAllWithConfig(hc, probeCfg)
 
 	if cfg.format == "json" {
-		_ = json.NewEncoder(stdout).Encode(results)
+		if err := json.NewEncoder(stdout).Encode(results); err != nil {
+			fmt.Fprintf(stderr, "kit-verify: encode results: %v\n", err)
+			return 1
+		}
 	} else {
 		printResults(stdout, results)
 	}
@@ -402,7 +405,7 @@ var probes = []Probe{
 		Name:     "secheaders-x-frame-options",
 		Controls: []asvs.ID{"V9.2.1"},
 		Run: func(hc *http.Client, cfg probeConfig) (Status, string) {
-			return expectHeaderPresent(hc, cfg.url(cfg.headersPath), "X-Frame-Options")
+			return expectHeaderToken(hc, cfg.url(cfg.headersPath), "X-Frame-Options", "DENY", "SAMEORIGIN")
 		},
 	},
 	{
@@ -606,35 +609,42 @@ func mergedResponseHeader(resp *http.Response, key string) (string, bool) {
 	return strings.Join(parts, ", "), true
 }
 
-// containsFold reports whether s contains substr, case-insensitively.
-// Used by header probes where servers may emit headers in any case
-// (per RFC 9110 §5.1, header names are case-insensitive but values
-// often need flexible matching too — e.g., "no-store" vs "No-Store").
+// containsFold reports whether s contains substr as a whole directive
+// token (split on commas/semicolons), case-insensitively. Used by header
+// probes so "nosniff" does not match a fictional "x-nosniff-off" value and
+// "no-store" still matches inside "private, no-store".
 func containsFold(s, substr string) bool {
-	if substr == "" {
+	want := strings.ToLower(strings.TrimSpace(substr))
+	if want == "" {
 		return true
 	}
-	if len(substr) > len(s) {
-		return false
-	}
-	for i := 0; i+len(substr) <= len(s); i++ {
-		match := true
-		for j := 0; j < len(substr); j++ {
-			a, b := s[i+j], substr[j]
-			if a >= 'A' && a <= 'Z' {
-				a += 'a' - 'A'
-			}
-			if b >= 'A' && b <= 'Z' {
-				b += 'a' - 'A'
-			}
-			if a != b {
-				match = false
-				break
-			}
-		}
-		if match {
+	for _, part := range strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ';'
+	}) {
+		if strings.ToLower(strings.TrimSpace(part)) == want {
 			return true
 		}
 	}
 	return false
 }
+
+// expectHeaderToken GETs url and requires header key to contain at least
+// one of the allowed tokens (case-insensitive whole-token match).
+func expectHeaderToken(hc *http.Client, url, key string, allowed ...string) (Status, string) {
+	resp, err := hc.Get(url)
+	if err != nil {
+		return fail("GET request failed")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	got, ok := mergedResponseHeader(resp, key)
+	if !ok {
+		return fail(fmt.Sprintf("response header %s missing", key))
+	}
+	for _, a := range allowed {
+		if containsFold(got, a) {
+			return pass("")
+		}
+	}
+	return fail(fmt.Sprintf("response header %s value %q is not one of %v", key, got, allowed))
+}
+

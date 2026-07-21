@@ -3,7 +3,6 @@ package rules
 import (
 	"go/ast"
 	"go/token"
-	"path/filepath"
 	"strings"
 )
 
@@ -152,7 +151,7 @@ func (r kitPrimitiveCollisionRule) Run(fset *token.FileSet, file *ast.File) []Fi
 			suggested + "`. If you're solving the same problem, prefer the kit primitive — " +
 			"that's why it's there. If this is a domain concept that happens to share the " +
 			"name, rename the local package to make the distinction explicit (e.g. `" +
-			"my" + pkgName + "` or `domain" + filepath.Base(pkgName) + "`).",
+			"my" + pkgName + "` or `domain" + pkgName + "`).",
 		Suggestion: "import " + suggested + " — or rename this package",
 	}}
 }

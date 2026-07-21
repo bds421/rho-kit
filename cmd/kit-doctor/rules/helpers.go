@@ -225,13 +225,40 @@ func callHasOption(call *ast.CallExpr, optName string) bool {
 
 // callOptionsUnverifiable reports whether the option arguments to call
 // cannot be inspected statically, so an option-presence rule must not
-// fire on it. This is true when the call spreads a slice
-// (e.g. `Module(url, opts...)`): the individual options live in `opts`
-// and callHasOption can never see them, so emitting a "missing option"
-// finding would be a false positive. Conditional option building behind
-// a variadic slice is common in real services, so option rules treat an
-// ellipsis spread as "cannot verify — stay silent" rather than risk
-// training operators to suppress noisy findings.
+// fire on it. True when:
+//
+//   - the call spreads a slice (`Module(url, opts...)`), or
+//   - any trailing argument is a non-call expression (e.g. a scalar
+//     variable `opt := WithUserExtractor(fn); Middleware(store, opt)`).
+//
+// callHasOption only recognises inline CallExpr options, so treating
+// variables / other expressions as "definitely absent" would emit
+// Critical false positives on correctly-configured code. Stay silent.
 func callOptionsUnverifiable(call *ast.CallExpr) bool {
-	return call != nil && call.Ellipsis.IsValid()
+	if call == nil {
+		return false
+	}
+	if call.Ellipsis.IsValid() {
+		return true
+	}
+	// Skip args[0]: kit constructors almost always take a required
+	// resource (store, handler, JWKS URL) as the first positional
+	// argument. Treating that Ident as an "option we cannot verify"
+	// would silence every Middleware(store) / NewServer(handler) finding.
+	// Trailing non-call, non-literal args may be prebuilt option values
+	// (opt := WithUserExtractor(fn); Middleware(store, opt)).
+	for i, arg := range call.Args {
+		if i == 0 {
+			continue
+		}
+		switch arg.(type) {
+		case *ast.CallExpr:
+			continue
+		case *ast.BasicLit:
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }

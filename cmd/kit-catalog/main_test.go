@@ -280,3 +280,35 @@ func TestEmitCSV_ReportsFlushError(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errFailWriter)
 }
+
+func TestCollectKitImports_IgnoresStringLiterals(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/s\n\ngo 1.22\n"), 0o644))
+	src := `package main
+const doc = "github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
+func main() {}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644))
+	imports, err := collectKitImports(dir)
+	require.NoError(t, err)
+	require.Empty(t, imports, "string literal must not count as an import")
+}
+
+func TestParseGoMod_IgnoresExcludeAndRetract(t *testing.T) {
+	content := `module example.com/s
+
+require github.com/bds421/rho-kit/httpx/v2 v2.0.3
+
+exclude (
+	github.com/bds421/rho-kit/httpx/v2 v2.0.1
+)
+
+retract (
+	github.com/bds421/rho-kit/data/v2 v2.0.0
+)
+`
+	_, versions := parseGoMod(content)
+	require.Equal(t, map[string]string{
+		"github.com/bds421/rho-kit/httpx/v2": "v2.0.3",
+	}, versions)
+}

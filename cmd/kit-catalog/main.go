@@ -67,6 +67,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"os"
@@ -167,7 +169,10 @@ func scanFleet(root string) ([]service, error) {
 		dir := filepath.Join(root, e.Name())
 		s, err := scanService(dir)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", dir, err)
+			// One unreadable service must not abort the fleet audit —
+			// surface a warning and keep scanning the rest.
+			fmt.Fprintf(os.Stderr, "kit-catalog: warning: skip %s: %v\n", dir, err)
+			continue
 		}
 		if s != nil {
 			out = append(out, *s)
@@ -224,36 +229,53 @@ func scanService(dir string) (*service, error) {
 
 var (
 	modulePattern = regexp.MustCompile(`(?m)^module\s+([^\s]+)`)
-	// requirePattern matches both single-line `require <path> <ver>`
-	// and indented entries inside a `require ( ... )` block.
-	requirePattern = regexp.MustCompile(`(?m)^(?:require\s+)?\s*(github\.com/bds421/rho-kit/[^\s]+)\s+(v[^\s]+)`)
+	// singleRequire matches a single-line require outside a block.
+	singleRequire = regexp.MustCompile(`^require\s+(github\.com/bds421/rho-kit/[^\s]+)\s+(v[^\s]+)`)
+	// blockRequire matches an indented path+version entry inside a
+	// require ( ... ) block.
+	blockRequire = regexp.MustCompile(`^\s+(github\.com/bds421/rho-kit/[^\s]+)\s+(v[^\s]+)`)
 )
 
 // parseGoMod extracts the service module name and a map of every
-// kit module pin -> version string from go.mod text. Indirect
-// require blocks are honored (the regex matches indented lines).
+// kit module pin -> version string from go.mod text. Only require
+// blocks are considered — exclude/retract entries with the same
+// path shape are ignored so a retracted version is never reported
+// as the service's pin.
 func parseGoMod(content string) (moduleName string, versions map[string]string) {
 	versions = map[string]string{}
 	if m := modulePattern.FindStringSubmatch(content); len(m) == 2 {
 		moduleName = m[1]
 	}
-	for _, m := range requirePattern.FindAllStringSubmatch(content, -1) {
-		if len(m) == 3 {
+	inRequireBlock := false
+	for _, line := range strings.Split(content, "\n") {
+		trim := strings.TrimSpace(line)
+		if !inRequireBlock {
+			if trim == "require (" {
+				inRequireBlock = true
+				continue
+			}
+			if m := singleRequire.FindStringSubmatch(trim); len(m) == 3 {
+				versions[m[1]] = m[2]
+			}
+			continue
+		}
+		if trim == ")" {
+			inRequireBlock = false
+			continue
+		}
+		if m := blockRequire.FindStringSubmatch(line); len(m) == 3 {
 			versions[m[1]] = m[2]
 		}
 	}
 	return moduleName, versions
 }
 
-// importPattern captures import paths from a Go source file.
-// Handles both single-line `import "..."` and grouped
-// `import ( "..." )`.
-var importPattern = regexp.MustCompile(`"(github\.com/bds421/rho-kit/[^"]+)"`)
-
 // collectKitImports walks every non-test .go file under root and
-// returns the set of kit import paths the source references.
+// returns the set of kit import paths from genuine import specs
+// (go/parser), not string literals embedded in code or comments.
 func collectKitImports(root string) (map[string]struct{}, error) {
 	out := map[string]struct{}{}
+	fset := token.NewFileSet()
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -274,18 +296,32 @@ func collectKitImports(root string) (map[string]struct{}, error) {
 		if strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return readErr
+		f, parseErr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if parseErr != nil {
+			// Unparseable file: skip rather than failing the fleet scan.
+			return nil
 		}
-		for _, m := range importPattern.FindAllStringSubmatch(string(data), -1) {
-			if len(m) == 2 {
-				out[m[1]] = struct{}{}
+		for _, imp := range f.Imports {
+			p, err := strconvUnquote(imp.Path.Value)
+			if err != nil {
+				continue
+			}
+			if strings.HasPrefix(p, "github.com/bds421/rho-kit/") {
+				out[p] = struct{}{}
 			}
 		}
 		return nil
 	})
 	return out, err
+}
+
+// strconvUnquote is a tiny wrapper so we do not pull strconv into
+// every hot path of this file's other helpers.
+func strconvUnquote(s string) (string, error) {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1], nil
+	}
+	return "", fmt.Errorf("not a quoted string")
 }
 
 // moduleForImport finds the kit MODULE path (the prefix in

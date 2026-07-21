@@ -262,3 +262,28 @@ func TestKitPrimitiveCollision_FlagsConsumerByModulePath(t *testing.T) {
 	assert.Equal(t, 1, names["kit-primitive-collision"],
 		"consumer repo under a path with a rho-kit segment must still be flagged, got %+v", findings)
 }
+
+func TestCallOptionsUnverifiable_VariableOptionArg(t *testing.T) {
+	_, file := parseSrc(t, "x.go", `package svc
+
+func Middleware(store any, opts ...any) {}
+func WithUserExtractor(fn any) any { return fn }
+
+func wire(store any, fn any) {
+	opt := WithUserExtractor(fn)
+	Middleware(store, opt)
+}
+`)
+	// Find Middleware call (second CallExpr is WithUserExtractor; third is Middleware).
+	var calls []*ast.CallExpr
+	ast.Inspect(file, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok {
+			calls = append(calls, c)
+		}
+		return true
+	})
+	require.GreaterOrEqual(t, len(calls), 2)
+	// Last call should be Middleware(store, opt)
+	assert.True(t, callOptionsUnverifiable(calls[len(calls)-1]),
+		"Middleware(store, opt) with a scalar option var must be unverifiable")
+}

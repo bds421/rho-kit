@@ -22,12 +22,16 @@ func fixAuthIdentityDrift(path string, line int) (string, error) {
 		return "", fmt.Errorf("parse %s: %w", path, err)
 	}
 	aliases := map[string]struct{}{}
+	dotImport := false
 	for _, imp := range authMiddlewareImports {
 		for name := range importAliasesFor(file, imp) {
 			aliases[name] = struct{}{}
 		}
+		if hasDotImport(file, imp) {
+			dotImport = true
+		}
 	}
-	if len(aliases) == 0 {
+	if len(aliases) == 0 && !dotImport {
 		return "", fmt.Errorf("no auth import in %s", path)
 	}
 
@@ -40,7 +44,7 @@ func fixAuthIdentityDrift(path string, line int) (string, error) {
 		if fset.Position(lit.Pos()).Line != line {
 			return true
 		}
-		if !isAuthIdentityType(lit.Type, aliases) {
+		if !isAuthIdentityType(lit.Type, aliases, dotImport) {
 			return true
 		}
 		hasUserID, hasSubject, hasActor := identityLiteralFields(lit)
