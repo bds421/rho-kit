@@ -7,8 +7,7 @@
 # Prerequisites (run these first if not already done):
 #   1. main is clean (`git status` empty) and on the commit you want
 #      to tag from.
-#   2. main is CI-green (`make ci` passes locally; CI on the latest
-#      push is also success).
+#   2. main is locally release-green (`make release-candidate` passes).
 #   3. Branch protection's required PR review is temporarily disabled
 #      (the dance pushes ~7 commits + tag batches directly to main).
 #      Re-enable it after the run.
@@ -121,7 +120,10 @@ for level in $(seq 0 "$max_level"); do
   done <<< "$level_dirs"
 
   if ! git diff --cached --quiet; then
-    git commit -q -m "release: prepare $VERSION module level $level"
+    # These mechanical commits are created only after the release candidate
+    # and rehearsal have passed. Skip push-triggered GitHub workflows so one
+    # coordinated release does not launch the same CI suite once per level.
+    git commit -q -m "release: prepare $VERSION module level $level [skip ci]"
     # --force-with-lease only succeeds if origin/main is still at the
     # remote-tracking ref this run last fetched; if another push raced
     # in, fail loudly here rather than silently overwriting it. (The

@@ -50,7 +50,7 @@ var ErrChainBroken = errors.New("auditlog: chain integrity check failed")
 //   - covers the entire wire-relevant content of the event.
 //
 // This encoding is part of the on-disk contract: changing it invalidates
-// every existing chain. Bump a CHANGES.md entry and document a migration
+// every existing chain. Add a root CHANGELOG.md entry and document a migration
 // path if the format ever has to change.
 func canonicalEvent(event Event) []byte {
 	// Estimate the buffer size to avoid reallocs on the hot path. PrevHMAC

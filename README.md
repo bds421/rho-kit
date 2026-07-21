@@ -8,9 +8,8 @@ while staying consistent, secure, and observable.
 
 ## Release
 
-- [docs/RELEASE_NOTES_v2.md](docs/RELEASE_NOTES_v2.md) — v2.0.0 release notes
-  body and breaking-changes enumeration; published verbatim as the GitHub
-  Release body.
+- [docs/RELEASE_NOTES_v2.md](docs/RELEASE_NOTES_v2.md) — historical v2.0.0
+  breaking-changes enumeration.
 - [CHANGELOG.md](CHANGELOG.md) — per-release summary.
 
 ### How to publish a release
@@ -20,51 +19,53 @@ sole cross-module-resolution mechanism (no `replace` directives in
 `go.mod` files). The one-time `replace`-drop was done at v2.0.0;
 subsequent releases just bump version numbers and tag.
 
-1. **Validate locally.** `make ci` (lint + race tests + build +
-   supply-chain + tidy gate) must be green. Then
-   `make release-candidate` runs the full pre-release gate
-   (vulncheck, integration tests, coverage, kit-doctor).
-2. **Trigger Release Readiness CI.** Run the `Release Readiness`
-   workflow via `workflow_dispatch` on `main` (or push to a
-   `release/**` branch). It re-runs the gates and rehearses the
-   dependency-ordered release against a temporary bare repository
-   via `tools/rehearse-v2-release.sh`.
-3. **Rehearse locally (safe, no real origin touched).**
+1. **Validate locally.** Run `make release-candidate`. It includes the
+   policy and tidy checks, lint, race tests, builds, vulnerability analysis,
+   integration tests, coverage, and kit-doctor. GitHub does not duplicate
+   this exhaustive release-owner gate.
+2. **Rehearse locally (safe, no real origin touched).**
    ```bash
    RELEASE_VERSION=v2.x.y bash tools/rehearse-v2-release.sh
    ```
    Runs the entire dance against a temp bare repo. Must reach
    "Rehearsal passed." before touching origin.
-4. **Temporarily disable PR-review branch protection** (the dance
+   The manual `Release Rehearsal` GitHub workflow exists only for validating
+   release machinery changes; it is not required for every release.
+3. **Temporarily disable PR-review branch protection** (the dance
    pushes ~7 commits + tag batches directly to main; main is
    normally PR-only):
    ```bash
    gh api -X DELETE repos/<owner>/<repo>/branches/main/protection/required_pull_request_reviews
    ```
-5. **Run the real release.**
+4. **Run the real release.**
    ```bash
    RELEASE_VERSION=v2.x.y bash tools/release-version.sh
    ```
    Per-level: bumps internal kit requires to the target version,
    tidies, commits, tags every module in the level, pushes tags
-   atomically. After all levels: pushes coordination tag
-   `release/v2.x.y`.
-6. **Restore branch protection.**
+   atomically. Mechanical release commits contain `[skip ci]` so the
+   dependency levels do not launch duplicate GitHub jobs. After all levels:
+   pushes coordination tag `release/v2.x.y`.
+5. **Restore branch protection immediately.** Capture the live protection
+   response before step 3 and restore those exact values. The current policy
+   is:
    ```bash
    gh api -X PATCH repos/<owner>/<repo>/branches/main/protection/required_pull_request_reviews \
      --input - <<EOF
    {"dismiss_stale_reviews": true, "require_code_owner_reviews": true,
-    "require_last_push_approval": false, "required_approving_review_count": 1}
+    "require_last_push_approval": false, "required_approving_review_count": 0}
    EOF
    ```
-7. **Smoke-test downstream resolution.**
+6. **Smoke-test downstream resolution.**
    ```bash
    tmpdir=$(mktemp -d); cd "$tmpdir"
    go mod init verify
    go get github.com/bds421/rho-kit/app/v2@v2.x.y
    go list -m all | grep rho-kit   # all should show v2.x.y
    ```
-8. **Publish GitHub Release** with `docs/RELEASE_NOTES_v2.md` as the body.
+7. **Publish the GitHub Release.** Use the version entry in `CHANGELOG.md`,
+   call out breaking changes, and link the comparison from the previous
+   coordination tag. Do not reuse the historical v2.0.0 notes.
 
 ## Adoption
 
