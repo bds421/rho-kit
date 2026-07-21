@@ -8,11 +8,14 @@ type requestID string
 // ridKey is the context key for request IDs.
 var ridKey = NewKey[requestID]("request_id")
 
-// MaxRequestIDLen caps the byte length of a request ID at the
-// boundary so a hostile inbound header cannot carry an unbounded
-// string through the kit's log/metric paths. 128 bytes is comfortably
-// above UUID, ULID, and conventional traceparent IDs.
-const MaxRequestIDLen = 128
+// MaxRequestIDLen is an alias of [MaxCorrelationIDLen]: request and
+// correlation identifiers share one length policy so middleware and
+// context setters cannot drift. 128 bytes is comfortably above UUID,
+// ULID, and conventional traceparent IDs.
+//
+// Prefer [MaxCorrelationIDLen] in new code; this name is retained for
+// call sites that historically read the request-ID constant.
+const MaxRequestIDLen = MaxCorrelationIDLen
 
 // SetRequestID stores a request ID in the context. Empty IDs and IDs
 // containing control characters or exceeding [MaxRequestIDLen] are

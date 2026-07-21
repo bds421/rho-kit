@@ -11,6 +11,10 @@ import (
 // Watchable holds a config value that can be atomically swapped with
 // subscriber notification. Safe for concurrent use.
 //
+// Construct via [NewWatchable]. The zero value is intentionally not
+// usable: Get/Set/OnChange panic with a clear message rather than an
+// opaque interface-conversion or nil-map error.
+//
 // Reads via Get are lock-free (atomic.Value). Writes via Set atomically
 // replace the value and notify all registered subscribers synchronously
 // in store order — concurrent Set(A) and Set(B) deliver consistent
@@ -40,8 +44,20 @@ func NewWatchable[T any](initial T) *Watchable[T] {
 }
 
 // Get returns the current config value. Lock-free read.
+//
+// Panics if w is the zero value (not constructed via [NewWatchable]) —
+// the zero Watchable has never stored a value, so Load returns nil and
+// the type assertion would otherwise produce an opaque interface-
+// conversion panic.
 func (w *Watchable[T]) Get() T {
-	return w.value.Load().(wrapper[T]).val
+	if w == nil {
+		panic("config: Watchable must be constructed with NewWatchable")
+	}
+	raw := w.value.Load()
+	if raw == nil {
+		panic("config: Watchable must be constructed with NewWatchable")
+	}
+	return raw.(wrapper[T]).val
 }
 
 // Set atomically replaces the value and notifies all subscribers.
@@ -64,11 +80,21 @@ func (w *Watchable[T]) Get() T {
 //
 // A panicking subscriber is recovered and logged so that remaining
 // subscribers are still notified.
+//
+// Panics if w is the zero value (not constructed via [NewWatchable]).
 func (w *Watchable[T]) Set(val T) {
+	if w == nil {
+		panic("config: Watchable must be constructed with NewWatchable")
+	}
+
 	w.setMu.Lock()
 	defer w.setMu.Unlock()
 
-	old := w.value.Load().(wrapper[T]).val
+	raw := w.value.Load()
+	if raw == nil {
+		panic("config: Watchable must be constructed with NewWatchable")
+	}
+	old := raw.(wrapper[T]).val
 	w.value.Store(wrapper[T]{val: val})
 
 	w.mu.Lock()
@@ -103,7 +129,12 @@ func (w *Watchable[T]) Set(val T) {
 // finding that the prior nil-tolerant path admitted wiring bugs.
 //
 // Returns a cancel function that unregisters the subscriber.
+//
+// Panics if w is the zero value (not constructed via [NewWatchable]).
 func (w *Watchable[T]) OnChange(fn func(old, new T)) func() {
+	if w == nil || w.subscribers == nil {
+		panic("config: Watchable must be constructed with NewWatchable")
+	}
 	if fn == nil {
 		panic("config: Watchable.OnChange requires a non-nil callback")
 	}

@@ -173,8 +173,12 @@ func (v *Validator) Struct(s any) error {
 // error instead because (a) it can be called after a Validator has
 // already served traffic, so a panic here would be a runtime crash
 // rather than a startup crash; (b) existing callers branch on the
-// error to surface "duplicate format" / "validator already frozen"
-// through ops dashboards. See `core/validate/doc.go`.
+// error to surface "validator already frozen" (and empty-name /
+// nil-fn misconfig) through ops dashboards. Re-registration of an
+// existing name overwrites the previous FormatFunc, including
+// built-ins — this is intentional so tests and startup code can
+// replace a format without a freeze/unfreeze cycle. See
+// `core/validate/doc.go`.
 func (v *Validator) RegisterFormat(name string, fn FormatFunc) error {
 	if name == "" {
 		return errors.New("validate: RegisterFormat name must not be empty")
@@ -232,6 +236,21 @@ func (v *Validator) schemaForType(t reflect.Type) (*compiledSchema, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Fail closed on bare format= names that are neither kit builtins
+	// nor RegisterFormat'd. santhosh-tekuri treats unknown format
+	// assertions as always-valid, so an unregistered typo would
+	// silently accept every value at validation time.
+	if len(bs.customFormats) > 0 {
+		registered := map[string]struct{}{}
+		for _, f := range v.snapshotFormats() {
+			registered[f.Name] = struct{}{}
+		}
+		for _, name := range bs.customFormats {
+			if _, ok := registered[name]; !ok {
+				return nil, fmt.Errorf("validate: unknown format %q (register via RegisterFormat or use a builtin)", name)
+			}
+		}
+	}
 	raw, err := json.Marshal(bs.schema)
 	if err != nil {
 		return nil, fmt.Errorf("validate: marshal inferred schema: %w", err)
@@ -288,6 +307,19 @@ func (v *Validator) freezeAndSnapshotFormats() []*jsonschema.Format {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.frozen.Store(true)
+	return v.copyFormatsLocked()
+}
+
+// snapshotFormats returns a stable copy of currently registered
+// formats without freezing the registry. Used to fail-closed-check
+// bare format= names before compile.
+func (v *Validator) snapshotFormats() []*jsonschema.Format {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.copyFormatsLocked()
+}
+
+func (v *Validator) copyFormatsLocked() []*jsonschema.Format {
 	out := make([]*jsonschema.Format, 0, len(v.formats))
 	for _, f := range v.formats {
 		out = append(out, f)

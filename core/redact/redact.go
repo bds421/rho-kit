@@ -55,13 +55,28 @@ const maxErrorFrames = 16
 //
 // Runtime identifiers such as message IDs, queue names, storage paths, and
 // backend endpoints often come from tenants, operators, or upstream systems.
-// Keep only length information so logs can distinguish empty/missing values
-// without copying topology, PII, or attacker-controlled text.
+// Exact lengths are intentionally NOT preserved: a precise byte count
+// distinguishes short passwords, reveals token classes (32 vs 64-byte keys),
+// and leaks identifier cardinality into every log sink. The stamp is
+// bucketed so operators can still tell empty from non-empty and coarse size
+// class without reconstructing the original value.
+//
+// Buckets: empty | <16 bytes | 16-64 bytes | 65-256 bytes | >256 bytes.
 func StringValue(value string) string {
 	if value == "" {
 		return "<redacted empty>"
 	}
-	return fmt.Sprintf("<redacted %d bytes>", len(value))
+	n := len(value)
+	switch {
+	case n < 16:
+		return "<redacted, <16 bytes>"
+	case n <= 64:
+		return "<redacted, 16-64 bytes>"
+	case n <= 256:
+		return "<redacted, 65-256 bytes>"
+	default:
+		return "<redacted, >256 bytes>"
+	}
 }
 
 // String returns a redacted slog attribute for a runtime string value.

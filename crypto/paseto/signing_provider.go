@@ -184,8 +184,19 @@ func OpenSigningProvider(ctx context.Context, src PrivateKeySource, interval tim
 	if p.clock == nil {
 		p.clock = time.Now
 	}
+	// Fail closed at construction when the refresh interval is >= the
+	// stale window (mirrors OpenProvider). interval >= maxStale produces a
+	// recurring self-inflicted outage of Sign between maxStale and the next
+	// refresh tick.
+	if p.maxStale > 0 && p.interval > p.maxStale {
+		rootCancel()
+		return nil, fmt.Errorf("paseto: refresh interval (%s) must be <= maxStale (%s) to avoid periodic fail-closed gaps", p.interval, p.maxStale)
+	}
 
-	if err := p.refresh(ctx); err != nil {
+	loadCtx, loadCancel := context.WithTimeout(ctx, p.fetchTimeout)
+	err := p.refresh(loadCtx)
+	loadCancel()
+	if err != nil {
 		rootCancel()
 		return nil, fmt.Errorf("paseto: initial signing key load: %w", err)
 	}
@@ -299,7 +310,11 @@ func (p *SigningProvider) refresh(ctx context.Context) error {
 	if keySecret == nil {
 		return errors.New("paseto: PrivateKeySource returned a nil secret.String")
 	}
+	// Reveal returns a defensive copy; also Zero the secret.String so
+	// the Source-owned buffer does not retain the Ed25519 private key
+	// until GC reclaims it.
 	raw := keySecret.Reveal()
+	defer keySecret.Zero()
 	if len(raw) != ed25519.PrivateKeySize {
 		// Zero the rejected key bytes before discarding the reference
 		// so a misconfigured Source cannot leave a torn private-key

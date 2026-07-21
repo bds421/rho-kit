@@ -289,3 +289,16 @@ func TestVerify_RejectsNonCanonicalVersionSegment(t *testing.T) {
 		assert.ErrorIsf(t, err, ErrMalformed, "expected ErrMalformed for %q", c)
 	}
 }
+
+func TestVerify_RejectsShortSaltOrKey(t *testing.T) {
+	// 1-byte salt / 1-byte digest must fail closed (RFC 9106 floors).
+	cases := []string{
+		"$argon2id$v=19$m=8192,t=1,p=1$YQ$YWFhYWFhYWFhYWFhYWFhYQ", // salt 1 byte
+		"$argon2id$v=19$m=8192,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ", // key 1 byte
+	}
+	for _, encoded := range cases {
+		res, err := Verify("hunter2", encoded, fastParams())
+		require.ErrorIs(t, err, ErrParamsOutOfBounds)
+		assert.False(t, res.Matched)
+	}
+}

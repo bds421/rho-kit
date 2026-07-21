@@ -201,8 +201,8 @@ func TestStaticKeyStore_ZeroValueMethodsFailClosed(t *testing.T) {
 	if k, err := store.Key(ctx, "k1"); !errors.Is(err, ErrUnknownKeyID) || k != nil {
 		t.Fatalf("zero-value Key = (%v, %v), want nil ErrUnknownKeyID", k, err)
 	}
-	if id, k, err := store.CurrentKeyID(ctx); id != "" || k != nil || err != nil {
-		t.Fatalf("zero-value CurrentKeyID = (%q, %v, %v), want empty nil nil", id, k, err)
+	if id, k, err := store.CurrentKeyID(ctx); id != "" || k != nil || !errors.Is(err, ErrUnknownKeyID) {
+		t.Fatalf("zero-value CurrentKeyID = (%q, %v, %v), want (\"\", nil, ErrUnknownKeyID)", id, k, err)
 	}
 }
 
@@ -212,8 +212,8 @@ func TestStaticKeyStore_NilReceiverMethodsFailClosed(t *testing.T) {
 	if k, err := store.Key(ctx, "k1"); !errors.Is(err, ErrUnknownKeyID) || k != nil {
 		t.Fatalf("nil Key = (%v, %v), want nil ErrUnknownKeyID", k, err)
 	}
-	if id, k, err := store.CurrentKeyID(ctx); id != "" || k != nil || err != nil {
-		t.Fatalf("nil CurrentKeyID = (%q, %v, %v), want empty nil nil", id, k, err)
+	if id, k, err := store.CurrentKeyID(ctx); id != "" || k != nil || !errors.Is(err, ErrUnknownKeyID) {
+		t.Fatalf("nil CurrentKeyID = (%q, %v, %v), want (\"\", nil, ErrUnknownKeyID)", id, k, err)
 	}
 }
 
@@ -251,8 +251,8 @@ func TestStaticKeyStore_Close_ZeroesKeysAndFailsClosed(t *testing.T) {
 	if k, err := store.Key(ctx, "k1"); !errors.Is(err, ErrUnknownKeyID) || k != nil {
 		t.Fatalf("Key after Close = (%v, %v), want nil ErrUnknownKeyID", k, err)
 	}
-	if id, k, err := store.CurrentKeyID(ctx); id != "" || k != nil || err != nil {
-		t.Fatalf("CurrentKeyID after Close = (%q, %v, %v), want empty nil nil", id, k, err)
+	if id, k, err := store.CurrentKeyID(ctx); id != "" || k != nil || !errors.Is(err, ErrUnknownKeyID) {
+		t.Fatalf("CurrentKeyID after Close = (%q, %v, %v), want (\"\", nil, ErrUnknownKeyID)", id, k, err)
 	}
 	// Idempotent.
 	if err := store.Close(); err != nil {

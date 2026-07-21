@@ -96,7 +96,7 @@ func validateCharset(charset string) ([]rune, error) {
 func MustString(length int, charset string) string {
 	s, err := RuneSequence(length, charset)
 	if err != nil {
-		panic("randstr: MustString random string generation failed")
+		panic(fmt.Sprintf("randstr: MustString: %v", err))
 	}
 	return s
 }

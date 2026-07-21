@@ -16,7 +16,7 @@ import (
 // Vault surfaces transport-class errors as *vaultapi.ResponseError with
 // the HTTP status code; this is the only reliable classification surface
 // (the body messages vary by Vault version and plugin).
-func classifyVaultError(operation string, err error) error {
+func classifyVaultError(_ string, err error) error {
 	if err == nil {
 		return nil
 	}

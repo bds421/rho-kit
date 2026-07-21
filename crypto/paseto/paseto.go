@@ -364,6 +364,10 @@ func (s *V4PublicSigner) Close() error {
 type V4Local struct {
 	cfg    config
 	parser paseto.Parser
+	// keyMu guards reads of key against the zero/replace write performed
+	// by Close, matching V4PublicSigner. Seal/Verify take RLock; Close
+	// takes the write lock after setting the closed flag.
+	keyMu  sync.RWMutex
 	key    paseto.V4SymmetricKey
 	// keyBytes is the kit-owned copy of the raw 32-byte key. We
 	// retain it so [V4Local.Close] can zero a slice we own,
@@ -409,6 +413,11 @@ func (v *V4Local) Verify(token string, now time.Time) (*Claims, error) {
 	if v.closed.Load() {
 		return nil, ErrV4LocalClosed
 	}
+	v.keyMu.RLock()
+	defer v.keyMu.RUnlock()
+	if v.closed.Load() {
+		return nil, ErrV4LocalClosed
+	}
 	parsed, err := v.parser.ParseV4Local(v.key, token, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: authentication failed", ErrTokenInvalid)
@@ -427,6 +436,11 @@ func (v *V4Local) Seal(claims Claims) (string, error) {
 	tok, err := buildToken(claims, v.cfg)
 	if err != nil {
 		return "", err
+	}
+	v.keyMu.RLock()
+	defer v.keyMu.RUnlock()
+	if v.closed.Load() {
+		return "", ErrV4LocalClosed
 	}
 	return tok.V4Encrypt(v.key, nil), nil
 }
@@ -454,6 +468,9 @@ func (v *V4Local) Close() error {
 	if !v.initialized {
 		return nil
 	}
+	// Wait for in-flight Seal/Verify to release their read locks.
+	v.keyMu.Lock()
+	defer v.keyMu.Unlock()
 	// Zero the kit-owned copy — we KNOW we own these bytes.
 	for i := range v.keyBytes {
 		v.keyBytes[i] = 0
@@ -521,7 +538,10 @@ func buildToken(c Claims, cfg config) (paseto.Token, error) {
 	}
 	for k, v := range c.Custom {
 		if err := t.Set(k, v); err != nil {
-			return paseto.Token{}, errors.New("paseto: set custom claim failed")
+			// Do not wrap the library error: it embeds the claim key, which
+			// may be a secret identifier. Surface the failing value's type
+			// so wiring bugs remain diagnosable without leaking keys.
+			return paseto.Token{}, fmt.Errorf("paseto: set custom claim failed: value of type %T is not serializable", v)
 		}
 	}
 	return t, nil

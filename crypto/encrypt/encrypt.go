@@ -133,9 +133,14 @@ func (o Operation) String() string {
 }
 
 // NewFieldEncryptor creates a FieldEncryptor from a 32-byte key.
-// Decrypt is strict: any value missing a recognised prefix (v3, or
-// legacy v2 for read-only compatibility) is rejected with
-// [ErrPlaintextNotAllowed]. There is no opt-in plaintext passthrough.
+// Decrypt is strict: any value missing a recognised prefix is rejected
+// with [ErrPlaintextNotAllowed]. Recognised prefixes are:
+//
+//   - enc:v3: — current write format
+//   - \x00enc:v2: — legacy v2 (read-only)
+//   - enc:v1: — legacy v1 (read-only)
+//
+// There is no opt-in plaintext passthrough.
 func NewFieldEncryptor(key []byte) (*FieldEncryptor, error) {
 	a, err := NewGCM(key)
 	if err != nil {

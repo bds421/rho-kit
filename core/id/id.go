@@ -1,27 +1,61 @@
 package id
 
 import (
+	"sync/atomic"
+
 	"github.com/google/uuid"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
-// Generator is the package-level UUID v7 generator. The default is
-// [New]; tests assign a deterministic closure here (and restore the
-// previous value on cleanup) to keep log lines, fixtures, and golden
-// files stable across runs. Concurrent calls must be safe for the
-// installed function — [New] itself is, and so is any closure that
-// only reads its captured state under a mutex.
+// generator holds the package-level ID source. Production code uses the
+// default [New]; tests install a deterministic function via
+// [SetGeneratorForTesting]. Reads are atomic so concurrent Generator
+// calls are race-free; install/restore still belongs in serial test
+// setup (before parallel work begins) so fixtures stay deterministic.
+var generator atomic.Pointer[func() string]
+
+func init() {
+	restoreDefaultGenerator()
+}
+
+func restoreDefaultGenerator() {
+	f := defaultNew
+	generator.Store(&f)
+}
+
+// Generator returns a fresh ID from the currently installed package
+// generator (default: [New]). Prefer calling [New] directly in
+// production; use Generator only when code under test must honour a
+// [SetGeneratorForTesting] swap.
+func Generator() string {
+	f := generator.Load()
+	if f == nil || *f == nil {
+		return defaultNew()
+	}
+	return (*f)()
+}
+
+// SetGeneratorForTesting installs g as the package-level ID source used
+// by [Generator]. Pass nil to restore the default ([New]). Intended for
+// tests that need stable IDs in log lines, fixtures, or golden files —
+// call during package/test setup and restore with nil (or via
+// t.Cleanup) before any parallel sibling may observe the swap.
 //
-// Generator is a plain, unsynchronized variable, so reassignment is a
-// test-only affordance: install the swap during package or test setup,
-// before any other goroutine reads it, and restore it on cleanup.
-// Reassigning Generator while another goroutine calls it — including
-// from a [testing.T.Parallel] test, or as a runtime swap in a live
-// service — is a data race under the Go memory model. When concurrent
-// code needs per-call determinism, thread a generator function through
-// your own configuration rather than swapping this variable.
-var Generator func() string = New
+// The installed function must be safe for concurrent calls (only reading
+// captured state under its own synchronization). SetGeneratorForTesting
+// itself is safe concurrent with Generator reads; it is not a production
+// runtime reconfiguration API.
+func SetGeneratorForTesting(g func() string) {
+	if g == nil {
+		restoreDefaultGenerator()
+		return
+	}
+	// Store a pointer to a heap-copied func value so the caller's local
+	// cannot be mutated out from under concurrent readers.
+	fn := g
+	generator.Store(&fn)
+}
 
 // New returns a fresh UUID v7 as a canonical 36-character string.
 //
@@ -38,7 +72,16 @@ var Generator func() string = New
 // stack. Pre-v2 call sites that wrapped uuid.NewV7 in
 // `if err != nil { return fmt.Errorf("generate ID: %w", err) }`
 // should drop the branch when migrating.
+//
+// New always uses the real UUID v7 source. Test determinism goes through
+// [Generator] + [SetGeneratorForTesting], not through New, so production
+// call sites that hard-code New keep cryptographic freshness even if a
+// test swap is active in-process.
 func New() string {
+	return defaultNew()
+}
+
+func defaultNew() string {
 	u, err := uuid.NewV7()
 	if err != nil {
 		panic("id: New crypto/rand entropy exhausted")

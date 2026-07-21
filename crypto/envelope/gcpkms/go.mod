@@ -14,6 +14,7 @@ require (
 	cloud.google.com/go/kms v1.32.0
 	github.com/bds421/rho-kit/core/v2 v2.4.0
 	github.com/bds421/rho-kit/crypto/v2 v2.4.0
+	github.com/googleapis/gax-go/v2 v2.23.0
 	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 )
@@ -31,7 +32,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.17 // indirect
-	github.com/googleapis/gax-go/v2 v2.23.0 // indirect
 	github.com/tink-crypto/tink-go/v2 v2.7.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.69.0 // indirect

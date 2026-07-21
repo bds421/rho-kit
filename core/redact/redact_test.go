@@ -16,11 +16,47 @@ func TestStringValueRedactsPayload(t *testing.T) {
 	if strings.Contains(got, "tenant-secret-route") {
 		t.Fatalf("StringValue leaked payload: %q", got)
 	}
-	if !strings.Contains(got, "19 bytes") {
-		t.Fatalf("StringValue should preserve length, got %q", got)
+	// Exact length must NOT appear — buckets only.
+	if strings.Contains(got, "19 bytes") {
+		t.Fatalf("StringValue leaked exact length: %q", got)
+	}
+	if got != "<redacted, 16-64 bytes>" {
+		t.Fatalf("StringValue bucket = %q, want 16-64", got)
 	}
 	if StringValue("") != "<redacted empty>" {
 		t.Fatalf("empty StringValue = %q", StringValue(""))
+	}
+}
+
+func TestStringValueBuckets(t *testing.T) {
+	cases := []struct {
+		n    int
+		want string
+	}{
+		{0, "<redacted empty>"},
+		{1, "<redacted, <16 bytes>"},
+		{15, "<redacted, <16 bytes>"},
+		{16, "<redacted, 16-64 bytes>"},
+		{64, "<redacted, 16-64 bytes>"},
+		{65, "<redacted, 65-256 bytes>"},
+		{256, "<redacted, 65-256 bytes>"},
+		{257, "<redacted, >256 bytes>"},
+	}
+	for _, tc := range cases {
+		in := strings.Repeat("x", tc.n)
+		got := StringValue(in)
+		if got != tc.want {
+			t.Fatalf("len=%d: got %q want %q", tc.n, got, tc.want)
+		}
+		// Exact "N bytes" alone must not appear; bucket labels like
+		// "16-64 bytes" are fine. Check the bare exact form with a leading space
+		// and no range dash immediately before the number.
+		if tc.n > 0 {
+			exact := fmt.Sprintf(" %d bytes", tc.n)
+			if strings.Contains(got, exact) && !strings.Contains(got, "-") {
+				t.Fatalf("len=%d leaked exact count in %q", tc.n, got)
+			}
+		}
 	}
 }
 

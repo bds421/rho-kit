@@ -75,3 +75,55 @@ func TestThrottledReader_ContextCancellation(t *testing.T) {
 	// Should complete quickly after cancellation, not wait 100 seconds.
 	assert.Less(t, elapsed, 2*time.Second)
 }
+
+// TestThrottledReader_IdleResetAllowsFirstChunkBurst pins the documented
+// contract: after >1s idle the first chunk is not re-charged (no full
+// fair-share sleep), while a subsequent chunk at the same rate is paced.
+func TestThrottledReader_IdleResetAllowsFirstChunkBurst(t *testing.T) {
+	t.Parallel()
+
+	// Use a slow rate so a full fair-share sleep for one chunk is obvious.
+	// maxChunk = bps/10; with bps=1000, maxChunk=100 bytes → fair share 100ms.
+	bps := int64(1000)
+	chunk := make([]byte, 100)
+	for i := range chunk {
+		chunk[i] = 'x'
+	}
+	// Two chunks with a >1s gap between them.
+	r := &scriptedReader{chunks: [][]byte{chunk, chunk}}
+	tr := NewThrottledReader(r, bps).(*throttledReader)
+
+	// First read establishes baseline (may sleep ~100ms for the chunk).
+	n, err := tr.Read(make([]byte, 100))
+	require.NoError(t, err)
+	require.Equal(t, 100, n)
+
+	// Simulate idle >1s.
+	tr.lastTime = time.Now().Add(-2 * time.Second)
+	tr.bytesSent = 0
+
+	start := time.Now()
+	n, err = tr.Read(make([]byte, 100))
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	require.Equal(t, 100, n)
+	// Post-idle first chunk must not wait the full fair-share (~100ms).
+	// Allow a small scheduling slack but fail if we slept ~full duration.
+	assert.Less(t, elapsed, 50*time.Millisecond,
+		"post-idle first chunk should be delivered without full fair-share sleep, took %s", elapsed)
+}
+
+// scriptedReader returns successive chunks then EOF.
+type scriptedReader struct {
+	chunks [][]byte
+	i      int
+}
+
+func (s *scriptedReader) Read(p []byte) (int, error) {
+	if s.i >= len(s.chunks) {
+		return 0, io.EOF
+	}
+	n := copy(p, s.chunks[s.i])
+	s.i++
+	return n, nil
+}

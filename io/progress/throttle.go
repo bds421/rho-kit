@@ -94,14 +94,16 @@ func (t *throttledReader) Read(p []byte) (int, error) {
 	elapsed := time.Since(t.lastTime)
 
 	// If the reader was idle for longer than 1 second, reset the timing
-	// state to prevent an unbounded burst. Without this, accumulated
-	// elapsed time during idle periods would allow full-speed reads until
-	// bytesSent catches up with the expected rate.
+	// state to prevent an unbounded burst of accumulated idle credit.
+	// Credit the just-read chunk so the first post-idle delivery is not
+	// re-charged (matching the package doc: full-speed first chunk, then
+	// throttle). lastTime is back-dated by the fair-share duration of n
+	// bytes so subsequent reads resume rate limiting from a zero deficit.
 	if deficit := elapsed - expectedDuration; deficit > time.Second {
-		t.lastTime = time.Now()
 		t.bytesSent = int64(n)
-		elapsed = 0
 		expectedDuration = time.Duration(float64(t.bytesSent) / float64(t.bytesPerSecond) * float64(time.Second))
+		t.lastTime = time.Now().Add(-expectedDuration)
+		elapsed = expectedDuration
 	}
 
 	if wait := expectedDuration - elapsed; wait > 0 {

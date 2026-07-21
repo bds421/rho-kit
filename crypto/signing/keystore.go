@@ -46,14 +46,14 @@ const maxKeyIDLen = 256
 //     other error (typically wrapping [ErrKeyStoreUnavailable]) for
 //     transient provider failures.
 //   - [CurrentKeyID] returns (id, secret, nil) on success, or
-//     ("", nil, err) when the active key cannot be resolved. Static
-//     stores never return an error from CurrentKeyID.
+//     ("", nil, err) when the active key cannot be resolved (including
+//     after the store has been closed). Callers must check err before
+//     using the returned key material.
 //
-// WARNING: The canonical string does not include the Host header. If
-// keys are shared across services, signatures are portable between
-// them — a valid signature for service A can be replayed against
-// service B at the same path. Use unique per-service-pair keys to
-// prevent cross-service replay.
+// Cross-service signature portability is a concern of the request
+// canonicalization layer (see [CanonicalContext.Domain]), not of key
+// lookup. Prefer unique per-service-pair keys and a non-empty Domain
+// separator so signatures cannot be replayed across hosts.
 type KeyStore interface {
 	// Key returns the secret for the given key ID. Returns
 	// [ErrUnknownKeyID] if absent.
@@ -165,31 +165,30 @@ func (s *StaticKeyStore) Key(_ context.Context, keyID string) ([]byte, error) {
 
 // CurrentKeyID returns the active signing key ID and secret. The
 // returned slice is a defensive copy; callers cannot mutate internal
-// state. Returns ("", nil, nil) after [StaticKeyStore.Close] — the
-// static store never returns an error from CurrentKeyID.
+// state. Returns ("", nil, [ErrUnknownKeyID]) after [StaticKeyStore.Close]
+// or when the active secret is unavailable, matching the KeyStore
+// contract that a failed resolve is always reported via err.
 func (s *StaticKeyStore) CurrentKeyID(context.Context) (string, []byte, error) {
 	if s == nil || s.keys == nil || s.closed.Load() {
-		return "", nil, nil
+		return "", nil, ErrUnknownKeyID
 	}
 	k, ok := s.keys[s.currentID]
 	if !ok || k == nil {
-		return s.currentID, nil, nil
+		return "", nil, ErrUnknownKeyID
 	}
 	// Reveal once and branch on the result, mirroring Key: a concurrent
 	// Close can zero the wrapped secret between a separate IsEmpty check
-	// and Reveal, yielding (currentID, nil, nil) — an id with no secret.
-	// Report the cleared key with the documented after-Close shape
-	// ("", nil, nil) so callers never see an id without its secret.
+	// and Reveal, yielding an id with no secret. Treat that as unknown.
 	b := k.Reveal()
 	if len(b) == 0 {
-		return "", nil, nil
+		return "", nil, ErrUnknownKeyID
 	}
 	return s.currentID, b, nil
 }
 
 // Close zeroes every wrapped key in the store. Subsequent Key /
-// CurrentKeyID calls return empty values. Idempotent — calling Close
-// on an already-closed store is a no-op.
+// CurrentKeyID calls return [ErrUnknownKeyID]. Idempotent — calling
+// Close on an already-closed store is a no-op.
 //
 // Close is intended for graceful shutdown paths where the kit owns
 // the key material's lifecycle (typically alongside server.Close()).

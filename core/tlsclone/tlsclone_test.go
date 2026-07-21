@@ -1,6 +1,7 @@
 package tlsclone
 
 import (
+	"bytes"
 	"crypto/tls"
 	"errors"
 	"testing"
@@ -161,5 +162,32 @@ func TestConfigOrEmptyWithFloor_RejectsInsecureSkipVerifyByDefault(t *testing.T)
 	_, err := ConfigOrEmptyWithFloor(&tls.Config{InsecureSkipVerify: true}, tls.VersionTLS12)
 	if !errors.Is(err, ErrInsecureSkipVerifyNotPermitted) {
 		t.Fatalf("err = %v, want ErrInsecureSkipVerifyNotPermitted", err)
+	}
+}
+
+func TestConfigWithFloor_ClearsKeyLogWriterByDefault(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := &tls.Config{KeyLogWriter: &buf}
+	cloned, err := ConfigWithFloor(cfg, tls.VersionTLS12)
+	if err != nil {
+		t.Fatalf("ConfigWithFloor: %v", err)
+	}
+	if cloned.KeyLogWriter != nil {
+		t.Fatal("KeyLogWriter must be cleared by default (session-secret leak)")
+	}
+	if cfg.KeyLogWriter == nil {
+		t.Fatal("source config KeyLogWriter must not be mutated")
+	}
+}
+
+func TestConfigWithFloor_WithAllowKeyLogWriterKeepsWriter(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := &tls.Config{KeyLogWriter: &buf}
+	cloned, err := ConfigWithFloor(cfg, tls.VersionTLS12, WithAllowKeyLogWriter())
+	if err != nil {
+		t.Fatalf("ConfigWithFloor: %v", err)
+	}
+	if cloned.KeyLogWriter != &buf {
+		t.Fatal("WithAllowKeyLogWriter must retain KeyLogWriter")
 	}
 }

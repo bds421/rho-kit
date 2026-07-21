@@ -39,10 +39,20 @@ import (
 
 	kms "cloud.google.com/go/kms/apiv1"
 	"cloud.google.com/go/kms/apiv1/kmspb"
+	"github.com/googleapis/gax-go/v2"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/bds421/rho-kit/crypto/v2/envelope"
 )
+
+// kmsAPI is the subset of *kms.KeyManagementClient this adapter calls.
+// It exists so Wrap/Unwrap (including CRC32C verification) can be
+// exercised with a fake in tests without a live client.
+// *kms.KeyManagementClient satisfies it.
+type kmsAPI interface {
+	Encrypt(ctx context.Context, req *kmspb.EncryptRequest, opts ...gax.CallOption) (*kmspb.EncryptResponse, error)
+	Decrypt(ctx context.Context, req *kmspb.DecryptRequest, opts ...gax.CallOption) (*kmspb.DecryptResponse, error)
+}
 
 // crc32cTable is the Castagnoli polynomial — what Google KMS uses for
 // its CRC32C field. Allocated once at package load so per-call
@@ -60,7 +70,7 @@ var ErrChecksumMismatch = errors.New("gcpkms: CRC32C verification failed; retry 
 
 // KEK is the GCP KMS-backed [envelope.KEK].
 type KEK struct {
-	c   *kms.KeyManagementClient
+	c   kmsAPI
 	key string // full resource path: projects/.../locations/.../keyRings/.../cryptoKeys/...
 	aad []byte
 }
@@ -90,13 +100,21 @@ func (c Config) LogValue() slog.Value {
 }
 
 // NewKEK builds a KEK from cfg using the given KMS client. Returns an
-// error if KeyResource is empty.
+// error if KeyResource is empty or version-qualified.
+//
+// KeyResource must be the parent CryptoKey path (without
+// "/cryptoKeyVersions/N"). GCP KMS Encrypt accepts a version-qualified
+// name, but symmetric Decrypt rejects it — configuring a version would
+// let Wrap succeed for weeks while every Unwrap fails permanently.
 func NewKEK(c *kms.KeyManagementClient, cfg Config) (*KEK, error) {
 	if c == nil {
 		return nil, errors.New("gcpkms: client must not be nil")
 	}
 	if cfg.KeyResource == "" {
 		return nil, errors.New("gcpkms: Config.KeyResource must not be empty")
+	}
+	if strings.Contains(cfg.KeyResource, "/cryptoKeyVersions/") {
+		return nil, errors.New("gcpkms: Config.KeyResource must be the parent CryptoKey path, not a version-qualified resource")
 	}
 	return &KEK{c: c, key: cfg.KeyResource, aad: append([]byte(nil), cfg.AdditionalAuthenticatedData...)}, nil
 }
@@ -174,6 +192,11 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("gcpkms: decrypt: %w", classifyGCPError("decrypt", err))
 	}
+	// Note: DecryptResponse (unlike EncryptResponse) does not surface
+	// VerifiedCiphertextCrc32C / VerifiedAdditionalAuthenticatedDataCrc32C
+	// request-echo flags — GCP only returns the plaintext CRC for
+	// Decrypt. We still send CiphertextCrc32C + AAD CRC on the request
+	// and verify the response plaintext CRC below.
 	plaintext := resp.GetPlaintext()
 	if got, want := crc32.Checksum(plaintext, crc32cTable), uint32(resp.GetPlaintextCrc32C().GetValue()); got != want {
 		return nil, responseChecksumMismatchError("plaintext")

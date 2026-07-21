@@ -352,15 +352,14 @@ func parseFallbackKeyID(keyID string) (string, string, string, error) {
 	if err != nil || u.Scheme != fallbackKeyIDScheme || u.Host != "keys" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return "", "", "", errors.New("azurekeyvault: invalid keyID")
 	}
+	// Fallback scheme IDs always carry a version segment: Unwrap rejects
+	// empty versions, and Wrap never emits version-less fallback IDs.
 	segments := splitCleanPath(u.Path)
-	if len(segments) != 1 && len(segments) != 2 {
+	if len(segments) != 2 {
 		return "", "", "", errors.New("azurekeyvault: invalid keyID")
 	}
 	keyName := segments[0]
-	keyVersion := ""
-	if len(segments) == 2 {
-		keyVersion = segments[1]
-	}
+	keyVersion := segments[1]
 	if err := validateKeySegment("keyID key name", keyName, false); err != nil {
 		return "", "", "", err
 	}

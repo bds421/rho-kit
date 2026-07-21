@@ -36,7 +36,16 @@ type VerifyResult struct {
 // are treated as passhash PHC argon2id. target is the argon2id policy used
 // to decide NeedsRehash for matched PHC hashes; bcrypt matches always set
 // NeedsRehash=true so callers can upgrade on next login.
+//
+// Empty passwords are rejected with [passhash.ErrEmptyPassword] for both
+// algorithms (same contract as [passhash.Verify]). The bcrypt path is
+// limited by bcrypt itself to the first 72 bytes of the password; longer
+// secrets that differ only after byte 72 will match. Matched bcrypt rows
+// always return NeedsRehash=true so the upgrade path heals this.
 func Verify(password, stored string, target passhash.Params) (VerifyResult, error) {
+	if password == "" {
+		return VerifyResult{}, passhash.ErrEmptyPassword
+	}
 	stored = strings.TrimSpace(stored)
 	if stored == "" {
 		return VerifyResult{}, passhash.ErrMalformed
@@ -46,9 +55,6 @@ func Verify(password, stored string, target passhash.Params) (VerifyResult, erro
 	}
 	res, err := passhash.Verify(password, stored, target)
 	if err != nil {
-		if errors.Is(err, passhash.ErrUnsupportedFormat) || errors.Is(err, passhash.ErrMalformed) {
-			return VerifyResult{}, err
-		}
 		return VerifyResult{}, err
 	}
 	return VerifyResult{
@@ -59,6 +65,8 @@ func Verify(password, stored string, target passhash.Params) (VerifyResult, erro
 }
 
 func verifyBcrypt(password, stored string) (VerifyResult, error) {
+	// bcrypt only consumes the first 72 bytes (Blowfish key schedule);
+	// documented on Verify. MaxPasswordLen still caps DoS from huge inputs.
 	if len(password) > passhash.MaxPasswordLen {
 		return VerifyResult{}, passhash.ErrPasswordTooLong
 	}

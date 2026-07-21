@@ -64,6 +64,7 @@ type Option func(*options)
 
 type options struct {
 	allowInsecureSkipVerify bool
+	allowKeyLogWriter       bool
 }
 
 // WithAllowInsecureSkipVerify permits the cloned config to keep
@@ -77,6 +78,15 @@ type options struct {
 // justify the opt-in in code review.
 func WithAllowInsecureSkipVerify() Option {
 	return func(o *options) { o.allowInsecureSkipVerify = true }
+}
+
+// WithAllowKeyLogWriter permits a non-nil tls.Config.KeyLogWriter to be
+// retained on the cloned config. By default KeyLogWriter is cleared
+// because it writes TLS session secrets (NSS key log) that enable
+// passive decryption of all traffic — strictly worse than
+// InsecureSkipVerify for production leakage.
+func WithAllowKeyLogWriter() Option {
+	return func(o *options) { o.allowKeyLogWriter = true }
 }
 
 // ConfigWithFloor returns a detached clone of cfg with MinVersion raised to
@@ -102,7 +112,7 @@ func ConfigWithFloor(cfg *tls.Config, minVersion uint16, opts ...Option) (*tls.C
 		return nil, ErrInsecureSkipVerifyNotPermitted
 	}
 	cloned := cfg.Clone()
-	detachTLSConfig(cloned)
+	detachTLSConfig(cloned, settings.allowKeyLogWriter)
 	if cloned.MaxVersion != 0 && cloned.MaxVersion < minVersion {
 		return nil, ErrMaxVersionBelowFloor
 	}
@@ -126,7 +136,7 @@ func ConfigOrEmptyWithFloor(cfg *tls.Config, minVersion uint16, opts ...Option) 
 	return ConfigWithFloor(cfg, minVersion, opts...)
 }
 
-func detachTLSConfig(cfg *tls.Config) {
+func detachTLSConfig(cfg *tls.Config, allowKeyLogWriter bool) {
 	cfg.Certificates = cloneCertificates(cfg.Certificates)
 	// NameToCertificate has been deprecated since Go 1.14 in favour of
 	// GetCertificate. A stale SNI map carried in from the caller would
@@ -135,6 +145,12 @@ func detachTLSConfig(cfg *tls.Config) {
 	//nolint:staticcheck // Reset the deprecated map intentionally.
 	//lint:ignore SA1019 deliberately zeroing the deprecated field
 	cfg.NameToCertificate = nil
+	// KeyLogWriter dumps TLS master secrets (NSS key log). Unless the
+	// caller explicitly opts in via WithAllowKeyLogWriter, clear it so a
+	// debug-era config cannot silently decrypt production traffic.
+	if !allowKeyLogWriter {
+		cfg.KeyLogWriter = nil
+	}
 	if cfg.RootCAs != nil {
 		cfg.RootCAs = cfg.RootCAs.Clone()
 	}

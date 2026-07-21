@@ -16,7 +16,7 @@ import (
 // can still inspect the raw code/message in logs. Errors that aren't gRPC
 // status errors, or that map to codes outside the curated set, are
 // returned unchanged.
-func classifyGCPError(operation string, err error) error {
+func classifyGCPError(_ string, err error) error {
 	if err == nil {
 		return nil
 	}

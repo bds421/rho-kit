@@ -49,6 +49,14 @@ func TestMaskString(t *testing.T) {
 			t.Fatalf("expected %q, got %q", "****", got)
 		}
 	})
+
+	t.Run("redacts when prefix would expose half or more", func(t *testing.T) {
+		// "hunter12" is 8 runes; n=7 would previously leak "hunter1****".
+		got := MaskString("hunter12", 7)
+		if got != "[REDACTED]" {
+			t.Fatalf("expected [REDACTED], got %q", got)
+		}
+	})
 }
 
 func TestMaskURL_Valid(t *testing.T) {

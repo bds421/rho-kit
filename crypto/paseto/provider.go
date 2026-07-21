@@ -175,8 +175,23 @@ func OpenProvider(ctx context.Context, src PublicKeySource, interval time.Durati
 	if p.clock == nil {
 		p.clock = time.Now
 	}
+	// Fail closed at construction when the refresh interval is >= the
+	// stale window: lastSuccessfulRefresh only advances on a successful
+	// refresh, and the first background tick fires after one full
+	// interval, so interval >= maxStale produces a recurring self-inflicted
+	// outage window (every Verify/Sign fails from t=maxStale until the
+	// next tick) with healthy keys and a healthy source.
+	if p.maxStale > 0 && p.interval > p.maxStale {
+		rootCancel()
+		return nil, fmt.Errorf("paseto: refresh interval (%s) must be <= maxStale (%s) to avoid periodic fail-closed gaps", p.interval, p.maxStale)
+	}
 
-	if err := p.refresh(ctx); err != nil {
+	// Cap the initial load with fetchTimeout (same bound as the refresh
+	// loop) so a hung key source cannot stall process startup forever.
+	loadCtx, loadCancel := context.WithTimeout(ctx, p.fetchTimeout)
+	err := p.refresh(loadCtx)
+	loadCancel()
+	if err != nil {
 		rootCancel()
 		return nil, fmt.Errorf("paseto: initial key load: %w", err)
 	}

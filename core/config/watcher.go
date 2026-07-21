@@ -27,6 +27,11 @@ const defaultDebounce = 100 * time.Millisecond
 // still provide fast response for ordinary edits; the poll is only a backstop.
 const defaultPollInterval = 10 * time.Second
 
+// fsnotifyNewWatcher constructs an fsnotify Watcher. Overridden in tests to
+// inject a watcher whose Events/Errors channels close unexpectedly so the
+// descriptive error paths are pinned.
+var fsnotifyNewWatcher = fsnotify.NewWatcher
+
 // watcherConfig holds shared options for watchers.
 type watcherConfig struct {
 	logger        *slog.Logger
@@ -185,6 +190,11 @@ func (fw *FileWatcher[T]) Watchable() *Watchable[T] {
 }
 
 // Start begins watching the file. It blocks until ctx is cancelled.
+//
+// Start is one-shot after a successful init: once started=true, a
+// second Start (including after a clean ctx-cancel exit) returns
+// "already started". Fallible init failures (fsnotify.NewWatcher,
+// watcher.Add) leave started=false so a lifecycle runner can retry.
 func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("config: FileWatcher.Start requires a non-nil context")
@@ -194,10 +204,12 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 		fw.startMu.Unlock()
 		return errors.New("config: FileWatcher already started")
 	}
-	fw.started = true
+	// Mark started only after fallible init succeeds so a transient
+	// NewWatcher/Add failure leaves the watcher retryable (lifecycle
+	// runners re-invoke Start on error).
 	fw.startMu.Unlock()
 
-	watcher, err := fsnotify.NewWatcher()
+	watcher, err := fsnotifyNewWatcher()
 	if err != nil {
 		return err
 	}
@@ -216,6 +228,15 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 	if err := watcher.Add(dir); err != nil {
 		return err
 	}
+
+	fw.startMu.Lock()
+	if fw.started {
+		// Lost a race with another Start after init — close and reject.
+		fw.startMu.Unlock()
+		return errors.New("config: FileWatcher already started")
+	}
+	fw.started = true
+	fw.startMu.Unlock()
 
 	var debounceTimer *time.Timer
 	var debounceCh <-chan time.Time
@@ -286,7 +307,7 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 
 		case event, ok := <-watcher.Events:
 			if !ok {
-				return nil
+				return errors.New("config: fsnotify Events channel closed unexpectedly")
 			}
 			if !isRelevantEvent(event) {
 				continue
@@ -309,7 +330,7 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 
 		case watchErr, ok := <-watcher.Errors:
 			if !ok {
-				return nil
+				return errors.New("config: fsnotify Errors channel closed unexpectedly")
 			}
 			fw.cfg.logger.Warn("file watcher error", redact.Error(watchErr))
 
@@ -363,9 +384,17 @@ func NewEnvReloader[T any](w *Watchable[T], opts ...WatcherOption) *EnvReloader[
 // Start listens for SIGHUP and reloads config from env vars.
 // It blocks until ctx is cancelled.
 //
+// Start is intentionally one-shot: there is no fallible init before
+// the signal loop (signal channel creation cannot fail in a way that
+// leaves the reloader half-armed), so started is set immediately and
+// a second Start — including after a clean ctx-cancel exit — always
+// returns "already started". Construct a new EnvReloader to restart.
+//
 // If [WithImmediateLoad] was passed, an initial Load runs once before the
 // signal loop so the Watchable reflects current environment state instead of
-// the construction-time `initial` value.
+// the construction-time `initial` value. A failed immediate Load is
+// non-fatal (logged; construction-time value is kept) and does not
+// reset started — the signal loop still runs.
 func (r *EnvReloader[T]) Start(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("config: EnvReloader.Start requires a non-nil context")

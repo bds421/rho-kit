@@ -4,7 +4,10 @@
 // the Encrypt response is the key ARN of the KMS key used (AWS KMS
 // does not expose per-version ARNs); KMS resolves the correct rotated
 // key material on Decrypt. We pass the ARN through to the envelope so
-// Decrypt later targets the same KMS key.
+// Decrypt later targets the same KMS key. When Config.KeyID is an alias,
+// Unwrap forwards the envelope's key ARN (after partition/region/account
+// scope checks) so repointing the alias for rotation does not make prior
+// envelopes undecryptable.
 //
 // The adapter assumes the caller has set up AWS credentials (env
 // vars, IRSA, EC2 role) and the KMS key has appropriate IAM grants:
@@ -12,9 +15,14 @@
 //   - kms:Encrypt for Wrap
 //   - kms:Decrypt for Unwrap
 //
-// Encryption context (AAD) support is intentionally omitted from this
-// scaffold — adding it requires aligning the kit's envelope format
-// with KMS's encryption_context map in a future minor release.
+// EncryptionContext is supported as a static, adapter-level KMS
+// encryption_context map applied to every Wrap and Unwrap. It must
+// remain stable for the lifetime of stored envelopes — changing it
+// makes existing ciphertexts undecryptable. Treat it as a constant
+// audit attribute (service name, environment), not a per-row binding;
+// per-envelope AAD belongs in the envelope caller's aad argument.
+// See also the parent envelope package doc on EncryptionContext vs
+// caller AAD.
 //
 // asvs: V6.2.1, V6.4.1
 package awskms
@@ -77,11 +85,12 @@ type Config struct {
 	// Aliases (alias/name) point at the latest key version.
 	KeyID string
 
-	// EncryptionContext is the AAD (Additional Authenticated Data)
-	// passed to KMS on every Wrap and Unwrap. Best practice per AWS
-	// guidance: include tenant ID, table name, or other binding
-	// data so a stolen ciphertext cannot be replayed in a different
-	// context.
+	// EncryptionContext is the static KMS encryption_context map
+	// passed on every Wrap and Unwrap. Keep it constant for the
+	// lifetime of stored envelopes (service/environment audit
+	// attributes). Do not put per-row identifiers here — use the
+	// envelope Encryptor's per-call AAD for row-level binding; a
+	// reconfigured EncryptionContext cannot unwrap existing blobs.
 	EncryptionContext map[string]string
 }
 
@@ -203,20 +212,45 @@ func (k *KEK) validate(ctx context.Context) error {
 
 // decryptKeyIDFor validates the envelope key ID and returns the KeyId to send
 // to AWS KMS Decrypt. The envelope header is attacker-controlled once stored
-// bytes can be modified, so alias-configured KEKs intentionally decrypt through
-// the configured alias rather than forwarding an arbitrary key ARN from the
-// envelope.
+// bytes can be modified.
+//
+// Alias-configured KEKs:
+//   - When the envelope carries a key ARN produced by Wrap (AWS Encrypt
+//     returns the concrete key ARN), forward that ARN after a scope check
+//     so repointing the alias (the standard AWS manual-rotation workflow)
+//     does not orphan envelopes written under the previous target key.
+//   - Alias-form envelope IDs still decrypt through the configured alias.
 func (k *KEK) decryptKeyIDFor(keyID string) (string, error) {
 	if keyID == k.keyID {
 		return keyID, nil
 	}
 
 	if isKMSAliasID(k.keyID) {
-		if (isKMSKeyARN(keyID) || isKMSAliasARN(keyID)) && !isKMSAliasARN(k.keyID) {
-			return k.keyID, nil
+		// Forward a scoped key ARN so alias retargeting keeps prior
+		// envelopes decryptable via their recorded key ARN.
+		if isKMSKeyARN(keyID) {
+			if isKMSAliasARN(k.keyID) {
+				if !sameKMSARNScope(k.keyID, keyID) {
+					return "", errors.New("awskms: keyID does not match this KEK")
+				}
+			} else if k.region != "" {
+				region, ok := kmsARNRegion(keyID)
+				if !ok || region != k.region {
+					return "", errors.New("awskms: keyID region does not match this KEK")
+				}
+			}
+			return keyID, nil
 		}
-		if (isKMSKeyARN(keyID) || isKMSAliasARN(keyID)) && sameKMSARNScope(k.keyID, keyID) {
-			return k.keyID, nil
+		// Alias-form envelope IDs: decrypt through the configured alias only
+		// when the envelope alias is in scope (or the config is a bare alias
+		// name — then only exact match is accepted via the keyID==k.keyID
+		// short-circuit above, or reject foreign alias ARNs).
+		if isKMSAliasARN(keyID) && isKMSAliasARN(k.keyID) && sameKMSARNScope(k.keyID, keyID) {
+			// Same account/region alias ARN family — still pin to configured
+			// alias resource rather than a foreign alias name.
+			if kmsARNResourceEqual(k.keyID, keyID) {
+				return k.keyID, nil
+			}
 		}
 		return "", errors.New("awskms: keyID does not match this KEK")
 	}
@@ -281,6 +315,12 @@ func sameKMSARNScope(a, b string) bool {
 		}
 	}
 	return aParts[2] == "kms" && bParts[2] == "kms"
+}
+
+func kmsARNResourceEqual(a, b string) bool {
+	ar, okA := kmsARNResource(a)
+	br, okB := kmsARNResource(b)
+	return okA && okB && ar == br
 }
 
 func kmsARNResource(s string) (string, bool) {

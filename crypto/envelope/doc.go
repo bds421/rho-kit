@@ -54,8 +54,10 @@
 // (awskms, azurekeyvault, gcpkms, vaulttransit) treat the
 // adapter-level EncryptionContext as a constant audit attribute
 // reported by the cloud provider's KMS logs — it is NOT bound to the
-// caller's per-row AAD. The per-envelope binding lives in the body
-// GCM AAD (caller AAD + length-prefixed keyID), so a ciphertext
+// caller's per-row AAD. The per-envelope body GCM AAD binds the
+// domain separator + length-prefixed caller AAD (not keyID; wrap-
+// header keyID tampering is detected via unknown-keyID rejection or
+// a wrong DEK failing body open — see above). A ciphertext
 // copy-pasted into a different row fails authentication regardless
 // of how the KEK adapter is configured. Operators reading KMS logs
 // will therefore see a single static EncryptionContext value for all

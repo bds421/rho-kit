@@ -111,11 +111,23 @@ func (l VerifyLimits) withDefaults() VerifyLimits {
 	return l
 }
 
+// RFC 9106 recommends ≥8-byte salts and ≥16-byte digests. Verify
+// enforces those floors so a corrupted or attacker-crafted PHC row
+// cannot degrade ConstantTimeCompare to a single-byte match (p=1/256)
+// by declaring a 1-byte digest. Upper bounds remain configurable via
+// MaxSaltLen/MaxKeyLen.
+const (
+	minVerifySaltLen uint32 = 8
+	minVerifyKeyLen  uint32 = 16
+)
+
 func (l VerifyLimits) accepts(p Params) bool {
 	return p.Memory <= l.MaxMemory &&
 		p.Iterations <= l.MaxIterations &&
 		p.Parallelism <= l.MaxParallelism &&
+		p.SaltLen >= minVerifySaltLen &&
 		p.SaltLen <= l.MaxSaltLen &&
+		p.KeyLen >= minVerifyKeyLen &&
 		p.KeyLen <= l.MaxKeyLen
 }
 

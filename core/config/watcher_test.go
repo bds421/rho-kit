@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -373,6 +374,42 @@ func TestFileWatcher_StartRejectsSecondStart(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
+// TestFileWatcher_StartRetryableAfterFailedInit is the regression pin
+// for review MEDIUM: if watcher.Add fails (missing parent dir),
+// started must remain false so a later Start succeeds once the path
+// exists — lifecycle runners re-invoke Start on error.
+func TestFileWatcher_StartRetryableAfterFailedInit(t *testing.T) {
+	root := t.TempDir()
+	// Parent of the config file does not exist yet → Add fails.
+	missingDir := filepath.Join(root, "missing-subdir")
+	cfgPath := filepath.Join(missingDir, "config.txt")
+
+	w := NewWatchable("initial")
+	fw := NewFileWatcher(cfgPath, func(string) (string, error) {
+		return "loaded", nil
+	}, w)
+
+	err := fw.Start(context.Background())
+	require.Error(t, err, "Start must fail when config parent dir is missing")
+
+	fw.startMu.Lock()
+	started := fw.started
+	fw.startMu.Unlock()
+	require.False(t, started, "failed init must leave started=false for retry")
+
+	// Create the path and retry — must succeed now.
+	require.NoError(t, os.MkdirAll(missingDir, 0o750))
+	writeFile(t, cfgPath, "data")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- fw.Start(ctx) }()
+	waitForFileWatcherStarted(t, fw)
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
 func TestFileWatcher_StartRejectsRestartAfterCancel(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.txt")
@@ -661,4 +698,40 @@ func TestEnvReloader_WithSignalChannel(t *testing.T) {
 	}, 2*time.Second, 20*time.Millisecond)
 
 	cancel()
+}
+
+// TestFileWatcher_EventsChannelClosedUnexpectedly pins the contract that
+// an fsnotify Events channel close (watcher death) returns a descriptive
+// error rather than nil, so lifecycle supervisors restart/alert instead of
+// treating it as a clean shutdown.
+func TestFileWatcher_EventsChannelClosedUnexpectedly(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.txt")
+	writeFile(t, cfgPath, "data")
+
+	orig := fsnotifyNewWatcher
+	t.Cleanup(func() { fsnotifyNewWatcher = orig })
+	fsnotifyNewWatcher = func() (*fsnotify.Watcher, error) {
+		w, err := orig()
+		if err != nil {
+			return nil, err
+		}
+		// Close after Start has Add'd the directory so the loop observes
+		// channel close, not an Add failure.
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			_ = w.Close()
+		}()
+		return w, nil
+	}
+
+	w := NewWatchable("data")
+	fw := NewFileWatcher(cfgPath, func(string) (string, error) {
+		return "data", nil
+	}, w)
+
+	err := fw.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fsnotify")
+	assert.Contains(t, err.Error(), "closed unexpectedly")
 }

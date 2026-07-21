@@ -1,7 +1,9 @@
 // Package maputil provides small, allocation-light helpers for working
-// with maps. Members live here when they are general enough to be used
-// by multiple unrelated callers (httpx, data adapters, app builder, …)
-// rather than belonging to any one of them.
+// with maps at service call sites (partial-update request bodies,
+// optional-pointer field patches). The helpers are intentionally
+// freestanding so application code can import them without pulling a
+// heavier domain package; the kit itself keeps few call sites so the
+// surface stays tiny and stable.
 package maputil
 
 // SetIfNotNil writes the dereferenced value of val into m at key when val

@@ -302,9 +302,7 @@ func resolveWithSource(envName string, isSecret bool) (val string, valBytes []by
 		// nil-means-disabled tracking even though the value is empty.
 		return "", nil, true, nil
 	}
-	if !isSecret {
-		return "", nil, false, nil
-	}
+	// Missing env (and, for secrets, missing _FILE): not from env.
 	return "", nil, false, nil
 }
 

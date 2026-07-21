@@ -119,22 +119,22 @@ func TestDecryptKeyIDForConstrainsAliasBackedEnvelopeARN(t *testing.T) {
 		wantErr    bool
 	}{
 		{
-			name:       "bare alias decrypts through configured alias",
+			name:       "bare alias forwards envelope key ARN for rotation safety",
 			configured: "alias/configured",
 			envelope:   envelopeKeyARN,
-			want:       "alias/configured",
+			want:       envelopeKeyARN,
 		},
 		{
-			name:       "bare alias ignores caller supplied alias ARN",
+			name:       "bare alias rejects foreign alias ARN",
 			configured: "alias/configured",
 			envelope:   "arn:aws:kms:us-east-1:999900001111:alias/configured",
-			want:       "alias/configured",
+			wantErr:    true,
 		},
 		{
-			name:       "alias ARN decrypts through configured alias ARN in same account",
+			name:       "alias ARN forwards scoped envelope key ARN for rotation safety",
 			configured: "arn:aws:kms:us-east-1:111122223333:alias/configured",
 			envelope:   envelopeKeyARN,
-			want:       "arn:aws:kms:us-east-1:111122223333:alias/configured",
+			want:       envelopeKeyARN,
 		},
 		{
 			name:       "alias ARN rejects different account",

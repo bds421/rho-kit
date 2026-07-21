@@ -34,6 +34,12 @@ const dekLen = 32
 // nonceLen is the AES-GCM nonce length in bytes (the standard 96-bit nonce).
 const nonceLen = 12
 
+// gcmTagLen is the AES-GCM authentication tag length (128-bit).
+const gcmTagLen = 16
+
+// minBodyLen is iv(12) || ct || tag(16); bodies shorter than this cannot be well-formed.
+const minBodyLen = nonceLen + gcmTagLen
+
 // aadDomainSepV2 is the fixed AAD suffix used in v2 blobs. v2 readers
 // continue to use this so legacy blobs decrypt unchanged.
 var aadDomainSepV2 = []byte("rho-kit/envelope/v2")
@@ -158,11 +164,11 @@ func (e *Encryptor) Decrypt(ctx context.Context, blob, aad []byte) ([]byte, erro
 	if err := e.validate(ctx); err != nil {
 		return nil, err
 	}
-	version, _, keyID, wrapped, body, err := parseBlob(blob)
+	version, keyID, wrapped, body, err := parseBlob(blob)
 	if err != nil {
 		return nil, err
 	}
-	if len(body) < nonceLen {
+	if len(body) < minBodyLen {
 		return nil, ErrTruncated
 	}
 
@@ -209,11 +215,11 @@ func (e *Encryptor) Rewrap(ctx context.Context, blob []byte) ([]byte, error) {
 	if err := e.validate(ctx); err != nil {
 		return nil, err
 	}
-	version, _, keyID, wrapped, body, err := parseBlob(blob)
+	version, keyID, wrapped, body, err := parseBlob(blob)
 	if err != nil {
 		return nil, err
 	}
-	if len(body) < nonceLen {
+	if len(body) < minBodyLen {
 		return nil, ErrTruncated
 	}
 
@@ -317,17 +323,16 @@ func buildHeaderVersion(version uint8, keyID string, wrappedDEK []byte) ([]byte,
 	}
 }
 
-// parseBlob splits a blob into (version, header, keyID, wrappedDEK,
-// body) where body is nonce || ciphertext+tag. Both v2 and v3 layouts
-// parse; the returned version selects the AAD derivation. Returns
-// ErrMalformed for layout errors and ErrUnsupportedVer for unknown
-// versions.
-func parseBlob(blob []byte) (version uint8, header []byte, keyID string, wrappedDEK, body []byte, err error) {
+// parseBlob splits a blob into (version, keyID, wrappedDEK, body) where
+// body is nonce || ciphertext+tag. Both v2 and v3 layouts parse; the
+// returned version selects the AAD derivation. Returns ErrMalformed for
+// layout errors and ErrUnsupportedVer for unknown versions.
+func parseBlob(blob []byte) (version uint8, keyID string, wrappedDEK, body []byte, err error) {
 	if len(blob) < 3+1+1 {
-		return 0, nil, "", nil, nil, ErrTruncated
+		return 0, "", nil, nil, ErrTruncated
 	}
 	if blob[0] != blobMagic[0] || blob[1] != blobMagic[1] || blob[2] != blobMagic[2] {
-		return 0, nil, "", nil, nil, ErrMalformed
+		return 0, "", nil, nil, ErrMalformed
 	}
 	v := blob[3]
 	switch v {
@@ -336,60 +341,60 @@ func parseBlob(blob []byte) (version uint8, header []byte, keyID string, wrapped
 	case blobVersionV3:
 		return parseBlobV3(blob)
 	default:
-		return 0, nil, "", nil, nil, ErrUnsupportedVer
+		return 0, "", nil, nil, ErrUnsupportedVer
 	}
 }
 
-func parseBlobV2(blob []byte) (uint8, []byte, string, []byte, []byte, error) {
+func parseBlobV2(blob []byte) (uint8, string, []byte, []byte, error) {
 	kL := int(blob[4])
 	off := 5
 	if len(blob) < off+kL+2 {
-		return 0, nil, "", nil, nil, ErrTruncated
+		return 0, "", nil, nil, ErrTruncated
 	}
 	keyID := string(blob[off : off+kL])
 	if err := validateKeyID(keyID); err != nil {
-		return 0, nil, "", nil, nil, ErrMalformed
+		return 0, "", nil, nil, ErrMalformed
 	}
 	off += kL
 	wL := int(binary.BigEndian.Uint16(blob[off : off+2]))
 	off += 2
 	if len(blob) < off+wL {
-		return 0, nil, "", nil, nil, ErrTruncated
+		return 0, "", nil, nil, ErrTruncated
 	}
 	wrappedDEK := blob[off : off+wL]
 	if len(wrappedDEK) == 0 {
-		return 0, nil, "", nil, nil, ErrMalformed
+		return 0, "", nil, nil, ErrMalformed
 	}
 	off += wL
-	return blobVersionV2, blob[:off], keyID, wrappedDEK, blob[off:], nil
+	return blobVersionV2, keyID, wrappedDEK, blob[off:], nil
 }
 
-func parseBlobV3(blob []byte) (uint8, []byte, string, []byte, []byte, error) {
+func parseBlobV3(blob []byte) (uint8, string, []byte, []byte, error) {
 	off := 4
 	if len(blob) < off+2 {
-		return 0, nil, "", nil, nil, ErrTruncated
+		return 0, "", nil, nil, ErrTruncated
 	}
 	kL := int(binary.BigEndian.Uint16(blob[off : off+2]))
 	off += 2
 	if len(blob) < off+kL+2 {
-		return 0, nil, "", nil, nil, ErrTruncated
+		return 0, "", nil, nil, ErrTruncated
 	}
 	keyID := string(blob[off : off+kL])
 	if err := validateKeyID(keyID); err != nil {
-		return 0, nil, "", nil, nil, ErrMalformed
+		return 0, "", nil, nil, ErrMalformed
 	}
 	off += kL
 	wL := int(binary.BigEndian.Uint16(blob[off : off+2]))
 	off += 2
 	if len(blob) < off+wL {
-		return 0, nil, "", nil, nil, ErrTruncated
+		return 0, "", nil, nil, ErrTruncated
 	}
 	wrappedDEK := blob[off : off+wL]
 	if len(wrappedDEK) == 0 {
-		return 0, nil, "", nil, nil, ErrMalformed
+		return 0, "", nil, nil, ErrMalformed
 	}
 	off += wL
-	return blobVersionV3, blob[:off], keyID, wrappedDEK, blob[off:], nil
+	return blobVersionV3, keyID, wrappedDEK, blob[off:], nil
 }
 
 func validateKeyID(keyID string) error {

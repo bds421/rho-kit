@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 
 	"golang.org/x/crypto/hkdf"
 
@@ -24,6 +25,11 @@ var (
 	ErrEmptyDomainLabel = errors.New("secretcrypt: domain label must not be empty")
 	// ErrEmptyIdentity is returned when Encrypt/Decrypt receive an empty identity.
 	ErrEmptyIdentity = errors.New("secretcrypt: identity must not be empty")
+	// ErrInvalidCrypter is returned when Encrypt/Decrypt is called on a nil
+	// or zero-value Crypter (one not constructed via [New]).
+	ErrInvalidCrypter = errors.New("secretcrypt: Crypter must be constructed with New")
+	// ErrClosed is returned when Encrypt/Decrypt is called after [Crypter.Close].
+	ErrClosed = errors.New("secretcrypt: Crypter is closed")
 )
 
 const (
@@ -36,6 +42,7 @@ const (
 type Crypter struct {
 	master []byte
 	label  string
+	closed atomic.Bool
 }
 
 // New constructs a Crypter. master is copied; domainLabel scopes derived
@@ -58,6 +65,9 @@ func New(master []byte, domainLabel string) (*Crypter, error) {
 // Encrypt seals plaintext with AES-256-GCM. identity participates in key
 // derivation; aad is authenticated but not encrypted (e.g. tenant id).
 func (c *Crypter) Encrypt(identity string, plaintext, aad []byte) ([]byte, error) {
+	if err := c.validate(); err != nil {
+		return nil, err
+	}
 	if identity == "" {
 		return nil, ErrEmptyIdentity
 	}
@@ -71,6 +81,9 @@ func (c *Crypter) Encrypt(identity string, plaintext, aad []byte) ([]byte, error
 // Decrypt opens a blob produced by [Crypter.Encrypt] for the same identity
 // and aad.
 func (c *Crypter) Decrypt(identity string, blob, aad []byte) ([]byte, error) {
+	if err := c.validate(); err != nil {
+		return nil, err
+	}
 	if identity == "" {
 		return nil, ErrEmptyIdentity
 	}
@@ -81,12 +94,43 @@ func (c *Crypter) Decrypt(identity string, blob, aad []byte) ([]byte, error) {
 	return encrypt.DecryptBytesAAD(aead, blob, aad)
 }
 
+func (c *Crypter) validate() error {
+	if c == nil || len(c.master) < minMasterLen || c.label == "" {
+		return ErrInvalidCrypter
+	}
+	if c.closed.Load() {
+		return ErrClosed
+	}
+	return nil
+}
+
+// Close zeroes the master key. Subsequent Encrypt/Decrypt calls return
+// [ErrClosed]. Idempotent.
+func (c *Crypter) Close() error {
+	if c == nil {
+		return nil
+	}
+	if !c.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	for i := range c.master {
+		c.master[i] = 0
+	}
+	return nil
+}
+
 func (c *Crypter) aead(identity string) (encrypt.AEAD, error) {
 	key, err := deriveKey(c.master, c.label, identity)
 	if err != nil {
 		return nil, fmt.Errorf("secretcrypt: derive key: %w", err)
 	}
-	return encrypt.NewGCM(key)
+	// NewGCM copies key material; zero the local HKDF-derived slice so
+	// it does not linger in the heap until GC.
+	aead, err := encrypt.NewGCM(key)
+	for i := range key {
+		key[i] = 0
+	}
+	return aead, err
 }
 
 func deriveKey(master []byte, label, identity string) ([]byte, error) {

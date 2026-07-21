@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -1022,6 +1023,62 @@ func TestV4Local_Close_NilReceiverIsSafe(t *testing.T) {
 	if err := v.Close(); err != nil {
 		t.Fatalf("nil Close: %v", err)
 	}
+}
+
+// TestV4Local_CloseConcurrentWithSealVerify pins keyMu: Close may race
+// concurrent Seal/Verify without panicking; after Close completes, both
+// fail closed with ErrV4LocalClosed.
+func TestV4Local_CloseConcurrentWithSealVerify(t *testing.T) {
+	key := randomV4LocalKey(t)
+	v, err := NewV4Local(key,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	tok, err := v.Seal(Claims{
+		Issuer: "svc-A", Audience: []string{"svc-B"}, ExpiresAt: futureExp(),
+	})
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 64)
+	for i := 0; i < 16; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, serr := v.Seal(Claims{
+				Issuer: "svc-A", Audience: []string{"svc-B"}, ExpiresAt: futureExp(),
+			})
+			if serr != nil && !errors.Is(serr, ErrV4LocalClosed) {
+				errCh <- serr
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			_, verr := v.Verify(tok, time.Now())
+			if verr != nil && !errors.Is(verr, ErrV4LocalClosed) {
+				errCh <- verr
+			}
+		}()
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- v.Close() }()
+
+	wg.Wait()
+	require.NoError(t, <-closeDone)
+	close(errCh)
+	for e := range errCh {
+		t.Fatalf("unexpected concurrent error: %v", e)
+	}
+
+	_, err = v.Seal(Claims{
+		Issuer: "svc-A", Audience: []string{"svc-B"}, ExpiresAt: futureExp(),
+	})
+	assert.ErrorIs(t, err, ErrV4LocalClosed)
+	_, err = v.Verify(tok, time.Now())
+	assert.ErrorIs(t, err, ErrV4LocalClosed)
 }
 
 // TestV4PublicSigner_CloseConcurrentWithSign exercises the documented

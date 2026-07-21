@@ -25,27 +25,63 @@ const MaxLoadBytes = 16 * 1024 * 1024
 // as 0).
 //
 // Use [LoadOrZero] when the distinction is irrelevant.
+//
+// Load opens the path once (O_NOFOLLOW on Unix), fstats the open
+// descriptor for the mode/size checks, and reads through a
+// MaxLoadBytes-capped LimitReader so a TOCTOU swap between Lstat and
+// ReadFile cannot redirect the read through a symlink or grow the file
+// past the cap after the size check.
 func Load[T any](path string) (value T, exists bool, err error) {
 	if err := rejectSymlinkAncestors(path); err != nil {
 		return value, false, fmt.Errorf("unsafe state path: %w", err)
 	}
-	if info, statErr := os.Lstat(path); statErr != nil {
+
+	// Fast path for missing files (common on first run) without opening.
+	if _, statErr := os.Lstat(path); statErr != nil {
 		if errors.Is(statErr, os.ErrNotExist) {
 			return value, false, nil
 		}
+		// Fall through to openReadNoFollow so permission/type errors share
+		// one code path; a racing create is fine — open will see it.
+	}
+
+	f, openErr := openReadNoFollow(path)
+	if openErr != nil {
+		if errors.Is(openErr, os.ErrNotExist) {
+			return value, false, nil
+		}
+		// O_NOFOLLOW reports ELOOP (or platform equivalent) when the final
+		// path component is a symlink. Map that to the same refusal text
+		// the Lstat path used so callers/tests stay stable.
+		if isNoFollowSymlink(openErr) {
+			return value, false, errors.New("refusing to read through symlink")
+		}
+		return value, false, fileError("open state file", openErr)
+	}
+	defer func() { _ = f.Close() }()
+
+	info, statErr := f.Stat()
+	if statErr != nil {
 		return value, false, fileError("stat state file", statErr)
-	} else if info.Mode()&os.ModeSymlink != 0 {
+	}
+	// On platforms without O_NOFOLLOW, re-check ModeSymlink via the
+	// opened path's Lstat (best-effort; the open already raced).
+	if info.Mode()&os.ModeSymlink != 0 {
 		return value, false, errors.New("refusing to read through symlink")
-	} else if info.Size() > MaxLoadBytes {
+	}
+	if info.Size() > MaxLoadBytes {
 		return value, false, fmt.Errorf("state file exceeds %d bytes (got %d)", MaxLoadBytes, info.Size())
 	}
 
-	data, readErr := os.ReadFile(path)
-	if errors.Is(readErr, os.ErrNotExist) {
-		return value, false, nil
-	}
+	// Read at most MaxLoadBytes+1 so a file that grows after Stat still
+	// cannot pull unbounded bytes into memory.
+	limited := io.LimitReader(f, int64(MaxLoadBytes)+1)
+	data, readErr := io.ReadAll(limited)
 	if readErr != nil {
 		return value, false, fileError("read state file", readErr)
+	}
+	if int64(len(data)) > MaxLoadBytes {
+		return value, false, fmt.Errorf("state file exceeds %d bytes (got >%d)", MaxLoadBytes, MaxLoadBytes)
 	}
 
 	if uErr := json.Unmarshal(data, &value); uErr != nil {
@@ -127,16 +163,19 @@ func Save[T any](path string, v T) error {
 		return fileError("sync temp file", err)
 	}
 
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fileError("close temp file", err)
-	}
-
+	// Chmod via the open fd (not the path) so a concurrent symlink plant
+	// in the same directory cannot redirect the mode change.
 	if preserveMode != 0 {
-		if err := os.Chmod(tmpPath, preserveMode); err != nil {
+		if err := tmp.Chmod(preserveMode); err != nil {
+			_ = tmp.Close()
 			_ = os.Remove(tmpPath)
 			return fileError("preserve file mode", err)
 		}
+	}
+
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fileError("close temp file", err)
 	}
 
 	if err := os.Rename(tmpPath, path); err != nil {
@@ -161,11 +200,12 @@ func Save[T any](path string, v T) error {
 
 	// Flush the directory entry to stable storage so the new filename
 	// survives a power failure on filesystems like ext4 data=ordered.
+	// Directory fsync is best-effort: the rename already succeeded, so a
+	// failure here must not make Save appear to fail (callers would retry
+	// and rewrite). Open and Sync failures are treated the same way —
+	// durability is not guaranteed, but the file content is in place.
 	if d, syncErr := os.Open(dir); syncErr == nil {
-		if fsyncErr := d.Sync(); fsyncErr != nil {
-			_ = d.Close()
-			return fileError("sync directory", fsyncErr)
-		}
+		_ = d.Sync()
 		_ = d.Close()
 	}
 

@@ -1,7 +1,9 @@
 package contextutil
 
-// MaxCorrelationIDLen is the shared maximum length for request and
-// correlation identifiers accepted from transport metadata.
+// MaxCorrelationIDLen is the single source of truth for the maximum
+// length of request and correlation identifiers accepted from transport
+// metadata. [MaxRequestIDLen] is an alias of this constant so the two
+// names cannot drift.
 const MaxCorrelationIDLen = 128
 
 // IsValidCorrelationToken reports whether id is a safe request/correlation

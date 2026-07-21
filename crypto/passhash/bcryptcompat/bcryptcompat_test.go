@@ -1,6 +1,7 @@
 package bcryptcompat
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -60,4 +61,13 @@ func TestVerify_RejectsMalformedStoredHash(t *testing.T) {
 func TestVerify_RejectsEmptyStoredHash(t *testing.T) {
 	_, err := Verify("hunter2", "", fastParams())
 	assert.ErrorIs(t, err, passhash.ErrMalformed)
+}
+
+func TestVerify_RejectsEmptyPassword(t *testing.T) {
+	// Use a minimal bcrypt hash shape so we exercise the top-level empty
+	// guard rather than the argon2 path.
+	_, err := Verify("", "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", passhash.DefaultParams())
+	if !errors.Is(err, passhash.ErrEmptyPassword) {
+		t.Fatalf("err = %v, want ErrEmptyPassword", err)
+	}
 }

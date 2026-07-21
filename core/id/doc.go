@@ -17,10 +17,10 @@
 //     string.
 //   - [Parse] turns a string back into a 16-byte UUID and returns a
 //     kit validation error on malformed input.
-//   - [Generator] is the package-level swap point. Tests assign a
-//     deterministic function to it (and restore the previous value on
-//     cleanup) so log lines, fixtures, and golden files stay stable
-//     across runs.
+//   - [Generator] + [SetGeneratorForTesting] is the package-level swap
+//     point. Tests install a deterministic function via
+//     SetGeneratorForTesting (and restore nil on cleanup) so log lines,
+//     fixtures, and golden files stay stable across runs.
 //
 // # When to use
 //

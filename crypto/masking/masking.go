@@ -33,15 +33,23 @@ func MaskURL(rawURL string) string {
 }
 
 // MaskString returns the first n runes of s followed by "****".
-// Returns "[REDACTED]" if s has fewer than or equal to n runes, preventing
-// accidental exposure of short secrets.
+// Returns "[REDACTED]" when revealing a prefix would expose half or more
+// of the secret (len(runes) <= 2*n), including the empty string and any
+// case where n is non-positive after clamping. This prevents
+// MaskString("hunter12", 7) → "hunter1****"-style near-total disclosure
+// that a bare "len > n" rule allows.
 // Operates on runes (not bytes) to avoid splitting multi-byte UTF-8 characters.
 func MaskString(s string, n int) string {
 	if n < 0 {
 		n = 0
 	}
 	runes := []rune(s)
-	if len(runes) <= n {
+	// Require at least n runes remain masked after the prefix so a
+	// caller-chosen n cannot leak nearly the entire secret.
+	if n == 0 || len(runes) <= 2*n {
+		if n == 0 && len(runes) > 0 {
+			return strings.Repeat("*", 4)
+		}
 		return "[REDACTED]"
 	}
 	return string(runes[:n]) + strings.Repeat("*", 4)

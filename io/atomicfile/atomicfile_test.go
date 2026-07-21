@@ -84,6 +84,31 @@ func TestLoad_RejectsSymlinkTarget(t *testing.T) {
 	assertErrorDoesNotContainPaths(t, err, link, target, dir)
 }
 
+func TestLoad_RejectsOversizedFile(t *testing.T) {
+	// Cap enforcement must run against the open file descriptor (same
+	// inode as the read), not a TOCTOU-prone path-based Stat.
+	path := filepath.Join(t.TempDir(), "big.json")
+	// Write a file just over MaxLoadBytes without allocating full RAM:
+	// create sparse-ish content via truncated write of MaxLoadBytes+1.
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(int64(MaxLoadBytes) + 1); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	_, _, err = Load[testState](path)
+	if err == nil {
+		t.Fatal("expected oversized state file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected size-cap error, got %v", err)
+	}
+}
+
 func TestLoad_RejectsSymlinkParent(t *testing.T) {
 	dir := t.TempDir()
 	outside := t.TempDir()

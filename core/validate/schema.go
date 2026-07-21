@@ -31,7 +31,12 @@ type builtSchema struct {
 	schema            *jsonschemago.Schema
 	requiredNonEmpty  map[string]struct{}
 	parametricFormats []string
-	fieldOrder        map[string]int
+	// customFormats are bare format= names that are not kit builtins.
+	// schemaForType fail-closes unless each is present in the
+	// RegisterFormat registry (unknown names would otherwise be
+	// silently ignored by santhosh-tekuri's format assertion).
+	customFormats []string
+	fieldOrder    map[string]int
 	// collections maps a schema-side dotted path that describes a JSON
 	// array or object-with-additionalProperties (slice/array or map
 	// fields) to the number of element levels nested directly under it.
@@ -61,6 +66,7 @@ func buildSchema(t reflect.Type) (*builtSchema, error) {
 		visiting:         map[reflect.Type]bool{},
 		requiredNonEmpty: map[string]struct{}{},
 		parametric:       map[string]struct{}{},
+		customFormats:    map[string]struct{}{},
 		fieldOrder:       map[string]int{},
 		collections:      map[string]int{},
 	}
@@ -77,6 +83,9 @@ func buildSchema(t reflect.Type) (*builtSchema, error) {
 	for name := range ctx.parametric {
 		out.parametricFormats = append(out.parametricFormats, name)
 	}
+	for name := range ctx.customFormats {
+		out.customFormats = append(out.customFormats, name)
+	}
 	return out, nil
 }
 
@@ -88,6 +97,7 @@ type buildCtx struct {
 	visiting         map[reflect.Type]bool
 	requiredNonEmpty map[string]struct{}
 	parametric       map[string]struct{}
+	customFormats    map[string]struct{}
 	fieldOrder       map[string]int
 	collections      map[string]int
 }
@@ -103,7 +113,9 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path 
 	}
 	if t == timeType {
 		s := &jsonschemago.Schema{Type: "string", Format: "date-time"}
-		applyStringConstraints(ctx, s, constraintTag)
+		if err := applyStringConstraints(ctx, s, constraintTag); err != nil {
+			return nil, err
+		}
 		return s, nil
 	}
 	if t == rawMessageType {
@@ -113,18 +125,24 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path 
 	switch t.Kind() {
 	case reflect.String:
 		s := &jsonschemago.Schema{Type: "string"}
-		applyStringConstraints(ctx, s, constraintTag)
+		if err := applyStringConstraints(ctx, s, constraintTag); err != nil {
+			return nil, err
+		}
 		return s, nil
 	case reflect.Bool:
 		return &jsonschemago.Schema{Type: "boolean"}, nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		s := &jsonschemago.Schema{Type: "integer"}
-		applyNumericConstraints(ctx, s, constraintTag)
+		if err := applyNumericConstraints(ctx, s, constraintTag); err != nil {
+			return nil, err
+		}
 		return s, nil
 	case reflect.Float32, reflect.Float64:
 		s := &jsonschemago.Schema{Type: "number"}
-		applyNumericConstraints(ctx, s, constraintTag)
+		if err := applyNumericConstraints(ctx, s, constraintTag); err != nil {
+			return nil, err
+		}
 		return s, nil
 	case reflect.Slice, reflect.Array:
 		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
@@ -140,7 +158,9 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path 
 			// here so a constraint on a []byte field is honoured instead
 			// of silently dropped.
 			s := &jsonschemago.Schema{Type: "string"}
-			applyStringConstraints(ctx, s, constraintTag)
+			if err := applyStringConstraints(ctx, s, constraintTag); err != nil {
+				return nil, err
+			}
 			return s, nil
 		}
 		if ctx.visiting[t] {
@@ -161,7 +181,9 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path 
 			return nil, err
 		}
 		s := &jsonschemago.Schema{Type: "array", Items: items}
-		applyArrayConstraints(s, constraintTag)
+		if err := applyArrayConstraints(s, constraintTag); err != nil {
+			return nil, err
+		}
 		return s, nil
 	case reflect.Map:
 		if t.Key().Kind() != reflect.String {
@@ -550,13 +572,26 @@ func descriptionFromJSONSchemaTag(tag string) string {
 	return desc
 }
 
+// knownBuiltinFormats are format names accepted by format= tags without
+// prior RegisterFormat. Unknown names fail schema build (fail-closed).
+var knownBuiltinFormats = map[string]struct{}{
+	"email": {}, "uri": {}, "url": {}, "uuid": {}, "uuid4": {},
+	"ip": {}, "ipv4": {}, "ipv6": {}, "ipv4-or-ipv6": {},
+	"hostname": {}, "alpha": {}, "alphanum": {}, "numeric": {},
+	"cidr": {}, "datetime": {}, "date-time": {},
+}
+
 // applyStringConstraints maps `jsonschema:"..."` rules that apply to
 // a string-typed schema (length, format, pattern). Numeric or
 // array-only rules are silently ignored — applyNumericConstraints /
 // applyArrayConstraints handle those.
-func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) {
+//
+// Malformed numeric constraint values and unknown format names return
+// an error (programming error at schema build) rather than silently
+// dropping the constraint (fail-open).
+func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) error {
 	if tag == "" {
-		return
+		return nil
 	}
 	for _, raw := range splitTagFields(tag) {
 		rule := strings.TrimSpace(raw)
@@ -570,27 +605,50 @@ func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) {
 		}
 		switch key {
 		case "min":
-			if n, ok := atoi(value); ok {
-				s.MinLength = ptrInt(n)
+			n, ok := atoi(value)
+			if !ok {
+				return fmt.Errorf("validate: invalid min constraint %q", value)
 			}
+			s.MinLength = ptrInt(n)
 		case "max":
-			if n, ok := atoi(value); ok {
-				s.MaxLength = ptrInt(n)
+			n, ok := atoi(value)
+			if !ok {
+				return fmt.Errorf("validate: invalid max constraint %q", value)
 			}
+			s.MaxLength = ptrInt(n)
 		case "len":
-			if n, ok := atoi(value); ok {
-				s.MinLength = ptrInt(n)
-				s.MaxLength = ptrInt(n)
+			n, ok := atoi(value)
+			if !ok {
+				return fmt.Errorf("validate: invalid len constraint %q", value)
 			}
+			s.MinLength = ptrInt(n)
+			s.MaxLength = ptrInt(n)
 		case "oneof":
 			s.Enum = parseEnum(s.Type, value)
 		case "pattern":
 			s.Pattern = value
 		case "format":
-			s.Format = value
-			if isParametricFormatName(value) {
-				ctx.parametric[value] = struct{}{}
+			if value == "" {
+				return fmt.Errorf("validate: empty format constraint")
 			}
+			if isParametricFormatName(value) {
+				s.Format = value
+				ctx.parametric[value] = struct{}{}
+				break
+			}
+			// Typo'd parametric prefixes (e.g. starts-wtih:/api) contain
+			// ':' but are not known parametric forms — fail closed.
+			if strings.Contains(value, ":") {
+				return fmt.Errorf("validate: unknown format %q (expected starts-with:/ends-with:/contains:/excludes-all: or a bare registered name)", value)
+			}
+			// Bare name: builtins accepted immediately; custom names are
+			// recorded so schemaForType can fail closed when the name
+			// was never RegisterFormat'd (santhosh-tekuri would otherwise
+			// treat unknown formats as always-valid).
+			if _, ok := knownBuiltinFormats[value]; !ok {
+				ctx.customFormats[value] = struct{}{}
+			}
+			s.Format = value
 		case "email", "url", "uri", "uuid", "uuid4", "ip", "ipv4", "ipv6",
 			"hostname", "alpha", "alphanum", "numeric", "cidr", "datetime":
 			s.Format = canonicalFormatName(key)
@@ -600,14 +658,15 @@ func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) {
 			ctx.parametric[name] = struct{}{}
 		}
 	}
+	return nil
 }
 
 // applyNumericConstraints maps `jsonschema:"..."` rules that apply to
 // integer/number-typed schemas (min/max value, gte/lte, gt/lt,
 // oneof, format).
-func applyNumericConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) {
+func applyNumericConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) error {
 	if tag == "" {
-		return
+		return nil
 	}
 	for _, raw := range splitTagFields(tag) {
 		rule := strings.TrimSpace(raw)
@@ -624,30 +683,50 @@ func applyNumericConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) 
 		}
 		switch key {
 		case "min", "gte":
-			if f, ok := atof(value); ok {
-				s.Minimum = ptrFloat(f)
+			f, ok := atof(value)
+			if !ok {
+				return fmt.Errorf("validate: invalid %s constraint %q", key, value)
 			}
+			s.Minimum = ptrFloat(f)
 		case "max", "lte":
-			if f, ok := atof(value); ok {
-				s.Maximum = ptrFloat(f)
+			f, ok := atof(value)
+			if !ok {
+				return fmt.Errorf("validate: invalid %s constraint %q", key, value)
 			}
+			s.Maximum = ptrFloat(f)
 		case "gt":
-			if f, ok := atof(value); ok {
-				s.ExclusiveMinimum = ptrFloat(f)
+			f, ok := atof(value)
+			if !ok {
+				return fmt.Errorf("validate: invalid gt constraint %q", value)
 			}
+			s.ExclusiveMinimum = ptrFloat(f)
 		case "lt":
-			if f, ok := atof(value); ok {
-				s.ExclusiveMaximum = ptrFloat(f)
+			f, ok := atof(value)
+			if !ok {
+				return fmt.Errorf("validate: invalid lt constraint %q", value)
 			}
+			s.ExclusiveMaximum = ptrFloat(f)
 		case "oneof":
 			s.Enum = parseEnum(s.Type, value)
 		case "format":
-			s.Format = value
-			if isParametricFormatName(value) {
-				ctx.parametric[value] = struct{}{}
+			if value == "" {
+				return fmt.Errorf("validate: empty format constraint")
 			}
+			if isParametricFormatName(value) {
+				s.Format = value
+				ctx.parametric[value] = struct{}{}
+				break
+			}
+			if strings.Contains(value, ":") {
+				return fmt.Errorf("validate: unknown format %q", value)
+			}
+			if _, ok := knownBuiltinFormats[value]; !ok {
+				ctx.customFormats[value] = struct{}{}
+			}
+			s.Format = value
 		}
 	}
+	return nil
 }
 
 // isParametricFormatName reports whether the name follows the kit's
@@ -663,9 +742,9 @@ func isParametricFormatName(name string) bool {
 
 // applyArrayConstraints maps slice/array constraints (length and
 // uniqueness rules) onto the schema.
-func applyArrayConstraints(s *jsonschemago.Schema, tag string) {
+func applyArrayConstraints(s *jsonschemago.Schema, tag string) error {
 	if tag == "" {
-		return
+		return nil
 	}
 	for _, raw := range splitTagFields(tag) {
 		rule := strings.TrimSpace(raw)
@@ -678,22 +757,29 @@ func applyArrayConstraints(s *jsonschemago.Schema, tag string) {
 		}
 		switch key {
 		case "min":
-			if n, ok := atoi(value); ok {
-				s.MinItems = ptrInt(n)
+			n, ok := atoi(value)
+			if !ok {
+				return fmt.Errorf("validate: invalid min constraint %q", value)
 			}
+			s.MinItems = ptrInt(n)
 		case "max":
-			if n, ok := atoi(value); ok {
-				s.MaxItems = ptrInt(n)
+			n, ok := atoi(value)
+			if !ok {
+				return fmt.Errorf("validate: invalid max constraint %q", value)
 			}
+			s.MaxItems = ptrInt(n)
 		case "len":
-			if n, ok := atoi(value); ok {
-				s.MinItems = ptrInt(n)
-				s.MaxItems = ptrInt(n)
+			n, ok := atoi(value)
+			if !ok {
+				return fmt.Errorf("validate: invalid len constraint %q", value)
 			}
+			s.MinItems = ptrInt(n)
+			s.MaxItems = ptrInt(n)
 		case "unique":
 			s.UniqueItems = true
 		}
 	}
+	return nil
 }
 
 // canonicalFormatName maps the v1 validator tag spellings onto the

@@ -1028,31 +1028,35 @@ func TestStruct_ConstraintAfterCommaQuantifier(t *testing.T) {
 // SchemaForType must freeze the format registry just like Struct does,
 // so a RegisterFormat that lands afterwards fails loudly rather than
 // being silently ignored for the already-cached type.
+//
+// Custom format names must be registered before SchemaForType (bare
+// unknown formats fail closed at schema build); the freeze pin is that
+// a *subsequent* RegisterFormat still fails.
 func TestSchemaForType_FreezesFormatRegistry(t *testing.T) {
 	v := New()
+	if err := v.RegisterFormat("mustbefoo", func(val any) error {
+		if s, ok := val.(string); ok && s == "foo" {
+			return nil
+		}
+		return errors.New("must be foo")
+	}); err != nil {
+		t.Fatalf("RegisterFormat: %v", err)
+	}
 	type req struct {
 		Name string `json:"name" jsonschema:"format=mustbefoo"`
 	}
 	if _, err := v.SchemaForType(reflect.TypeOf(req{})); err != nil {
 		t.Fatalf("SchemaForType: %v", err)
 	}
-	// Registry must now be frozen; registering a format must fail.
-	err := v.RegisterFormat("mustbefoo", func(val any) error {
-		if s, ok := val.(string); ok && s == "foo" {
-			return nil
-		}
-		return errors.New("must be foo")
+	// Registry must now be frozen; registering another format must fail.
+	err := v.RegisterFormat("after-freeze-should-fail", func(_ any) error {
+		return nil
 	})
 	if err == nil {
 		t.Fatal("expected RegisterFormat to fail after SchemaForType froze the registry")
 	}
-	// And the previously-cached schema must not silently accept an
-	// invalid value through a format that never got registered.
-	if verr := v.Struct(req{Name: "not-foo"}); verr != nil {
-		// "not-foo" fails only if the format actually ran; before the
-		// fix the cached schema ignored the format and accepted it. We
-		// don't assert the message because the format was never
-		// registered — the point is the registry is frozen, proven above.
-		_ = verr
+	// Registered format still enforces at validation time.
+	if verr := v.Struct(req{Name: "not-foo"}); verr == nil {
+		t.Fatal("expected format=mustbefoo to reject not-foo")
 	}
 }

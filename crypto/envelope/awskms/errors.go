@@ -36,7 +36,7 @@ func (k *KEK) classifyAWSError(operation string, err error) error {
 		return apperror.NewDependencyUnavailable("kms", "kms internal error: "+code, err)
 	case "KeyUnavailableException", "DisabledException", "KMSInvalidStateException", "KeyDeletionException", "KeyDeletedException":
 		return apperror.NewPermanentWithCause("kms key not usable: "+code, err)
-	case "AccessDeniedException", "NotFoundException":
+	case "AccessDeniedException", "NotFoundException", "IncorrectKeyException":
 		return apperror.NewPermanentWithCause("kms access denied or key not found: "+code, err)
 	default:
 		return err

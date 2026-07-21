@@ -330,9 +330,11 @@ func parametricFormat(name string) *jsonschema.Format {
 			},
 		}
 	}
-	// Unknown parametric — accept any value so absence of the format
-	// does not turn into a runtime panic. Callers registering their
-	// own parametric format should call RegisterFormat with the
-	// fully-parametrised name.
-	return &jsonschema.Format{Name: name, Validate: func(any) error { return nil }}
+	// Unknown parametric form: reject every value. Schema build already
+	// requires known parametric prefixes (starts-with:/ends-with:/…);
+	// if one still reaches the compiler without a real validator, fail
+	// closed rather than accepting all inputs.
+	return &jsonschema.Format{Name: name, Validate: func(any) error {
+		return fmt.Errorf("unknown parametric format %q", name)
+	}}
 }

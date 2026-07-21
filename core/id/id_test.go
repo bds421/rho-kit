@@ -138,23 +138,19 @@ func TestParse_WrapsUnderlyingError(t *testing.T) {
 // test-mode swap that consumers should follow when they want stable
 // IDs in log assertions or golden files.
 //
-// This test deliberately does NOT call t.Parallel: Generator is an
-// unsynchronized package-level variable, so reassigning it while a
-// parallel sibling reads it would be a data race (see the Generator
-// doc comment). Keep all Generator-swap tests serial.
+// Prefer serial setup around SetGeneratorForTesting so fixtures stay
+// deterministic even though the underlying storage is race-free.
 func TestGenerator_IsSwappableForDeterministicOutput(t *testing.T) {
 	const fixedID = "01900000-0000-7000-8000-000000000001"
 
-	prev := id.Generator
-	t.Cleanup(func() { id.Generator = prev })
-
-	id.Generator = func() string { return fixedID }
+	id.SetGeneratorForTesting(func() string { return fixedID })
+	t.Cleanup(func() { id.SetGeneratorForTesting(nil) })
 
 	assert.Equal(t, fixedID, id.Generator())
 	assert.Equal(t, fixedID, id.Generator(), "swapped Generator must be stable across calls")
 
-	// The default New continues to emit fresh values regardless of the
-	// Generator swap — Generator is the variable; New is the function.
+	// New always uses the real UUID v7 source so production call sites
+	// keep freshness even if a test swap is active in-process.
 	assert.NotEqual(t, fixedID, id.New(),
 		"swapping Generator must not affect direct New() callers")
 }

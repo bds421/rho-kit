@@ -17,7 +17,7 @@ import (
 // code plus an "ErrorCode" string. Status codes give us the throttle /
 // outage classification; ErrorCodes such as "KeyNotFound" / "Forbidden"
 // give us the permanent-key signal.
-func classifyAzureError(operation string, err error) error {
+func classifyAzureError(_ string, err error) error {
 	if err == nil {
 		return nil
 	}

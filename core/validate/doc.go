@@ -37,9 +37,12 @@
 // error return because (a) it can be called after a Validator has
 // already served traffic — a panic there would be a runtime crash
 // rather than a startup crash; (b) existing callers branch on the
-// error to surface "duplicate format" or "validator already frozen"
-// to ops dashboards. The shape is preserved deliberately; do not file
-// it as an inconsistency.
+// error to surface empty-name / nil-fn / "validator already frozen"
+// through ops dashboards. Re-registration of an existing name
+// overwrites the previous FormatFunc (including built-ins) so tests
+// and startup code can replace a format without a freeze/unfreeze
+// cycle. The error-return shape is preserved deliberately; do not
+// file it as an inconsistency.
 //
 // # Schema walker limitations
 //

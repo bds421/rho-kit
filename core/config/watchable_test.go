@@ -176,3 +176,36 @@ func TestWatchable_PanicInSubscriberDoesNotBlockOthers(t *testing.T) {
 	assert.True(t, firstCalled.Load(), "first subscriber should have been called")
 	assert.True(t, thirdCalled.Load(), "third subscriber should have been called")
 }
+
+func TestWatchable_ZeroValuePanicsClearly(t *testing.T) {
+	const want = "config: Watchable must be constructed with NewWatchable"
+	var w Watchable[string]
+
+	t.Run("Get", func(t *testing.T) {
+		defer func() {
+			r := recover()
+			if r != want {
+				t.Fatalf("Get panic = %v, want %q", r, want)
+			}
+		}()
+		_ = w.Get()
+	})
+	t.Run("Set", func(t *testing.T) {
+		defer func() {
+			r := recover()
+			if r != want {
+				t.Fatalf("Set panic = %v, want %q", r, want)
+			}
+		}()
+		w.Set("x")
+	})
+	t.Run("OnChange", func(t *testing.T) {
+		defer func() {
+			r := recover()
+			if r != want {
+				t.Fatalf("OnChange panic = %v, want %q", r, want)
+			}
+		}()
+		_ = w.OnChange(func(_, _ string) {})
+	})
+}

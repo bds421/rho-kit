@@ -171,7 +171,7 @@ func TestSigningProvider_RejectsSignAfterMaxStale(t *testing.T) {
 
 	fixed := time.Now()
 	clock := func() time.Time { return fixed }
-	p, err := OpenSigningProvider(context.Background(), src, time.Hour,
+	p, err := OpenSigningProvider(context.Background(), src, time.Minute, // <= maxStale
 		WithSigningOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
 		WithSigningMaxStale(time.Minute),
 		withSigningProviderClock(clock),

@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -210,7 +211,7 @@ func TestProvider_FailsClosedWhenKeySetStale(t *testing.T) {
 		func(_ context.Context) ([]ed25519.PublicKey, error) {
 			return []ed25519.PublicKey{pub}, nil
 		},
-		time.Hour,
+		time.Minute, // must be <= maxStale
 		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
 		WithMaxStale(time.Minute),
 		withProviderClock(func() time.Time { return now }),
@@ -392,3 +393,30 @@ func TestProvider_InvalidReceiverDoesNotPanic(t *testing.T) {
 }
 
 func nilContextForTest() context.Context { return nil }
+
+func TestOpenProvider_RejectsIntervalGreaterThanMaxStale(t *testing.T) {
+	src := func(context.Context) ([]ed25519.PublicKey, error) {
+		pub, _, err := ed25519.GenerateKey(nil)
+		return []ed25519.PublicKey{pub}, err
+	}
+	_, err := OpenProvider(context.Background(), src, 2*time.Hour,
+		WithMaxStale(time.Hour),
+		WithVerifyOptions(WithAllowAnyIssuer(), WithAllowAnyAudience()),
+	)
+	if err == nil {
+		t.Fatal("expected error when interval > maxStale")
+	}
+	if !strings.Contains(err.Error(), "maxStale") {
+		t.Fatalf("err = %v, want maxStale mention", err)
+	}
+	// Equality is allowed: maxStale check uses > so a refresh at t=interval
+	// still lands inside the stale window.
+	p, err := OpenProvider(context.Background(), src, time.Hour,
+		WithMaxStale(time.Hour),
+		WithVerifyOptions(WithAllowAnyIssuer(), WithAllowAnyAudience()),
+	)
+	if err != nil {
+		t.Fatalf("interval == maxStale should be accepted: %v", err)
+	}
+	_ = p.Close()
+}
