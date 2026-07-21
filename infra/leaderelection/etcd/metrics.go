@@ -5,7 +5,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/bds421/rho-kit/infra/v2/leaderelection/metricscontract"
+	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
@@ -66,7 +66,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 		}
 		opt(&cfg)
 	}
-	duration, warns := metricscontract.New(cfg.registerer)
+	duration, warns := leaderelection.NewCallbackDrainMetrics(cfg.registerer)
 	m := &Metrics{drainDuration: duration, drainWarns: warns}
 	return m
 }

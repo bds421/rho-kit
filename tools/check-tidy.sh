@@ -33,22 +33,37 @@ fi
 
 fail=0
 stale=()
+errors=()
+
 while IFS= read -r dir; do
   [ -z "$dir" ] && continue
   # go mod tidy -diff prints the unified diff that would be applied
   # to stdout; empty stdout means the module is already tidy-clean.
-  # stderr carries download/progress noise from cold cache and is
-  # discarded so a warm-vs-cold cache doesn't change the gate result.
-  diff_out=$(cd "$dir" && GOWORK=off go mod tidy -diff 2>/dev/null || true)
+  # A non-zero exit with no diff is a real tidy failure and must not be
+  # silently accepted as clean.
+  tidy_err=$(mktemp)
+  tidy_status=0
+  diff_out=$(cd "$dir" && GOWORK=off go mod tidy -diff 2>"$tidy_err") || tidy_status=$?
   if [ -n "$diff_out" ]; then
     stale+=("$dir")
     fail=1
+  elif [ "$tidy_status" -ne 0 ]; then
+    errors+=("$dir: $(tr '\n' ' ' < "$tidy_err")")
+    fail=1
   fi
+  rm -f "$tidy_err"
 done <<< "$modules"
 
 if [ "$fail" -ne 0 ]; then
-  echo "tidy check FAILED — the following modules' go.mod/go.sum are not tidy-clean:" >&2
-  printf '  %s\n' "${stale[@]}" >&2
+  echo "tidy check FAILED" >&2
+  if [ "${#stale[@]}" -gt 0 ]; then
+    echo "The following modules' go.mod/go.sum files are not tidy-clean:" >&2
+    printf '  %s\n' "${stale[@]}" >&2
+  fi
+  if [ "${#errors[@]}" -gt 0 ]; then
+    echo "The following modules could not be tidied:" >&2
+    printf '  %s\n' "${errors[@]}" >&2
+  fi
   echo "" >&2
   echo "Run 'cd <dir> && GOWORK=off go mod tidy' in each, commit the diff, and re-run." >&2
   exit 1
