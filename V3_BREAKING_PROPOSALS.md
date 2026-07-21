@@ -60,42 +60,45 @@ guardrail and closes the confused-deputy path for raw KeySet users.
 
 ## approval.TenantStore: fold ForTenant into Store interface
 
-**Status:** v2 FIXED for kit backends; optional interface remains for third parties.
+**Status:** APPLIED on v2 as intentional break (review-11 MEDIUM).
 
-**v2 change (applied):** `memory` and `postgres` implement
-`ApproveForTenant` / `RejectForTenant` / `MarkExecutedForTenant`.
-`TenantStore` type-asserts `tenantScopedMutator` and prefers the atomic
-path; check-then-act + post-write tripwire remains only for third-party
-`Store` implementations that lack the optional methods. Tests cover the
-atomic preference path.
-
-**v3 proposal:** Promote ForTenant methods onto the core `Store` interface
-(or replace id-only mutations) so every backend is atomic by construction
-and the optional type-assert / fallback path can be deleted.
+**v2 change (applied):** `NewTenantStore` requires `TenantScopedMutator`
+(`ApproveForTenant` / `RejectForTenant` / `MarkExecutedForTenant`) and
+panics if the inner `Store` lacks those methods. Check-then-act fallback
+and post-write tripwire are removed. Kit `memory` and `postgres` backends
+already implement the mutator; third-party Stores must implement it to use
+`TenantStore`.
 
 ## data/idempotency: reject forgeable tenant-scoped raw keys
 
-**Status:** Documented on v2 (bare + tenant-wrapped stores must not share a
-backend keyspace). Cryptographic unforgeability is v3.
+**Status:** APPLIED.
 
 **v2 change (applied):** Package doc on `data/idempotency/tenant` states that
 mounting a bare store and a tenant-wrapped store on the same Redis prefix /
 Postgres table lets a bare-path caller address tenant slots via the
 length-prefixed key format.
 
-**v3 proposal:** Either (a) reject raw keys matching the canonical
-`tenant:<len>:…` shape in `idempotency.ValidateKey` while letting backends
-accept pre-scoped keys through an internal API, or (b) HMAC/hash the
-scoped key so the on-disk form is not forgeable as a raw key.
+**v3 change (applied):**
+- `idempotency.ValidateKey` rejects reserved prefixes `tenant:` and `tns:`
+  (`ErrKeyReservedPrefix`).
+- `idempotency.ValidateStorageKey` accepts ordinary user keys and well-formed
+  opaque tenant storage keys (`tns:` + 64 lowercase hex); backends
+  (memory/redis/pg) validate via `ValidateStorageKey`.
+- Tenant wrapper always stores `tns:` + hex(sha256(coretenant.KeyFor(...))),
+  never the readable length-prefixed form. Storage keys are not human-readable.
+- Tests cover forge attempts against a shared bare+wrapped keyspace.
 
 ## data/queue + data/stream: Consumer.Consume returns error
 
-**Status:** Docs corrected on v2 (no in-tree Consumer implementers;
-redisqueue/redisstream use their own types). Error-return shape is v3.
+**Status:** APPLIED on v2 as intentional break (review-12 LOWs).
 
-**v3 proposal:** Change `Consumer.Consume(ctx, name, handler) error` (nil on
-clean ctx cancel, non-nil on terminal backend failure) in lockstep for queue
-and stream, matching `MemoryStore.Run` lifecycle conventions.
+**v2 change (applied):** `queue.Consumer.Consume` and `stream.Consumer.Consume`
+return `error`. Clean cancel returns `ctx.Err()`; terminal backend failures
+return a wrapped non-context error. `redisstream.Consumer.Consume` and
+`redisqueue.Queue.Process` implement the contract; `StartConsumers` /
+`StartProcessors` and `infra/messaging/redisbackend` propagate permanent
+failures to `shutdownFn`. `infra/redis.RunWithBackoff` returns the last
+error / `ctx.Err()` so lifecycle runners can observe exits.
 
 ## data/lock/redislock: extract redlock shared internals
 
@@ -123,17 +126,15 @@ schema.
 
 ## httpx/websocket: safe heartbeat and write-timeout defaults
 
-**Status:** Documented on v2; non-zero defaults are v3.
+**Status:** APPLIED on v2 as intentional break (review-09 MEDIUM).
 
-**v2 change (applied):** `defaultConfig` / package docs state that
-heartbeat and write timeout are opt-in, and recommend
-`WithPingInterval` + `WithWriteTimeout` (+ `WithMaxConnections`) for
-untrusted clients. `WithReadDrain` now cancels the per-conn context
-promptly on peer disconnect.
-
-**v3 proposal:** Ship non-zero defaults (e.g. 30s write timeout, 30s
-ping interval) with explicit `WithNoWriteTimeout` / `WithNoHeartbeat`
-opt-outs.
+**v2 change (applied):** `defaultConfig` enables fail-safe defaults —
+`writeTimeout: 30s` (`DefaultWriteTimeout`), `pingInterval: 30s`
+(`DefaultPingInterval`), `pongTimeout: 10s` (`DefaultPongTimeout`).
+Explicit opt-outs: `WithNoWriteTimeout()` and `WithNoHeartbeat()`.
+`WithWriteTimeout` requires a positive duration (zero only via
+`WithNoWriteTimeout`); `WithPingInterval(0)` still disables heartbeat
+and clears pong timeout.
 
 ## httpx/websocket: shutdown-linked connection context
 
@@ -147,17 +148,23 @@ so `http.Server` BaseContext cancellation propagates without opting into Hub.
 
 ## infra/storage: implement or park optional capability interfaces
 
-**Status:** OPEN on v2 (Tagger/Versioner/MultipartUploader/BatchDeleter
-exported without backend implementations; opaque decorators strip them).
+**Status:** APPLIED.
 
-**v3 proposal:** Either implement the surfaces in s3backend (and forward
-through retry/circuitbreaker/encryption decorators) or unexport/park them
-until a backend needs them, with a compile-time guard that every optional
-interface is forwarded by each decorator.
+**v3 change (applied):**
+- Removed dead public surfaces with no production backends: `Tagger`,
+  `Versioner`, `BatchDeleter` and their `As*` helpers (`tagging.go` /
+  `version.go` deleted; batch path simplified).
+- `DeleteMany` is always sequential via `Storage.Delete` so hooks and
+  decorators always see per-key deletes (no BatchDeleter bypass).
+- Kept `MultipartUploader` / `AsMultipartUploader` (and lister sibling) —
+  s3backend implements them and retry/circuitbreaker already forward them.
+- Hooks / retry / circuitbreaker combinator tables shrunk to four shared
+  forwarder types + thin embedding (review-18 LOWs); method bodies live in
+  one place per decorator.
 
 ## sftpbackend: reference-counted reconnect leases
 
-**Status:** Partial v2 fix applied; ref-counted cleanup remains v3.
+**Status:** APPLIED.
 
 **v2 change (applied):**
 - `connect` dials SSH outside `b.mu` under a dedicated `dialMu` with
@@ -166,9 +173,18 @@ interface is forwarded by each decorator.
 - `List` with `MaxKeys > 0` retains only the MaxKeys smallest keys after
   `StartAfter` via a max-heap (unbounded when MaxKeys is 0).
 
-**v3 proposal:** Reference-count client leases (`getClient` returns a
-release func; reconnect cleanup waits for the count to drain) instead of
-the fixed 5s grace / generation-bump early close under flapping.
+**v3 change (applied):**
+- `clientSession` reference-counts leases; `getClient` returns
+  `(Client, release, error)`. Put/Delete/Exists/List `defer release()`;
+  Get holds the lease until the body `ReadCloser` is closed
+  (`leasedReadCloser`).
+- Reconnect installs a new session immediately and retires the old one;
+  old SSH/SFTP FDs close only when inflight leases drain (no force-close
+  under transfers). Drain grace (30s) logs then continues waiting.
+- `Backend.Close` retires the live session, waits up to drain grace, then
+  force-closes so a leaked Get body cannot hang shutdown forever.
+- Tests: `TestClientLease_HeldAcrossReconnect`,
+  `TestClientLease_GetHoldsUntilBodyClose`.
 
 ## redisstream: separate shutdown grace from handlerTimeout
 

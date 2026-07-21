@@ -18,16 +18,16 @@
 - `Handle(opts...)` — returns `http.HandlerFunc`. Compose with any kit middleware exactly like any other handler.
 - `WithHandler(fn)` — REQUIRED. Application callback signature `func(ctx Context, conn *Conn) error`.
 - `WithMaxConnections(n)` — caps concurrent connections per handler. Beyond cap returns `503` + `Retry-After: 1`.
-- `WithPingInterval(d)` + `WithPongTimeout(d)` — idle keepalive heartbeat. Without these, half-open connections survive until the kernel TCP keepalive (~2h).
-- `WithWriteTimeout(d)` — per-write deadline. Slow consumer DoS lever — on deadline expiry the connection is dropped (WebSocket framing cannot resume a partial frame).
+- `WithPingInterval(d)` + `WithPongTimeout(d)` — idle keepalive heartbeat. Defaults: 30s ping / 10s pong. Opt out with `WithNoHeartbeat()`.
+- `WithWriteTimeout(d)` — per-write deadline (default 30s). Slow consumer DoS lever — on deadline expiry the connection is dropped. Opt out with `WithNoWriteTimeout()`.
 - `WithMaxMessageBytes(n)` — caps inbound message size. Default 1 MiB.
 - `WithAnyOriginUnsafe()` — disables same-origin check. The "Unsafe" suffix is deliberate; only safe when every handler independently authenticates the principal.
 
 ## Common mistakes
 
-- **No `WithPingInterval`** — production WebSocket services WILL accumulate half-open connections. RFC 6455 has no mandatory heartbeat; browsers don't ping; `coder/websocket` doesn't auto-ping. **Set this for any service handling more than 100 concurrent connections.**
+- **`WithNoHeartbeat` in production without another dead-peer path** — production WebSocket services WILL accumulate half-open connections if the default heartbeat is disabled without a substitute. RFC 6455 has no mandatory heartbeat; browsers don't ping.
 - **No `WithMaxConnections`** — unbounded concurrency → OOM. Default to a per-handler cap based on your service's connection budget.
-- **No `WithWriteTimeout`** — a slow consumer wedges a goroutine for minutes (TCP backpressure). Set this with a value comfortably larger than `largest_message / slowest_realistic_bandwidth`.
+- **`WithNoWriteTimeout` on untrusted peers** — a slow consumer wedges a goroutine for minutes (TCP backpressure). Keep the default 30s (or set a value comfortably larger than `largest_message / slowest_realistic_bandwidth`).
 - **`WithAnyOriginUnsafe()` without bearer-token auth in the first message** — opens the service to cross-site WebSocket hijacking (CSWSH). Either use explicit `WithOriginPatterns(allowlist)` OR independently auth the principal post-upgrade.
 - **`WithCompression()` in high-fanout services** — the default is `NoContextTakeover` (bounded per-conn memory). Avoid `WithCompressionContextTakeover()` unless workload measurements show the memory cost (~32 KiB per direction per conn) is acceptable.
 - **`Conn.Close` without `defer`** — handler exits early on an error path, connection orphan until GC. `Close` is idempotent so `defer conn.Close(...)` is always safe.
@@ -41,8 +41,7 @@ wsHandler := websocket.Handle(
     websocket.WithLogger(logger),
     websocket.WithMetrics(reg),
     websocket.WithMaxConnections(10_000),
-    websocket.WithPingInterval(30 * time.Second),
-    websocket.WithWriteTimeout(10 * time.Second),
+    // write timeout + heartbeat are on by default (30s / 30s+10s pong)
 )
 rl := ratelimit.NewLimiter(100, time.Minute)
 mux.Handle("/ws", auth.JWT(provider)(ratelimit.Middleware(rl)(wsHandler)))

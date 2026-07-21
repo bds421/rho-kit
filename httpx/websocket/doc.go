@@ -82,15 +82,17 @@
 //   - Every read/write error wraps the underlying coder/websocket error
 //     with [redact.WrapError] so [errors.Is]/[errors.As] still works
 //     but [error.Error]() never embeds the inner text.
-//   - [WithWriteTimeout] bounds the time a single write may block on a
-//     slow peer. When the deadline expires the underlying connection
-//     is closed because the WebSocket framing protocol cannot resume a
-//     partial frame; this is the kit's "drop the slow consumer" knob
-//     for outbound DoS mitigation.
-//   - [WithPingInterval] enables an idle keepalive heartbeat. RFC 6455
-//     specifies no mandatory heartbeat and browser clients do not
-//     ping, so without this option half-open connections can survive
-//     until the kernel TCP keepalive (often 2 h) reclaims them.
+//   - Write timeout defaults to [DefaultWriteTimeout] (30s) so a slow
+//     peer cannot pin a write goroutine indefinitely. Override with
+//     [WithWriteTimeout] or opt out via [WithNoWriteTimeout]. When the
+//     deadline expires the underlying connection is closed because the
+//     WebSocket framing protocol cannot resume a partial frame.
+//   - Idle heartbeat defaults to [DefaultPingInterval] (30s) with
+//     [DefaultPongTimeout] (10s). RFC 6455 specifies no mandatory
+//     heartbeat and browser clients do not ping; without a heartbeat
+//     half-open connections can survive until the kernel TCP keepalive
+//     (often 2 h) reclaims them. Override with [WithPingInterval] /
+//     [WithPongTimeout] or opt out via [WithNoHeartbeat].
 //   - [WithMaxConnections] caps in-flight connections to bound memory
 //     and file-descriptor pressure. Rejections respond with
 //     `503 Service Unavailable` + `Retry-After: 1` before any
@@ -103,8 +105,8 @@
 // Protocols`) is fully bounded by the surrounding [http.Server]
 // timeouts — when the kit's [httpx.NewServer] is used these are set
 // to `ReadHeaderTimeout: 5s` and `WriteTimeout: 35s` by default.
-// After Accept hijacks the connection, [WithPingInterval] and
-// [WithWriteTimeout] take over.
+// After Accept hijacks the connection, the default (or configured)
+// heartbeat and write timeout take over.
 //
 // If you wire a raw [http.Server] yourself, set `ReadHeaderTimeout`
 // and `WriteTimeout` explicitly — without them slow-loris-style

@@ -61,14 +61,28 @@ type config struct {
 	originPatterns []string
 }
 
-// defaultConfig leaves heartbeat and write timeout disabled. Callers
-// serving untrusted clients SHOULD set [WithPingInterval] and
-// [WithWriteTimeout] (and usually [WithMaxConnections]) so a peer that
-// stops reading cannot pin a goroutine/fd indefinitely. Safe non-zero
-// defaults are a v3 candidate (see V3_BREAKING_PROPOSALS.md).
+// DefaultWriteTimeout is the fail-safe per-write deadline applied when
+// [WithWriteTimeout] / [WithNoWriteTimeout] are omitted.
+const DefaultWriteTimeout = 30 * time.Second
+
+// DefaultPingInterval is the fail-safe idle keepalive interval applied
+// when [WithPingInterval] / [WithNoHeartbeat] are omitted.
+const DefaultPingInterval = 30 * time.Second
+
+// DefaultPongTimeout is the fail-safe pong wait applied alongside
+// [DefaultPingInterval] when [WithPongTimeout] is omitted.
+const DefaultPongTimeout = 10 * time.Second
+
+// defaultConfig enables write timeout and idle heartbeat so a peer that
+// stops reading cannot pin a goroutine/fd indefinitely. Callers that need
+// the historical unbounded behaviour must opt out explicitly with
+// [WithNoWriteTimeout] and/or [WithNoHeartbeat].
 func defaultConfig() config {
 	return config{
 		maxMessageSize: DefaultMaxMessageBytes,
+		writeTimeout:   DefaultWriteTimeout,
+		pingInterval:   DefaultPingInterval,
+		pongTimeout:    DefaultPongTimeout,
 		logger:         slog.Default(),
 	}
 }
@@ -150,10 +164,15 @@ func WithMaxConnections(n int) Option {
 	return func(c *config) { c.maxConnections = int64(n) }
 }
 
-// WithPingInterval enables an idle-keepalive heartbeat. Once per
+// WithPingInterval sets the idle-keepalive heartbeat interval. Once per
 // interval the handler sends a WebSocket Ping control frame; if the
 // peer does not respond with a Pong within [WithPongTimeout] the
 // connection is closed with [StatusPolicyViolation].
+//
+// The default is [DefaultPingInterval] (30s). Prefer [WithNoHeartbeat]
+// to disable heartbeats entirely; pass zero here only when you need a
+// one-liner disable (zero also clears any configured pong timeout so
+// [Handle] does not panic on the "pong without ping" guard).
 //
 // WebSocket has no mandatory heartbeat — browsers do not ping, and
 // idle TCP sockets survive until the kernel keepalive (often 2 h)
@@ -171,13 +190,32 @@ func WithMaxConnections(n int) Option {
 // [StatusPolicyViolation]; pair [WithReadDrain] with this option for
 // push-only handlers.
 //
-// Pass zero (the default) to disable heartbeats. Non-positive values
-// other than zero panic so misconfiguration surfaces at startup.
+// Non-negative only: negative values panic so misconfiguration
+// surfaces at startup.
 func WithPingInterval(d time.Duration) Option {
 	if d < 0 {
 		panic("httpx/websocket: WithPingInterval requires a non-negative duration (zero disables)")
 	}
-	return func(c *config) { c.pingInterval = d }
+	return func(c *config) {
+		c.pingInterval = d
+		if d == 0 {
+			// Disable must not leave a default pong timeout set: Handle
+			// panics when pongTimeout > 0 && pingInterval <= 0.
+			c.pongTimeout = 0
+		}
+	}
+}
+
+// WithNoHeartbeat disables the idle keepalive heartbeat that
+// [defaultConfig] enables. Prefer this over [WithPingInterval](0) for
+// readability at call sites that intentionally opt out of dead-peer
+// detection (e.g. tests, or fully trusted mesh peers with their own
+// keepalive).
+func WithNoHeartbeat() Option {
+	return func(c *config) {
+		c.pingInterval = 0
+		c.pongTimeout = 0
+	}
 }
 
 // WithPongTimeout bounds how long the heartbeat waits for the peer's
@@ -229,8 +267,9 @@ func WithReadDrain() Option {
 }
 
 // WithWriteTimeout bounds the duration of a single [Conn.WriteMessage]
-// or [Conn.WriteJSON] call. When zero (the default) writes inherit the
-// per-connection context with no per-call deadline.
+// or [Conn.WriteJSON] call. The default is [DefaultWriteTimeout] (30s).
+// Use [WithNoWriteTimeout] to opt out of the per-write deadline (writes
+// then inherit only the per-connection context).
 //
 // The WebSocket framing protocol cannot resume a partially-sent
 // message, so when the deadline expires the underlying
@@ -240,12 +279,20 @@ func WithReadDrain() Option {
 // expected payload divided by the slowest realistic peer bandwidth
 // (e.g. 5–30 s for human-interactive UIs over 4G).
 //
-// Non-positive values panic so misconfiguration surfaces at startup.
+// Positive values only; zero/negative panic so misconfiguration
+// surfaces at startup. Disable only via [WithNoWriteTimeout].
 func WithWriteTimeout(d time.Duration) Option {
 	if d <= 0 {
-		panic("httpx/websocket: WithWriteTimeout requires a positive duration (omit the option for no timeout)")
+		panic("httpx/websocket: WithWriteTimeout requires a positive duration (use WithNoWriteTimeout to disable)")
 	}
 	return func(c *config) { c.writeTimeout = d }
+}
+
+// WithNoWriteTimeout disables the default per-write deadline so writes
+// inherit only the per-connection context. Prefer this over trying to
+// pass zero to [WithWriteTimeout] (which panics).
+func WithNoWriteTimeout() Option {
+	return func(c *config) { c.writeTimeout = 0 }
 }
 
 // WithMetrics registers the kit metric set on reg.

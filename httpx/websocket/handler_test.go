@@ -287,12 +287,15 @@ func TestHandle_PanicsOnNilMetricsReg(t *testing.T) {
 
 // TestHandle_PanicsOnPongTimeoutWithoutPingInterval guards the fail-fast
 // contract: a pong timeout is inert without a heartbeat, so configuring
-// it without WithPingInterval must surface as a startup panic rather
-// than being silently dropped.
+// it after [WithNoHeartbeat] (or any path that leaves pingInterval at
+// zero) must surface as a startup panic rather than being silently
+// dropped. Defaults enable both ping and pong, so the panic only fires
+// when the heartbeat is explicitly disabled.
 func TestHandle_PanicsOnPongTimeoutWithoutPingInterval(t *testing.T) {
 	assert.Panics(t, func() {
 		websocket.Handle(
 			websocket.WithHandler(func(context.Context, *websocket.Conn) error { return nil }),
+			websocket.WithNoHeartbeat(),
 			websocket.WithPongTimeout(5*time.Second),
 		)
 	})

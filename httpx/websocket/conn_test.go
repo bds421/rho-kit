@@ -444,13 +444,22 @@ func TestConn_WriteTimeout_FiresOnSlowConsumer(t *testing.T) {
 	}
 }
 
-// TestConn_WriteTimeout_DefaultsToUnbounded confirms that omitting
-// WithWriteTimeout leaves writes uncapped (the conn-scoped context is
+// TestConn_WriteTimeout_DefaultIsBounded confirms the fail-safe default
+// write timeout is non-zero (review-09). Unbounded writes require
+// [WithNoWriteTimeout].
+func TestConn_WriteTimeout_DefaultIsBounded(t *testing.T) {
+	assert.Equal(t, 30*time.Second, websocket.DefaultWriteTimeout)
+	assert.Equal(t, 30*time.Second, websocket.DefaultPingInterval)
+	assert.Equal(t, 10*time.Second, websocket.DefaultPongTimeout)
+}
+
+// TestConn_WriteTimeout_NoWriteTimeoutDisables confirms that
+// WithNoWriteTimeout leaves writes uncapped (the conn-scoped context is
 // the only deadline). The check is necessarily indirect: with a small
 // payload and a responsive client the write completes quickly, which
 // would also happen if a bogus 1ms default were applied — so we time
 // the write with a margin that a 1ms timeout would always trip.
-func TestConn_WriteTimeout_DefaultsToUnbounded(t *testing.T) {
+func TestConn_WriteTimeout_NoWriteTimeoutDisables(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	done := make(chan error, 1)
 
@@ -465,6 +474,8 @@ func TestConn_WriteTimeout_DefaultsToUnbounded(t *testing.T) {
 			return err
 		}),
 		websocket.WithMetrics(reg),
+		websocket.WithNoWriteTimeout(),
+		websocket.WithNoHeartbeat(), // avoid idle ping during the write path
 	)
 
 	srv := httptest.NewServer(handler)
@@ -486,6 +497,16 @@ func TestConn_WriteTimeout_DefaultsToUnbounded(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler did not finish")
 	}
+}
+
+func TestWithNoWriteTimeout_AndNoHeartbeat_DoNotPanic(t *testing.T) {
+	assert.NotPanics(t, func() {
+		_ = websocket.Handle(
+			websocket.WithHandler(func(context.Context, *websocket.Conn) error { return nil }),
+			websocket.WithNoWriteTimeout(),
+			websocket.WithNoHeartbeat(),
+		)
+	})
 }
 
 // Sanity check that read errors round-trip through redact.WrapError

@@ -43,13 +43,12 @@ func buildConfig(opts ...Option) config {
 	if cfg.handler == nil {
 		panic("httpx/websocket: Handle requires WithHandler")
 	}
-	// WithPongTimeout only takes effect when a heartbeat is running, and
-	// the heartbeat is spawned solely when WithPingInterval is set.
-	// Configuring a pong timeout without a ping interval is therefore an
-	// inert, silently-dropped setting — exactly the misconfiguration the
-	// package's other options fail fast on, so reject it at startup.
+	// WithPongTimeout only takes effect when a heartbeat is running
+	// (pingInterval > 0; default is DefaultPingInterval unless
+	// WithNoHeartbeat / WithPingInterval(0)). Configuring a pong timeout
+	// without a heartbeat is therefore inert — reject it at startup.
 	if cfg.pongTimeout > 0 && cfg.pingInterval <= 0 {
-		panic("httpx/websocket: WithPongTimeout requires WithPingInterval (the pong timeout is inert without a heartbeat)")
+		panic("httpx/websocket: WithPongTimeout requires a non-zero ping interval (the pong timeout is inert without a heartbeat)")
 	}
 	// WithReadDrain is independent of the heartbeat, but historically
 	// operators paired them; keep the option always honoured (no silent drop).
@@ -161,9 +160,9 @@ func handleWithHooks(opts []Option, onOpen, onClose func(*Conn)) http.HandlerFun
 				conn.cancelCtx()
 			}()
 		}
-		// Idle keepalive — spawned only when WithPingInterval is set.
-		// Closes the connection if the peer stops responding to pings,
-		// which causes in-flight reads/writes to unblock with an error.
+		// Idle keepalive — default on (DefaultPingInterval); opt out via
+		// WithNoHeartbeat. Closes the connection if the peer stops
+		// responding to pings, unblocking in-flight reads/writes.
 		if pingInterval > 0 {
 			go runHeartbeat(ctx, conn, pingInterval, pongTimeout, logger, metrics)
 		}
