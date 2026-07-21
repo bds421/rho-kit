@@ -9,18 +9,14 @@ on:
     branches: [main]
     paths:
       - "**/go.mod"
-      - "**/go.sum"
       - "go.work"
-      - "go.work.sum"
       - "tools/check-licenses.sh"
       - ".github/workflows/supply-chain.yml"
   push:
     branches: [main]
     paths:
       - "**/go.mod"
-      - "**/go.sum"
       - "go.work"
-      - "go.work.sum"
       - "tools/check-licenses.sh"
       - ".github/workflows/supply-chain.yml"
   schedule:
