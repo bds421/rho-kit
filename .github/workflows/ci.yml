@@ -28,6 +28,10 @@ env:
   GOWORK: ${{ github.workspace }}/go.work
   GOPRIVATE: github.com/bds421/*
   GONOSUMDB: github.com/bds421/*
+  # PR hygiene checks inspect only files/modules changed from the protected,
+  # already-green base. Pushes to main leave this empty and retain the full
+  # authoritative repository scan.
+  CI_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
 
 jobs:
   ci:

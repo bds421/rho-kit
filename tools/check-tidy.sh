@@ -31,6 +31,51 @@ if [ -n "$extra_modules" ]; then
   modules=$(printf '%s\n%s\n' "$modules" "$extra_modules" | sort -u)
 fi
 
+scope="all modules"
+
+# Tidy state is module-local: only a module whose Go sources or module files
+# changed can acquire a stale require/go.sum entry. A protected main build
+# still leaves CI_BASE_REF unset and checks every module. PRs pass the base SHA
+# and check only touched modules; changes to go.work or this guard force the
+# full scan because they can alter module discovery or the check itself.
+if [ -n "${CI_BASE_REF:-}" ]; then
+  if ! git cat-file -e "${CI_BASE_REF}^{commit}" 2>/dev/null; then
+    echo "tidy check FAILED — CI_BASE_REF is not a commit: ${CI_BASE_REF}" >&2
+    exit 1
+  fi
+
+  changed=$(git diff --name-only --diff-filter=ACMRD "${CI_BASE_REF}...HEAD")
+  if printf '%s\n' "$changed" | grep -Eq '^(go\.work|tools/check-tidy\.sh)$'; then
+    scope="all modules (global tidy input changed)"
+  else
+    selected=""
+    # Longest paths first so a file in data/cache/rediscache maps to that
+    # nested module, not the parent data module.
+    sorted_modules=$(printf '%s\n' "$modules" | awk '{ print length($0), $0 }' | sort -rn | cut -d' ' -f2-)
+    while IFS= read -r path; do
+      case "$path" in
+        *.go|*/go.mod|*/go.sum)
+          while IFS= read -r dir; do
+            case "$path" in
+              "$dir"/*)
+                selected=$(printf '%s\n%s\n' "$selected" "$dir" | sed '/^$/d' | sort -u)
+                break
+                ;;
+            esac
+          done <<< "$sorted_modules"
+          ;;
+      esac
+    done <<< "$changed"
+    modules="$selected"
+    scope="modules changed since ${CI_BASE_REF}"
+  fi
+fi
+
+if [ -z "$modules" ]; then
+  echo "tidy check OK (0 modules required; ${scope})"
+  exit 0
+fi
+
 fail=0
 stale=()
 errors=()
@@ -69,4 +114,4 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-echo "tidy check OK ($(echo "$modules" | wc -l | tr -d ' ') workspace modules clean)"
+echo "tidy check OK ($(echo "$modules" | wc -l | tr -d ' ') modules clean; ${scope})"
