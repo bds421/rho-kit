@@ -78,6 +78,12 @@ var (
 //
 // Internally uses [encrypt.NewGCM], [encrypt.EncryptBytes], and [encrypt.DecryptBytes]
 // from kit/encrypt for the cryptographic operations.
+// DefaultMaxOpenPlaintextReaders is the default cap on concurrent open
+// plaintext readers retained after decrypt. Independent of the decrypt-work
+// semaphore so a leaked ReadCloser cannot pin unbounded MaxEncryptableSize
+// buffers while still allowing decrypt concurrency to release promptly.
+const DefaultMaxOpenPlaintextReaders = 64
+
 type EncryptedStorage struct {
 	backend storage.Storage
 	keys    KeyProvider
@@ -96,9 +102,16 @@ type EncryptedStorage struct {
 	// is materialised into the returned reader — not held until Close —
 	// so a leaked ReadCloser cannot permanently starve every subsequent
 	// encrypted download (review-18). Callers must still Close to zero the
-	// plaintext buffer. Sized to runtime.NumCPU() by default; override
-	// with [WithMaxConcurrentDecryptions].
+	// plaintext buffer and to release the open-plaintext budget. Sized to
+	// runtime.NumCPU() by default; override with [WithMaxConcurrentDecryptions].
 	getSem chan struct{}
+
+	// openSem caps concurrent open plaintext readers after successful
+	// decrypt. Acquired once plaintext is materialised and released on
+	// Close (and on error paths before return). Default:
+	// [DefaultMaxOpenPlaintextReaders]; override with
+	// [WithMaxOpenPlaintextReaders].
+	openSem chan struct{}
 }
 
 // Option configures an EncryptedStorage.
@@ -150,6 +163,33 @@ func WithoutMaxConcurrentDecryptions() Option {
 	}
 }
 
+// WithMaxOpenPlaintextReaders caps how many decrypted plaintext buffers may
+// be retained concurrently by open Get readers. Default:
+// [DefaultMaxOpenPlaintextReaders]. The value must be positive; use
+// [WithoutMaxOpenPlaintextReaders] only when an external admission
+// controller already bounds how many decrypted bodies a process may hold.
+//
+// The slot is acquired after successful decrypt and released in the
+// reader's Close. Holding many unclosed readers therefore blocks further
+// Gets (ctx cancellation during the wait returns ctx.Err()).
+func WithMaxOpenPlaintextReaders(n int) Option {
+	if n <= 0 {
+		panic("storage/encryption: WithMaxOpenPlaintextReaders requires n > 0")
+	}
+	return func(e *EncryptedStorage) {
+		e.openSem = make(chan struct{}, n)
+	}
+}
+
+// WithoutMaxOpenPlaintextReaders disables the retained-plaintext budget.
+// Decrypt concurrency is still gated by [WithMaxConcurrentDecryptions]
+// unless that is also disabled.
+func WithoutMaxOpenPlaintextReaders() Option {
+	return func(e *EncryptedStorage) {
+		e.openSem = nil
+	}
+}
+
 // Unwrap returns the underlying storage backend.
 func (e *EncryptedStorage) Unwrap() storage.Storage { return e.backend }
 
@@ -197,6 +237,7 @@ func New(backend storage.Storage, keys KeyProvider, opts ...Option) storage.Stor
 		keys:    keys,
 		putSem:  make(chan struct{}, runtime.NumCPU()),
 		getSem:  make(chan struct{}, runtime.NumCPU()),
+		openSem: make(chan struct{}, DefaultMaxOpenPlaintextReaders),
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -328,20 +369,19 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 //
 // Holds up to ~MaxEncryptableSize of ciphertext plus a full plaintext buffer
 // while decrypting; the plaintext buffer is retained by the returned reader
-// until Close. Concurrent Get calls are bounded by the semaphore set in [New]
-// (default runtime.NumCPU()) — a public download endpoint without this cap can
-// exhaust memory under fan-out.
+// until Close. Two independent budgets apply:
 //
-// Semaphore lifetime: the slot is acquired before the backend read/decrypt
-// and transferred to the returned reader, which releases it only in Close
-// (error paths before return release immediately). This intentionally bounds
-// peak retained plaintext memory, not just concurrent decrypt work: the full
-// buffer is already materialised before the reader is handed out, so releasing
-// at decrypt-complete would let unbounded readers pin MaxEncryptableSize each.
-// Callers MUST Close the ReadCloser (prefer defer) — a leaked reader
-// permanently consumes one slot and, after NumCPU leaks, starves every
-// subsequent encrypted Get until process restart. ctx cancellation during
-// the acquire wait returns ctx.Err().
+//   - Decrypt work ([WithMaxConcurrentDecryptions], default runtime.NumCPU())
+//     is acquired for the ciphertext read + AES-GCM window and released once
+//     plaintext is materialised, so a leaked ReadCloser cannot starve decrypts.
+//   - Retained plaintext ([WithMaxOpenPlaintextReaders], default
+//     [DefaultMaxOpenPlaintextReaders]) is acquired after successful decrypt
+//     and released on Close, so a leaky caller cannot pin unbounded plaintext
+//     buffers.
+//
+// Callers MUST Close the ReadCloser (prefer defer) — a leaked reader holds
+// one open-plaintext slot until process restart (or Close). ctx cancellation
+// during either acquire wait returns ctx.Err().
 func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
 	if ctx == nil {
 		// Normalise a nil context up front so the semaphore acquire and
@@ -356,21 +396,21 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	// concurrent decrypt work is bounded. The slot is released when decrypt
 	// finishes (success or error), not when the caller Closes the reader —
 	// a leaked ReadCloser must not permanently starve the download path.
-	var release func()
+	var releaseDecrypt func()
 	if e.getSem != nil {
 		select {
 		case e.getSem <- struct{}{}:
-			release = func() { <-e.getSem }
+			releaseDecrypt = func() { <-e.getSem }
 		case <-ctx.Done():
 			return nil, storage.ObjectMeta{}, redact.WrapError("encryption", ctx.Err())
 		}
 	}
-	// releaseOnError frees the slot on any early return; on success we
-	// release immediately after materialising plaintext (below).
-	releaseOnError := release
+	// releaseDecryptOnError frees the decrypt slot on any early return; on
+	// success we release immediately after materialising plaintext (below).
+	releaseDecryptOnError := releaseDecrypt
 	defer func() {
-		if releaseOnError != nil {
-			releaseOnError()
+		if releaseDecryptOnError != nil {
+			releaseDecryptOnError()
 		}
 	}()
 
@@ -419,26 +459,53 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	}
 
 	meta.Size = int64(len(plaintext))
-	// Decrypt complete: free the concurrency slot now. Plaintext zeroing
-	// still happens on Close (hygiene), but Close discipline must not gate
-	// admission of subsequent Gets (review-18).
-	if releaseOnError != nil {
-		releaseOnError()
-		releaseOnError = nil
+	// Decrypt complete: free the decrypt-work slot now so leaked readers
+	// cannot starve concurrent AES-GCM work (review-18).
+	if releaseDecryptOnError != nil {
+		releaseDecryptOnError()
+		releaseDecryptOnError = nil
 	}
-	return &cleaningReader{Reader: bytes.NewReader(plaintext), buf: plaintext}, meta, nil
+
+	// Acquire the retained-plaintext budget before handing the buffer out.
+	// Released on Close; error paths free it immediately.
+	var releaseOpen func()
+	if e.openSem != nil {
+		select {
+		case e.openSem <- struct{}{}:
+			releaseOpen = func() { <-e.openSem }
+		case <-ctx.Done():
+			zeroBytes(plaintext)
+			return nil, storage.ObjectMeta{}, redact.WrapError("encryption", ctx.Err())
+		}
+	}
+	return &cleaningReader{
+		Reader:  bytes.NewReader(plaintext),
+		buf:     plaintext,
+		release: releaseOpen,
+	}, meta, nil
 }
 
 // cleaningReader wraps a bytes.Reader and zeros the underlying plaintext
 // buffer when Close is called, preventing decrypted data from lingering
-// in memory after the caller is done reading.
+// in memory after the caller is done reading. Close also releases the
+// retained-plaintext budget slot.
 type cleaningReader struct {
 	*bytes.Reader
-	buf []byte
+	buf     []byte
+	release func()
+	closed  bool
 }
 
 func (c *cleaningReader) Close() error {
+	if c.closed {
+		return nil
+	}
+	c.closed = true
 	zeroBytes(c.buf)
+	if c.release != nil {
+		c.release()
+		c.release = nil
+	}
 	return nil
 }
 
