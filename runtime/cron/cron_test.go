@@ -25,14 +25,8 @@ func TestScheduler_JobExecution(t *testing.T) {
 		return nil
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = s.Start(ctx) }()
-
-	// Wait for at least one execution.
-	require.Eventually(t, func() bool { return called.Load() >= 1 }, 2*time.Second, 50*time.Millisecond)
-
-	cancel()
-	_ = s.Stop(context.Background())
+	runFirstJob(t, s)
+	require.Equal(t, int32(1), called.Load())
 
 	// Verify metrics were recorded.
 	families, err := reg.Gather()
@@ -49,16 +43,13 @@ func TestScheduler_JobError(t *testing.T) {
 		return errors.New("boom")
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = s.Start(ctx) }()
-
-	require.Eventually(t, func() bool {
-		families, _ := reg.Gather()
-		return metricValue(families, "cron_job_runs_total", map[string]string{"name": "fail-job", "status": "error"}) >= 1
-	}, 2*time.Second, 50*time.Millisecond)
-
-	cancel()
-	_ = s.Stop(context.Background())
+	runFirstJob(t, s)
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	require.GreaterOrEqual(t,
+		metricValue(families, "cron_job_runs_total", map[string]string{"name": "fail-job", "status": "error"}),
+		float64(1),
+	)
 }
 
 func TestScheduler_PanicRecovery(t *testing.T) {
@@ -69,16 +60,13 @@ func TestScheduler_PanicRecovery(t *testing.T) {
 		panic("test panic")
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = s.Start(ctx) }()
-
-	require.Eventually(t, func() bool {
-		families, _ := reg.Gather()
-		return metricValue(families, "cron_job_runs_total", map[string]string{"name": "panic-job", "status": "panic"}) >= 1
-	}, 2*time.Second, 50*time.Millisecond)
-
-	cancel()
-	_ = s.Stop(context.Background())
+	require.NotPanics(t, func() { runFirstJob(t, s) })
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	require.GreaterOrEqual(t,
+		metricValue(families, "cron_job_runs_total", map[string]string{"name": "panic-job", "status": "panic"}),
+		float64(1),
+	)
 }
 
 func TestScheduler_ContextCancelledOnStop(t *testing.T) {
@@ -92,8 +80,9 @@ func TestScheduler_ContextCancelledOnStop(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = s.Start(ctx) }()
-
-	require.Eventually(t, func() bool { return jobCtx.Load() != nil }, 2*time.Second, 50*time.Millisecond)
+	waitForSchedulerStarted(t, s)
+	runFirstJob(t, s)
+	require.NotNil(t, jobCtx.Load())
 
 	cancel()
 	_ = s.Stop(context.Background())
@@ -298,16 +287,13 @@ func TestScheduler_DurationMetric(t *testing.T) {
 		return nil
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = s.Start(ctx) }()
-
-	require.Eventually(t, func() bool {
-		families, _ := reg.Gather()
-		return metricValue(families, "cron_job_duration_seconds", map[string]string{"name": "slow-job"}) > 0
-	}, 2*time.Second, 50*time.Millisecond)
-
-	cancel()
-	_ = s.Stop(context.Background())
+	runFirstJob(t, s)
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	require.Greater(t,
+		metricValue(families, "cron_job_duration_seconds", map[string]string{"name": "slow-job"}),
+		float64(0),
+	)
 }
 
 // metricValue finds a metric family by name and returns the value for a counter
@@ -355,6 +341,13 @@ func waitForSchedulerStarted(t *testing.T, s *Scheduler) {
 		s.mu.RUnlock()
 		return started
 	}, time.Second, time.Millisecond)
+}
+
+func runFirstJob(t *testing.T, s *Scheduler) {
+	t.Helper()
+	entries := s.cron.Entries()
+	require.NotEmpty(t, entries)
+	entries[0].Job.Run()
 }
 
 func TestScheduler_SetJobTimeout_AppliesPerRunDeadline(t *testing.T) {

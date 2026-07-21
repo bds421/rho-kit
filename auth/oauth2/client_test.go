@@ -398,6 +398,7 @@ func TestHandlers_CallbackCtxCancelDuringExchange(t *testing.T) {
 	// the .well-known/openid-configuration body (which must echo
 	// `issuer` matching the URL go-oidc was given — RFC 8414 §3.3).
 	var srvURL string
+	tokenRelease := make(chan struct{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -417,11 +418,15 @@ func TestHandlers_CallbackCtxCancelDuringExchange(t *testing.T) {
 	mux.HandleFunc("/token", func(_ http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
-		case <-time.After(2 * time.Second):
+		case <-tokenRelease:
 		}
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
+	// Release the fake token handler before httptest.Server.Close waits for
+	// active handlers. The assertion below still proves the callback observes
+	// request cancellation; cleanup no longer pays an unrelated 2s timer.
+	defer close(tokenRelease)
 	srvURL = srv.URL
 
 	stateStore := oauth2.NewMemoryStateStore()

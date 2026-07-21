@@ -266,6 +266,24 @@ func (s *fakeStore) findByID(id uuid.UUID) (outbox.Entry, bool) {
 	return outbox.Entry{}, false
 }
 
+// forceRetryEligible advances one pending entry past its recorded retry gate.
+// It returns the original deadline so tests can first assert that the relay
+// scheduled a real future backoff without sleeping through that backoff.
+func (s *fakeStore) forceRetryEligible(id uuid.UUID) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.entries {
+		if s.entries[i].ID != id || s.entries[i].Status != outbox.StatusPending || s.entries[i].NextRetryAt == nil {
+			continue
+		}
+		original := *s.entries[i].NextRetryAt
+		past := time.Now().UTC().Add(-time.Millisecond)
+		s.entries[i].NextRetryAt = &past
+		return original, true
+	}
+	return time.Time{}, false
+}
+
 func (s *fakeStore) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -26,7 +26,12 @@ func setupQuorum(t *testing.T, n int) []goredislib.UniversalClient {
 	clients := make([]goredislib.UniversalClient, 0, n)
 	for i := 0; i < n; i++ {
 		mr := miniredis.RunT(t)
-		c := goredislib.NewClient(&goredislib.Options{Addr: mr.Addr()})
+		c := goredislib.NewClient(&goredislib.Options{
+			Addr:               mr.Addr(),
+			MaxRetries:         -1,
+			DialerRetries:      1,
+			DialerRetryTimeout: time.Millisecond,
+		})
 		t.Cleanup(func() { _ = c.Close() })
 		clients = append(clients, c)
 	}
@@ -133,7 +138,12 @@ func TestQuorumLocker_SurvivesMinorityFailure(t *testing.T) {
 	clients := make([]goredislib.UniversalClient, 3)
 	for i := 0; i < 3; i++ {
 		mrs[i] = miniredis.RunT(t)
-		clients[i] = goredislib.NewClient(&goredislib.Options{Addr: mrs[i].Addr()})
+		clients[i] = goredislib.NewClient(&goredislib.Options{
+			Addr:               mrs[i].Addr(),
+			MaxRetries:         -1,
+			DialerRetries:      1,
+			DialerRetryTimeout: time.Millisecond,
+		})
 		t.Cleanup(func() { _ = clients[i].Close() })
 	}
 
@@ -166,7 +176,12 @@ func TestQuorumLocker_LosesWithoutMajority(t *testing.T) {
 	clients := make([]goredislib.UniversalClient, 3)
 	for i := 0; i < 3; i++ {
 		mrs[i] = miniredis.RunT(t)
-		clients[i] = goredislib.NewClient(&goredislib.Options{Addr: mrs[i].Addr()})
+		clients[i] = goredislib.NewClient(&goredislib.Options{
+			Addr:               mrs[i].Addr(),
+			MaxRetries:         -1,
+			DialerRetries:      1,
+			DialerRetryTimeout: time.Millisecond,
+		})
 		t.Cleanup(func() { _ = clients[i].Close() })
 	}
 

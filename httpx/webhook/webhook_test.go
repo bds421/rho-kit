@@ -20,15 +20,28 @@ import (
 )
 
 func newDispatcher(t *testing.T, client *http.Client, opts ...webhook.Option) *webhook.Dispatcher {
+	return newDispatcherWithSigner(t, client, signing.NewSigner(), opts...)
+}
+
+func newDispatcherWithSigner(t *testing.T, client *http.Client, signer *signing.Signer, opts ...webhook.Option) *webhook.Dispatcher {
 	t.Helper()
 	d, err := webhook.New(webhook.Config{
 		HTTPClient:               client,
-		Signer:                   signing.NewSigner(),
+		Signer:                   signer,
 		Secret:                   signing.Secret("test-secret-32-bytes-padded-12345"),
 		AllowPrivateDestinations: true, // httptest + local receivers
 	}, opts...)
 	require.NoError(t, err)
 	return d
+}
+
+func fastRetryPolicy() retry.Policy {
+	p := retry.DefaultPolicy()
+	p.BaseDelay = time.Millisecond
+	p.MaxDelay = time.Millisecond
+	p.Factor = 1
+	p.Jitter = 0
+	return p
 }
 
 func TestSend_HappyPath(t *testing.T) {
@@ -148,7 +161,7 @@ func TestSend_RetriesOn5xxThenSucceeds(t *testing.T) {
 	}))
 	defer srv.Close()
 	d := newDispatcher(t, srv.Client(),
-		webhook.WithRetryPolicy(retry.DefaultPolicy()),
+		webhook.WithRetryPolicy(fastRetryPolicy()),
 	)
 	require.NoError(t, d.Send(context.Background(), webhook.Delivery{URL: srv.URL}))
 	require.GreaterOrEqual(t, attempts.Load(), int32(3))
@@ -176,11 +189,13 @@ func TestSend_TimestampFreshPerAttempt(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	d := newDispatcher(t, srv.Client(),
-		// Use a tiny base + factor so the test runs fast but still
-		// guarantees ≥1s span between first and last attempt — that's
-		// long enough for time.Now() to advance the Unix-second tick.
-		webhook.WithRetryPolicy(retry.DefaultPolicy()),
+	var clockTick atomic.Int64
+	baseTime := time.Unix(1_700_000_000, 0)
+	signer := signing.NewSigner(signing.WithClock(func() time.Time {
+		return baseTime.Add(time.Duration(clockTick.Add(1)) * time.Second)
+	}))
+	d := newDispatcherWithSigner(t, srv.Client(), signer,
+		webhook.WithRetryPolicy(fastRetryPolicy()),
 	)
 	require.NoError(t, d.Send(context.Background(), webhook.Delivery{URL: srv.URL}))
 	mu.Lock()
@@ -215,7 +230,7 @@ func TestSend_NetworkErrorRetries(t *testing.T) {
 	}))
 	srv.Close() // close immediately so dials fail
 	d := newDispatcher(t, http.DefaultClient,
-		webhook.WithRetryPolicy(retry.DefaultPolicy()),
+		webhook.WithRetryPolicy(fastRetryPolicy()),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -224,23 +239,23 @@ func TestSend_NetworkErrorRetries(t *testing.T) {
 }
 
 func TestSend_HonoursCtxCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
+		cancel()
 	}))
 	defer srv.Close()
 	d := newDispatcher(t, srv.Client(),
-		webhook.WithRetryPolicy(retry.DefaultPolicy()),
+		webhook.WithRetryPolicy(fastRetryPolicy()),
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
 	err := d.Send(ctx, webhook.Delivery{URL: srv.URL})
 	require.Error(t, err)
-	// The server keeps returning 503 (retryable), so Send must keep retrying
-	// until the context deadline fires and surface a ctx-derived error — not
-	// retry-budget exhaustion. Assert the cancellation cause directly rather
-	// than the previously tautological "|| err != nil".
-	require.ErrorIs(t, err, context.DeadlineExceeded,
-		"expected the context deadline to terminate retries, got %v", err)
+	// The receiver returns a retryable status and cancels the caller context.
+	// Send must stop before exhausting its retry budget and retain the
+	// cancellation cause in the returned error chain.
+	require.ErrorIs(t, err, context.Canceled,
+		"expected context cancellation to terminate retries, got %v", err)
 }
 
 func TestNew_ValidatesConfig(t *testing.T) {
@@ -379,7 +394,7 @@ func TestSend_RetriesOn429ThenSucceeds(t *testing.T) {
 	}))
 	defer srv.Close()
 	d := newDispatcher(t, srv.Client(),
-		webhook.WithRetryPolicy(retry.DefaultPolicy()),
+		webhook.WithRetryPolicy(fastRetryPolicy()),
 	)
 	require.NoError(t, d.Send(context.Background(), webhook.Delivery{URL: srv.URL}))
 	require.GreaterOrEqual(t, attempts.Load(), int32(3), "429 must be retried")
@@ -397,7 +412,7 @@ func TestSend_RetriesOn408ThenSucceeds(t *testing.T) {
 	}))
 	defer srv.Close()
 	d := newDispatcher(t, srv.Client(),
-		webhook.WithRetryPolicy(retry.DefaultPolicy()),
+		webhook.WithRetryPolicy(fastRetryPolicy()),
 	)
 	require.NoError(t, d.Send(context.Background(), webhook.Delivery{URL: srv.URL}))
 	require.GreaterOrEqual(t, attempts.Load(), int32(2), "408 must be retried")

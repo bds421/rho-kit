@@ -6,9 +6,12 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/bds421/rho-kit/resilience/v2/retry"
 )
 
 func TestRunWithBackoff_StopsOnContextCancel(t *testing.T) {
@@ -38,14 +41,14 @@ func TestRunWithBackoff_RestartsOnError(t *testing.T) {
 	done := make(chan error, 1)
 
 	go func() {
-		done <- RunWithBackoff(ctx, slog.Default(), "test", func(_ context.Context) error {
+		done <- runWithBackoff(ctx, slog.Default(), "test", func(_ context.Context) error {
 			n := calls.Add(1)
 			if n >= 3 {
 				cancel()
 				return nil
 			}
 			return errors.New("transient")
-		})
+		}, retry.WithBaseDelay(time.Millisecond), retry.WithMaxDelay(time.Millisecond), retry.WithJitter(0))
 	}()
 
 	err := <-done

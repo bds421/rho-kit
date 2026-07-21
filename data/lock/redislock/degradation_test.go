@@ -18,7 +18,12 @@ func setupDegradedRedis(t *testing.T) (*miniredis.Miniredis, *redis.Connection) 
 	t.Helper()
 	mr := miniredis.RunT(t)
 	conn, err := redis.Connect(
-		&goredis.Options{Addr: mr.Addr()},
+		&goredis.Options{
+			Addr:               mr.Addr(),
+			MaxRetries:         -1,
+			DialerRetries:      1,
+			DialerRetryTimeout: time.Millisecond,
+		},
 		redis.WithHealthInterval(50*time.Millisecond),
 	)
 	require.NoError(t, err)

@@ -55,6 +55,7 @@ type Connection struct {
 	connectedOnce        sync.Once      // ensures connected is closed exactly once
 	maxReconnectAttempts int            // 0 = unlimited
 	lazyConnect          bool           // defer initial connection to background
+	reconnectPolicy      retry.Policy   // internal timing policy; production uses WorkerPolicy
 	generation           uint64         // incremented on each reconnect; stale watchers self-terminate
 	reconnecting         atomic.Bool    // prevents overlapping reconnect goroutines
 	reconnectSignal      chan struct{}  // buffered(1); queues a reconnect when loop is finishing
@@ -235,6 +236,7 @@ func Connect(rawURL string, logger *slog.Logger, opts ...DialOption) (*Connectio
 		connected:          make(chan struct{}),
 		reconnectSignal:    make(chan struct{}, 1),
 		urlProviderTimeout: defaultProviderTimeout,
+		reconnectPolicy:    retry.WorkerPolicy(),
 	}
 
 	for _, opt := range opts {
@@ -686,7 +688,7 @@ func (c *Connection) reconnect() {
 		return
 	}
 
-	bo := retry.WorkerPolicy().NewBackoff()
+	bo := c.reconnectPolicy.NewBackoff()
 	attempts := 0
 
 	for {
