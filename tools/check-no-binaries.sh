@@ -22,6 +22,8 @@ ALLOWLIST=(
 
 REJECT_BINARIES=()
 WARN_LARGE=()
+SCAN_SCOPE="full repository"
+SCAN_LIST=""
 
 allowed() {
     local path="$1"
@@ -34,14 +36,36 @@ allowed() {
     return 1
 }
 
-# Walk every tracked file. We only need ls-files; build artifacts that
-# are gitignored are not the concern here.
+# A protected main branch has already passed the full-repository scan. On a
+# pull request, only added/changed/renamed files can introduce a new binary.
+# CI_BASE_REF is deliberately unset on main, so the authoritative post-merge
+# build still scans everything. Changes to this guard itself force a full scan.
+if [[ -n "${CI_BASE_REF:-}" ]]; then
+    if ! git cat-file -e "${CI_BASE_REF}^{commit}" 2>/dev/null; then
+        echo "tracked-binary check FAILED — CI_BASE_REF is not a commit: ${CI_BASE_REF}" >&2
+        exit 1
+    fi
+    if git diff --name-only "${CI_BASE_REF}...HEAD" -- tools/check-no-binaries.sh | grep -q .; then
+        SCAN_LIST=$(git ls-files)
+    else
+        SCAN_SCOPE="changes since ${CI_BASE_REF}"
+        SCAN_LIST=$(git diff --name-only --diff-filter=ACMR "${CI_BASE_REF}...HEAD")
+    fi
+else
+    SCAN_LIST=$(git ls-files)
+fi
+
+# Walk the selected tracked files. Build artifacts that are gitignored are not
+# the concern here.
+scanned=0
 while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
     if allowed "$path"; then
         continue
     fi
     # Skip non-existent (rare; handles deletions in flight).
     [[ -f "$path" ]] || continue
+    scanned=$((scanned + 1))
 
     mime=$(file --mime-type --brief -- "$path" 2>/dev/null || echo unknown)
     case "$mime" in
@@ -65,7 +89,7 @@ while IFS= read -r path; do
                 ;;
         esac
     fi
-done < <(git ls-files)
+done <<< "$SCAN_LIST"
 
 if (( ${#REJECT_BINARIES[@]} > 0 )); then
     printf 'tracked-binary check FAILED — refusing executable artifacts in source control:\n' >&2
@@ -80,4 +104,4 @@ if (( ${#WARN_LARGE[@]} > 0 )); then
     printf '\n(Warning only; reject only executable types. Move to fixture allowlist if intentional.)\n' >&2
 fi
 
-echo "tracked-binary check OK ($(git ls-files | wc -l | tr -d ' ') files scanned)"
+echo "tracked-binary check OK (${scanned} files scanned; ${SCAN_SCOPE})"
