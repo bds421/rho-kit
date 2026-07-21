@@ -62,7 +62,9 @@ func TestMaxConcurrentStreamsServer_AcceptsUpToMax(t *testing.T) {
 	interc := interceptor.MaxConcurrentStreamsServer(2, m)
 
 	release := make(chan struct{})
+	entered := make(chan struct{}, 2)
 	handler := func(_ any, _ grpc.ServerStream) error {
+		entered <- struct{}{}
 		<-release
 		return nil
 	}
@@ -79,8 +81,15 @@ func TestMaxConcurrentStreamsServer_AcceptsUpToMax(t *testing.T) {
 	go func() { r1 <- result{interc(nil, &fakeServerStream{ctx: context.Background()}, info, handler)} }()
 	go func() { r2 <- result{interc(nil, &fakeServerStream{ctx: context.Background()}, info, handler)} }()
 
-	// Give the two acceptable streams a moment to enter handler.
-	time.Sleep(100 * time.Millisecond)
+	// Wait until both acceptable streams hold their slots before trying the
+	// over-cap stream. This is deterministic and avoids scheduler sleeps.
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("accepted stream did not enter handler")
+		}
+	}
 
 	// Third stream is over cap → ResourceExhausted, handler never runs.
 	go func() { r3 <- result{interc(nil, &fakeServerStream{ctx: context.Background()}, info, handler)} }()
@@ -129,7 +138,7 @@ func TestStreamIdleTimeout_PanicsOnNonPositive(t *testing.T) {
 func TestStreamIdleTimeout_CancelsIdleStream(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := interceptor.NewStreamLimitMetrics(interceptor.WithRegisterer(reg))
-	interc := interceptor.StreamIdleTimeout(100*time.Millisecond, m)
+	interc := interceptor.StreamIdleTimeout(20*time.Millisecond, m)
 
 	// Handler that just waits for ctx cancellation, mimicking an
 	// idle handler that's blocked waiting for the next message.
@@ -150,12 +159,12 @@ func TestStreamIdleTimeout_CancelsIdleStream(t *testing.T) {
 }
 
 func TestStreamIdleTimeout_ActivityResetsTimer(t *testing.T) {
-	interc := interceptor.StreamIdleTimeout(150*time.Millisecond, nil)
+	interc := interceptor.StreamIdleTimeout(100*time.Millisecond, nil)
 
 	// Handler that sends/receives periodically — activity should
 	// keep the stream alive past the idle timeout.
 	handler := func(_ any, ss grpc.ServerStream) error {
-		ticker := time.NewTicker(50 * time.Millisecond)
+		ticker := time.NewTicker(25 * time.Millisecond)
 		defer ticker.Stop()
 		ticks := 0
 		for {
@@ -166,7 +175,7 @@ func TestStreamIdleTimeout_ActivityResetsTimer(t *testing.T) {
 				ticks++
 				_ = ss.SendMsg("ping") // reset activity timer
 				if ticks >= 5 {
-					return nil // 250ms of activity > 150ms idle threshold
+					return nil // 125ms of activity > 100ms idle threshold
 				}
 			}
 		}
@@ -213,12 +222,12 @@ func TestStreamIdleTimeout_HandlerErrorPropagated(t *testing.T) {
 // already replied via SendAndClose. The interceptor must surface the
 // handler's real result, not an unconditional DeadlineExceeded.
 func TestStreamIdleTimeout_WatchdogFireDoesNotMaskCleanReturn(t *testing.T) {
-	interc := interceptor.StreamIdleTimeout(80*time.Millisecond, nil)
+	interc := interceptor.StreamIdleTimeout(20*time.Millisecond, nil)
 
-	// Handler ignores ctx entirely, does no Send/Recv (so the idle
-	// watchdog fires), then returns nil long after the watchdog cancel.
-	handler := func(_ any, _ grpc.ServerStream) error {
-		time.Sleep(300 * time.Millisecond)
+	// Waiting for cancellation proves the watchdog fired. Returning nil then
+	// proves that cancellation is not substituted for the handler result.
+	handler := func(_ any, ss grpc.ServerStream) error {
+		<-ss.Context().Done()
 		return nil
 	}
 
@@ -234,11 +243,11 @@ func TestStreamIdleTimeout_WatchdogFireDoesNotMaskCleanReturn(t *testing.T) {
 // same hazard for a non-nil business error: it must propagate unchanged
 // rather than being replaced by DeadlineExceeded.
 func TestStreamIdleTimeout_WatchdogFireDoesNotMaskBusinessError(t *testing.T) {
-	interc := interceptor.StreamIdleTimeout(80*time.Millisecond, nil)
+	interc := interceptor.StreamIdleTimeout(20*time.Millisecond, nil)
 
 	want := errors.New("application-specific failure")
-	handler := func(_ any, _ grpc.ServerStream) error {
-		time.Sleep(300 * time.Millisecond)
+	handler := func(_ any, ss grpc.ServerStream) error {
+		<-ss.Context().Done()
 		return want
 	}
 
@@ -304,10 +313,11 @@ func TestStreamIdleTimeout_PanicStopsWatchdogPromptly(t *testing.T) {
 // exactly that threat scenario, and converts the scaffolding into a live
 // assertion of the contract.
 func TestStreamIdleTimeout_DoesNotUnblockHandlerParkedInRecvMsg(t *testing.T) {
-	interc := interceptor.StreamIdleTimeout(80*time.Millisecond, nil)
+	interc := interceptor.StreamIdleTimeout(20*time.Millisecond, nil)
 
 	block := make(chan struct{})
 	ss := &fakeServerStream{ctx: context.Background(), recvBlockCh: block}
+	watchdogFired := make(chan struct{})
 
 	// Handler parks inside RecvMsg, ignoring its (derived, cancellable) ctx —
 	// the canonical `for { stream.Recv() }` loop against a silent client.
@@ -315,17 +325,26 @@ func TestStreamIdleTimeout_DoesNotUnblockHandlerParkedInRecvMsg(t *testing.T) {
 	go func() {
 		done <- interc(nil, ss, &grpc.StreamServerInfo{FullMethod: "/test.Service/Stream"},
 			func(_ any, stream grpc.ServerStream) error {
+				go func() {
+					<-stream.Context().Done()
+					close(watchdogFired)
+				}()
 				return stream.RecvMsg(nil)
 			},
 		)
 	}()
 
-	// The watchdog fires well within this window, but it cannot unblock a
-	// handler parked in RecvMsg: the handler must still be running.
+	// Observe the watchdog cancellation directly, then verify it did not
+	// unblock the underlying RecvMsg call.
+	select {
+	case <-watchdogFired:
+	case <-time.After(time.Second):
+		t.Fatal("idle watchdog did not fire")
+	}
 	select {
 	case err := <-done:
 		t.Fatalf("handler parked in RecvMsg was unexpectedly unblocked by the idle watchdog (err=%v); the documented limitation no longer holds", err)
-	case <-time.After(300 * time.Millisecond):
+	default:
 		// Expected: still blocked.
 	}
 	assert.Equal(t, int32(1), ss.recvMsgCount.Load(),
@@ -350,17 +369,23 @@ func TestNewStreamLimitMetrics_RegistersAllCollectors(t *testing.T) {
 	// the families.
 	interc := interceptor.MaxConcurrentStreamsServer(1, m)
 	release := make(chan struct{})
+	entered := make(chan struct{})
 	defer close(release)
 	go func() {
 		_ = interc(nil, &fakeServerStream{ctx: context.Background()},
 			&grpc.StreamServerInfo{FullMethod: "/test/Stream"},
 			func(_ any, _ grpc.ServerStream) error {
+				close(entered)
 				<-release
 				return nil
 			},
 		)
 	}()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("stream did not enter handler")
+	}
 
 	// Trigger a rejection so the rejected counter has a value.
 	_ = interc(nil, &fakeServerStream{ctx: context.Background()},

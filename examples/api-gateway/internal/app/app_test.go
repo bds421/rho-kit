@@ -84,6 +84,10 @@ func TestGateway_RetryRecoversTransientFailure(t *testing.T) {
 // of 502 (downstream-error).
 func TestGateway_BreakerOpensAfterSustainedFailures(t *testing.T) {
 	gw := newGateway("demo-token-1234567890", alwaysFailDownstream)
+	gw.retryPolicy.BaseDelay = time.Millisecond
+	gw.retryPolicy.MaxDelay = time.Millisecond
+	gw.retryPolicy.Factor = 1
+	gw.retryPolicy.Jitter = 0
 	srv := httptest.NewServer(gw.buildHandler(slog.Default()))
 	defer srv.Close()
 
@@ -220,6 +224,8 @@ func TestGateway_BudgetExhaustedReturns504(t *testing.T) {
 	}
 
 	gw := newGateway("demo-token-1234567890", slowDownstream)
+	gw.requestBudget = 30 * time.Millisecond
+	gw.postCallReservation = time.Millisecond
 	srv := httptest.NewServer(gw.buildHandler(slog.Default()))
 	defer srv.Close()
 

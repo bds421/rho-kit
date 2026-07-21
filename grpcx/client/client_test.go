@@ -308,9 +308,14 @@ func (f *flakyHealthSrv) Check(_ context.Context, _ *healthpb.HealthCheckRequest
 
 func TestNewClient_RetryRetriesUnavailable(t *testing.T) {
 	addr := startFlakyServer(t, 2)
+	policy := retry.DefaultPolicy()
+	policy.BaseDelay = time.Millisecond
+	policy.MaxDelay = time.Millisecond
+	policy.Factor = 1
+	policy.Jitter = 0
 	conn, err := client.NewClient(addr,
 		client.WithInsecure(),
-		client.WithRetry(retry.DefaultPolicy()),
+		client.WithRetry(policy),
 		client.WithoutLogging(),
 		client.WithoutMetrics(),
 	)
