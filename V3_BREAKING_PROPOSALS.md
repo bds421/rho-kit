@@ -3,60 +3,80 @@
 Proposals collected during review remediation. **Not applied on v2.** Each item
 is a candidate for the next major version only.
 
-## grpcx: propagate permissions/scopes across trusted-S2S hops
+## grpcx + httpx: propagate permissions/scopes across trusted-S2S hops
 
-**Status:** Partial mitigation applied on v2; full fix is v3.
+**Status:** APPLIED.
 
-**v2 change (applied):** `RequirePermission*` / `RequireScope*` no longer treat
-`IsTrustedS2S` as a blanket bypass. Opt in with `WithTrustedS2SBypass()` for
-service-level trust. Safer default against permission laundering when mTLS
-impersonation stamps empty perms/scopes.
+**v2 change (applied):** gRPC `RequirePermission*` / `RequireScope*` no longer
+treat `IsTrustedS2S` as a blanket bypass. Opt in with `WithTrustedS2SBypass()`
+for service-level trust.
 
-**v3 proposal:** Propagate the caller's permissions and scopes across the S2S
-hop (signed metadata or token exchange) so downstream `Require*` can enforce
-user entitlements without a bypass. Extend the impersonation guard to receive
-the target method for per-RPC delegation policy. Align httpx middleware with
-the same default (HTTP still bypasses on trusted-S2S today).
+**v3 change (applied):**
+- Metadata keys `x-permissions` / `x-scopes` (gRPC) and headers
+  `X-Permissions` / `X-Scopes` (HTTP) carry user entitlements across trusted
+  S2S hops.
+- `AppendOutgoingIdentity` stamps permissions and scopes from context when
+  present; mTLS admission adopts them into context (`AdoptIncomingIdentity` on
+  gRPC; `requireHeaderUser` on HTTP).
+- HTTP `RequirePermission` / `PermissionByMethod` / `RequireScope` match gRPC:
+  no blanket trusted-S2S bypass unless `WithTrustedS2SBypass()`.
+- Cross-hop tests cover RequirePermission still enforcing user perms when S2S
+  is trusted without bypass.
+
+**Deferred:** impersonation guard receiving the target method for per-RPC
+delegation policy remains a future enhancement.
 
 ## infra/storage/encryption: bound retained plaintext independently of decrypt
 
-**Status:** Partial v2 fix applied; residual memory-budget redesign is v3.
+**Status:** APPLIED.
 
-**v2 change (applied):** `getSem` now gates concurrent decrypt work only and
-is released once plaintext is materialised (not on reader `Close`), so a
-leaked `ReadCloser` cannot permanently starve encrypted downloads. `Close`
-still zeros the plaintext buffer. Tests cover post-materialise concurrent Gets.
+**v2 change (applied):** `getSem` gates concurrent decrypt work only and is
+released once plaintext is materialised (not on reader `Close`), so a leaked
+`ReadCloser` cannot permanently starve encrypted downloads. `Close` still
+zeros the plaintext buffer.
 
-**v3 proposal:** Add a distinct retained-plaintext budget / TTL reclaim for
-unclosed readers (the v2 fix removes permanent DoS but no longer caps how many
-plaintext buffers a leaky caller can hold). Consider a metric when acquire
-waits exceed a threshold.
+**v3 change (applied):**
+- Distinct `openSem` retained-plaintext budget
+  (`WithMaxOpenPlaintextReaders`, default `DefaultMaxOpenPlaintextReaders` = 64).
+- Acquired after successful decrypt; released on reader `Close` (and error
+  paths). `n < 1` panics at construction.
+- Holding many unclosed readers blocks further Gets; Close releases.
+- Optional wait/rejection metric deferred.
 
 ## data/budget/redis: Refund against charge-period window
 
-**Status:** Documented on v2; behavior change is v3.
+**Status:** APPLIED (intentional break).
 
 **v2 change (applied):** `budget.Refunder` and `budget/redis.Budget.Refund`
 godoc warn that refunds credit the *current* period bucket, so estimate-then-
 reconcile across a window boundary can under-count or drop credit.
 
-**v3 proposal:** Accept an explicit period id / charge timestamp on `Refund` so
-window-boundary reconciles credit the correct bucket rather than the current
-period.
+**v3 change (applied):**
+- `Refunder.Refund(ctx, key, amount, chargedAt time.Time)` — period identity is
+  derived from `chargedAt` via the same floor(t/period) mapping as Consume.
+- Package helper `budget.Refund` takes `chargedAt`; zero values return
+  `ErrInvalidChargedAt`.
+- memory + redis backends refund the charge-period bucket (Redis Lua keys
+  `prefix+key:periodID` of chargedAt, not now).
+- `httpx/budget` captures pre-charge time and passes it on cleanup refunds.
 
 ## jwtutil: KeySet.Verify fail-closed issuer/audience
 
-**Status:** Documented on v2; fail-closed is v3.
+**Status:** APPLIED (intentional break).
 
 **v2 change (applied):** KeySet.Verify godoc now warns that empty
 `ExpectedIssuer` / `ExpectedAudience` skip those checks, and points
 callers at Provider (which already panics without an explicit policy).
 
-**v3 proposal:** Make `KeySet.Verify` (and/or `ParseKeySet`) require an
-explicit issuer and audience policy — either non-empty Expected* fields
-or new `AllowAnyIssuer` / `AllowAnyAudience` flags — failing with a
-typed error when both are unset. Mirrors the Provider constructor
-guardrail and closes the confused-deputy path for raw KeySet users.
+**v3 change (applied):**
+- `KeySet.Verify` requires explicit issuer and audience policy: non-empty
+  `ExpectedIssuer`/`ExpectedAudience` or `AllowAnyIssuer`/`AllowAnyAudience`.
+- Missing policy returns typed `ErrPolicyRequired` (still freezes snapshot
+  on first Verify; recover via `WithExpected*` / `WithAllowAny*` copies).
+- `WithAllowAnyIssuer` / `WithAllowAnyAudience` helpers; freeze captures
+  AllowAny flags. `ParseKeySet` / `ParseKeySetFromPEM` document no default
+  policy. Provider already set policy and now copies AllowAny onto
+  `KeySet()` snapshots.
 
 ## approval.TenantStore: fold ForTenant into Store interface
 
@@ -113,16 +133,20 @@ parity for QuorumLocker if callers still need a single option surface.
 
 ## messaging: strict unknown schema version by default
 
-**Status:** Documented on v2; fail-closed default is v3.
+**Status:** APPLIED (intentional break).
 
 **v2 change (applied):** `InMemorySchemaRegistry.ValidateMessage` and
 validating-handler docs warn that unknown/producer-controlled versions
 pass through unless `WithStrictUnknownVersion` is set.
 
-**v3 proposal:** Make strict unknown-version rejection the default, with
-an explicit `WithLegacyPassThrough` / `WithLooseUnknownVersion` opt-out.
-Also consider rejecting version-0 for types that have any registered
-schema.
+**v3 change (applied):**
+- Strict unknown-version rejection is the default for
+  `InMemorySchemaRegistry.ValidatePayload` and `NewValidatingHandler`.
+- When a type has any registered schema, unknown versions and version 0
+  (missing version) are rejected with `ErrUnknownSchemaVersion`.
+- Opt-out: `WithLooseUnknownVersion` / `WithLegacyPassThrough` on the
+  validating handler; `WithSchemaLegacyPassThrough` on the registry.
+- Removed `WithStrictUnknownVersion` (semantics inverted; default is strict).
 
 ## httpx/websocket: safe heartbeat and write-timeout defaults
 
