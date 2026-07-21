@@ -3,13 +3,13 @@ module github.com/bds421/rho-kit/data/approval/postgres/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.4.0
+	github.com/bds421/rho-kit/core/v2 v2.5.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
-	github.com/bds421/rho-kit/data/v2 v2.4.0
+	github.com/bds421/rho-kit/data/v2 v2.5.0
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
