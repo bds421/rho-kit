@@ -33,7 +33,10 @@ type Policy struct {
 	// BaseDelay is the initial delay before the first retry.
 	BaseDelay time.Duration
 
-	// MaxDelay caps the computed delay.
+	// MaxDelay caps the delay returned to the caller after jitter is
+	// applied. The underlying exponential backoff uses MaxDelay as its
+	// pre-jitter MaxInterval; Next/Delay/doWithPolicy additionally
+	// clamp the post-jitter value so sleeps never exceed MaxDelay.
 	MaxDelay time.Duration
 
 	// Factor is the exponential backoff multiplier (e.g. 2.0 for doubling).
@@ -236,12 +239,12 @@ func RetryIfNotPermanent(err error) bool {
 // attempts across stability cycles. Use MaxRetries alone for a firm cap.
 func Do(ctx context.Context, fn func(ctx context.Context) error, opts ...Option) error {
 	if fn == nil {
-		panic("retry: Do Do requires a non-nil fn")
+		panic("retry: Do requires a non-nil fn")
 	}
 	p := DefaultPolicy()
 	for _, o := range opts {
 		if o == nil {
-			panic("retry: Do Do option must not be nil")
+			panic("retry: Do option must not be nil")
 		}
 		o(&p)
 	}
@@ -307,7 +310,7 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 		// exiting rather than silently swallowing it.
 		if err != nil && ctx.Err() != nil {
 			logger.Error(component+" stopped during shutdown",
-				"error", err,
+				redact.Error(err),
 			)
 			return
 		}
@@ -323,44 +326,23 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 			return
 		}
 
-		if p.RetryIf != nil && !callRetryIf(logger, component, p.RetryIf, err) {
-			logger.Error(component+" stopped with non-retryable error", "error", err)
+		wait, plan := evaluateRetry(logger, component, p, bo, &attempt, loopStart, start, err)
+		switch plan {
+		case retryPlanStopNonRetryable:
+			logger.Error(component+" stopped with non-retryable error", redact.Error(err))
 			return
-		}
-
-		// Bound by total wall-clock so restarts don't outlast the caller's
-		// SLO budget even when MaxRetries is unlimited — consistent with
-		// the Do/DoWith path.
-		if p.MaxElapsedTime > 0 && time.Since(loopStart) >= p.MaxElapsedTime {
+		case retryPlanStopMaxElapsed:
 			logger.Error(component+" max elapsed time exceeded, stopping",
-				"error", err, "elapsed", time.Since(loopStart), "max", p.MaxElapsedTime)
+				redact.Error(err), "elapsed", time.Since(loopStart), "max", p.MaxElapsedTime)
 			return
-		}
-
-		if p.StableReset > 0 && time.Since(start) >= p.StableReset {
-			bo.Reset()
-			attempt = 0
-		}
-
-		if p.MaxRetries >= 0 && attempt >= p.MaxRetries {
+		case retryPlanStopMaxRetries:
 			logger.Error(component+" max retries exhausted, stopping",
 				"attempts", attempt, "max", p.MaxRetries)
 			return
 		}
 
-		wait := bo.NextBackOff()
-		if p.DelayOverride != nil {
-			if override := callDelayOverride(logger, component, p.DelayOverride, err); override > 0 {
-				wait = override
-			}
-		}
-
-		if p.OnRetry != nil {
-			callOnRetry(logger, component, p.OnRetry, err, attempt+1, wait)
-		}
-
 		logger.Warn(component+" stopped, restarting",
-			"error", err,
+			redact.Error(err),
 			"restart_delay", wait,
 			"attempt", attempt+1,
 		)
@@ -374,6 +356,66 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 		}
 		attempt++
 	}
+}
+
+// retryPlan is the shared post-failure decision for Loop and doWithPolicy.
+// Both entry points drive the same state machine so StableReset / MaxRetries
+// / MaxElapsedTime / DelayOverride ordering cannot drift between them.
+type retryPlan int
+
+const (
+	retryPlanContinue retryPlan = iota
+	retryPlanStopNonRetryable
+	retryPlanStopMaxElapsed
+	retryPlanStopMaxRetries
+)
+
+// evaluateRetry applies the shared retry policy after a failed attempt.
+// attempt may be reset to 0 when StableReset fires (must run before the
+// MaxRetries check so a stable run gets a fresh attempt budget).
+// On retryPlanContinue, wait is the delay before the next attempt and
+// OnRetry has already been invoked.
+func evaluateRetry(
+	logger *slog.Logger,
+	component string,
+	p Policy,
+	bo *backoff.ExponentialBackOff,
+	attempt *int,
+	loopStart, attemptStart time.Time,
+	err error,
+) (wait time.Duration, plan retryPlan) {
+	if p.RetryIf != nil && !callRetryIf(logger, component, p.RetryIf, err) {
+		return 0, retryPlanStopNonRetryable
+	}
+	// Bound by total wall-clock so retries don't outlast the caller's
+	// SLO budget even when MaxRetries is unlimited / generous.
+	if p.MaxElapsedTime > 0 && time.Since(loopStart) >= p.MaxElapsedTime {
+		return 0, retryPlanStopMaxElapsed
+	}
+	// Check StableReset before MaxRetries so a stable run resets the
+	// counter — consistent between Loop and doWithPolicy.
+	if p.StableReset > 0 && time.Since(attemptStart) >= p.StableReset {
+		bo.Reset()
+		*attempt = 0
+	}
+	if p.MaxRetries >= 0 && *attempt >= p.MaxRetries {
+		return 0, retryPlanStopMaxRetries
+	}
+
+	wait = bo.NextBackOff()
+	if p.DelayOverride != nil {
+		if override := callDelayOverride(logger, component, p.DelayOverride, err); override > 0 {
+			wait = override
+		}
+	}
+	// Clamp post-jitter backoff and hostile/unbounded Retry-After-style
+	// overrides to MaxDelay so a peer cannot stall the retry loop and
+	// sleeps never exceed the documented cap.
+	wait = clampDelay(wait, p.MaxDelay)
+	if p.OnRetry != nil {
+		callOnRetry(logger, component, p.OnRetry, err, *attempt+1, wait)
+	}
+	return wait, retryPlanContinue
 }
 
 func callLoopFunc(fn func(context.Context) error, ctx context.Context) (err error) {
@@ -444,7 +486,7 @@ func (p Policy) Delay(attempt int) time.Duration {
 	if wait == 0 {
 		return p.BaseDelay
 	}
-	return wait
+	return clampDelay(wait, p.MaxDelay)
 }
 
 func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) error) (retErr error) {
@@ -475,11 +517,10 @@ func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) er
 		totalAttempts++
 		err := fn(ctx)
 		if err == nil {
-			// fn succeeded — only surface a cancelled ctx if it
-			// fired after the successful return. Otherwise nil.
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
-			}
+			// A successful attempt wins over a concurrent cancellation.
+			// Callers that need to observe ctx death after success can
+			// check ctx.Err() themselves; masking success as failure
+			// loses the only signal that work completed.
 			return nil
 		}
 		// fn returned a real error: it takes precedence over ctx.Err().
@@ -487,43 +528,20 @@ func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) er
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return errors.Join(err, ctxErr)
 		}
-		if p.RetryIf != nil && !callRetryIf(logger, "retry", p.RetryIf, err) {
+
+		wait, plan := evaluateRetry(logger, "retry", p, bo, &attempt, loopStart, start, err)
+		switch plan {
+		case retryPlanStopNonRetryable, retryPlanStopMaxElapsed, retryPlanStopMaxRetries:
 			return err
-		}
-
-		// Bound by total wall-clock so retries don't outlast the caller's
-		// SLO budget even when MaxRetries is generous.
-		if p.MaxElapsedTime > 0 && time.Since(loopStart) >= p.MaxElapsedTime {
-			return err
-		}
-
-		// Check StableReset before MaxRetries so a stable run resets the
-		// counter — consistent with the Loop path.
-		if p.StableReset > 0 && time.Since(start) >= p.StableReset {
-			bo.Reset()
-			attempt = 0
-		}
-
-		if p.MaxRetries >= 0 && attempt >= p.MaxRetries {
-			return err
-		}
-
-		wait := bo.NextBackOff()
-		if p.DelayOverride != nil {
-			if override := callDelayOverride(logger, "retry", p.DelayOverride, err); override > 0 {
-				wait = override
-			}
-		}
-
-		if p.OnRetry != nil {
-			callOnRetry(logger, "retry", p.OnRetry, err, attempt+1, wait)
 		}
 
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return ctx.Err()
+			// Preserve the last fn error alongside cancellation so callers
+			// can distinguish "never ran" from "failed then cancelled mid-backoff".
+			return errors.Join(err, ctx.Err())
 		case <-timer.C:
 		}
 
@@ -550,9 +568,10 @@ func (p Policy) NewBackoff() *Backoff {
 	return &Backoff{bo: newBackOff(p)}
 }
 
-// Next returns the next backoff delay in the sequence.
+// Next returns the next backoff delay in the sequence, clamped to
+// the policy's MaxDelay so post-jitter values never exceed the cap.
 func (b *Backoff) Next() time.Duration {
-	return b.bo.NextBackOff()
+	return clampDelay(b.bo.NextBackOff(), b.bo.MaxInterval)
 }
 
 // Reset restarts the backoff sequence from the initial delay.
@@ -575,9 +594,20 @@ func newBackOff(p Policy) *backoff.ExponentialBackOff {
 	return bo
 }
 
-func mustValidatePolicy(_ string, p Policy) {
+// clampDelay enforces MaxDelay as a hard post-jitter ceiling. The
+// cenkalti/backoff MaxInterval only caps the pre-jitter RetryInterval,
+// so without this clamp DefaultPolicy(MaxDelay=30s, Jitter=0.25) can
+// sleep up to ~37.5s.
+func clampDelay(wait, max time.Duration) time.Duration {
+	if max > 0 && wait > max {
+		return max
+	}
+	return wait
+}
+
+func mustValidatePolicy(what string, p Policy) {
 	if err := p.Validate(); err != nil {
-		panic("retry: invalid policy")
+		panic(what + ": " + err.Error())
 	}
 }
 

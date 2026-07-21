@@ -28,8 +28,14 @@ type httpServerComponent struct {
 // Stop calls Shutdown for graceful draining.
 //
 // Panics if srv is nil, srv.Addr is empty, srv.Handler is nil, or
-// srv.ReadHeaderTimeout is zero — all wiring mistakes caught at
-// construction so a misconfigured server never reaches Start.
+// srv.ReadHeaderTimeout is zero — wiring mistakes caught at construction
+// so a misconfigured server never reaches Start.
+//
+// Only ReadHeaderTimeout is enforced here (slowloris on headers). Callers
+// are responsible for setting ReadTimeout / WriteTimeout / IdleTimeout and,
+// when TLSConfig is non-nil, an appropriate MinVersion (prefer TLS 1.2+).
+// Prefer [httpx.NewServer], which applies kit-safe defaults, then wrap it
+// with NewHTTPServer.
 func NewHTTPServer(srv *http.Server) Component {
 	if srv == nil {
 		panic("lifecycle: NewHTTPServer requires a non-nil *http.Server")
@@ -118,6 +124,11 @@ func (f *FuncComponent) Start(ctx context.Context) (retErr error) {
 		if r := recover(); r != nil {
 			retErr = fmt.Errorf("lifecycle: FuncComponent panicked: %s", redact.PanicValue(r))
 		}
+		// Always cancel the derived context when startFn returns on its
+		// own (success, error, or panic). Without this, a startFn that
+		// returns early leaves the cancel func live until Stop, leaking
+		// the child context's resources for the component's lifetime.
+		cancel()
 		f.mu.Lock()
 		close(f.done)
 		f.mu.Unlock()

@@ -1,6 +1,7 @@
 package retry
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -669,8 +670,12 @@ func TestDoWith_PanicsOnInvalidPolicy(t *testing.T) {
 		if rcv == nil {
 			t.Fatal("expected panic for invalid policy")
 		}
-		if rcv != "retry: invalid policy" {
-			t.Fatalf("panic = %q, want %q", rcv, "retry: invalid policy")
+		msg, ok := rcv.(string)
+		if !ok {
+			t.Fatalf("panic type = %T, want string", rcv)
+		}
+		if !strings.Contains(msg, "retry: Do policy") || !strings.Contains(msg, "base delay") {
+			t.Fatalf("panic = %q, want context + Validate() diagnosis", msg)
 		}
 	}()
 	_ = DoWith(context.Background(), Policy{
@@ -681,15 +686,22 @@ func TestDoWith_PanicsOnInvalidPolicy(t *testing.T) {
 	}, func(context.Context) error { return nil })
 }
 
-func TestMustValidatePolicyPanicDoesNotReflectContext(t *testing.T) {
+func TestMustValidatePolicyIncludesValidateError(t *testing.T) {
 	defer func() {
 		rcv := recover()
-		if rcv != "retry: invalid policy" {
-			t.Fatalf("panic = %q, want %q", rcv, "retry: invalid policy")
+		msg, ok := rcv.(string)
+		if !ok {
+			t.Fatalf("panic type = %T, want string", rcv)
+		}
+		if !strings.Contains(msg, "retry: Do policy") {
+			t.Fatalf("panic missing context prefix: %q", msg)
+		}
+		if !strings.Contains(msg, "base delay") {
+			t.Fatalf("panic missing Validate() diagnosis: %q", msg)
 		}
 	}()
 
-	mustValidatePolicy("secret-token", Policy{})
+	mustValidatePolicy("retry: Do policy", Policy{})
 }
 
 func TestLoop_PanicsOnNilOption(t *testing.T) {
@@ -802,4 +814,127 @@ func TestPolicy_DelayPanicsOnInvalidPolicy(t *testing.T) {
 		}
 	}()
 	_ = (Policy{}).Delay(0)
+}
+
+func TestDo_SuccessWinsOverConcurrentCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	err := Do(ctx, func(_ context.Context) error {
+		cancel()
+		return nil
+	}, WithMaxRetries(0), WithBaseDelay(time.Millisecond), WithMaxDelay(time.Millisecond))
+	if err != nil {
+		t.Fatalf("successful attempt must win over concurrent cancel, got %v", err)
+	}
+}
+
+func TestDo_DelayOverrideClampedToMaxDelay(t *testing.T) {
+	var observed time.Duration
+	var calls int
+	err := Do(context.Background(), func(_ context.Context) error {
+		calls++
+		if calls >= 2 {
+			return nil
+		}
+		return errors.New("transient")
+	},
+		WithMaxRetries(3),
+		WithBaseDelay(time.Millisecond),
+		WithMaxDelay(20*time.Millisecond),
+		WithJitter(0),
+		WithDelayOverride(func(error) time.Duration {
+			return time.Hour // hostile Retry-After
+		}),
+		WithOnRetry(func(_ error, _ int, wait time.Duration) {
+			observed = wait
+		}),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if observed != 20*time.Millisecond {
+		t.Fatalf("DelayOverride wait = %v, want clamped to MaxDelay=20ms", observed)
+	}
+}
+
+func TestDo_BackoffCancelJoinsLastError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	business := errors.New("still failing")
+	var calls int
+	err := Do(ctx, func(_ context.Context) error {
+		calls++
+		if calls == 1 {
+			// cancel during the upcoming backoff sleep
+			go func() {
+				time.Sleep(5 * time.Millisecond)
+				cancel()
+			}()
+		}
+		return business
+	},
+		WithMaxRetries(5),
+		WithBaseDelay(50*time.Millisecond),
+		WithMaxDelay(50*time.Millisecond),
+		WithJitter(0),
+	)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, business) {
+		t.Fatalf("expected last fn error joined, got %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled joined, got %v", err)
+	}
+}
+
+func TestLoop_RedactsWorkerErrorsInLogs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ctx, cancel := context.WithCancel(context.Background())
+	secret := "password=super-secret-dsn"
+	n := 0
+	go func() {
+		Loop(ctx, logger, "worker", func(context.Context) error {
+			n++
+			if n >= 2 {
+				cancel()
+			}
+			return errors.New(secret)
+		}, WithMaxRetries(5), WithBaseDelay(time.Millisecond), WithMaxDelay(time.Millisecond), WithJitter(0))
+	}()
+	// Wait for cancel
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Allow final log lines to flush
+	time.Sleep(20 * time.Millisecond)
+	out := buf.String()
+	if strings.Contains(out, secret) {
+		t.Fatalf("Loop logs leaked raw worker error: %q", out)
+	}
+	if !strings.Contains(out, "redacted") && !strings.Contains(out, "error=") {
+		// redact.Error stamps contain "redacted error"
+		t.Fatalf("expected redacted error attr in logs, got %q", out)
+	}
+}
+
+func TestBackoff_NextClampsPostJitterToMaxDelay(t *testing.T) {
+	p := Policy{
+		MaxRetries: 10,
+		BaseDelay:  30 * time.Second,
+		MaxDelay:   30 * time.Second,
+		Factor:     2,
+		Jitter:     0.5, // cenkalti can return up to MaxInterval*(1+jitter)
+	}
+	bo := p.NewBackoff()
+	for i := 0; i < 20; i++ {
+		d := bo.Next()
+		if d > p.MaxDelay {
+			t.Fatalf("Next() = %v exceeds MaxDelay %v on iteration %d", d, p.MaxDelay, i)
+		}
+	}
 }

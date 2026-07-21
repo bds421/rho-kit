@@ -223,11 +223,22 @@ func TestScheduler_InvalidSchedulePanicDoesNotReflectInputs(t *testing.T) {
 		require.NotNil(t, rec)
 		msg, ok := rec.(string)
 		require.True(t, ok, "panic must be a stable string, got %T", rec)
-		assert.Equal(t, "cron: Add invalid schedule for job", msg)
+		assert.Contains(t, msg, "cron: Add invalid schedule for job:")
+		// Parser diagnosis (field count) is safe to surface.
+		assert.Contains(t, msg, "expected exactly 5 fields")
+		// Job name and schedule expression must never appear.
 		assert.NotContains(t, msg, "secret-token")
+		assert.NotContains(t, msg, "not-a-cron-expr")
 	}()
 
 	s.Add("job-secret-token", "not-a-cron-expr-secret-token", func(_ context.Context) error { return nil })
+}
+
+func TestSanitizeCronParseError(t *testing.T) {
+	assert.Equal(t, "expected exactly 5 fields, found 1",
+		sanitizeCronParseError(errors.New("expected exactly 5 fields, found 1: [not-a-cron-expr-secret-token]")))
+	assert.Equal(t, "failed to parse @every duration",
+		sanitizeCronParseError(errors.New(`failed to parse duration @every xyz: time: invalid duration "xyz"`)))
 }
 
 func TestScheduler_PanicsOnNilOption(t *testing.T) {

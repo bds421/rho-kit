@@ -19,10 +19,13 @@
 //     concurrency and let retries spike through.
 //
 // The kit's bulkhead is a counting semaphore with three rejection
-// modes: ctx-cancel-on-wait (the default), immediate rejection
-// (when MaxQueueWait is zero), or queued-then-cancel after the
-// configured wait. Wait timeouts are observable via the
-// `bulkhead_acquisitions_total{outcome=...}` Prometheus metric.
+// modes: immediate rejection (the default when MaxQueueWait is
+// unset/zero), queued wait up to MaxQueueWait, or ctx-cancel while
+// waiting. Pass [WithMaxQueueWait] with a positive duration to enable
+// queueing; use a long wait (or context deadline) for
+// "block until a slot frees or ctx cancels" behaviour. Wait timeouts
+// are observable via the `bulkhead_acquisitions_total{outcome=...}`
+// Prometheus metric.
 //
 // Bulkhead is a per-downstream primitive — construct one per
 // distinct downstream resource (database pool, downstream HTTP

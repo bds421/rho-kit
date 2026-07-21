@@ -195,3 +195,20 @@ func TestMetrics_NilSafe(t *testing.T) {
 		m.recordOutcome("x", outcomeSuccess, 1)
 	})
 }
+
+func TestMetrics_DownstreamDeadlineNotCtxCancelled(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(WithRegisterer(reg))
+	policy := Policy{
+		MaxRetries: 0, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond,
+		Factor: 2, Name: "downstream-deadline", Metrics: m,
+	}
+	// Live retry ctx; fn returns DeadlineExceeded from a sub-context.
+	err := DoWith(context.Background(), policy, func(_ context.Context) error {
+		return context.DeadlineExceeded
+	})
+	require.Error(t, err)
+	assert.Equal(t, 0.0, testutil.ToFloat64(m.outcomes.WithLabelValues("downstream-deadline", outcomeFailedCtxCancelled)),
+		"downstream DeadlineExceeded must not map to failed_ctx_cancelled")
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.outcomes.WithLabelValues("downstream-deadline", outcomeFailedExhausted)))
+}

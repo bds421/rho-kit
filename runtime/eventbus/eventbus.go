@@ -211,6 +211,10 @@ type Bus struct {
 	startMu         sync.Mutex
 	started         bool
 	stopped         bool
+	// unboundedWG tracks in-flight unbounded-async handler goroutines so
+	// Stop can wait for them (bounded by the Stop ctx), matching the
+	// worker-pool drain contract.
+	unboundedWG sync.WaitGroup
 }
 
 // New creates a [Bus]. The zero value is not usable; always use New.
@@ -234,6 +238,12 @@ func New(opts ...Option) *Bus {
 			panic("eventbus: New option must not be nil")
 		}
 		opt(b)
+	}
+	// WithUnboundedAsync and an explicit worker pool are mutually exclusive.
+	// Leaving both set used to silently build the pool and ignore unbounded
+	// mode (and then require Start before async dispatch works).
+	if b.unboundedAsync && b.poolCfg != nil && b.poolCfg.workers > 0 {
+		panic("eventbus: WithUnboundedAsync conflicts with WithWorkerPool / WithWorkerPoolBuffer")
 	}
 	defaultPool := false
 	if !b.unboundedAsync {
@@ -416,6 +426,13 @@ func (b *Bus) maybeCompactLocked(eventName string) {
 // Async handlers run in separate goroutines; their errors go to the [WithOnError] callback.
 // Returns nil if no handlers are registered for the event.
 //
+// Parameter order places *Bus first because Go methods cannot be generic;
+// this free function is the type-safe entry point. Prefer the non-generic
+// method [Bus.Publish] when the static event type is not needed (or when
+// lint tools require context.Context as the first parameter). A future
+// major version may reorder to Publish(ctx, b, event) to match
+// concurrency.FanOut / saga.Run.
+//
 // Async dispatch behavior under saturation depends on [WithOnFull]:
 //   - [OnFullError] (default): Publish returns [ErrQueueFull] without enqueuing.
 //   - [OnFullDrop]: events are dropped silently and counted via
@@ -426,13 +443,30 @@ func (b *Bus) maybeCompactLocked(eventName string) {
 // Security-critical events should use synchronous handlers (without
 // [WithAsync]) to guarantee delivery.
 func Publish[E Event](b *Bus, ctx context.Context, event E) error {
+	return publishAny(b, ctx, event)
+}
+
+// Publish dispatches a runtime [Event] with context.Context first, matching
+// Go's context-first convention. Prefer the generic free function
+// [Publish] when the compiler should pin the event type; use this method
+// when the event is already boxed as [Event] or when call-site lint rules
+// require ctx first.
+func (b *Bus) Publish(ctx context.Context, event Event) error {
+	if event == nil {
+		return errors.New("eventbus: Publish requires a non-nil event")
+	}
+	return publishAny(b, ctx, event)
+}
+
+func publishAny(b *Bus, ctx context.Context, event Event) error {
+	if ctx == nil {
+		return errors.New("eventbus: Publish requires a non-nil context")
+	}
 	// Defensive: callers can pass a typed-nil pointer (or a nil
 	// interface) for E if it is a pointer type — calling EventName on
 	// such a value panics for any implementation that reads receiver
 	// fields. Subscribe already guards against this via an
-	// instantiation probe; Publish needed the same guard. Wave 66
-	// added an explicit typed error instead of letting the panic
-	// reach the caller.
+	// instantiation probe; Publish needed the same guard.
 	if v := reflect.ValueOf(event); !v.IsValid() || (v.Kind() == reflect.Pointer && v.IsNil()) {
 		return errors.New("eventbus: Publish requires a non-nil event")
 	}
@@ -463,10 +497,21 @@ func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 			continue
 		}
 		if h.async {
+			// Async paths honor OnFullPolicy for post-Stop Publish:
+			// OnFullError surfaces ErrStopped; Drop/Block suppress it.
 			if err := b.dispatchAsync(ctx, eventName, h, event); err != nil {
 				dispatchErrs = append(dispatchErrs, fmt.Errorf("handler failed: %w", err))
 			}
 		} else {
+			// Sync handlers always observe Stop: they are the
+			// security-critical path and must not run against
+			// torn-down dependencies after Stop returns.
+			b.startMu.Lock()
+			stopped := b.stopped
+			b.startMu.Unlock()
+			if stopped {
+				return ErrStopped
+			}
 			if err := callSync(ctx, h, event); err != nil {
 				dispatchErrs = append(dispatchErrs, fmt.Errorf("handler failed: %w", err))
 			}
@@ -521,16 +566,24 @@ func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredH
 		// and the bounded path. ErrStopped is surfaced only to OnFullError
 		// callers (the default); Drop/Block treat shutdown as a silent drop,
 		// mirroring submit()/dispatchAsync's bounded behaviour.
+		//
+		// Increment the WaitGroup and spawn under startMu so Stop cannot
+		// observe stopped=true, return, then race a post-check goroutine
+		// against already-torn-down dependencies.
 		b.startMu.Lock()
-		stopped := b.stopped
-		b.startMu.Unlock()
-		if stopped {
+		if b.stopped {
+			b.startMu.Unlock()
 			if b.onFull == OnFullError {
 				return ErrStopped
 			}
 			return nil
 		}
-		go b.runAsync(ctx, eventName, h, event)
+		b.unboundedWG.Add(1)
+		go func() {
+			defer b.unboundedWG.Done()
+			b.runAsync(ctx, eventName, h, event)
+		}()
+		b.startMu.Unlock()
 		return nil
 	}
 
@@ -601,17 +654,21 @@ func (b *Bus) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop drains pending events and stops workers. No-op if no pool is configured.
-// If the context has a deadline, Stop returns ctx.Err() if the deadline is
-// reached before all workers finish draining.
+// Stop drains pending events and stops workers (or in-flight unbounded
+// async handlers when no pool is configured). If the context has a
+// deadline, Stop returns ctx.Err() if the deadline is reached before
+// drain completes.
 //
-// Idempotent and safe for concurrent callers — the worker-pool teardown
-// runs exactly once; subsequent calls return nil immediately. Subsequent
-// [Publish] calls return [ErrStopped].
+// Idempotent and safe for concurrent callers — teardown runs exactly
+// once; subsequent calls return nil immediately. Subsequent [Publish]
+// with sync handlers returns [ErrStopped]. Async publishes return
+// [ErrStopped] under [OnFullError] (the default); [OnFullDrop] and
+// [OnFullBlock] suppress it (matching saturation behaviour).
 //
-// If Stop returns ctx.Err(), the pool goroutine and its workers may still be
-// running. This is an inherent limitation of Go's lack of goroutine preemption.
-// Ensure handler functions respect context cancellation to minimize drain time.
+// If Stop returns ctx.Err(), the pool goroutine and its workers (or
+// unbounded handler goroutines) may still be running. This is an inherent
+// limitation of Go's lack of goroutine preemption. Ensure handler
+// functions respect context cancellation to minimize drain time.
 //
 // Implements lifecycle.Component.
 func (b *Bus) Stop(ctx context.Context) error {
@@ -626,17 +683,24 @@ func (b *Bus) Stop(ctx context.Context) error {
 		return nil
 	}
 
-	if b.pool == nil {
-		return nil
-	}
 	done := make(chan struct{})
 	go func() {
-		b.pool.stop()
+		if b.pool != nil {
+			b.pool.stop()
+		} else {
+			// Drain unbounded-async handlers spawned before Stop set
+			// the stopped flag (Add ran under startMu).
+			b.unboundedWG.Wait()
+		}
 		close(done)
 	}()
 	select {
 	case <-done:
-		b.logger.Info("eventbus worker pool stopped")
+		if b.pool != nil {
+			b.logger.Info("eventbus worker pool stopped")
+		} else {
+			b.logger.Info("eventbus unbounded async handlers drained")
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

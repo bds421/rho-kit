@@ -195,3 +195,17 @@ func TestBulkhead_ConcurrentLoad(t *testing.T) {
 	assert.LessOrEqual(t, int(atomic.LoadInt32(&maxObserved)), cap,
 		"in-flight must never exceed capacity under contention")
 }
+
+func TestExecuteCtx_PreCancelledCtxDoesNotAcquire(t *testing.T) {
+	b := New("pre-cancel", 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	err := b.ExecuteCtx(ctx, func(context.Context) error {
+		called = true
+		return nil
+	})
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.False(t, called, "fn must not run when ctx is already cancelled")
+	assert.Equal(t, 0, b.InFlight())
+}

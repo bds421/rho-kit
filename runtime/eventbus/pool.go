@@ -2,6 +2,7 @@ package eventbus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -78,6 +79,12 @@ func newWorkerPool(
 // Calling submit after stop is handled gracefully (recovered from channel-close
 // panic). The event is dropped and counted.
 func (p *workerPool) submit(task *asyncTask, policy OnFullPolicy, pubCtx context.Context) (ok bool, err error) {
+	// Publish already rejects nil ctx; defend here so OnFullBlock cannot
+	// panic on <-nil.Done() and have recover mask it as ErrStopped.
+	if pubCtx == nil {
+		releaseTask(task)
+		return false, errors.New("eventbus: submit requires a non-nil context")
+	}
 	if !p.started.Load() {
 		// FR-090 [MED]: pre-fix the pool buffered events before
 		// Start() and dropped them on stop without ever running. The

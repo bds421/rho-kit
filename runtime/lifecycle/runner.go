@@ -170,7 +170,20 @@ func (r *Runner) Run(ctx context.Context) error {
 		case <-runDone:
 			return
 		}
+		// Re-check runDone before Notify. Run's deferred signal.Stop may
+		// already have run (defers fire before close(runDone)), so a
+		// late-scheduled goroutine that Notify'd after Stop would leave
+		// forceQuit permanently registered and disable default SIGINT/
+		// SIGTERM handling for the rest of the process lifetime.
+		select {
+		case <-runDone:
+			return
+		default:
+		}
 		signal.Notify(forceQuit, os.Interrupt, syscall.SIGTERM)
+		// Stop from this goroutine too so a Notify that races past the
+		// re-check above is always unregistered when we exit.
+		defer signal.Stop(forceQuit)
 		select {
 		case <-forceQuit:
 			// Second signal: cancel the stop timeout context so all pending
@@ -263,8 +276,32 @@ func (r *Runner) Run(ctx context.Context) error {
 		return nil
 	})
 
-	startErr := eg.Wait()
-	return errors.Join(startErr, stopErr)
+	// Wait for component Start exits, but do not hang forever after a
+	// second-signal force-quit: a component whose Start ignores ctx can
+	// otherwise leave Run blocked until SIGKILL despite the "forcing
+	// immediate shutdown" log (audit: force-quit must abandon stragglers).
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- eg.Wait() }()
+
+	select {
+	case startErr := <-waitCh:
+		return errors.Join(startErr, stopErr)
+	case <-forceCtx.Done():
+		// Second signal already cancelled stop budgets. Give one final
+		// stopTimeout window for cooperative exit, then abandon.
+		timer := time.NewTimer(r.stopTimeout)
+		defer timer.Stop()
+		select {
+		case startErr := <-waitCh:
+			return errors.Join(startErr, stopErr)
+		case <-timer.C:
+			r.logger.Error("forced shutdown abandoned components still blocked in Start")
+			return errors.Join(
+				errors.New("lifecycle: forced shutdown abandoned components still blocked in Start"),
+				stopErr,
+			)
+		}
+	}
 }
 
 // stopAll stops all components sequentially in reverse registration order.

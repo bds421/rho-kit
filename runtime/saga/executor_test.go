@@ -462,3 +462,112 @@ func TestMemoryStateStore_PutEmptyIDRejectsAsValidationError(t *testing.T) {
 	// The rejected write must not be persisted.
 	require.Equal(t, 0, s.Len())
 }
+
+func TestDurableExecutor_StartPanicSurfacesAsError(t *testing.T) {
+	store := saga.NewMemoryStateStore()
+	exec, err := saga.NewDurableExecutor(store)
+	require.NoError(t, err)
+	require.NoError(t, exec.Register(&saga.DurableDefinition{
+		Name: "panic-saga",
+		Steps: []saga.DurableStep{{
+			Name: "boom",
+			Forward: func(context.Context, []byte) ([]byte, error) {
+				panic("secret-token-xyz")
+			},
+		}},
+	}))
+
+	instID, err := exec.Start(context.Background(), "panic-saga", nil)
+	require.Error(t, err)
+	require.NotEmpty(t, instID)
+	require.NotContains(t, err.Error(), "secret-token-xyz")
+
+	inst, getErr := store.Get(context.Background(), instID)
+	require.NoError(t, getErr)
+	require.NotContains(t, inst.LastError, "secret-token-xyz")
+}
+
+func TestDurableExecutor_CompensationIgnoresCallerCancel(t *testing.T) {
+	store := saga.NewMemoryStateStore()
+	exec, err := saga.NewDurableExecutor(store)
+	require.NoError(t, err)
+
+	var compensated atomic.Bool
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, exec.Register(&saga.DurableDefinition{
+		Name: "comp-ctx",
+		Steps: []saga.DurableStep{
+			{
+				Name: "a",
+				Forward: func(context.Context, []byte) ([]byte, error) {
+					return []byte(`"a"`), nil
+				},
+				Compensate: func(ctx context.Context, _, _ []byte) error {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					compensated.Store(true)
+					return nil
+				},
+			},
+			{
+				Name: "b",
+				Forward: func(context.Context, []byte) ([]byte, error) {
+					cancel() // cancel the caller ctx mid-flight
+					return nil, errors.New("downstream secret=s3cr3t")
+				},
+			},
+		},
+	}))
+
+	instID, err := exec.Start(ctx, "comp-ctx", nil)
+	require.Error(t, err)
+	require.True(t, compensated.Load(), "compensation must run despite cancelled parent")
+	inst, getErr := store.Get(context.Background(), instID)
+	require.NoError(t, getErr)
+	require.NotContains(t, inst.LastError, "s3cr3t")
+}
+
+func TestDurableExecutor_ConcurrentRunSameInstanceDoesNotDoubleForward(t *testing.T) {
+	store := saga.NewMemoryStateStore()
+	exec, err := saga.NewDurableExecutor(store)
+	require.NoError(t, err)
+
+	var forwards atomic.Int32
+	gate := make(chan struct{})
+	require.NoError(t, exec.Register(&saga.DurableDefinition{
+		Name: "once",
+		Steps: []saga.DurableStep{{
+			Name: "only",
+			Forward: func(context.Context, []byte) ([]byte, error) {
+				forwards.Add(1)
+				<-gate
+				return []byte(`"ok"`), nil
+			},
+		}},
+	}))
+
+	id := "inst-race"
+	require.NoError(t, store.Put(context.Background(), saga.Instance{
+		ID: id, Definition: "once", State: saga.StatePending,
+	}))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			errs <- exec.Run(context.Background(), id)
+		}()
+	}
+	// Let both attempt to enter executeInstance; lock serializes them.
+	time.Sleep(50 * time.Millisecond)
+	close(gate)
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		require.NoError(t, e)
+	}
+	require.Equal(t, int32(1), forwards.Load(), "per-instance lock must serialize Forward")
+}

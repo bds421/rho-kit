@@ -86,17 +86,29 @@ const (
 // classifyRetryOutcome maps the terminal err and ctx into the bounded
 // outcome label. The classification matches the loop body's return
 // paths in doWithPolicy: RetryIf-rejected → non_retryable;
-// MaxRetries/MaxElapsedTime → exhausted; ctx done → ctx_cancelled;
-// nil err → success. Anything else is grouped under exhausted (the
-// catch-all terminal path).
+// MaxRetries/MaxElapsedTime → exhausted; retry ctx done →
+// ctx_cancelled; nil err → success. Anything else is grouped under
+// exhausted (the catch-all terminal path).
+//
+// Downstream timeouts that wrap context.DeadlineExceeded while the
+// retry ctx itself is still alive are classified as exhausted, not
+// ctx_cancelled — only the retry context's own cancellation counts
+// as failed_ctx_cancelled.
 func classifyRetryOutcome(err error, ctx context.Context) string {
 	if err == nil {
 		return outcomeSuccess
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	// Prefer the retry context's own state over the terminal error.
+	// fn may wrap a per-attempt DeadlineExceeded from a downstream
+	// sub-context even when the retry loop's ctx is still live.
+	if ctx != nil && ctx.Err() != nil {
 		return outcomeFailedCtxCancelled
 	}
-	if ctx != nil && ctx.Err() != nil {
+	// Bare context.Canceled without a live ctx argument is treated
+	// as cancellation (Do with a cancelled Background-derived ctx
+	// still passes that ctx in). DeadlineExceeded alone is not —
+	// without a dead retry ctx it is an ordinary exhausted failure.
+	if errors.Is(err, context.Canceled) {
 		return outcomeFailedCtxCancelled
 	}
 	// The loop body returns the underlying err directly in the

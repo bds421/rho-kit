@@ -140,15 +140,39 @@ func TestExecuteCtx_PassesCtxToFn(t *testing.T) {
 	assert.Equal(t, ctx, got)
 }
 
-func TestExecuteCtx_NilReceiverPassesThrough(t *testing.T) {
+func TestExecuteCtx_NilReceiverPanics(t *testing.T) {
 	var cb *CircuitBreaker
-	called := false
-	err := cb.ExecuteCtx(context.Background(), func(_ context.Context) error {
-		called = true
-		return nil
+	assert.PanicsWithValue(t, "circuitbreaker: ExecuteCtx called on nil *CircuitBreaker", func() {
+		_ = cb.ExecuteCtx(context.Background(), func(_ context.Context) error {
+			return nil
+		})
 	})
-	assert.True(t, called)
-	assert.NoError(t, err)
+}
+
+func TestExecute_NilReceiverPanics(t *testing.T) {
+	var cb *CircuitBreaker
+	assert.PanicsWithValue(t, "circuitbreaker: Execute called on nil *CircuitBreaker", func() {
+		_ = cb.Execute(func() error { return nil })
+	})
+}
+
+func TestNewCircuitBreaker_PanicsOnNonPositiveThreshold(t *testing.T) {
+	assert.PanicsWithValue(t, "circuitbreaker: NewCircuitBreaker requires threshold >= 1", func() {
+		NewCircuitBreaker(0, time.Minute)
+	})
+	assert.PanicsWithValue(t, "circuitbreaker: NewCircuitBreaker requires threshold >= 1", func() {
+		NewCircuitBreaker(-1, time.Minute)
+	})
+}
+
+func TestState_NilReceiverPanics(t *testing.T) {
+	var cb *CircuitBreaker
+	assert.PanicsWithValue(t, "circuitbreaker: State called on nil *CircuitBreaker", func() {
+		_ = cb.State()
+	})
+	assert.PanicsWithValue(t, "circuitbreaker: StateValue called on nil *CircuitBreaker", func() {
+		_ = cb.StateValue()
+	})
 }
 
 // TestExecuteCtx_NilCtxRejected pins the contract that ExecuteCtx with a
@@ -239,4 +263,36 @@ func TestExecuteCtx_OpenCircuitReturnsErrCircuitOpen(t *testing.T) {
 	})
 	assert.False(t, called)
 	assert.ErrorIs(t, err, ErrCircuitOpen)
+}
+
+func TestCircuitBreaker_ExcludedDoesNotResetFailureStreak(t *testing.T) {
+	// threshold 3: two failures, an excluded cancel, then one more failure
+	// must still open. If cancel were counted as success the streak would reset.
+	cb := NewCircuitBreaker(3, time.Minute)
+
+	_ = cb.Execute(func() error { return errors.New("fail 1") })
+	_ = cb.Execute(func() error { return errors.New("fail 2") })
+	assert.Equal(t, "closed", cb.State())
+
+	err := cb.Execute(func() error { return context.Canceled })
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, "closed", cb.State(), "cancel must not open the breaker")
+
+	_ = cb.Execute(func() error { return errors.New("fail 3") })
+	assert.Equal(t, "open", cb.State(), "failure streak must survive interleaving cancels")
+}
+
+func TestCircuitBreaker_WithIsExcluded(t *testing.T) {
+	ignored := errors.New("ignore-me")
+	cb := NewCircuitBreaker(2, time.Minute, WithIsExcluded(func(err error) bool {
+		return errors.Is(err, ignored)
+	}))
+
+	_ = cb.Execute(func() error { return errors.New("fail 1") })
+	err := cb.Execute(func() error { return ignored })
+	assert.ErrorIs(t, err, ignored)
+	assert.Equal(t, "closed", cb.State())
+
+	_ = cb.Execute(func() error { return errors.New("fail 2") })
+	assert.Equal(t, "open", cb.State(), "excluded errors must not reset consecutive failures")
 }

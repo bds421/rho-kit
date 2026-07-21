@@ -41,8 +41,24 @@ type Option func(*breakerConfig)
 
 // WithIsSuccessful overrides the success predicate used to decide whether
 // an error should count as a failure. Returning true treats the call as success.
+//
+// Prefer [WithIsExcluded] for errors that should neither advance failure
+// progress nor reset consecutive failures (for example context.Canceled).
+// Treating excluded errors as "success" erases failure streaks and can close
+// a half-open circuit against a still-broken dependency.
 func WithIsSuccessful(fn func(err error) bool) Option {
 	return func(c *breakerConfig) { c.settings.IsSuccessful = fn }
+}
+
+// WithIsExcluded overrides the exclusion predicate. Returning true treats the
+// error as neither a success nor a failure: consecutive-failure progress is
+// preserved, and a half-open probe is not closed by the excluded outcome.
+//
+// The package default excludes [context.Canceled] so caller aborts cannot
+// trip or heal the breaker. Pair with [WithIsSuccessful] when a custom
+// success predicate is also needed.
+func WithIsExcluded(fn func(err error) bool) Option {
+	return func(c *breakerConfig) { c.settings.IsExcluded = fn }
 }
 
 // WithPermanentSuccess treats apperror.Permanent as successful calls, preventing
@@ -54,13 +70,17 @@ func WithPermanentSuccess() Option {
 }
 
 // defaultIsSuccessful is the package-level default for the success
-// predicate. It ignores caller-driven cancellation (context.Canceled)
-// because a client aborting an in-flight request is not evidence the
-// downstream is unhealthy.
+// predicate: only a nil error counts as success.
 func defaultIsSuccessful(err error) bool {
-	if err == nil {
-		return true
-	}
+	return err == nil
+}
+
+// defaultIsExcluded ignores caller-driven cancellation (context.Canceled)
+// because a client aborting an in-flight request is not evidence the
+// downstream is unhealthy. Using IsExcluded (not IsSuccessful) preserves
+// consecutive-failure progress so interleaving cancels cannot prevent a
+// hard-down dependency from tripping the breaker.
+func defaultIsExcluded(err error) bool {
 	return errors.Is(err, context.Canceled)
 }
 
@@ -218,7 +238,11 @@ type CircuitBreaker struct {
 // consecutive failures and stays open for cooldownPeriod before probing.
 func NewCircuitBreaker(threshold int, cooldownPeriod time.Duration, opts ...Option) *CircuitBreaker {
 	if threshold < 1 {
-		threshold = 1
+		// Fail fast (kit convention, same as bulkhead.New / retry policy
+		// validation): silent clamp-to-1 turned an unset YAML threshold
+		// of 0 into "trip on every failure", which looks like a
+		// downstream outage rather than a wiring bug.
+		panic("circuitbreaker: NewCircuitBreaker requires threshold >= 1")
 	}
 
 	settings := gobreaker.Settings{
@@ -227,12 +251,12 @@ func NewCircuitBreaker(threshold int, cooldownPeriod time.Duration, opts ...Opti
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
 			return counts.ConsecutiveFailures >= uint32(threshold)
 		},
-		// Default success predicate: treat caller-driven cancellation
-		// (context.Canceled) as success so a flood of cancelled requests
-		// from a flaky client cannot trip the circuit and harm
-		// unrelated callers. Server-side timeouts (DeadlineExceeded)
-		// remain failures.
+		// Default predicates: only nil errors are successes. Caller-driven
+		// cancellation (context.Canceled) is excluded (neither success nor
+		// failure) so cancels neither trip the breaker nor erase failure
+		// progress. Server-side timeouts (DeadlineExceeded) remain failures.
 		IsSuccessful: defaultIsSuccessful,
+		IsExcluded:   defaultIsExcluded,
 	}
 	cfg := &breakerConfig{settings: &settings}
 	for _, opt := range opts {
@@ -267,23 +291,23 @@ func NewCircuitBreaker(threshold int, cooldownPeriod time.Duration, opts ...Opti
 // Execute runs fn through the circuit breaker. If the circuit is open,
 // it returns ErrCircuitOpen without calling fn.
 //
-// A nil receiver is treated as a no-op: fn is invoked directly with no
-// breaker semantics. This makes it safe to compose with optional
-// dependencies (e.g. wrapping an outbound call when a breaker may or may
-// not have been wired up).
+// A nil receiver panics. Optional breakers must be constructed
+// explicitly (e.g. via a local no-op wrapper) rather than left nil —
+// silent fail-open on a nil receiver hid missing wiring and let
+// downstreams run unguarded.
 func (cb *CircuitBreaker) Execute(fn func() error) error {
 	if cb == nil {
-		return fn()
+		panic("circuitbreaker: Execute called on nil *CircuitBreaker")
 	}
-	_, span := cb.startSpan(context.Background(), "breaker.Execute")
-	defer span.End()
+	// No OTel span: ctx-less Execute has no parent trace to join, so a
+	// span would create an orphan root trace per call. Metrics still
+	// cover aggregates; prefer ExecuteCtx to propagate request tracing.
 	_, err := cb.cb.Execute(func() (any, error) {
 		return nil, fn()
 	})
 	if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
 		err = ErrCircuitOpen
 	}
-	recordResult(span, err)
 	cb.metrics.recordCall(cb.name, callOutcome(err, cb.isSuccessful))
 	return err
 }
@@ -294,19 +318,22 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 // ErrCircuitOpen is returned without calling fn.
 //
 // fn receives ctx so it can stop work on cancellation. The breaker's
-// failure-counting predicate (see [WithIsSuccessful]) decides whether
+// predicates (see [WithIsSuccessful], [WithIsExcluded]) decide whether
 // ctx.Err() returned by fn counts as a failure — by default
-// context.Canceled is treated as success (a caller aborting an in-flight
-// request is not evidence the downstream is unhealthy) while
-// context.DeadlineExceeded counts as a failure. Use [WithIsSuccessful]
-// to change this when callers may cancel for reasons unrelated to the
-// downstream's health (e.g. shedding load on a slow client).
+// context.Canceled is excluded (neither success nor failure; a caller
+// aborting an in-flight request is not evidence the downstream is
+// unhealthy) while context.DeadlineExceeded counts as a failure. Use
+// [WithIsExcluded] / [WithIsSuccessful] to change this when callers may
+// cancel for reasons unrelated to the downstream's health.
 //
 // A nil ctx is rejected with an error rather than panicking, matching
 // the sibling [bulkhead.Bulkhead.ExecuteCtx] contract.
 //
-// A nil receiver is treated as a no-op: fn is invoked directly with no
-// breaker semantics, after the ctx pre-check.
+// A nil receiver panics (same fail-fast contract as [Execute]). The
+// nil-context and already-cancelled checks run first so a nil breaker
+// with a bad ctx still surfaces the ctx error rather than the nil
+// panic when both are wrong — ctx validation is independent of the
+// receiver.
 func (cb *CircuitBreaker) ExecuteCtx(ctx context.Context, fn func(ctx context.Context) error) error {
 	if ctx == nil {
 		return errors.New("circuitbreaker: ExecuteCtx requires a non-nil context")
@@ -315,7 +342,7 @@ func (cb *CircuitBreaker) ExecuteCtx(ctx context.Context, fn func(ctx context.Co
 		return err
 	}
 	if cb == nil {
-		return fn(ctx)
+		panic("circuitbreaker: ExecuteCtx called on nil *CircuitBreaker")
 	}
 	_, span := cb.startSpan(ctx, "breaker.ExecuteCtx")
 	defer span.End()
@@ -331,17 +358,19 @@ func (cb *CircuitBreaker) ExecuteCtx(ctx context.Context, fn func(ctx context.Co
 }
 
 // State returns the current circuit state as a string (for observability).
+// A nil receiver panics (fail-fast; mirrors [Execute]).
 func (cb *CircuitBreaker) State() string {
 	if cb == nil {
-		return "unknown"
+		panic("circuitbreaker: State called on nil *CircuitBreaker")
 	}
 	return cb.cb.State().String()
 }
 
 // StateValue returns the current circuit state as a typed value.
+// A nil receiver panics (fail-fast; mirrors [Execute]).
 func (cb *CircuitBreaker) StateValue() State {
 	if cb == nil {
-		return StateUnknown
+		panic("circuitbreaker: StateValue called on nil *CircuitBreaker")
 	}
 	return mapState(cb.cb.State())
 }

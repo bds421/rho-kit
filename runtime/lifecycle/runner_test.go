@@ -738,3 +738,21 @@ func TestRunner_StopErrorLogIncludesElapsed(t *testing.T) {
 		t.Fatalf("log missing elapsed= attribute; got:\n%s", final)
 	}
 }
+
+// TestFuncComponent_StartCancelsDerivedContextOnReturn pins that a
+// startFn which returns on its own (without Stop) still cancels the
+// derived context so child resources are not leaked until Stop.
+func TestFuncComponent_StartCancelsDerivedContextOnReturn(t *testing.T) {
+	var sawDone atomic.Bool
+	fc := NewFuncComponent(func(ctx context.Context) error {
+		go func() {
+			<-ctx.Done()
+			sawDone.Store(true)
+		}()
+		// Return immediately without waiting for Stop.
+		return nil
+	})
+	require.NoError(t, fc.Start(context.Background()))
+	require.Eventually(t, sawDone.Load, time.Second, 5*time.Millisecond,
+		"derived context must be cancelled when startFn returns early")
+}

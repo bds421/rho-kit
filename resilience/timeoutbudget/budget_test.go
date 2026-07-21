@@ -218,3 +218,44 @@ func newFakeClock(start time.Time) *fakeClock { return &fakeClock{t: start} }
 func (c *fakeClock) now() time.Time { return c.t }
 
 func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
+// TestWithReservation_ClearDoesNotCorruptSiblingRestores guards the
+// generation-based clear semantics: a clear must invalidate prior
+// restores so they cannot shrink a reservation granted after the clear.
+func TestWithReservation_ClearDoesNotCorruptSiblingRestores(t *testing.T) {
+	_, b, cancel := New(context.Background(), time.Second)
+	defer cancel()
+
+	// A reserves 50ms.
+	restoreA := b.WithReservation(50 * time.Millisecond)
+	require.Equal(t, 50*time.Millisecond, b.Reservation())
+
+	// B clears (d<=0 path).
+	restoreClear := b.WithReservation(0)
+	require.Equal(t, time.Duration(0), b.Reservation())
+	restoreClear() // no-op
+
+	// C reserves 100ms after the clear.
+	restoreC := b.WithReservation(100 * time.Millisecond)
+	require.Equal(t, 100*time.Millisecond, b.Reservation())
+
+	// A's deferred restore must NOT subtract its pre-clear 50ms from C.
+	restoreA()
+	assert.Equal(t, 100*time.Millisecond, b.Reservation(),
+		"restore from a pre-clear reservation must not shrink post-clear reservations")
+
+	restoreC()
+	assert.Equal(t, time.Duration(0), b.Reservation())
+}
+
+func TestBudget_ClearInvalidatesOutstandingRestores(t *testing.T) {
+	_, b, cancel := New(context.Background(), time.Second)
+	defer cancel()
+
+	restore := b.WithReservation(75 * time.Millisecond)
+	b.Clear()
+	require.Equal(t, time.Duration(0), b.Reservation())
+
+	restore() // must be a no-op after Clear
+	assert.Equal(t, time.Duration(0), b.Reservation())
+}

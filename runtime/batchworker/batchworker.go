@@ -178,6 +178,14 @@ func (w *Worker) Start(ctx context.Context) error {
 
 	w.logger.Info("batch worker started", "name", w.name, "interval", w.interval)
 
+	// Already-cancelled Start ctx (shutdown race or test fixture) must
+	// exit cleanly without a spurious first batch error.
+	if err := ctx.Err(); err != nil {
+		w.doneOnce.Do(func() { close(w.done) })
+		w.logger.Info("batch worker stopped", "name", w.name)
+		return nil
+	}
+
 	// Run once immediately on start.
 	w.runBatch(ctx)
 

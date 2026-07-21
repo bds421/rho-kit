@@ -75,18 +75,22 @@ func (d *DurableDefinition) Validate() error {
 // checkpointing state at every step boundary so a process crash can
 // be recovered by [DurableExecutor.Resume] on the next start.
 //
-// Multiple replicas may share the same [StateStore] safely; the
-// executor uses optimistic-concurrency semantics on the store (last
-// writer wins for the same instance state). Use a [StateStore]
-// backend that serialises updates per instance (e.g. data/saga/pgstore
-// uses an UPDATE ... WHERE updated_at = $old check) to prevent two
-// replicas executing the same step in parallel.
+// Multiple replicas may share the same [StateStore] safely only when
+// the backend serialises ownership per instance (e.g. data/saga/pgstore
+// claim leases). Within a single process the executor holds a per-instance
+// mutex so concurrent Start/Run/Resume of the same ID cannot double-fire
+// Forward steps. Cross-process safety still depends on the store.
 type DurableExecutor struct {
 	store       StateStore
 	logger      *slog.Logger
 	definitions map[string]*DurableDefinition
 
 	mu sync.Mutex
+	// instanceMu serialises executeInstance per saga ID inside this
+	// process. Without it two goroutines can both Get the same
+	// non-terminal instance, both observe CurrentStep=N, and both
+	// invoke Steps[N].Forward — double-applying external side effects.
+	instanceMu sync.Map // map[string]*sync.Mutex
 }
 
 // ExecutorOption configures a [DurableExecutor].
@@ -275,7 +279,32 @@ func (e *DurableExecutor) lookupDef(name string) (*DurableDefinition, error) {
 
 // executeInstance is the core state-machine driver. Called from Start,
 // Run, and Resume — they differ only in how the instance ID arrives.
-func (e *DurableExecutor) executeInstance(ctx context.Context, def *DurableDefinition, instanceID string) error {
+//
+// Panic recovery lives here (not only in Resume) so a panicking Forward
+// / Compensate during Start/Run yields an error instead of crashing the
+// caller and leaving the instance stuck in StateRunning with no
+// LastError and no compensation attempted.
+func (e *DurableExecutor) executeInstance(ctx context.Context, def *DurableDefinition, instanceID string) (err error) {
+	unlock := e.lockInstance(instanceID)
+	defer unlock()
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			e.logger.Error("saga step panicked",
+				slog.String("instance", instanceID),
+				slog.String("definition", def.Name),
+				redact.Panic(rec),
+			)
+			// Best-effort: persist a failure marker so Resume can pick up.
+			if inst, getErr := e.store.Get(ctx, instanceID); getErr == nil && !inst.IsTerminal() {
+				inst.LastError = redact.PanicValue(rec)
+				inst.State = StateCompensating
+				_ = e.store.Put(ctx, inst)
+			}
+			err = fmt.Errorf("saga: step panicked: %s", redact.PanicValue(rec))
+		}
+	}()
+
 	inst, err := e.store.Get(ctx, instanceID)
 	if err != nil {
 		return err
@@ -295,7 +324,7 @@ func (e *DurableExecutor) executeInstance(ctx context.Context, def *DurableDefin
 
 	for inst.CurrentStep < len(def.Steps) {
 		if err := ctx.Err(); err != nil {
-			inst.LastError = err.Error()
+			inst.LastError = redact.ErrorValue(err)
 			_ = e.store.Put(ctx, inst)
 			return err
 		}
@@ -307,9 +336,9 @@ func (e *DurableExecutor) executeInstance(ctx context.Context, def *DurableDefin
 				slog.String("instance", inst.ID),
 				slog.String("definition", def.Name),
 				slog.String("step", step.Name),
-				slog.String("error", fwdErr.Error()),
+				redact.Error(fwdErr),
 			)
-			inst.LastError = fwdErr.Error()
+			inst.LastError = redact.ErrorValue(fwdErr)
 			inst.State = StateCompensating
 			if err := e.store.Put(ctx, inst); err != nil {
 				return fmt.Errorf("saga: persist failure state: %w", err)
@@ -365,9 +394,19 @@ func (e *DurableExecutor) driveCompensationAfterForward(ctx context.Context, def
 // resume (after a crash that left an instance in StateCompensating).
 //
 // Walks indices from inst.CurrentStep-1 down to 0, skipping any in
-// inst.Compensated. Each successful compensate is appended to
-// Compensated and persisted so a re-resume doesn't double-fire.
+// inst.Compensated. Each compensate attempt (success OR failure) is
+// appended to Compensated and persisted — compensation is best-effort
+// and is not re-attempted on Resume for a previously-tried index.
+// Callers needing retry-on-compensate-failure should keep the step
+// out of Compensated themselves via a custom StateStore.
+//
+// Compensation runs under context.WithoutCancel so a cancelled or
+// deadline-expired caller (typical for HTTP-driven Start) cannot
+// abort rollback mid-way, matching the in-memory [Run] rollBack path.
 func (e *DurableExecutor) driveCompensation(ctx context.Context, def *DurableDefinition, inst Instance) error {
+	// Detach cancellation/deadline; preserve values. Match saga.Run's
+	// rollBack so a timed-out request still completes compensation.
+	compCtx := context.WithoutCancel(ctx)
 	already := make(map[int]struct{}, len(inst.Compensated))
 	for _, idx := range inst.Compensated {
 		already[idx] = struct{}{}
@@ -384,28 +423,39 @@ func (e *DurableExecutor) driveCompensation(ctx context.Context, def *DurableDef
 			if i < len(inst.StepResults) {
 				output = inst.StepResults[i]
 			}
-			if err := step.Compensate(ctx, input, output); err != nil {
+			if err := step.Compensate(compCtx, input, output); err != nil {
 				e.logger.Warn("saga compensate step failed",
 					slog.String("instance", inst.ID),
 					slog.String("step", step.Name),
-					slog.String("error", err.Error()),
+					redact.Error(err),
 				)
 				compErrs = append(compErrs, CompensateStepError{Index: i, Name: step.Name, Cause: err})
 			}
 		}
 		inst.Compensated = append(inst.Compensated, i)
-		if err := e.store.Put(ctx, inst); err != nil {
+		if err := e.store.Put(compCtx, inst); err != nil {
 			return fmt.Errorf("saga: persist compensated %d: %w", i, err)
 		}
 	}
 	inst.State = StateFailed
-	if err := e.store.Put(ctx, inst); err != nil {
+	if err := e.store.Put(compCtx, inst); err != nil {
 		return fmt.Errorf("saga: persist failed state: %w", err)
 	}
 	if len(compErrs) == 0 {
 		return nil
 	}
 	return &CompensateError{Errors: compErrs}
+}
+
+// lockInstance acquires the per-instance mutex for id and returns an
+// unlock func. Safe for concurrent use; the mutex is retained in the
+// map for the process lifetime (saga IDs are not unbounded hot keys —
+// each Start mints a new ID and completed instances are not re-driven).
+func (e *DurableExecutor) lockInstance(id string) (unlock func()) {
+	v, _ := e.instanceMu.LoadOrStore(id, &sync.Mutex{})
+	m := v.(*sync.Mutex)
+	m.Lock()
+	return m.Unlock
 }
 
 // stepInput returns the bytes passed to step CurrentStep's Forward.

@@ -627,3 +627,29 @@ func sliceArrayPtr[T any](s []T) uintptr {
 	}
 	return reflect.ValueOf(s).Pointer()
 }
+
+func TestNew_PanicsOnUnboundedWithWorkerPool(t *testing.T) {
+	assert.Panics(t, func() {
+		New(WithUnboundedAsync(), WithWorkerPool(4))
+	})
+}
+
+func TestPublish_NilContextRejected(t *testing.T) {
+	bus := New(WithUnboundedAsync())
+	err := Publish[testEvent](bus, nil, testEvent{ID: "n"}) //nolint:staticcheck // intentional nil-ctx contract test
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
+func TestPublish_AfterStopReturnsErrStopped(t *testing.T) {
+	bus := New(WithUnboundedAsync())
+	called := atomic.Bool{}
+	Subscribe(bus, func(context.Context, testEvent) error {
+		called.Store(true)
+		return nil
+	})
+	require.NoError(t, bus.Stop(context.Background()))
+	err := Publish(bus, context.Background(), testEvent{ID: "n"})
+	assert.ErrorIs(t, err, ErrStopped)
+	assert.False(t, called.Load())
+}

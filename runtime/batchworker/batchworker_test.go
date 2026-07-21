@@ -341,3 +341,16 @@ func assertMetricLabel(t *testing.T, mfs []*io_prometheus_client.MetricFamily, n
 	}
 	t.Errorf("expected metric %s with label %s=%s", name, labelName, labelValue)
 }
+
+func TestWorker_StartPreCancelledCtxSkipsFirstBatch(t *testing.T) {
+	calls := atomic.Int32{}
+	w := New("pre-cancel", time.Hour, func(context.Context) error {
+		calls.Add(1)
+		return nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := w.Start(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), calls.Load(), "pre-cancelled Start must not run a batch")
+}

@@ -3,15 +3,17 @@
 //
 // # Model
 //
-// A [Component] has three responsibilities:
+// A [Component] has two responsibilities:
 //
-//   - Name() returns a stable identifier used in logs and metrics.
 //   - Start(ctx) blocks until ctx is cancelled or the component fails.
 //   - Stop(ctx) performs graceful shutdown. The Runner derives per-component
 //     contexts from a single shared shutdown budget configured with
 //     [WithStopTimeout] (default 30s); each Stop observes ctx.Done() once
 //     that shared budget is exhausted, not after a fresh per-component
 //     timer.
+//
+// Component names are supplied externally via [Runner.Add] / [Runner.AddFunc]
+// (not a method on Component) so adapters stay free of naming concerns.
 //
 // [Runner] orchestrates a set of components: Start them concurrently, block
 // on OS signals (SIGINT, SIGTERM), then Stop them in reverse registration

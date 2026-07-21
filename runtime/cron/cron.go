@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,12 +17,40 @@ import (
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
-// defaultJobTimeout caps any cron job that has no explicit
-// SetJobTimeout (audit FR-093). 30 minutes is generous for typical
-// scheduled work — index rebuilds, data exports — and bounds the
-// "forever-stuck job" failure mode that causes SkipIfStillRunning
+// DefaultJobTimeout caps any cron job that has no explicit
+// [Scheduler.SetJobTimeout] (audit FR-093). 30 minutes is generous for
+// typical scheduled work — index rebuilds, data exports — and bounds
+// the "forever-stuck job" failure mode that causes SkipIfStillRunning
 // to skip every future tick.
-const defaultJobTimeout = 30 * time.Minute
+const DefaultJobTimeout = 30 * time.Minute
+
+// defaultJobTimeout is the historical unexported alias retained for
+// internal references; prefer [DefaultJobTimeout] in new code and docs.
+const defaultJobTimeout = DefaultJobTimeout
+
+// sanitizeCronParseError strips the schedule expression that robfig/cron
+// embeds in parse errors (e.g. "expected exactly 5 fields, found 1: [expr]")
+// so panic messages stay diagnostic without reflecting caller-supplied
+// schedule text.
+func sanitizeCronParseError(err error) string {
+	if err == nil {
+		return "unknown parse error"
+	}
+	msg := err.Error()
+	// Standard field-count errors end with ": [expression]".
+	if i := strings.Index(msg, ": ["); i >= 0 {
+		return msg[:i]
+	}
+	// @every parse failures embed the duration literal; keep only the class.
+	if strings.Contains(msg, "failed to parse duration") || strings.Contains(msg, "invalid duration") {
+		return "failed to parse @every duration"
+	}
+	// Fallback: drop anything after the first colon-space that might carry input.
+	if i := strings.Index(msg, ": "); i >= 0 {
+		return msg[:i]
+	}
+	return "invalid cron expression"
+}
 
 // Scheduler runs periodic jobs on cron schedules. It wraps robfig/cron/v3 with
 // structured logging, Prometheus metrics, and context-based lifecycle.
@@ -113,7 +142,7 @@ func New(logger *slog.Logger, opts ...Option) *Scheduler {
 	}
 }
 
-// WithJobTimeout configures a per-run wall-clock budget for the named
+// SetJobTimeout configures a per-run wall-clock budget for the named
 // job. The job's context is derived from the scheduler ctx with
 // WithTimeout(d), so after d the context reports
 // `ctx.Err() == context.DeadlineExceeded`.
@@ -128,8 +157,8 @@ func New(logger *slog.Logger, opts ...Option) *Scheduler {
 //
 // FR-094 [LOW]: panics on d <= 0 — pre-fix the call silently
 // returned without configuring a timeout, leaving the job
-// unbounded. Pass [defaultJobTimeout] explicitly when no per-job
-// override is needed.
+// unbounded. Pass [DefaultJobTimeout] (30m) explicitly when no
+// per-job override is needed.
 //
 // Call AFTER Add — the timeout takes effect on the next tick. Repeated
 // calls override the previous timeout.
@@ -138,7 +167,9 @@ func (s *Scheduler) SetJobTimeout(name string, d time.Duration) {
 		panic("cron: SetJobTimeout requires d > 0")
 	}
 	if err := promutil.ValidateStaticLabelValue("job name", name); err != nil {
-		panic("cron: SetJobTimeout invalid job name")
+		// Do not interpolate name: invalid names may contain control
+		// bytes or attacker-controlled content unsafe in panic strings.
+		panic("cron: SetJobTimeout invalid job name: " + err.Error())
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -163,7 +194,11 @@ func (s *Scheduler) Add(name, schedule string, fn func(ctx context.Context) erro
 	}
 	wrapped := s.wrapJob(name, fn)
 	if _, err := s.cron.AddFunc(schedule, wrapped); err != nil {
-		panic("cron: Add invalid schedule for job")
+		// Include a sanitised parser diagnosis so operators can see
+		// "too many fields" / "bad duration" without reflecting the
+		// schedule expression or job name (both may carry secrets /
+		// attacker input — see TestScheduler_InvalidSchedulePanicDoesNotReflectInputs).
+		panic("cron: Add invalid schedule for job: " + sanitizeCronParseError(err))
 	}
 	s.mu.RLock()
 	_, hasTimeout := s.jobTimeouts[name]

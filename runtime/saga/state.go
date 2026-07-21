@@ -54,9 +54,10 @@ type Instance struct {
 	// Compensate reads its corresponding result so rollback has the
 	// data Forward produced.
 	StepResults []json.RawMessage
-	// LastError holds the Error() string of the most recent failure
-	// (forward or compensate). Reset to empty when CurrentStep
-	// advances.
+	// LastError holds a redacted summary of the most recent failure
+	// (forward or compensate). It is produced via core/redact.ErrorValue
+	// so SDK/payload fragments never land in the durable store. Reset
+	// to empty when CurrentStep advances.
 	LastError string
 	// CreatedAt / UpdatedAt are wall-clock timestamps. Backends
 	// populate them; callers should not set them.

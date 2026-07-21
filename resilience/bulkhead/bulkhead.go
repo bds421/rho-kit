@@ -37,9 +37,9 @@ type Bulkhead struct {
 type Option func(*Bulkhead)
 
 // WithMaxQueueWait caps the wait when the bulkhead is full. When
-// d <= 0, a full bulkhead rejects immediately with
-// ErrBulkheadFull. The default is "wait for caller's ctx" — see
-// the package preamble for rejection modes.
+// d <= 0 (the New default), a full bulkhead rejects immediately with
+// ErrBulkheadFull. Pass a positive duration to queue until a slot
+// frees, the wait elapses, or ctx cancels — see the package preamble.
 func WithMaxQueueWait(d time.Duration) Option {
 	return func(b *Bulkhead) { b.maxWait = d }
 }
@@ -110,13 +110,22 @@ func (b *Bulkhead) Capacity() int { return int(b.max) }
 //
 // Returns ErrBulkheadFull when the bulkhead is full and either
 // the wait elapsed or MaxQueueWait is zero. Returns the caller's
-// ctx error when ctx cancels before acquisition.
+// ctx error when ctx is already cancelled or cancels before
+// acquisition. An already-cancelled ctx is rejected before the
+// semaphore is touched so a dead request never consumes a slot
+// (matches [circuitbreaker.CircuitBreaker.ExecuteCtx]).
 func (b *Bulkhead) ExecuteCtx(ctx context.Context, fn func(ctx context.Context) error) (retErr error) {
 	if ctx == nil {
 		return errors.New("bulkhead: ExecuteCtx requires a non-nil context")
 	}
 	if fn == nil {
 		return errors.New("bulkhead: ExecuteCtx requires a non-nil fn")
+	}
+	// Reject cancelled contexts before acquiring a slot so doomed
+	// calls cannot steal capacity from live traffic.
+	if err := ctx.Err(); err != nil {
+		b.recordAcquire(0, outcomeCtx)
+		return err
 	}
 
 	start := time.Now()

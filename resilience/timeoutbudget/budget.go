@@ -19,8 +19,12 @@ type Budget struct {
 	deadline    time.Time
 	total       time.Duration
 	reservation time.Duration
-	mu          sync.Mutex
-	now         func() time.Time
+	// gen advances on Clear so outstanding restore funcs from earlier
+	// reservations become no-ops and cannot desynchronize a later
+	// reservation after a clear wiped the total (see WithReservation).
+	gen uint64
+	mu  sync.Mutex
+	now func() time.Time
 }
 
 // Option configures [New].
@@ -110,7 +114,8 @@ func (b *Budget) Reservation() time.Duration {
 // WithReservation sets a duration the Budget will hold back from
 // `Remaining()` so downstream calls cannot consume time the
 // caller needs for post-call work (audit log write, lock
-// release, metrics emit). Pass d <= 0 to clear the reservation.
+// release, metrics emit). Pass d <= 0 to clear every active
+// reservation (see also [Budget.Clear]).
 //
 // Returns a restore function the caller MUST defer to undo the
 // reservation when the post-call section is done. This is
@@ -118,22 +123,27 @@ func (b *Budget) Reservation() time.Duration {
 //
 //	restore := budget.WithReservation(50 * time.Millisecond)
 //	defer restore()
+//
+// Restore subtracts exactly this call's own contribution rather
+// than restoring an absolute snapshot, so it is safe for concurrent
+// / overlapping (non-LIFO) reservations. A clear (d <= 0 or
+// [Budget.Clear]) advances an internal generation so any restore
+// from a reservation granted before the clear becomes a no-op —
+// otherwise a deferred restore could silently shrink a sibling
+// reservation that was granted after the clear.
 func (b *Budget) WithReservation(d time.Duration) (restore func()) {
 	b.mu.Lock()
+	var gen uint64
 	if d > 0 {
 		b.reservation += d
+		gen = b.gen
 	} else {
 		b.reservation = 0
+		b.gen++
+		gen = b.gen
 	}
 	b.mu.Unlock()
 
-	// Restore subtracts exactly this call's own contribution rather
-	// than restoring an absolute snapshot, so it is safe for
-	// concurrent / overlapping (non-LIFO) reservations: undoing one
-	// reservation never wipes a sibling's still-active reservation.
-	// Guarded with sync.Once so a double-deferred restore does not
-	// over-release. A clear (d <= 0) carries no per-call delta and
-	// so has a no-op restore.
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -141,13 +151,27 @@ func (b *Budget) WithReservation(d time.Duration) (restore func()) {
 				return
 			}
 			b.mu.Lock()
-			b.reservation -= d
-			if b.reservation < 0 {
-				b.reservation = 0
+			// Skip if a clear happened after this reservation was granted.
+			if b.gen == gen {
+				b.reservation -= d
+				if b.reservation < 0 {
+					b.reservation = 0
+				}
 			}
 			b.mu.Unlock()
 		})
 	}
+}
+
+// Clear drops every active reservation and invalidates outstanding
+// restore funcs from prior WithReservation calls. Prefer Clear over
+// WithReservation(0) when the intent is "forget all holds" rather
+// than "reserve nothing and get a no-op restore".
+func (b *Budget) Clear() {
+	b.mu.Lock()
+	b.reservation = 0
+	b.gen++
+	b.mu.Unlock()
 }
 
 // WithRemaining returns a child context whose deadline is the
