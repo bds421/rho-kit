@@ -140,7 +140,9 @@ func TestLoadFields_Defaults(t *testing.T) {
 	f, err := LoadFields()
 	require.NoError(t, err)
 	assert.Equal(t, 5672, f.RabbitMQ.Port)
-	assert.Equal(t, "guest", f.RabbitMQ.User)
+	// Credentials default empty — guest/guest is never implied silently.
+	assert.Equal(t, "", f.RabbitMQ.User)
+	assert.Equal(t, "", f.RabbitMQ.Password)
 	assert.Equal(t, "/", f.RabbitMQ.VHost)
 }
 

@@ -72,6 +72,10 @@ const (
 // publish cannot stall shutdown indefinitely.
 const closeDrainTimeout = 5 * time.Second
 
+// handlerTimeout caps every handler invocation, including during graceful
+// shutdown (detached parent + this deadline). Matches amqpbackend.
+const handlerTimeout = 30 * time.Second
+
 const minimumTLSVersion = tls.VersionTLS12
 
 // maxConsumerDeliveryBytes caps the JetStream-delivered message bytes
@@ -168,11 +172,12 @@ type Config struct {
 	// network.
 	AllowInsecure bool
 
-	// ExtraOptions are raw nats.Option values appended after the
-	// kit-derived options. The escape hatch covers anything the typed
-	// fields do not — custom error handlers, custom dialers,
-	// per-message inbox prefixes, etc. Applied last so callers can
-	// override defaults the kit installs.
+	// ExtraOptions are raw nats.Option values for anything the typed
+	// fields do not cover — custom error handlers, custom dialers,
+	// per-message inbox prefixes, etc. They are appended before a
+	// security-critical re-apply of DrainTimeout/TLS/MaxReconnects/
+	// ReconnectWait/Name so callers can extend behaviour but cannot
+	// disable those kit-hardened defaults.
 	ExtraOptions []nats.Option
 }
 
@@ -265,29 +270,44 @@ func parseServerURL(rawURL string) (*url.URL, error) {
 // check runs before any DNS or socket activity so a misconfigured
 // service fails fast at startup rather than silently shipping
 // unauthenticated traffic.
+//
+// Password and token auth send shared secrets on the wire, so they
+// additionally require TLS (or an explicit AllowInsecure opt-in).
+// NKey and credentials-file auth use challenge-response and may stand
+// alone as the authentication signal.
 func (c Config) validateAuth(serverURL *url.URL) error {
 	if c.AllowInsecure {
 		return nil
 	}
-	if c.TLS != nil {
-		return nil
-	}
-	if c.Username != "" || c.Token != "" || c.CredentialsFile != "" || c.NKeyFile != "" ||
-		c.UsernamePasswordProvider != nil || c.TokenProvider != nil {
-		return nil
-	}
-	if serverURL != nil {
+	tlsOK := c.TLS != nil
+	if !tlsOK && serverURL != nil {
 		switch strings.ToLower(serverURL.Scheme) {
 		case "tls", "wss":
-			return nil
+			tlsOK = true
 		}
 	}
-	if strings.HasPrefix(strings.ToLower(c.URL), "tls://") || strings.HasPrefix(strings.ToLower(c.URL), "wss://") {
-		// URL scheme requests TLS even when no *tls.Config is
-		// supplied; nats.go falls back to the system trust store. The
-		// connection is still encrypted, so we accept this as the
-		// "TLS is configured" signal.
+	if !tlsOK {
+		u := strings.ToLower(c.URL)
+		if strings.HasPrefix(u, "tls://") || strings.HasPrefix(u, "wss://") {
+			// URL scheme requests TLS even when no *tls.Config is
+			// supplied; nats.go falls back to the system trust store.
+			tlsOK = true
+		}
+	}
+	if tlsOK {
 		return nil
+	}
+	// Challenge-response credentials are acceptable without a separate
+	// TLS config (the server still typically enforces TLS, but the kit
+	// does not require a *tls.Config when NKey/creds are used).
+	if c.CredentialsFile != "" || c.NKeyFile != "" {
+		return nil
+	}
+	// Username/password and token are cleartext shared secrets — refuse
+	// without TLS unless AllowInsecure was set above.
+	if c.Username != "" || c.Token != "" ||
+		c.UsernamePasswordProvider != nil || c.TokenProvider != nil {
+		return errors.New("natsbackend: password/token auth requires TLS (or explicit AllowInsecure) so secrets are not sent in cleartext (audit FR-073)")
 	}
 	return errors.New("natsbackend: connect requires TLS, authentication (Username/Token/CredentialsFile/NKeyFile or provider), or explicit AllowInsecure (audit FR-073)")
 }
@@ -839,30 +859,61 @@ func (c *Consumer) Consume(ctx context.Context, handler messaging.Handler) error
 	}
 
 	var stopped atomic.Bool
+	var terminalErr atomic.Value // error
 	consume, err := cons.Consume(func(jm jetstream.Msg) {
 		if stopped.Load() {
 			return
 		}
 		c.dispatch(ctx, jm, handler)
-	})
+	}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, consumeErr error) {
+		if consumeErr == nil {
+			return
+		}
+		c.logger.Error("natsbackend: consume subscription error", redact.Error(consumeErr))
+		terminalErr.Store(consumeErr)
+	}))
 	if err != nil {
 		return redact.WrapError("natsbackend: start consume", err)
 	}
 
-	<-ctx.Done()
-	stopped.Store(true)
-	consume.Stop()
-	return nil
+	select {
+	case <-ctx.Done():
+		stopped.Store(true)
+		// Drain in-flight callbacks briefly so handlers can finish ack
+		// work; fall back to Stop if Drain hangs past the grace window.
+		drainDone := make(chan struct{})
+		go func() {
+			consume.Drain()
+			close(drainDone)
+		}()
+		select {
+		case <-drainDone:
+		case <-time.After(handlerTimeout):
+			consume.Stop()
+		}
+		return nil
+	case <-consume.Closed():
+		stopped.Store(true)
+		if v := terminalErr.Load(); v != nil {
+			return redact.WrapError("natsbackend: consume closed", v.(error))
+		}
+		return errors.New("natsbackend: consume closed")
+	}
 }
 
 // dispatch routes one delivery to the handler and ack/nacks based on
-// the result. A handler panic counts as an error — the message is
-// nacked so it redelivers up to ConsumerConfig.MaxDeliver times, after
-// which JetStream gives up (sends to the configured DLQ if any, else
-// drops). The panic is recovered here and not re-raised; the consumer
-// must keep running so other deliveries continue to be processed.
-// Process-level reaction to handler panics should subscribe to the
+// the result. A handler panic is treated as a poison-pill: the message
+// is Term'd (JetStream DLQ) rather than Nak'd, because redelivery of
+// the same payload through the same handler would panic again and burn
+// the MaxDeliver budget. The panic is recovered here and not re-raised;
+// the consumer must keep running so other deliveries continue. Process-
+// level reaction to handler panics should subscribe to the
 // "natsbackend: handler panicked" log line, not rely on a re-throw.
+//
+// On consumer shutdown the parent ctx is already cancelled; handlers
+// receive a detached context with [handlerTimeout] grace (via
+// context.WithoutCancel) so they can finish ack-critical work, matching
+// AMQP's shutdown-grace semantics.
 func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messaging.Handler) {
 	var handlerStarted time.Time
 	var handlerStartedSet bool
@@ -947,8 +998,10 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 
 	// Surface JetStream-level redelivery via metadata.
 	redelivered := false
+	var numDelivered uint64
 	if md, err := jm.Metadata(); err == nil {
-		redelivered = md.NumDelivered > 1
+		numDelivered = md.NumDelivered
+		redelivered = numDelivered > 1
 	}
 
 	delivery := messaging.Delivery{
@@ -960,9 +1013,21 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 		Headers:       headers,
 	}
 
+	// Detach a cancelled parent so shutdown still grants handlers a
+	// bounded grace window (parity with amqpbackend handlerTimeout).
+	handlerBase := ctx
+	if ctx != nil && ctx.Err() != nil {
+		handlerBase = context.WithoutCancel(ctx)
+	}
+	if handlerBase == nil {
+		handlerBase = context.Background()
+	}
+	handlerCtx, handlerCancel := context.WithTimeout(handlerBase, handlerTimeout)
+	defer handlerCancel()
+
 	handlerStarted = time.Now()
 	handlerStartedSet = true
-	if err := handler(ctx, delivery); err != nil {
+	if err := handler(handlerCtx, delivery); err != nil {
 		c.metrics.observeHandler(c.cfg.Stream, c.cfg.Durable, natsHandlerOutcomeError, handlerStarted)
 		// Permanent errors (apperror.PermanentError) get Term'd so
 		// JetStream stops redelivering immediately, mirroring the
@@ -981,12 +1046,16 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 			}
 			return
 		}
-		c.logger.Warn("natsbackend: handler returned error — nacking",
+		// Delayed Nak: immediate Nak() burns MaxDeliver in milliseconds
+		// under a short transient outage and then permanently stalls the
+		// message with no DLQ. Escalate delay from delivery count.
+		delay := natsNakDelay(numDelivered)
+		c.logger.Warn("natsbackend: handler returned error — nacking with delay",
 			redact.String("subject", subject),
 			redact.String("msg_id", msg.ID),
 			redact.Error(err),
 		)
-		if err := jm.Nak(); err != nil {
+		if err := jm.NakWithDelay(delay); err != nil {
 			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeNakFailed)
 		} else {
 			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeRetry)
@@ -1006,6 +1075,25 @@ func publishOutcomeForError(err error) string {
 		return natsPublishOutcomeTooLarge
 	}
 	return natsPublishOutcomeFailed
+}
+
+// natsNakDelay returns a redelivery backoff for transient handler
+// failures. Immediate Nak() under a short outage burns MaxDeliver in
+// milliseconds and permanently stalls the message; escalating delays
+// give dependencies time to recover. Caps at 30s.
+func natsNakDelay(numDelivered uint64) time.Duration {
+	// Treat 0 (metadata unavailable) as first delivery.
+	n := numDelivered
+	if n == 0 {
+		n = 1
+	}
+	// 1s, 2s, 4s, 8s, 16s, 30s...
+	d := time.Second << (n - 1)
+	const maxDelay = 30 * time.Second
+	if d > maxDelay || d <= 0 {
+		return maxDelay
+	}
+	return d
 }
 
 // maxNatsDeliveryHeaders caps the number of headers materialised from a
@@ -1043,7 +1131,9 @@ func deliveryHeaderMaps(h nats.Header) (map[string]any, map[string]string) {
 		if len(v) > 0 {
 			cost := len(k) + len(v[0])
 			if cost > byteBudget {
-				break
+				// Skip only the oversized entry so map/header order cannot
+				// nondeterministically drop later small headers.
+				continue
 			}
 			byteBudget -= cost
 			headers[k] = v[0]
@@ -1132,15 +1222,21 @@ func splitSubject(subject string) (exchange, routingKey string) {
 
 // extractExchangeAndRoutingKey returns the exchange and routing-key for
 // a delivery. It prefers the [headerExchange] / [headerRoutingKey]
-// headers (added by [Publisher.Publish]) and falls back to splitting
-// the subject for messages produced by older clients.
+// headers (added by [Publisher.Publish]) only when they recompose to
+// the broker-authorized subject; otherwise it falls back to splitting
+// the subject so a publisher cannot override routing metadata used for
+// authorization. Messages produced by older clients without headers
+// always use the subject split.
 func extractExchangeAndRoutingKey(jm jetstream.Msg) (exchange, routingKey string) {
 	hdr := jm.Headers()
 	if hdr != nil {
 		ex := hdr.Get(headerExchange)
 		rk := hdr.Get(headerRoutingKey)
 		if ex != "" || rk != "" {
-			return ex, rk
+			if composeSubject(ex, rk) == jm.Subject() {
+				return ex, rk
+			}
+			// Mismatch: trust the broker subject, not the headers.
 		}
 	}
 	return splitSubject(jm.Subject())

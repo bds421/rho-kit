@@ -24,13 +24,16 @@ import (
 )
 
 type consumeRequest struct {
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload"`
+	Type          string          `json:"type"`
+	Payload       json.RawMessage `json:"payload"`
+	SchemaVersion uint            `json:"schema_version,omitempty"`
+	RoutingKey    string          `json:"routing_key,omitempty"`
 }
 
 type publishRequest struct {
 	Exchange   string          `json:"exchange"`
 	RoutingKey string          `json:"routing_key"`
+	Type       string          `json:"type,omitempty"`
 	Payload    json.RawMessage `json:"payload"`
 }
 
@@ -44,12 +47,20 @@ type typesResponse struct {
 	Types []string `json:"types"`
 }
 
-// ConsumeHandler returns an HTTP handler that accepts a JSON body
-// and dispatches it to the registered consumer handler, bypassing RabbitMQ.
+// ConsumeHandler returns a [Guard]-wrapped HTTP handler that accepts a JSON
+// body and dispatches it to the registered consumer handler, bypassing RabbitMQ.
+// environment and auth are required so the RCE-equivalent surface cannot be
+// mounted without both gates (use [UnguardedConsumeHandler] only in tests).
 //
 // Request body: { "type": "event.type", "payload": { ... } }
 // Response:     { "ok": true, "message_id": "..." }
-func ConsumeHandler(handlers map[string]messaging.Handler, logger *slog.Logger) http.HandlerFunc {
+func ConsumeHandler(environment string, auth Authenticator, handlers map[string]messaging.Handler, logger *slog.Logger) http.Handler {
+	return Guard(environment, auth, UnguardedConsumeHandler(handlers, logger))
+}
+
+// UnguardedConsumeHandler is the raw debug consume endpoint. Prefer
+// [ConsumeHandler], which always applies [Guard].
+func UnguardedConsumeHandler(handlers map[string]messaging.Handler, logger *slog.Logger) http.HandlerFunc {
 	if handlers == nil {
 		panic("debughttp: ConsumeHandler requires a non-nil handlers map")
 	}
@@ -76,13 +87,19 @@ func ConsumeHandler(handlers map[string]messaging.Handler, logger *slog.Logger) 
 
 		msg, err := messaging.NewMessage(req.Type, req.Payload)
 		if err != nil {
-			logger.Error("debug consume: failed to create message", redact.Error(err))
-			httpx.WriteError(w, http.StatusInternalServerError, "failed to create message")
+			// Client-controlled Type/Payload failed ValidateMessage — 400, not 500.
+			logger.Info("debug consume: invalid message", redact.Error(err))
+			httpx.WriteError(w, http.StatusBadRequest, "invalid message")
 			return
+		}
+		if req.SchemaVersion != 0 {
+			msg = msg.WithSchemaVersion(req.SchemaVersion)
 		}
 
 		d := messaging.Delivery{
-			Message: msg,
+			Message:       msg,
+			RoutingKey:    req.RoutingKey,
+			SchemaVersion: req.SchemaVersion,
 		}
 
 		logger.Info("debug consume", redact.String("type", req.Type), redact.String("message_id", msg.ID))
@@ -129,14 +146,24 @@ func ConsumeTypesHandler(handlers map[string]messaging.Handler) http.HandlerFunc
 	}
 }
 
-// PublishHandler returns an HTTP handler that publishes a message
-// to a RabbitMQ exchange via REST. This triggers the full messaging flow.
-// The allowedExchanges parameter restricts which exchanges can be targeted,
-// preventing cross-service message injection. Pass nil to allow all (not recommended).
+// PublishHandler returns a [Guard]-wrapped HTTP handler that publishes a
+// message to a RabbitMQ exchange via REST. environment and auth are required
+// so the surface cannot be mounted without both gates (use
+// [UnguardedPublishHandler] only in tests).
+// The allowedExchanges parameter restricts which exchanges can be targeted
+// (exchange-only; any routing key within an allowed exchange is reachable).
+// Pass nil panics; use []string{"*"} to opt into open-publish.
 //
-// Request body: { "exchange": "...", "routing_key": "...", "payload": { ... } }
+// Request body: { "exchange": "...", "routing_key": "...", "type": "...", "payload": { ... } }
+// "type" is optional and defaults to routing_key. Empty routing_key is allowed for fanout.
 // Response:     { "ok": true, "message_id": "..." }
-func PublishHandler(pub messaging.Publisher, allowedExchanges []string, logger *slog.Logger) http.HandlerFunc {
+func PublishHandler(environment string, auth Authenticator, pub messaging.Publisher, allowedExchanges []string, logger *slog.Logger) http.Handler {
+	return Guard(environment, auth, UnguardedPublishHandler(pub, allowedExchanges, logger))
+}
+
+// UnguardedPublishHandler is the raw debug publish endpoint. Prefer
+// [PublishHandler], which always applies [Guard].
+func UnguardedPublishHandler(pub messaging.Publisher, allowedExchanges []string, logger *slog.Logger) http.HandlerFunc {
 	if pub == nil {
 		panic("debughttp: PublishHandler requires a non-nil publisher")
 	}
@@ -171,10 +198,9 @@ func PublishHandler(pub messaging.Publisher, allowedExchanges []string, logger *
 			httpx.WriteError(w, http.StatusBadRequest, "exchange is required")
 			return
 		}
-		if req.RoutingKey == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "routing_key is required")
-			return
-		}
+		// Empty routing_key is allowed (fanout / exchange-only), matching
+		// messaging.ValidatePublishRoute. Message type defaults to routing_key
+		// for backward compatibility when "type" is omitted.
 
 		if !allowAny {
 			if _, ok := allowed[req.Exchange]; !ok {
@@ -183,10 +209,19 @@ func PublishHandler(pub messaging.Publisher, allowedExchanges []string, logger *
 			}
 		}
 
-		msg, err := messaging.NewMessage(req.RoutingKey, req.Payload)
+		msgType := req.Type
+		if msgType == "" {
+			msgType = req.RoutingKey
+		}
+		if msgType == "" {
+			httpx.WriteError(w, http.StatusBadRequest, "type is required when routing_key is empty")
+			return
+		}
+		msg, err := messaging.NewMessage(msgType, req.Payload)
 		if err != nil {
-			logger.Error("debug publish: failed to create message", redact.Error(err))
-			httpx.WriteError(w, http.StatusInternalServerError, "failed to create message")
+			// Client-controlled type/payload failed ValidateMessage — 400.
+			logger.Info("debug publish: invalid message", redact.Error(err))
+			httpx.WriteError(w, http.StatusBadRequest, "invalid message")
 			return
 		}
 

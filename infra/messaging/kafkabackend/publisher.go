@@ -179,14 +179,14 @@ func WithAllowAutoTopicCreation(allow bool) PublisherOption {
 	return func(o *publisherOptions) { o.allowAutoTopicCreation = allow }
 }
 
-// NewPublisher constructs a [Publisher] backed by a kafka.Writer
-// addressed at brokers. The publisher writes to dynamic topics; the
-// kit-side exchange parameter becomes the Kafka topic at every
-// Publish call.
+// NewPublisher is a convenience wrapper around [NewPublisherWithConfig]
+// with only brokers set. Because [ValidateConfig] requires TLS, SASL, or
+// AllowInsecure, this form can only succeed for callers that do not need
+// further Config fields — which is none of the production paths. Prefer
+// [NewPublisherWithConfig] and set TLS / SASL / AllowInsecure explicitly.
 //
-// Returns an error if brokers is empty or a SASL / TLS
-// misconfiguration is detected — these are configuration errors that
-// must surface at startup.
+// Kept for API stability; it always fails FR-073 validation unless the
+// zero Config somehow becomes valid (it does not). Use NewPublisherWithConfig.
 func NewPublisher(brokers []string, opts ...PublisherOption) (*Publisher, error) {
 	cfg := Config{Brokers: brokers}
 	return NewPublisherWithConfig(cfg, opts...)

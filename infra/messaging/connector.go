@@ -10,6 +10,9 @@ import "context"
 // handler code decoupled from the transport.
 type Connector interface {
 	// Healthy reports whether the broker connection is alive and usable.
+	// Implementations MUST be non-blocking (cheap atomic/flag read). Callers
+	// such as [BufferedPublisher.Publish] may invoke Healthy while holding
+	// internal locks; a network probe or mutex that can stall stalls publish.
 	Healthy() bool
 
 	// Stop shuts down the connection and releases resources. The deadline

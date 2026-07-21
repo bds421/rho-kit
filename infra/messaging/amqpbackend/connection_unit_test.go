@@ -469,3 +469,68 @@ func TestDial_WithAllOptions(t *testing.T) {
 	assert.False(t, reconnectCalled, "reconnect callback not called when connection never succeeds")
 	_ = conn.Stop(context.Background())
 }
+
+func TestStop_AlreadyCancelledCtx_StillClosesConnection(t *testing.T) {
+	c := &Connection{
+		closed:          make(chan struct{}),
+		dead:            make(chan struct{}),
+		connected:       make(chan struct{}),
+		reconnectSignal: make(chan struct{}, 1),
+		logger:          discardLogger(),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := c.Stop(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+
+	select {
+	case <-c.closed:
+	default:
+		t.Fatal("Stop with cancelled ctx must still close c.closed so reconnect stops")
+	}
+}
+
+func TestWaitForConnection_ObservesDead(t *testing.T) {
+	c := &Connection{
+		closed: make(chan struct{}),
+		dead:   make(chan struct{}),
+	}
+	close(c.dead)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := c.WaitForConnection(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permanently lost")
+}
+
+func TestDrainPendingReconnect_WhenDead_DoesNotRearm(t *testing.T) {
+	c := &Connection{
+		logger:          discardLogger(),
+		closed:          make(chan struct{}),
+		dead:            make(chan struct{}),
+		reconnectSignal: make(chan struct{}, 1),
+	}
+	close(c.dead)
+	c.reconnecting.Store(true)
+	c.reconnectSignal <- struct{}{}
+
+	again := c.drainPendingReconnect()
+	assert.False(t, again)
+	assert.False(t, c.reconnecting.Load())
+	assert.Len(t, c.reconnectSignal, 0)
+}
+
+func TestStartReconnect_WhenDead_Noop(t *testing.T) {
+	c := &Connection{
+		logger:          discardLogger(),
+		closed:          make(chan struct{}),
+		dead:            make(chan struct{}),
+		reconnectSignal: make(chan struct{}, 1),
+	}
+	close(c.dead)
+	c.startReconnect()
+	assert.False(t, c.reconnecting.Load())
+}

@@ -108,6 +108,7 @@ type BufferedPublisher struct {
 	mu                sync.Mutex
 	runMu             sync.Mutex
 	pending           []pendingMessage
+	pendingBytes      int // running sum of Payload lengths; O(1) gauge
 	maxSize           int
 	finalDrainTimeout time.Duration
 	started           bool
@@ -461,11 +462,17 @@ func NewBufferedPublisher(inner Publisher, conn Connector, logger *slog.Logger, 
 	return o
 }
 
-// Publish sends a message to RabbitMQ with FIFO ordering guarantees.
+// Publish sends a message with FIFO ordering guarantees.
 // Direct publish is only attempted when the buffer is empty, no other
 // direct publish is in flight, AND the broker is healthy. Otherwise the
 // message is appended to the buffer for the drain loop to publish in order.
-// Returns an error only when the buffer is full (back-pressure).
+//
+// Returns an error when: the context/route/message fails validation, the
+// size limiter rejects the payload, the buffer is full (back-pressure /
+// [ErrBufferFull]), or (in rare paths) the underlying publisher fails in a
+// way that cannot be buffered. A successful return means the message was
+// either published or accepted into the buffer — not necessarily that the
+// broker has acknowledged it yet.
 func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey string, msg Message) error {
 	if err := ValidatePublishContext(ctx); err != nil {
 		return err
@@ -514,6 +521,15 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 			o.mu.Unlock()
 			o.onDirectPublish()
 			return nil
+		} else if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			// Caller's own cancellation/deadline must not convert into
+			// guaranteed later delivery — return the context error instead of
+			// buffering (broker failures still buffer for at-least-once).
+			o.mu.Lock()
+			o.directInFlight = false
+			published = true
+			o.mu.Unlock()
+			return ctx.Err()
 		}
 
 		// Direct publish failed — buffer the message.
@@ -532,7 +548,7 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 			o.onDrop()
 			return ErrBufferFull
 		}
-		o.pending = append(o.pending, pendingMessage{
+		o.addPendingLocked(pendingMessage{
 			Exchange:   exchange,
 			RoutingKey: routingKey,
 			Msg:        msg,
@@ -542,7 +558,7 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 			// Roll back the buffered append so memory state matches what
 			// was successfully persisted. Without this, a later successful
 			// save would persist a message the caller was told failed.
-			o.pending = o.pending[:len(o.pending)-1]
+			o.dropLastPendingLocked()
 			o.mu.Unlock()
 			return redact.WrapError("buffered publisher: persist message after direct publish failure", saveErr)
 		}
@@ -588,14 +604,14 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 		}
 	}
 
-	o.pending = append(o.pending, pendingMessage{
+	o.addPendingLocked(pendingMessage{
 		Exchange:   exchange,
 		RoutingKey: routingKey,
 		Msg:        msg,
 	})
 	saveErr := o.persistAppendLocked()
 	if saveErr != nil && !o.lossyMode {
-		o.pending = o.pending[:len(o.pending)-1]
+		o.dropLastPendingLocked()
 		o.mu.Unlock()
 		return redact.WrapError("buffered publisher: persist buffered message", saveErr)
 	}
@@ -753,6 +769,19 @@ func (o *BufferedPublisher) drainBatch(ctx context.Context) (published int, more
 	copy(batch, o.pending[:batchSize])
 	o.mu.Unlock()
 
+	// Guarantee directInFlight is cleared even if publishFn panics.
+	// Without this (mirroring the Publish direct path), a recovered panic
+	// permanently freezes the drain loop and forces all subsequent Publishes
+	// down the buffer path until capacity is exhausted.
+	cleared := false
+	defer func() {
+		if !cleared {
+			o.mu.Lock()
+			o.directInFlight = false
+			o.mu.Unlock()
+		}
+	}()
+
 	for _, pm := range batch {
 		if ctx.Err() != nil {
 			break
@@ -773,6 +802,7 @@ func (o *BufferedPublisher) drainBatch(ctx context.Context) (published int, more
 
 	o.mu.Lock()
 	o.directInFlight = false
+	cleared = true
 
 	var saveErr error
 	pending := -1
@@ -785,6 +815,10 @@ func (o *BufferedPublisher) drainBatch(ctx context.Context) (published int, more
 		compacted := make([]pendingMessage, remaining)
 		copy(compacted, o.pending[published:])
 		o.pending = compacted
+		o.pendingBytes = 0
+		for i := range o.pending {
+			o.pendingBytes += len(o.pending[i].Msg.Payload)
+		}
 		// FR-068 [HIGH]: surface the save error instead of swallowing
 		// it. On disk-full / EROFS / quota the on-disk pending list
 		// still contains the messages we just delivered to the broker,
@@ -842,6 +876,11 @@ func (o *BufferedPublisher) saveLocked() error {
 
 	if err := atomicfile.Save(o.stateFile, o.pending); err != nil {
 		o.logger.Error("failed to save buffered publisher state", redact.Error(err), redact.String("file", o.stateFile))
+		// Invalidate journal append mode so the next persist rewrites a full
+		// snapshot from the in-memory pending slice. Leaving journalReady
+		// true would let a later successful append clear LastSaveError while
+		// the on-disk snapshot still contains already-delivered messages.
+		o.journalReady = false
 		o.lastSaveErr.Store(&err)
 		o.onStateWrite(false)
 		return err
@@ -1045,11 +1084,24 @@ func resolveStateFilePath(stateDir, relPath string) (string, error) {
 // magnitude in realistic workloads, and computing the exact serialized
 // size would require re-marshalling every entry on every gauge update.
 func (o *BufferedPublisher) pendingBytesLocked() int {
-	bytes := 0
-	for i := range o.pending {
-		bytes += len(o.pending[i].Msg.Payload)
+	return o.pendingBytes
+}
+
+func (o *BufferedPublisher) addPendingLocked(pm pendingMessage) {
+	o.pending = append(o.pending, pm)
+	o.pendingBytes += len(pm.Msg.Payload)
+}
+
+func (o *BufferedPublisher) dropLastPendingLocked() {
+	if len(o.pending) == 0 {
+		return
 	}
-	return bytes
+	last := o.pending[len(o.pending)-1]
+	o.pendingBytes -= len(last.Msg.Payload)
+	if o.pendingBytes < 0 {
+		o.pendingBytes = 0
+	}
+	o.pending = o.pending[:len(o.pending)-1]
 }
 
 func (o *BufferedPublisher) reportPending(count, bytes int) {
@@ -1116,5 +1168,9 @@ func (o *BufferedPublisher) load() error {
 	}
 
 	o.pending = valid
+	o.pendingBytes = 0
+	for i := range o.pending {
+		o.pendingBytes += len(o.pending[i].Msg.Payload)
+	}
 	return nil
 }

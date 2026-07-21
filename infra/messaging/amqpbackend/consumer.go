@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -107,7 +108,11 @@ type Consumer struct {
 	hooks                 ConsumerHooks
 	metrics               *Metrics
 	maxDLQConsecutiveFail int
-	dlqConsecutiveFail    atomic.Uint64
+	// dlqFailByExchange tracks consecutive DLQ publish failures per
+	// dead-exchange key so one broken DLE cannot force-discard traffic
+	// for other bindings on the same Consumer (and so a healthy DLE is
+	// not reset by an unrelated broken one).
+	dlqFailByExchange sync.Map // map[string]*atomic.Uint64
 }
 
 // defaultMaxDLQConsecutiveFailures bounds how many consecutive dead-letter
@@ -504,17 +509,20 @@ func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, ms
 // message never made it to a retry attempt.
 func (c *Consumer) routeToDeadExchange(ctx context.Context, delivery amqp.Delivery, msg messaging.Message, b messaging.Binding, handlerErr error, retryCount int) string {
 	// FR-072 [MED]: derive from the caller's ctx so trace values
-	// and shutdown deadlines propagate to the DLE publish, while
-	// still capping per-publish runtime via deadLetterPublishTimeout.
+	// propagate to the DLE publish. Base on WithoutCancel so an already
+	// expired/cancelled handler ctx cannot defeat the DLQ safety net —
+	// deadLetterPublishTimeout still bounds the publish.
 	parent := ctx
 	if parent == nil {
 		parent = context.Background()
+	} else {
+		parent = context.WithoutCancel(parent)
 	}
 	deadCtx, deadCancel := context.WithTimeout(parent, deadLetterPublishTimeout)
 	pubErr := c.publishRawDeadLetter(deadCtx, b.DeadExchange, b.ConsumerGroup, delivery.Body, msg.ID)
 	deadCancel()
 	if pubErr != nil {
-		fails := c.dlqConsecutiveFail.Add(1)
+		fails := c.dlqFailCounter(b.DeadExchange).Add(1)
 		capped := c.maxDLQConsecutiveFail > 0 && int(fails) > c.maxDLQConsecutiveFail
 		if capped {
 			c.logger.Error("dead-letter publish has failed repeatedly, force-discarding to break the loop — fix the dead exchange",
@@ -539,12 +547,27 @@ func (c *Consumer) routeToDeadExchange(ctx context.Context, delivery amqp.Delive
 		}
 		return amqpConsumeOutcomeDLQPublishFailed
 	}
-	c.dlqConsecutiveFail.Store(0)
+	c.dlqFailCounter(b.DeadExchange).Store(0)
 	if ackErr := delivery.Ack(false); ackErr != nil {
 		c.logger.Error("ack failed after dead-letter publish", redact.Error(ackErr), redact.String("id", msg.ID))
 	}
 	c.onDeadLetter(msg.ID, msg.Type, b.ConsumerGroup, retryCount)
 	return amqpConsumeOutcomeDeadLettered
+}
+
+// dlqFailCounter returns the consecutive-failure counter for a dead exchange.
+// Keys are isolated so multi-binding consumers do not cross-contaminate caps.
+func (c *Consumer) dlqFailCounter(deadExchange string) *atomic.Uint64 {
+	key := deadExchange
+	if key == "" {
+		key = "_"
+	}
+	if v, ok := c.dlqFailByExchange.Load(key); ok {
+		return v.(*atomic.Uint64)
+	}
+	counter := &atomic.Uint64{}
+	actual, _ := c.dlqFailByExchange.LoadOrStore(key, counter)
+	return actual.(*atomic.Uint64)
 }
 
 func (c *Consumer) publishRawDeadLetter(ctx context.Context, exchange, routingKey string, body []byte, msgID string) (err error) {
@@ -612,9 +635,21 @@ func (c *Consumer) callHook(name string, fn func()) {
 // configured on the Connection, topology is re-declared automatically
 // before consumers retry. The backoff resets after a stable session
 // (running longer than 30s). Blocks until ctx is cancelled.
+//
+// Returns nil when ctx is cancelled (graceful shutdown), matching the
+// Kafka backend and the messaging.Consumer contract. Permanent configuration
+// errors from ConsumeOnce (e.g. retry binding without a publisher) are
+// returned immediately without retry.
 func (c *Consumer) Consume(ctx context.Context, b messaging.Binding, handler messaging.Handler) error {
+	if b.Retry != nil && c.publisher == nil {
+		return fmt.Errorf("consume with retry requires a publisher (pass non-nil publisher to NewConsumer)")
+	}
 	retry.Loop(ctx, c.logger, "consumer["+b.ConsumerGroup+"]", func(ctx context.Context) error {
 		return c.ConsumeOnce(ctx, b, handler)
 	})
-	return ctx.Err()
+	// Graceful shutdown is not an error — mirror kafkabackend.Subscriber.Consume.
+	if ctx.Err() != nil {
+		return nil
+	}
+	return nil
 }

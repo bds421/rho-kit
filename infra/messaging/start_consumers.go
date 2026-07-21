@@ -52,11 +52,11 @@ func StartConsumers(
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("messaging: no handlers registered for declared bindings (count=%d)", len(missing))
-	}
+	return fmt.Errorf("messaging: no handlers registered for declared bindings (count=%d keys=%v)", len(missing), missing)
+}
 	if len(nilHandlers) > 0 {
-		return fmt.Errorf("messaging: nil handlers registered for declared bindings (count=%d)", len(nilHandlers))
-	}
+	return fmt.Errorf("messaging: nil handlers registered for declared bindings (count=%d keys=%v)", len(nilHandlers), nilHandlers)
+}
 
 	for _, b := range declared {
 		binding := b

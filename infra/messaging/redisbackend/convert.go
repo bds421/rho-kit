@@ -35,33 +35,55 @@ func toStreamMessage(msg messaging.Message) stream.Message {
 // SchemaVersion is extracted from the transport header if present. The
 // messaging routing key is restored from the transport header set by Publish;
 // direct/legacy Redis stream messages fall back to the event type.
-func toDelivery(sm stream.Message, streamName string) messaging.Delivery {
-	headers := make(map[string]any, len(sm.Headers))
-	for k, v := range sm.Headers {
+//
+// Inbound headers/ID/type are validated with the same caps as Publish so a
+// hostile stream writer cannot inject CRLF/control characters or unbounded
+// header maps into handler Delivery values.
+func toDelivery(sm stream.Message, streamName string) (messaging.Delivery, error) {
+	messageHeaders := cloneStringHeaders(sm.Headers)
+	// Strip kit-internal transport headers from the application-visible
+	// Message.Headers (they are re-surfaced on Delivery fields below).
+	delete(messageHeaders, headerRoutingKey)
+	delete(messageHeaders, messaging.HeaderSchemaVersion)
+	if err := messaging.ValidateMessageHeaders(messageHeaders); err != nil {
+		return messaging.Delivery{}, err
+	}
+	msg := messaging.Message{
+		ID:        sm.ID,
+		Type:      sm.Type,
+		Payload:   cloneRawMessage(sm.Payload),
+		Timestamp: sm.Timestamp,
+		Headers:   messageHeaders,
+	}
+	// Validate ID/type token rules; payload size is already enforced by the
+	// stream consumer. Use ValidateMessage which also covers headers.
+	if err := messaging.ValidateMessage(msg); err != nil {
+		return messaging.Delivery{}, err
+	}
+
+	headers := make(map[string]any, len(messageHeaders))
+	for k, v := range messageHeaders {
 		headers[k] = v
 	}
-	messageHeaders := cloneStringHeaders(sm.Headers)
-
 	schemaVersion := parseSchemaVersion(sm.Headers)
+	msg.SchemaVersion = schemaVersion
 	routingKey := sm.Headers[headerRoutingKey]
 	if routingKey == "" {
 		routingKey = sm.Type
+	} else if err := messaging.ValidateRoutingKey(routingKey); err != nil {
+		// Untrusted stream writer: refuse spoofed/invalid routing keys.
+		return messaging.Delivery{}, err
 	}
+	corrID := messageHeaders[messaging.HeaderCorrelationID]
 
 	return messaging.Delivery{
-		Message: messaging.Message{
-			ID:            sm.ID,
-			Type:          sm.Type,
-			Payload:       cloneRawMessage(sm.Payload),
-			Timestamp:     sm.Timestamp,
-			SchemaVersion: schemaVersion,
-			Headers:       messageHeaders,
-		},
+		Message:       msg,
 		Exchange:      streamName,
 		RoutingKey:    routingKey,
 		SchemaVersion: schemaVersion,
+		CorrelationID: corrID,
 		Headers:       headers,
-	}
+	}, nil
 }
 
 // parseSchemaVersion extracts the schema version from string headers.
@@ -72,8 +94,10 @@ func parseSchemaVersion(headers map[string]string) uint {
 	if !ok {
 		return 0
 	}
-	v, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || v < 0 {
+	// Bit-size of uint so out-of-range values fail closed to 0 on 32-bit
+	// platforms instead of silently truncating onto a real version.
+	v, err := strconv.ParseUint(raw, 10, strconv.IntSize)
+	if err != nil {
 		return 0
 	}
 	return uint(v)

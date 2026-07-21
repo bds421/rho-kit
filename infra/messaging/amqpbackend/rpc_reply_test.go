@@ -51,9 +51,38 @@ func TestReplySender_Send_ChannelError(t *testing.T) {
 	prov := &fakeChannelProvider{err: errors.New("connection lost")}
 	rs := NewReplySender(prov)
 
-	d := messaging.Delivery{ReplyTo: "reply-queue", CorrelationID: "corr-1"}
+	d := messaging.Delivery{ReplyTo: "amq.gen-abc123", CorrelationID: "corr-1"}
 	err := rs.Send(context.Background(), d, []byte(`{"ok":true}`))
 
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get channel for RPC reply")
+}
+
+func TestReplySender_Send_RejectsUntrustedReplyTo(t *testing.T) {
+	prov := &fakeChannelProvider{err: errors.New("should not be called")}
+	rs := NewReplySender(prov)
+
+	err := rs.Send(context.Background(), messaging.Delivery{ReplyTo: "internal.orders"}, []byte(`{}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not an allowed reply queue")
+}
+
+func TestReplySender_Send_AllowsDirectReplyTo(t *testing.T) {
+	prov := &fakeChannelProvider{err: errors.New("connection lost")}
+	rs := NewReplySender(prov)
+
+	err := rs.Send(context.Background(), messaging.Delivery{ReplyTo: "amq.rabbitmq.reply-to"}, []byte(`{}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get channel for RPC reply")
+}
+
+func TestReplySender_Send_WithReplyToAllow(t *testing.T) {
+	prov := &fakeChannelProvider{err: errors.New("connection lost")}
+	rs := NewReplySender(prov, WithReplyToAllow(func(replyTo string) bool {
+		return replyTo == "app.rpc.replies"
+	}))
+
+	err := rs.Send(context.Background(), messaging.Delivery{ReplyTo: "app.rpc.replies"}, []byte(`{}`))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "get channel for RPC reply")
 }

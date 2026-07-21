@@ -160,8 +160,8 @@ func TestConnect_RejectsNegativeTimingConfig(t *testing.T) {
 	}
 }
 
-func TestValidateAuth_AcceptsRotatingCredentialProviders(t *testing.T) {
-	serverURL := &url.URL{Scheme: "nats", Host: "nats.example.com:4222"}
+func TestValidateAuth_AcceptsRotatingCredentialProvidersWithTLS(t *testing.T) {
+	serverURL := &url.URL{Scheme: "tls", Host: "nats.example.com:4222"}
 
 	tests := []struct {
 		name string
@@ -189,6 +189,13 @@ func TestValidateAuth_AcceptsRotatingCredentialProviders(t *testing.T) {
 			require.NoError(t, tt.cfg.validateAuth(serverURL))
 		})
 	}
+}
+
+func TestValidateAuth_RejectsPasswordTokenWithoutTLS(t *testing.T) {
+	serverURL := &url.URL{Scheme: "nats", Host: "nats.example.com:4222"}
+	err := (Config{Username: "u", Password: "p"}).validateAuth(serverURL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "password/token auth requires TLS")
 }
 
 func TestCloneTLSConfigWithFloor_ClonesAndEnforcesFloor(t *testing.T) {
@@ -469,25 +476,39 @@ func TestConnect_TLSSchemeSatisfiesAuthCheck(t *testing.T) {
 	assert.NotContains(t, err.Error(), "FR-073")
 }
 
-// Username-based auth satisfies the FR-073 check.
-func TestConnect_UsernamePasswordSatisfiesAuthCheck(t *testing.T) {
+// Username/password without TLS is rejected at the FR-073 gate.
+func TestConnect_UsernamePasswordWithoutTLS_Rejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	_, err := Connect(ctx, Config{URL: "nats://127.0.0.1:1", Username: "u", Password: "p"})
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "password/token auth requires TLS")
+}
+
+// Username/password with TLS scheme passes the FR-073 gate (dial may still fail).
+func TestConnect_UsernamePasswordWithTLSScheme_PassesAuthCheck(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := Connect(ctx, Config{URL: "tls://127.0.0.1:1", Username: "u", Password: "p"})
+	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "FR-073")
+	assert.NotContains(t, err.Error(), "password/token auth requires TLS")
 }
 
 // fakeJetstreamMsg is a minimal jetstream.Msg implementation used by the
-// extractor tests. We only need Subject() and Headers().
+// extractor and dispatch tests.
 type fakeJetstreamMsg struct {
 	jetstream.Msg
-	subject string
-	headers nats.Header
-	data    []byte
-	acked   bool
-	nacked  bool
-	termed  bool
+	subject      string
+	headers      nats.Header
+	data         []byte
+	acked        bool
+	nacked       bool
+	nakDelayed   bool
+	nakDelay     time.Duration
+	termed       bool
+	numDelivered uint64
+	metaErr      error
 }
 
 func (f *fakeJetstreamMsg) Subject() string                    { return f.subject }
@@ -497,13 +518,25 @@ func (f *fakeJetstreamMsg) Reply() string                      { return "" }
 func (f *fakeJetstreamMsg) Ack() error                         { f.acked = true; return nil }
 func (f *fakeJetstreamMsg) DoubleAck(_ context.Context) error  { return nil }
 func (f *fakeJetstreamMsg) Nak() error                         { f.nacked = true; return nil }
-func (f *fakeJetstreamMsg) NakWithDelay(_ time.Duration) error { return nil }
-func (f *fakeJetstreamMsg) InProgress() error                  { return nil }
-func (f *fakeJetstreamMsg) Term() error                        { f.termed = true; return nil }
-func (f *fakeJetstreamMsg) TermWithReason(_ string) error      { return nil }
+func (f *fakeJetstreamMsg) NakWithDelay(d time.Duration) error {
+	f.nakDelayed = true
+	f.nakDelay = d
+	f.nacked = true
+	return nil
+}
+func (f *fakeJetstreamMsg) InProgress() error             { return nil }
+func (f *fakeJetstreamMsg) Term() error                   { f.termed = true; return nil }
+func (f *fakeJetstreamMsg) TermWithReason(_ string) error { return nil }
 
 func (f *fakeJetstreamMsg) Metadata() (*jetstream.MsgMetadata, error) {
-	return nil, errors.New("fake jetstream msg: no metadata")
+	if f.metaErr != nil {
+		return nil, f.metaErr
+	}
+	n := f.numDelivered
+	if n == 0 {
+		n = 1
+	}
+	return &jetstream.MsgMetadata{NumDelivered: n}, nil
 }
 
 // TestExtractExchangeAndRoutingKey_PrefersHeaders pins the v2 fix for
@@ -513,7 +546,8 @@ func (f *fakeJetstreamMsg) Metadata() (*jetstream.MsgMetadata, error) {
 // exchange="orders", routingKey="v1.created".
 func TestExtractExchangeAndRoutingKey_PrefersHeaders(t *testing.T) {
 	jm := &fakeJetstreamMsg{
-		subject: "orders.v1.created",
+		// Subject must be the kit-encoded form so header claims recompose.
+		subject: composeSubject("orders.v1", "created"),
 		headers: nats.Header{
 			headerExchange:   []string{"orders.v1"},
 			headerRoutingKey: []string{"created"},
@@ -522,6 +556,20 @@ func TestExtractExchangeAndRoutingKey_PrefersHeaders(t *testing.T) {
 	ex, rk := extractExchangeAndRoutingKey(jm)
 	assert.Equal(t, "orders.v1", ex)
 	assert.Equal(t, "created", rk)
+}
+
+func TestExtractExchangeAndRoutingKey_RejectsMismatchedHeaders(t *testing.T) {
+	jm := &fakeJetstreamMsg{
+		subject: "events.user.created",
+		headers: nats.Header{
+			headerExchange:   []string{"evil"},
+			headerRoutingKey: []string{"override"},
+		},
+	}
+	ex, rk := extractExchangeAndRoutingKey(jm)
+	// Fall back to subject split when headers do not recompose.
+	assert.Equal(t, "events", ex)
+	assert.Equal(t, "user.created", rk)
 }
 
 // TestExtractExchangeAndRoutingKey_FallsBackToSubject covers messages
@@ -579,7 +627,7 @@ func TestDrainWithTimeout_FastDrainReturnsCleanly(t *testing.T) {
 // routing-key-empty case where only X-Exchange is non-empty.
 func TestExtractExchangeAndRoutingKey_HeaderOnlyExchange(t *testing.T) {
 	jm := &fakeJetstreamMsg{
-		subject: "orders.v1",
+		subject: composeSubject("orders.v1", ""),
 		headers: nats.Header{
 			headerExchange:   []string{"orders.v1"},
 			headerRoutingKey: []string{""},
@@ -672,6 +720,42 @@ func TestDispatch_PopulatesMessageHeadersAndDetachesMessage(t *testing.T) {
 	assert.Equal(t, `{"id":"42"}`, string(msg.Payload))
 	assert.Equal(t, `{Xid":"42"}`, string(got.Message.Payload))
 	assert.Equal(t, "corr-1", jm.headers.Get(messaging.HeaderCorrelationID))
+}
+
+// TestDispatch_TransientError_NaksWithDelay is the regression pin for
+// review-17: transient handler errors must use NakWithDelay (not
+// immediate Nak) so MaxDeliver is not burned in milliseconds.
+func TestDispatch_TransientError_NaksWithDelay(t *testing.T) {
+	msg, err := messaging.NewMessage("order.created", map[string]string{"id": "1"})
+	require.NoError(t, err)
+	data, err := json.Marshal(msg)
+	require.NoError(t, err)
+
+	jm := &fakeJetstreamMsg{
+		subject:      "orders.created",
+		data:         data,
+		headers:      nats.Header{headerExchange: []string{"orders"}, headerRoutingKey: []string{"created"}},
+		numDelivered: 3,
+	}
+	c := &Consumer{logger: slog.Default(), cfg: ConsumerConfig{Stream: "s", Durable: "d"}}
+
+	c.dispatch(t.Context(), jm, func(context.Context, messaging.Delivery) error {
+		return errors.New("db briefly unavailable")
+	})
+
+	assert.True(t, jm.nakDelayed, "transient errors must call NakWithDelay")
+	assert.False(t, jm.termed)
+	assert.False(t, jm.acked)
+	// numDelivered=3 → 1s << (3-1) = 4s
+	assert.Equal(t, 4*time.Second, jm.nakDelay, "delay must escalate from delivery count")
+}
+
+func TestNatsNakDelay_EscalatesAndCaps(t *testing.T) {
+	assert.Equal(t, time.Second, natsNakDelay(0))
+	assert.Equal(t, time.Second, natsNakDelay(1))
+	assert.Equal(t, 2*time.Second, natsNakDelay(2))
+	assert.Equal(t, 4*time.Second, natsNakDelay(3))
+	assert.Equal(t, 30*time.Second, natsNakDelay(10), "must cap at 30s")
 }
 
 // TestDeliveryHeaderMaps_RejectsOversizedAggregate guards L139: NATS

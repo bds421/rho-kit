@@ -70,7 +70,8 @@ func TestToDelivery(t *testing.T) {
 		Headers:   map[string]string{"trace-id": "xyz"},
 	}
 
-	d := toDelivery(sm, "users-stream")
+	d, err := toDelivery(sm, "users-stream")
+	require.NoError(t, err)
 
 	assert.Equal(t, "msg-id", d.Message.ID)
 	assert.Equal(t, "user.updated", d.Message.Type)
@@ -88,7 +89,8 @@ func TestToDelivery_DetachesPayloadAndHeaders(t *testing.T) {
 		Headers: map[string]string{"trace-id": "xyz"},
 	}
 
-	d := toDelivery(sm, "users-stream")
+	d, err := toDelivery(sm, "users-stream")
+	require.NoError(t, err)
 	sm.Payload[1] = 'X'
 	sm.Headers["trace-id"] = "changed"
 	assert.Equal(t, `{"ok":true}`, string(d.Message.Payload))
@@ -112,10 +114,15 @@ func TestToDelivery_PrefersRoutingKeyHeader(t *testing.T) {
 		Headers: map[string]string{headerRoutingKey: "users.v2.updated"},
 	}
 
-	d := toDelivery(sm, "users-stream")
+	d, err := toDelivery(sm, "users-stream")
+	require.NoError(t, err)
 
 	assert.Equal(t, "users.v2.updated", d.RoutingKey)
-	assert.Equal(t, "users.v2.updated", d.Headers[headerRoutingKey])
+	// Transport routing_key is stripped from application-visible headers.
+	_, ok := d.Headers[headerRoutingKey]
+	assert.False(t, ok)
+	_, ok = d.Message.Headers[headerRoutingKey]
+	assert.False(t, ok)
 }
 
 func TestToDelivery_EmptyHeaders(t *testing.T) {
@@ -124,7 +131,8 @@ func TestToDelivery_EmptyHeaders(t *testing.T) {
 		Type: "test.event",
 	}
 
-	d := toDelivery(sm, "stream")
+	d, err := toDelivery(sm, "stream")
+	require.NoError(t, err)
 
 	assert.Empty(t, d.Message.Headers)
 	assert.Empty(t, d.Headers)
@@ -159,7 +167,8 @@ func TestToDelivery_ExtractsSchemaVersion(t *testing.T) {
 		Headers: map[string]string{messaging.HeaderSchemaVersion: "5"},
 	}
 
-	d := toDelivery(sm, "stream")
+	d, err := toDelivery(sm, "stream")
+	require.NoError(t, err)
 
 	assert.Equal(t, uint(5), d.SchemaVersion)
 	assert.Equal(t, uint(5), d.Message.SchemaVersion)
@@ -172,7 +181,8 @@ func TestToDelivery_SchemaVersionZeroWhenAbsent(t *testing.T) {
 		Headers: map[string]string{"other": "value"},
 	}
 
-	d := toDelivery(sm, "stream")
+	d, err := toDelivery(sm, "stream")
+	require.NoError(t, err)
 
 	assert.Equal(t, uint(0), d.SchemaVersion)
 	assert.Equal(t, uint(0), d.Message.SchemaVersion)

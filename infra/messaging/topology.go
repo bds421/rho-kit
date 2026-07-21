@@ -172,6 +172,12 @@ func ValidateBindingSpecs(specs []BindingSpec) error {
 			if b.Retry.Delay < time.Millisecond {
 				return errors.New("retry policy Delay must be >= 1ms; sub-ms delays truncate to 0 in the AMQP TTL")
 			}
+			// ComputeBindings derives Exchange+".retry"/".dead"; keep the
+			// stem short enough that derived exchange names stay within
+			// MaxRouteNameBytes (mirrors validateConsumerGroup).
+			if len(b.Exchange) > MaxRouteNameBytes-len(retryExchangeSuffix) {
+				return errors.New("exchange name too long: derived retry/dead exchange name would exceed the portable route-name limit")
+			}
 		}
 	}
 	return nil
@@ -183,6 +189,11 @@ func ValidateBindingSpecs(specs []BindingSpec) error {
 // portable route-name cap, so a consumer group is allowed at most
 // MaxRouteNameBytes-len(retryQueueSuffix) bytes when retry is set.
 const retryQueueSuffix = ".retry"
+
+// retryExchangeSuffix is appended to Exchange when ComputeBindings
+// derives the retry exchange name (Exchange+".retry"). Same length as
+// ".dead", so one constant covers both derived exchange names.
+const retryExchangeSuffix = ".retry"
 
 // validateConsumerGroup holds the ConsumerGroup to the same portable
 // token rules as exchange names (non-empty, <= MaxRouteNameBytes, valid
@@ -198,9 +209,9 @@ const retryQueueSuffix = ".retry"
 func validateConsumerGroup(consumerGroup string, withRetry bool) error {
 	if err := ValidateRoutingKey(consumerGroup); err != nil {
 		// Reuse the routing-key token rules (length, UTF-8, control,
-		// whitespace) but re-label the field and keep the non-empty
-		// message wording stable for existing callers/tests.
-		return fmt.Errorf("consumer group invalid: %w", ErrInvalidRoute)
+		// whitespace) but re-label the field. Preserve both the generic
+		// sentinel (for errors.Is) and the specific validation cause.
+		return fmt.Errorf("consumer group invalid: %w: %v", ErrInvalidRoute, err)
 	}
 	if consumerGroup == "" {
 		return errors.New("consumer group must not be empty")

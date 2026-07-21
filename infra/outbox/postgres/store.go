@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -243,21 +244,45 @@ ORDER BY ord`
 
 // Heartbeat extends the updated_at watermark on the listed processing
 // rows so [ResetStaleProcessing] does not reset them while a long
-// publish is in flight. The status='processing' guard keeps a stale
-// list from resurrecting rows that already moved to published/failed.
+// publish is in flight. Rows are fenced by the process-local claim_token
+// remembered at FetchPending — a late heartbeat from a relay whose claim
+// was stale-reset and re-claimed by another process cannot keep the new
+// owner's lease alive. The status='processing' guard additionally keeps a
+// stale list from resurrecting rows that already moved to published/failed.
 func (s *Store) Heartbeat(ctx context.Context, ids []string) (int64, error) {
-	if s == nil || s.pool == nil {
+	if s == nil {
 		return 0, errors.New("outbox/postgres: store not initialized")
 	}
 	if len(ids) == 0 {
 		return 0, nil
 	}
+	// Pair each id with the claim token this process minted. Skip ids we
+	// do not own (no remembered token) so we never refresh another
+	// worker's claim. Empty ownership set is a no-op (no SQL).
+	hbIDs := make([]string, 0, len(ids))
+	hbTokens := make([]string, 0, len(ids))
+	for _, id := range ids {
+		tok, ok := s.claimToken(id)
+		if !ok || tok == "" {
+			continue
+		}
+		hbIDs = append(hbIDs, id)
+		hbTokens = append(hbTokens, tok)
+	}
+	if len(hbIDs) == 0 {
+		return 0, nil
+	}
+	if s.pool == nil {
+		return 0, errors.New("outbox/postgres: store not initialized")
+	}
 	const q = `
-UPDATE outbox_entries
+UPDATE outbox_entries AS o
 SET updated_at = NOW()
-WHERE status = 'processing'
-  AND id = ANY($1::uuid[])`
-	ct, err := s.pool.Exec(ctx, q, ids)
+FROM unnest($1::uuid[], $2::uuid[]) AS t(id, token)
+WHERE o.id = t.id
+  AND o.status = 'processing'
+  AND o.claim_token = t.token`
+	ct, err := s.pool.Exec(ctx, q, hbIDs, hbTokens)
 	if err != nil {
 		return 0, redact.WrapError("outbox/postgres: heartbeat", err)
 	}
@@ -339,24 +364,45 @@ func (s *Store) ResetPending(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	const q = `
-UPDATE outbox_entries
-SET status = 'pending',
-    updated_at = NOW(),
-    claim_token = NULL
-WHERE id = $1 AND status = 'processing' AND claim_token = $2`
+	// Collect (id, token) pairs this process still remembers, then forget
+	// every one regardless of Exec outcome — ownership is being relinquished
+	// on the shutdown path either way (prevents claimTokens growth on
+	// partial errors).
+	type pair struct{ id, token string }
+	pairs := make([]pair, 0, len(ids))
 	for _, id := range ids {
 		token, ok := s.claimToken(id)
 		if !ok {
-			// Not claimed by this process — nothing to reset, skip silently.
 			continue
 		}
-		if _, err := s.pool.Exec(ctx, q, id, token); err != nil {
-			return redact.WrapError("outbox/postgres: reset pending", err)
-		}
-		// Whether or not the row matched (it may have been re-claimed or
-		// completed concurrently), this process no longer owns the claim.
-		s.forgetClaim(id)
+		pairs = append(pairs, pair{id: id, token: token})
+	}
+	for _, p := range pairs {
+		s.forgetClaim(p.id)
+	}
+	if len(pairs) == 0 {
+		return nil
+	}
+
+	// Single batched UPDATE ... FROM (VALUES ...) so shutdown under a tight
+	// resetTimeout does not pay N serial round-trips.
+	args := make([]any, 0, len(pairs)*2)
+	valParts := make([]string, 0, len(pairs))
+	for i, p := range pairs {
+		a := i*2 + 1
+		b := i*2 + 2
+		valParts = append(valParts, fmt.Sprintf("($%d::text, $%d::text)", a, b))
+		args = append(args, p.id, p.token)
+	}
+	q := `
+UPDATE outbox_entries AS o
+SET status = 'pending',
+    updated_at = NOW(),
+    claim_token = NULL
+FROM (VALUES ` + strings.Join(valParts, ", ") + `) AS v(id, token)
+WHERE o.id = v.id AND o.status = 'processing' AND o.claim_token = v.token`
+	if _, err := s.pool.Exec(ctx, q, args...); err != nil {
+		return redact.WrapError("outbox/postgres: reset pending", err)
 	}
 	return nil
 }
@@ -462,9 +508,15 @@ func (s *Store) ResetStaleProcessing(ctx context.Context, staleDuration time.Dur
 	// Cast via make_interval so a negative or otherwise unsafe
 	// duration cannot flow into the comparison; staleDuration is
 	// validated above as positive.
+	// Clear claim_token so a reset row matches the documented invariant
+	// (status='pending' ⇒ claim_token IS NULL) used by IncrementAttempts
+	// and ResetPending. FetchPending always overwrites the token on the
+	// next claim, but leaving a stale token on pending rows is a trap
+	// for future fences that assume the invariant.
 	const q = `
 UPDATE outbox_entries
 SET status = 'pending',
+    claim_token = NULL,
     updated_at = NOW()
 WHERE status = 'processing'
   AND updated_at < NOW() - make_interval(secs => $1)`

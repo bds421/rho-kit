@@ -66,12 +66,22 @@ type Metrics struct {
 	// services that have audited their topology can opt back into
 	// raw labels with [WithRawRouteLabels].
 	labelRoute routeLabelFunc
+	// labelConsume maps a raw queue name to the consume-side label
+	// value. Defaults to opaque, matching Kafka/NATS consume labels.
+	labelConsume consumeLabelFunc
 }
 
 type routeLabelFunc func(exchange, routingKey string) (string, string)
+type consumeLabelFunc func(queue string) string
 
 func passthroughRouteLabel(exchange, routingKey string) (string, string) {
 	return exchange, routingKey
+}
+
+func passthroughConsumeLabel(queue string) string { return queue }
+
+func opaqueConsumeLabel(queue string) string {
+	return promutil.OpaqueLabelValue("queue", queue)
 }
 
 // MetricsOption configures the AMQP metric constructor. Standardised
@@ -79,8 +89,9 @@ func passthroughRouteLabel(exchange, routingKey string) (string, string) {
 type MetricsOption func(*metricsConfig)
 
 type metricsConfig struct {
-	registerer prometheus.Registerer
-	labelRoute routeLabelFunc
+	registerer   prometheus.Registerer
+	labelRoute   routeLabelFunc
+	labelConsume consumeLabelFunc
 }
 
 // WithRegisterer pins the Prometheus registerer used for AMQP
@@ -124,21 +135,36 @@ func WithRawRouteLabels() MetricsOption {
 	}
 }
 
+// WithOpaqueConsumeLabels (the default) hashes the queue label on
+// consume-side metrics so a high-cardinality queue naming scheme
+// cannot explode Prometheus series. Mirrors Kafka/NATS defaults.
+func WithOpaqueConsumeLabels() MetricsOption {
+	return func(c *metricsConfig) { c.labelConsume = opaqueConsumeLabel }
+}
+
+// WithRawConsumeLabels reverts consume-side queue labels to the raw
+// queue name. Use only when every consumer queue is a static,
+// low-cardinality topology name.
+func WithRawConsumeLabels() MetricsOption {
+	return func(c *metricsConfig) { c.labelConsume = passthroughConsumeLabel }
+}
+
 func opaqueRouteLabel(exchange, routingKey string) (string, string) {
 	return promutil.OpaqueLabelValue("exchange", exchange),
 		promutil.OpaqueLabelValue("routingkey", routingKey)
 }
 
 // NewMetrics creates and registers AMQP metrics. Pass [WithRegisterer]
-// to use a non-default registry. Route labels default to the bounded /
-// opaque form (v2 cardinality-safe default); pass [WithRawRouteLabels]
-// only when the routing topology is audited and known to be low
-// cardinality. Repeated calls reuse already-registered collectors on
-// the same registry.
+// to use a non-default registry. Route and consume labels default to the
+// bounded / opaque form (v2 cardinality-safe default); pass
+// [WithRawRouteLabels] / [WithRawConsumeLabels] only when the topology
+// is audited and known to be low cardinality. Repeated calls reuse
+// already-registered collectors on the same registry.
 func NewMetrics(opts ...MetricsOption) *Metrics {
 	cfg := metricsConfig{
-		registerer: prometheus.DefaultRegisterer,
-		labelRoute: opaqueRouteLabel,
+		registerer:   prometheus.DefaultRegisterer,
+		labelRoute:   opaqueRouteLabel,
+		labelConsume: opaqueConsumeLabel,
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -195,6 +221,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	m.reconnectAttempts = promutil.MustRegisterOrGet(reg, m.reconnectAttempts)
 	m.consecutiveReconnectFailures = promutil.MustRegisterOrGet(reg, m.consecutiveReconnectFailures)
 	m.labelRoute = cfg.labelRoute
+	m.labelConsume = cfg.labelConsume
 	return m
 }
 
@@ -218,14 +245,21 @@ func (m *Metrics) observeConsumed(queue, outcome string) {
 	if m == nil {
 		return
 	}
-	m.consumed.WithLabelValues(queue, outcome).Inc()
+	m.consumed.WithLabelValues(m.consumeLabel(queue), outcome).Inc()
 }
 
 func (m *Metrics) observeHandler(queue, outcome string, started time.Time) {
 	if m == nil {
 		return
 	}
-	m.handlerDuration.WithLabelValues(queue, outcome).Observe(time.Since(started).Seconds())
+	m.handlerDuration.WithLabelValues(m.consumeLabel(queue), outcome).Observe(time.Since(started).Seconds())
+}
+
+func (m *Metrics) consumeLabel(queue string) string {
+	if m == nil || m.labelConsume == nil {
+		return queue
+	}
+	return m.labelConsume(queue)
 }
 
 // observeConnectionUp sets the connection_up gauge for broker. Pass 1 for

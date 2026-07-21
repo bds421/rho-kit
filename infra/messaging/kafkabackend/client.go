@@ -115,6 +115,12 @@ func ValidateConfig(cfg Config) error {
 	if cfg.AllowInsecure {
 		return nil
 	}
+	// SASL/PLAIN sends credentials in cleartext without TLS — refuse
+	// unless the caller explicitly opted into AllowInsecure. SCRAM is
+	// also a shared-secret exchange and is treated the same way.
+	if cfg.SASLMechanism != "" && cfg.TLS == nil {
+		return errors.New("kafkabackend: SASL credentials require TLS (or explicit AllowInsecure) so broker secrets are not sent in cleartext (audit FR-073)")
+	}
 	if cfg.TLS != nil || cfg.SASLMechanism != "" {
 		return nil
 	}

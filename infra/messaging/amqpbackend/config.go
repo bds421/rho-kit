@@ -115,10 +115,13 @@ func LoadFields() (Fields, error) {
 
 	return Fields{
 		RabbitMQ: Config{
-			Host:     config.Get("RABBITMQ_HOST", ""),
-			Port:     port,
-			User:     config.Get("RABBITMQ_USER", "guest"),
-			Password: config.MustGetSecret("RABBITMQ_PASSWORD", "guest"),
+			Host: config.Get("RABBITMQ_HOST", ""),
+			Port: port,
+			// Empty defaults: do not silently imply guest/guest. Callers
+			// must set credentials (or RABBITMQ_URL); ValidateRabbitMQ
+			// rejects weak/missing secrets at startup.
+			User:     config.Get("RABBITMQ_USER", ""),
+			Password: config.MustGetSecret("RABBITMQ_PASSWORD", ""),
 			VHost:    config.Get("RABBITMQ_VHOST", "/"),
 		},
 	}, nil

@@ -2,6 +2,7 @@ package redisbackend
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 	stream "github.com/bds421/rho-kit/data/stream/redisstream/v2"
@@ -92,6 +93,9 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	}
 	if err := p.sizeLimiter.Check(exchange, routingKey, msg); err != nil {
 		return err
+	}
+	if _, ok := msg.Headers[headerRoutingKey]; ok {
+		return fmt.Errorf("%w: header %q is reserved for transport routing metadata", messaging.ErrInvalidMessageHeader, headerRoutingKey)
 	}
 	sm := toStreamMessage(msg)
 	if routingKey != "" {

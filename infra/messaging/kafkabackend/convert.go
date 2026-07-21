@@ -95,13 +95,17 @@ func fromKafkaMessage(km kafka.Message) (messaging.Delivery, error) {
 	if msg.Headers == nil {
 		msg.Headers = headerStr
 	}
-	exchange := stringHeader(km.Headers, headerExchange)
-	if exchange == "" {
-		exchange = km.Topic
+	// Prefer broker-authorized topic/key. Header X-Exchange/X-Routing-Key
+	// are round-trip aids stamped by our publisher with exchange==topic;
+	// only honour them when they match the broker-enforced values so a
+	// hostile producer cannot override Delivery.Exchange for ACL logic.
+	exchange := km.Topic
+	if hdrEx := stringHeader(km.Headers, headerExchange); hdrEx != "" && hdrEx == km.Topic {
+		exchange = hdrEx
 	}
-	routingKey := stringHeader(km.Headers, headerRoutingKey)
-	if routingKey == "" {
-		routingKey = string(km.Key)
+	routingKey := string(km.Key)
+	if hdrRK := stringHeader(km.Headers, headerRoutingKey); hdrRK != "" && hdrRK == string(km.Key) {
+		routingKey = hdrRK
 	}
 	schemaVersion := parseSchemaVersion(km.Headers)
 	if schemaVersion != 0 {
@@ -137,18 +141,20 @@ func splitHeaders(headers []kafka.Header) (map[string]any, map[string]string) {
 		}
 		cost := len(h.Key) + len(h.Value)
 		if cost > byteBudget {
-			break
+			// Skip only the oversized entry so remaining in-budget headers
+			// still materialise.
+			continue
 		}
 		byteBudget -= cost
 		v := string(h.Value)
-		anyHeaders[h.Key] = v
-		// Skip the kit-internal X-* envelope headers in the per-message
-		// header map so the kit envelope and round-tripped Message.Headers
-		// stay in sync with the publisher-side input.
+		// Skip kit-internal X-* envelope headers from both maps so
+		// Delivery.Headers matches NATS (which strips them) and callers
+		// cannot confuse publisher-asserted routing with broker topic.
 		switch h.Key {
 		case headerExchange, headerRoutingKey, headerMessageID, headerMessageType, messaging.HeaderSchemaVersion:
 			continue
 		}
+		anyHeaders[h.Key] = v
 		strHeaders[h.Key] = v
 	}
 	if len(anyHeaders) == 0 {

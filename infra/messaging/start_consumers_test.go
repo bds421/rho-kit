@@ -41,7 +41,7 @@ func TestStartConsumers_MissingHandler_ReturnsError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no handlers registered")
 	assert.Contains(t, err.Error(), "count=1")
-	assert.NotContains(t, err.Error(), "user.updated")
+	assert.Contains(t, err.Error(), "user.updated")
 }
 
 func TestStartConsumers_MultipleMissingHandlers(t *testing.T) {
@@ -59,8 +59,8 @@ func TestStartConsumers_MultipleMissingHandlers(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "count=2")
-	assert.NotContains(t, err.Error(), "b.event")
-	assert.NotContains(t, err.Error(), "c.event")
+	assert.Contains(t, err.Error(), "b.event")
+	assert.Contains(t, err.Error(), "c.event")
 }
 
 func TestStartConsumers_NilHandler_ReturnsError(t *testing.T) {
@@ -77,7 +77,7 @@ func TestStartConsumers_NilHandler_ReturnsError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil handlers")
 	assert.Contains(t, err.Error(), "count=1")
-	assert.NotContains(t, err.Error(), "order.created")
+	assert.Contains(t, err.Error(), "order.created")
 }
 
 func TestStartConsumers_NilConsumer_ReturnsError(t *testing.T) {

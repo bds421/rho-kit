@@ -236,7 +236,11 @@ func assertPublish(t *testing.T, m *Metrics, exchange, routingKey, outcome strin
 
 func assertConsume(t *testing.T, m *Metrics, queue, outcome string, want float64) {
 	t.Helper()
-	got := testutil.ToFloat64(m.consumed.WithLabelValues(queue, outcome))
+	// Route through the same consumeLabel function the recorder uses so
+	// the test works against both the v2 opaque default and
+	// [WithRawConsumeLabels].
+	q := m.consumeLabel(queue)
+	got := testutil.ToFloat64(m.consumed.WithLabelValues(q, outcome))
 	if got != want {
 		t.Fatalf("consume %s/%s = %v, want %v", queue, outcome, got, want)
 	}

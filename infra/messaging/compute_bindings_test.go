@@ -571,3 +571,19 @@ func TestComputeBindings_FirstInvalidSpecFails(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exchange name must not be empty")
 }
+
+// TestValidateBindingSpecs_ExchangeTooLongForRetry pins the fail-fast
+// invariant: derived Exchange+".retry"/".dead" must stay within MaxRouteNameBytes.
+func TestValidateBindingSpecs_ExchangeTooLongForRetry(t *testing.T) {
+	// MaxRouteNameBytes - len(".retry") + 1 overflows the derived name.
+	ex := strings.Repeat("e", messaging.MaxRouteNameBytes-len(".retry")+1)
+	err := messaging.ValidateBindingSpecs([]messaging.BindingSpec{{
+		Exchange:      ex,
+		ExchangeType:  messaging.ExchangeDirect,
+		RoutingKey:    "rk",
+		ConsumerGroup: "cg",
+		Retry:         &messaging.RetryPolicy{MaxRetries: 3, Delay: time.Second},
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exchange name too long")
+}

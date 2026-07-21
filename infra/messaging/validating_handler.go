@@ -56,7 +56,7 @@ func WithStrictUnknownVersion() ValidatingHandlerOption {
 // Composes with NewVersionedHandler:
 //
 //	handler := NewValidatingHandler(registry, NewVersionedHandler(handlers))
-func NewValidatingHandler(registry *InMemorySchemaRegistry, next Handler, opts ...ValidatingHandlerOption) Handler {
+func NewValidatingHandler(registry SchemaRegistry, next Handler, opts ...ValidatingHandlerOption) Handler {
 	if registry == nil {
 		panic("messaging: NewValidatingHandler requires a non-nil registry")
 	}

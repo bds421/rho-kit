@@ -2,11 +2,14 @@ package postgres
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/infra/v2/outbox"
 )
@@ -87,6 +90,25 @@ func TestStore_ImplementsPendingResetter(t *testing.T) {
 	assert.Implements(t, (*outbox.PendingResetter)(nil), (*Store)(nil))
 }
 
+// TestHeartbeat_SkipsIdsWithoutClaimToken pins claim_token fencing:
+// Heartbeat must not refresh rows this process does not own (no remembered
+// token). Without a pool the SQL path is not exercised; we assert the
+// pre-SQL filter returns 0 when no tokens are remembered.
+func TestHeartbeat_SkipsIdsWithoutClaimToken(t *testing.T) {
+	s := &Store{claimTokens: make(map[string]string)}
+	// pool is nil — Heartbeat should fail with init error only after the
+	// token filter. With no tokens it returns (0, nil) without touching pool.
+	n, err := s.Heartbeat(context.Background(), []string{"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
+
+	// Nil store / nil pool with remembered tokens still fails closed.
+	s.rememberClaim("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "11111111-2222-3333-4444-555555555555")
+	_, err = s.Heartbeat(context.Background(), []string{"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not initialized")
+}
+
 // TestClaimTokenBookkeeping exercises the in-process id->token map that
 // fences outcome updates. This is the unit-testable core of DEFECT B's
 // fence; the actual SQL fence needs a live Postgres (integration suite).
@@ -140,4 +162,20 @@ func TestStore_InsertRejectsZeroID(t *testing.T) {
 	s := &Store{pool: nil}
 	err := s.Insert(context.Background(), outbox.Entry{})
 	assert.Error(t, err)
+}
+
+// TestResetStaleProcessing_SQLClearsClaimToken is a source-level pin that
+// the stale-processing recovery UPDATE nulls claim_token, matching
+// IncrementAttempts/ResetPending and the documented pending invariant.
+func TestResetStaleProcessing_SQLClearsClaimToken(t *testing.T) {
+	body, err := os.ReadFile("store.go")
+	require.NoError(t, err)
+	s := string(body)
+	idx := strings.Index(s, "func (s *Store) ResetStaleProcessing")
+	require.Greater(t, idx, 0, "ResetStaleProcessing not found")
+	// Slice a bounded window after the function marker so we do not
+	// accidentally match claim_token = NULL from IncrementAttempts.
+	window := s[idx : idx+1600]
+	require.Contains(t, window, "claim_token = NULL",
+		"ResetStaleProcessing must clear claim_token when returning rows to pending")
 }

@@ -34,12 +34,35 @@ func TestValidateConfig_AllowsTLS(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestValidateConfig_AllowsSASL(t *testing.T) {
+func TestValidateConfig_AllowsSASLWithTLS(t *testing.T) {
 	err := ValidateConfig(Config{
 		Brokers:       []string{"localhost:9092"},
 		SASLMechanism: "PLAIN",
 		SASLUsername:  "u",
 		SASLPassword:  "p",
+		TLS:           &tls.Config{MinVersion: tls.VersionTLS12},
+	})
+	assert.NoError(t, err)
+}
+
+func TestValidateConfig_RejectsSASLWithoutTLS(t *testing.T) {
+	err := ValidateConfig(Config{
+		Brokers:       []string{"localhost:9092"},
+		SASLMechanism: "PLAIN",
+		SASLUsername:  "u",
+		SASLPassword:  "p",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SASL credentials require TLS")
+}
+
+func TestValidateConfig_AllowsSASLWithoutTLSWhenInsecure(t *testing.T) {
+	err := ValidateConfig(Config{
+		Brokers:       []string{"localhost:9092"},
+		SASLMechanism: "PLAIN",
+		SASLUsername:  "u",
+		SASLPassword:  "p",
+		AllowInsecure: true,
 	})
 	assert.NoError(t, err)
 }

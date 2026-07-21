@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/bds421/rho-kit/io/v2/atomicfile"
 )
@@ -73,6 +74,16 @@ func marshalPendingEntry(pm pendingMessage) ([]byte, error) {
 // checking the current end-of-file byte rather than tracking state, so the
 // separator is added exactly once regardless of how many appends follow.
 func appendPendingEntry(path string, line []byte) error {
+	// Mirror atomicfile.Save's symlink defenses (THREAT_MODEL M-05): the
+	// snapshot path rejects symlinked destinations and ancestors; the O(1)
+	// append path must not be a weaker write surface for payload data.
+	if err := rejectStateSymlink(path); err != nil {
+		return err
+	}
+	if err := rejectJournalSymlinkAncestors(path); err != nil {
+		return err
+	}
+
 	needsLeadingNewline, err := fileNeedsLeadingNewline(path)
 	if err != nil {
 		return err
@@ -108,9 +119,14 @@ func appendPendingEntry(path string, line []byte) error {
 // with a newline because the file is non-empty and does not already end in one
 // (the case immediately after [atomicfile.Save] wrote a snapshot array).
 func fileNeedsLeadingNewline(path string) (bool, error) {
-	info, err := os.Stat(path)
+	// Lstat: do not follow a destination symlink planted after the initial
+	// snapshot (same threat model as rejectStateSymlink).
+	info, err := os.Lstat(path)
 	if err != nil {
 		return false, fmt.Errorf("stat journal: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, errors.New("refusing to append journal through symlink")
 	}
 	if info.Size() == 0 {
 		return false, nil
@@ -153,9 +169,10 @@ func loadJournal(path string) ([]pendingMessage, error) {
 	// journal carrying appended entries; fall back to line-oriented parsing.
 	parsed, journalErr := parseJournalFile(path)
 	if journalErr != nil {
-		// Neither interpretation worked: report the original (snapshot) error
-		// so corruption surfaces with the same message callers already pin.
-		return nil, err
+		// Neither interpretation worked. Keep the snapshot error as the primary
+		// (callers pin its text) and join the journal fallback for line-level
+		// diagnosis during recovery.
+		return nil, errors.Join(err, fmt.Errorf("journal fallback: %w", journalErr))
 	}
 	return parsed, nil
 }
@@ -234,10 +251,11 @@ func parseJournalFile(path string) ([]pendingMessage, error) {
 	return pending, nil
 }
 
-// rejectStateSymlink refuses to read the state file through a symlink at the
-// final path component, mirroring the destination check [atomicfile.Save]
-// performs before writing. Ancestor containment is already enforced by the
-// constructor (resolveStateFilePath) and by atomicfile on every write.
+// rejectStateSymlink refuses to read/append the state file through a symlink
+// at the final path component, mirroring the destination check
+// [atomicfile.Save] performs before writing. Pair with
+// [rejectJournalSymlinkAncestors] on the append path — resolveStateFilePath is
+// purely lexical and does not inspect the live filesystem.
 func rejectStateSymlink(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -250,4 +268,40 @@ func rejectStateSymlink(path string) error {
 		return errors.New("refusing to read journal through symlink")
 	}
 	return nil
+}
+
+// rejectJournalSymlinkAncestors walks the directory ancestors of path and
+// refuses any symlink component below the filesystem root. Mirrors
+// atomicfile's unexported rejectSymlinkAncestors so journal appends share the
+// snapshot writer's M-05 containment.
+func rejectJournalSymlinkAncestors(path string) error {
+	cur, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return errors.New("journal path is invalid")
+	}
+	cur = filepath.Clean(cur)
+	for {
+		info, err := os.Lstat(cur)
+		if errors.Is(err, os.ErrNotExist) {
+			// Missing ancestors are fine: the snapshot writer creates them.
+		} else if err != nil {
+			return fmt.Errorf("inspect journal path: %w", err)
+		} else if info.Mode()&os.ModeSymlink != 0 {
+			// Darwin root-level compatibility links (/var -> /private/var):
+			// allow when the parent is the filesystem root; reject deeper
+			// symlink pivots that an attacker could plant under a service
+			// state directory (mirrors atomicfile.rejectSymlinkAncestors).
+			parent := filepath.Dir(cur)
+			if filepath.Dir(parent) == parent {
+				cur = parent
+				continue
+			}
+			return errors.New("refusing journal path with symlink ancestor")
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return nil
+		}
+		cur = parent
+	}
 }

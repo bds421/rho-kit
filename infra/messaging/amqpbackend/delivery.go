@@ -82,7 +82,9 @@ func extractStringHeaders(h amqp.Table) map[string]string {
 		}
 		cost := len(k) + len(s)
 		if cost > byteBudget {
-			break
+			// Skip this oversize entry and keep scanning so map-iteration
+			// order does not nondeterministically drop later small headers.
+			continue
 		}
 		byteBudget -= cost
 		result[k] = s

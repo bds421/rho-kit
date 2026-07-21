@@ -189,6 +189,12 @@ func (b *Broker) Unsubscribe(id SubscriptionID) {
 // Drain processes all pending published messages by dispatching them to
 // matching subscribers synchronously. Returns the first error from any
 // handler, or nil if all succeed.
+//
+// Handlers may Publish or Subscribe while Drain is running, but MUST NOT call
+// Drain or PublishAndDrain: drainMu is non-reentrant and nested Drain deadlocks.
+// When a handler returns an error mid-fanout the head message stays queued and
+// a later Drain re-delivers it to all matching subscribers (at-least-once test
+// semantics) — do not assume at-most-once delivery across a failed Drain.
 func (b *Broker) Drain(ctx context.Context) error {
 	if err := b.ready(); err != nil {
 		return err
@@ -200,6 +206,7 @@ func (b *Broker) Drain(ctx context.Context) error {
 	// cannot peek the same head entry before either removes it, which would
 	// dispatch the same message to subscribers more than once. b.mu is still
 	// released during handler dispatch so handlers may publish or subscribe.
+	// Nested Drain from a handler deadlocks; see method godoc.
 	b.drainMu.Lock()
 	defer b.drainMu.Unlock()
 	for {
@@ -304,6 +311,11 @@ func matches(sub subscription, exchange, routingKey string) bool {
 
 // matchTopic implements AMQP 0-9-1 topic matching between a pattern and a routing key.
 func matchTopic(pattern, key string) bool {
+	// AMQP 0-9-1: "*" matches exactly one non-empty word. An empty routing key
+	// is zero words (valid for fanout), so it must not match "*".
+	if key == "" {
+		return pattern == "#" || pattern == ""
+	}
 	if pattern == "#" || (pattern == "*" && !strings.Contains(key, ".")) {
 		return true
 	}

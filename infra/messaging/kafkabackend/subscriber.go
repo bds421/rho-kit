@@ -39,6 +39,24 @@ import (
 // cancelled commit. Operators relying on exactly-once semantics must
 // layer idempotency at the handler or downstream-store level; the
 // kit's [data/v2/idempotency] package is the canonical hook.
+//
+// # Handler execution bound
+//
+// Every handler invocation is capped at [handlerTimeout] (30s), matching
+// amqpbackend and natsbackend. A stuck handler is cancelled rather than
+// stalling the partition forever. There is no separate shutdown grace:
+// on parent ctx cancel the handler still receives the remaining timeout
+// window via context.WithoutCancel + WithTimeout (at-least-once redelivery
+// still applies if the handler fails after cancel).
+//
+// # Transient-error reader reset cost
+//
+// Non-permanent handler errors close and recreate the group Reader so the
+// fetch rewinds to the last committed offset. That leave/rejoin triggers a
+// consumer-group rebalance. Back-off escalates with resetStreak (500ms base,
+// doubling to 30s) to limit rebalance storms under persistent failures.
+const handlerTimeout = 30 * time.Second
+
 type Subscriber struct {
 	cfg     Config
 	groupID string
@@ -46,6 +64,10 @@ type Subscriber struct {
 	options subscriberOptions
 	logger  *slog.Logger
 	metrics *Metrics
+
+	// resetStreak counts consecutive reader resets due to transient
+	// handler errors; used only to escalate the reset back-off.
+	resetStreak int
 }
 
 // SubscriberOption configures a [Subscriber].
@@ -176,19 +198,13 @@ func WithSubscriberMetrics(m *Metrics) SubscriberOption {
 	return func(o *subscriberOptions) { o.metrics = m }
 }
 
-// NewSubscriber constructs a Subscriber bound to brokers and the
-// consumer group identified by groupID. The topics slice declares the
-// topic set the subscriber accepts bindings for. Callers can register
-// more than one topic and let Consume dispatch by Binding.Exchange:
-// each Consume call constructs a private [kafka.Reader] scoped to that
-// single binding topic, so a record for one topic never reaches a
-// handler bound to another.
+// NewSubscriber is a convenience wrapper around [NewSubscriberWithConfig]
+// with only brokers set. Like [NewPublisher], FR-073 validation requires
+// TLS, SASL, or AllowInsecure on Config — so this form cannot succeed in
+// production. Prefer [NewSubscriberWithConfig].
 //
 // groupID must be non-empty; the kit refuses to fabricate a stable
-// group ID for the caller (a missing group is almost always a
-// configuration error — kafka-go's "no group, no commits" mode is
-// available via the lower-level [kafka.Reader] API for callers that
-// genuinely need it).
+// group ID for the caller.
 func NewSubscriber(brokers []string, groupID string, topics []string, opts ...SubscriberOption) (*Subscriber, error) {
 	cfg := Config{Brokers: brokers}
 	return NewSubscriberWithConfig(cfg, groupID, topics, opts...)
@@ -358,6 +374,7 @@ func (s *Subscriber) Consume(ctx context.Context, b messaging.Binding, handler m
 			// later success on this partition must not commit past it
 			// and silently drop the failed message. See dispatch's doc
 			// for the Kafka-watermark rationale.
+			s.resetStreak++
 			newReader, resetErr := s.resetReader(ctx, reader, b.Exchange)
 			// The old reader is closed inside resetReader; clear it so
 			// the deferred cleanup does not double-close it.
@@ -369,6 +386,8 @@ func (s *Subscriber) Consume(ctx context.Context, b messaging.Binding, handler m
 				// ctx cancelled during the back-off.
 				return nil
 			}
+		} else {
+			s.resetStreak = 0
 		}
 	}
 }
@@ -386,12 +405,25 @@ func (s *Subscriber) resetReader(ctx context.Context, old *kafka.Reader, topic s
 			redact.Error(closeErr),
 		)
 	}
-	// Soft back-off so a persistently-failing handler does not spin the
-	// fetch/reset loop. Bounded by ctx.
+	// Soft escalating back-off so a persistently-failing handler does not
+	// spin consumer-group rebalances. Bounded by ctx; capped at 30s.
+	// Base 500ms doubles each consecutive reset (1: 500ms, 2: 1s, …).
+	delay := 500 * time.Millisecond
+	for i := 1; i < s.resetStreak && delay < 30*time.Second; i++ {
+		delay *= 2
+	}
+	if delay > 30*time.Second {
+		delay = 30 * time.Second
+	}
+	s.logger.Info("kafkabackend: reader reset after transient handler error",
+		redact.String("topic", topic),
+		"streak", s.resetStreak,
+		"backoff", delay,
+	)
 	select {
 	case <-ctx.Done():
 		return nil, nil
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(delay):
 	}
 	reader, err := s.newReader(topic)
 	if err != nil {
@@ -504,7 +536,12 @@ func (s *Subscriber) dispatch(ctx context.Context, reader committer, km kafka.Me
 		s.commitWithOutcome(ctx, reader, km, kafkaConsumeOutcomeValidateError)
 		return false
 	}
-	if err := handler(ctx, delivery); err != nil {
+	// Bound handler execution (parity with amqpbackend/natsbackend). Detach
+	// from parent cancellation so an in-flight handler can finish within the
+	// timeout when shutdown is signalled mid-dispatch.
+	handlerCtx, handlerCancel := context.WithTimeout(context.WithoutCancel(ctx), handlerTimeout)
+	defer handlerCancel()
+	if err := handler(handlerCtx, delivery); err != nil {
 		if apperror.IsPermanent(err) {
 			s.logger.Error("kafkabackend: permanent error — committing offset to skip poison pill",
 				redact.String("topic", km.Topic),

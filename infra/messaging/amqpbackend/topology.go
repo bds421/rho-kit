@@ -213,8 +213,14 @@ func declareRetryTopology(ch *amqp.Channel, b messaging.BindingSpec, db messagin
 // deliveries. The original publish key remains available in the x-death
 // header's routing-keys field for handlers that need it.
 func retryQueueArgs(b messaging.BindingSpec) amqp.Table {
+	// RabbitMQ TTLs are whole milliseconds. Floor sub-millisecond delays
+	// at 1ms so truncation to 0 cannot create an immediate-bounce loop.
+	ttlMs := b.Retry.Delay / time.Millisecond
+	if b.Retry.Delay > 0 && ttlMs < 1 {
+		ttlMs = 1
+	}
 	return amqp.Table{
-		"x-message-ttl":             int64(b.Retry.Delay / time.Millisecond),
+		"x-message-ttl":             int64(ttlMs),
 		"x-dead-letter-exchange":    "",
 		"x-dead-letter-routing-key": b.ConsumerGroup,
 	}

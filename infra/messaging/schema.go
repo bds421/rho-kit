@@ -29,6 +29,11 @@ type SchemaRegistry interface {
 	// Versions returns all registered versions for the given message type,
 	// sorted in ascending order. Returns nil if the message type is unknown.
 	Versions(msgType string) []SchemaVersion
+
+	// ValidateMessage validates the message payload against the schema
+	// registered for its SchemaVersion. Returns nil when no schema is
+	// registered for the version (backward-compat pass-through).
+	ValidateMessage(msg Message) error
 }
 
 // InMemorySchemaRegistry is a thread-safe, in-memory implementation of SchemaRegistry.
@@ -36,6 +41,9 @@ type SchemaRegistry interface {
 type InMemorySchemaRegistry struct {
 	mu      sync.RWMutex
 	schemas map[schemaKey]schemaEntry
+	// byType indexes versions per message type so Versions is O(versions)
+	// rather than O(all registered schemas).
+	byType map[string][]SchemaVersion
 }
 
 type schemaKey struct {
@@ -53,6 +61,7 @@ type schemaEntry struct {
 func NewInMemorySchemaRegistry() *InMemorySchemaRegistry {
 	return &InMemorySchemaRegistry{
 		schemas: make(map[schemaKey]schemaEntry),
+		byType:  make(map[string][]SchemaVersion),
 	}
 }
 
@@ -88,6 +97,8 @@ func (r *InMemorySchemaRegistry) Register(msgType string, version SchemaVersion,
 	stored := make(json.RawMessage, len(schema))
 	copy(stored, schema)
 	r.schemas[key] = schemaEntry{raw: stored, compiled: compiled}
+	r.byType[msgType] = append(r.byType[msgType], version)
+	slices.Sort(r.byType[msgType])
 
 	return nil
 }
@@ -117,21 +128,28 @@ func (r *InMemorySchemaRegistry) Versions(msgType string) []SchemaVersion {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	var versions []SchemaVersion
-	for key := range r.schemas {
-		if key.msgType == msgType {
-			versions = append(versions, key.version)
-		}
+	src := r.byType[msgType]
+	if len(src) == 0 {
+		return nil
 	}
-
-	slices.Sort(versions)
+	versions := make([]SchemaVersion, len(src))
+	copy(versions, src)
 	return versions
 }
 
-// ValidateMessage validates the message payload against the schema registered
-// for its SchemaVersion. Returns nil if no schema is registered for the version
-// (backward compat: unversioned messages pass through).
-func (r *InMemorySchemaRegistry) ValidateMessage(msg Message) error {
+// ValidatePayload validates the message payload against the schema registered
+// for its SchemaVersion. It does NOT run metadata validation ([ValidateMessage]
+// on package messaging); use that separately for id/type/headers.
+// Returns nil if no schema is registered for the version (backward compat:
+// unversioned messages and unknown versions pass through).
+//
+// SECURITY: the version header is producer-controlled. In the default
+// non-strict configuration a hostile/buggy peer can set an unregistered
+// X-Schema-Version (or omit it → version 0) and skip payload validation
+// for a type that otherwise has schemas. Prefer
+// [NewValidatingHandler] with [WithStrictUnknownVersion] in production;
+// making strict the default is a v3 candidate (see V3_BREAKING_PROPOSALS.md).
+func (r *InMemorySchemaRegistry) ValidatePayload(msg Message) error {
 	key := schemaKey{msgType: msg.Type, version: msg.SchemaVersion}
 
 	r.mu.RLock()
@@ -143,6 +161,14 @@ func (r *InMemorySchemaRegistry) ValidateMessage(msg Message) error {
 	}
 
 	return validatePayload(entry.compiled, msg.Payload)
+}
+
+// ValidateMessage implements [SchemaRegistry]. Prefer [ValidatePayload] at
+// call sites for clarity: this method only validates the payload against a
+// registered JSON schema and does not run package-level [ValidateMessage]
+// metadata checks.
+func (r *InMemorySchemaRegistry) ValidateMessage(msg Message) error {
+	return r.ValidatePayload(msg)
 }
 
 // compileJSONSchema parses and compiles a JSON schema from raw bytes.

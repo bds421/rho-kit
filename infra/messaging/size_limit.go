@@ -1,11 +1,9 @@
 package messaging
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
-	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // DefaultMaxMessageBytes is the cross-backend publish limit used by
@@ -159,13 +157,26 @@ func (l MessageSizeLimiter) Check(exchange, routingKey string, msg Message) erro
 // MessageSizeLimiter. It includes the JSON message body plus transport headers,
 // because headers ride outside Message's JSON body on AMQP, NATS, and Redis
 // Streams but still consume broker frame/storage budget.
+//
+// The estimate is arithmetic (no throwaway json.Marshal): payload is already
+// serialized JSON, and fixed scaffolding bounds the metadata fields. Transport
+// headers are counted a second time outside the body, matching the previous
+// marshal-then-add-headers accounting used by Check.
 func EstimateMessageBytes(msg Message) (int, error) {
-	body, err := json.Marshal(msg)
-	if err != nil {
-		return 0, redact.WrapError("messaging: estimate message size", err)
+	// Scaffolding covers JSON object braces, field names, quotes, and commas
+	// for id/type/payload/timestamp/headers/schema_version without re-marshaling.
+	const jsonScaffold = 96
+	size := jsonScaffold + len(msg.ID) + len(msg.Type) + len(msg.Payload)
+	if !msg.Timestamp.IsZero() {
+		// RFC3339Nano worst-case length.
+		size += 35
 	}
-	size := len(body)
+	if msg.SchemaVersion != 0 {
+		size += 24
+	}
 	for k, v := range msg.Headers {
+		// JSON object entry overhead (~6) + body bytes + transport-side re-count.
+		size += len(k) + len(v) + 6
 		size += len(k) + len(v)
 	}
 	return size, nil

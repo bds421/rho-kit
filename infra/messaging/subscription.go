@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync/atomic"
+	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
@@ -197,6 +198,9 @@ func (s *Subscription) awaitCancel(ctx context.Context) *context.CancelFunc {
 			// to cover the publish-then-return ordering.
 			return s.cancel.Swap(nil)
 		default:
+			// Yield so concurrent Start can publish cancel without a
+			// 100% CPU busy-spin in the Start/Stop race window.
+			time.Sleep(time.Millisecond)
 		}
 	}
 }

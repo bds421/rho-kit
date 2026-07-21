@@ -36,7 +36,7 @@ func TestConsumeHandler_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	ConsumeHandler(handlers, discardLogger())(rec, req)
+	UnguardedConsumeHandler(handlers, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
@@ -50,13 +50,13 @@ func TestConsumeHandler_Success(t *testing.T) {
 
 func TestConsumeHandler_PanicsOnNilHandlers(t *testing.T) {
 	require.Panics(t, func() {
-		ConsumeHandler(nil, discardLogger())
+		UnguardedConsumeHandler(nil, discardLogger())
 	})
 }
 
 func TestConsumeHandler_PanicsOnNilHandlerValue(t *testing.T) {
 	require.PanicsWithValue(t, "debughttp: ConsumeHandler requires non-nil handlers", func() {
-		ConsumeHandler(map[string]messaging.Handler{"order.created": nil}, discardLogger())
+		UnguardedConsumeHandler(map[string]messaging.Handler{"order.created": nil}, discardLogger())
 	})
 }
 
@@ -69,7 +69,7 @@ func TestConsumeHandler_DetachesHandlersMap(t *testing.T) {
 		},
 	}
 
-	h := ConsumeHandler(handlers, discardLogger())
+	h := UnguardedConsumeHandler(handlers, discardLogger())
 	handlers["order.created"] = func(_ context.Context, _ messaging.Delivery) error {
 		t.Fatal("mutated handler map was used")
 		return nil
@@ -94,7 +94,7 @@ func TestConsumeHandler_NilLoggerUsesDefault(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	ConsumeHandler(handlers, nil)(rec, req)
+	UnguardedConsumeHandler(handlers, nil)(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
@@ -106,7 +106,7 @@ func TestConsumeHandler_InvalidJSON(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	ConsumeHandler(handlers, discardLogger())(rec, req)
+	UnguardedConsumeHandler(handlers, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
@@ -119,7 +119,7 @@ func TestConsumeHandler_EmptyType(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	ConsumeHandler(handlers, discardLogger())(rec, req)
+	UnguardedConsumeHandler(handlers, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "type is required")
@@ -135,7 +135,7 @@ func TestConsumeHandler_UnknownType(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	ConsumeHandler(handlers, discardLogger())(rec, req)
+	UnguardedConsumeHandler(handlers, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "unknown message type")
@@ -154,7 +154,7 @@ func TestConsumeHandler_HandlerError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	ConsumeHandler(handlers, discardLogger())(rec, req)
+	UnguardedConsumeHandler(handlers, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 
@@ -233,7 +233,7 @@ func TestPublishHandler_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
+	UnguardedPublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
@@ -248,7 +248,7 @@ func TestPublishHandler_Success(t *testing.T) {
 
 func TestPublishHandler_PanicsOnNilPublisher(t *testing.T) {
 	require.Panics(t, func() {
-		PublishHandler(nil, []string{"*"}, discardLogger())
+		UnguardedPublishHandler(nil, []string{"*"}, discardLogger())
 	})
 }
 
@@ -258,7 +258,7 @@ func TestPublishHandler_NilLoggerUsesDefault(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, []string{"*"}, nil)(rec, req)
+	UnguardedPublishHandler(pub, []string{"*"}, nil)(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
@@ -270,7 +270,7 @@ func TestPublishHandler_InvalidJSON(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
+	UnguardedPublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
@@ -283,24 +283,26 @@ func TestPublishHandler_MissingExchange(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
+	UnguardedPublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "exchange is required")
 }
 
-func TestPublishHandler_MissingRoutingKey(t *testing.T) {
+func TestPublishHandler_EmptyRoutingKeyRequiresType(t *testing.T) {
 	pub := &fakePublisher{}
 
+	// Empty routing_key is allowed for fanout, but type must be set when
+	// it cannot default from routing_key.
 	body := `{"exchange":"ex","routing_key":"","payload":{}}`
 	req := httptest.NewRequest(http.MethodPost, "/debug/publish", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
+	UnguardedPublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Contains(t, rec.Body.String(), "routing_key is required")
+	assert.Contains(t, rec.Body.String(), "type is required when routing_key is empty")
 }
 
 func TestPublishHandler_PublishError(t *testing.T) {
@@ -311,7 +313,7 @@ func TestPublishHandler_PublishError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
+	UnguardedPublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 
@@ -329,7 +331,7 @@ func TestPublishHandler_ExchangeNotAllowed(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, []string{"allowed-exchange"}, discardLogger())(rec, req)
+	UnguardedPublishHandler(pub, []string{"allowed-exchange"}, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "exchange not allowed")
@@ -343,7 +345,7 @@ func TestPublishHandler_ExchangeAllowed(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, []string{"allowed-exchange"}, discardLogger())(rec, req)
+	UnguardedPublishHandler(pub, []string{"allowed-exchange"}, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "allowed-exchange", pub.lastExchange)

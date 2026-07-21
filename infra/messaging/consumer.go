@@ -37,12 +37,17 @@ type Handler func(ctx context.Context, d Delivery) error
 type Consumer interface {
 	// Consume blocks until ctx is cancelled, dispatching messages to handler.
 	// Resilient: reconnects automatically on transport errors.
-	// Returns nil when ctx is cancelled (normal shutdown), or an error if
-	// reconnection has been permanently abandoned (e.g., max retries exceeded,
-	// configuration error).
+	// On normal shutdown (ctx cancelled) backends return ctx.Err()
+	// (typically context.Canceled). A non-context error means reconnection
+	// was permanently abandoned (e.g. max retries exceeded, configuration).
 	Consume(ctx context.Context, b Binding, handler Handler) error
 
 	// ConsumeOnce reads until the context is cancelled or the transport
-	// connection drops. Callers typically wrap this in a retry loop.
+	// connection drops. Some backends (e.g. Redis Streams) implement this as a
+	// single-shot, self-reconnecting call that returns only on context
+	// cancellation — those backends refuse a second ConsumeOnce on the same
+	// consumer (ErrInvalidConsumer). Prefer one long-lived Consume for
+	// production wiring; use ConsumeOnce only when the backend documents
+	// retry-loop semantics.
 	ConsumeOnce(ctx context.Context, b Binding, handler Handler) error
 }

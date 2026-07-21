@@ -1,4 +1,5 @@
-// Package debughttp provides optional HTTP handlers for debugging AMQP
-// message consumption and publishing without a RabbitMQ client.
-// Import this package only if you need debug endpoints — it pulls in httpx.
 package debughttp
+
+// Package documentation (including the SECURITY warning that handlers MUST
+// be wrapped with Guard) lives on the package clause in debug.go so a single
+// godoc page is rendered.

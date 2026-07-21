@@ -108,6 +108,11 @@ func (m Message) WithHeader(key, value string) (Message, error) {
 	if clone.Headers == nil {
 		clone.Headers = make(map[string]string, 1)
 	}
+	// Enforce MaxMessageHeaders at construction so a chain of WithHeader
+	// cannot build a Message that only fails later at ValidateMessage/Publish.
+	if _, exists := clone.Headers[key]; !exists && len(clone.Headers) >= MaxMessageHeaders {
+		return Message{}, fmt.Errorf("%w: header count exceeds %d", ErrInvalidMessageHeader, MaxMessageHeaders)
+	}
 	clone.Headers[key] = value
 	return clone, nil
 }

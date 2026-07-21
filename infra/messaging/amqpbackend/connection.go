@@ -352,13 +352,13 @@ func normalizeDialURL(rawURL string, tlsConfigured, allowPlaintext bool) (string
 	}
 }
 
-func cloneTLSConfigWithFloor(cfg *tls.Config, _ string) *tls.Config {
+func cloneTLSConfigWithFloor(cfg *tls.Config, caller string) *tls.Config {
 	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion)
 	if err != nil {
 		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
-			panic("amqpbackend: TLS InsecureSkipVerify=true is not permitted")
+			panic(caller + ": TLS InsecureSkipVerify=true is not permitted")
 		}
-		panic("amqpbackend: TLS MaxVersion must allow TLS 1.2 or newer")
+		panic(caller + ": TLS MaxVersion must allow TLS 1.2 or newer")
 	}
 	return cloned
 }
@@ -389,6 +389,9 @@ func (c *Connection) Channel() (*amqp.Channel, error) {
 // transient connection cycles — outbox Relay, polling consumers — by
 // pausing the work loop until the next reconnect completes.
 //
+// Also returns when reconnect attempts are permanently exhausted
+// ([Dead] closes); callers must not spin forever after the budget is spent.
+//
 // Polls at 100ms intervals; the cost of a tighter loop isn't justified in
 // practice (reconnects take seconds, not milliseconds).
 func (c *Connection) WaitForConnection(ctx context.Context) error {
@@ -410,6 +413,8 @@ func (c *Connection) WaitForConnection(ctx context.Context) error {
 			return fmt.Errorf("amqpbackend: WaitForConnection: %w", ctx.Err())
 		case <-c.closed:
 			return fmt.Errorf("amqpbackend: WaitForConnection: connection closed")
+		case <-c.dead:
+			return fmt.Errorf("amqpbackend: WaitForConnection: connection permanently lost")
 		case <-t.C:
 		}
 	}
@@ -418,25 +423,25 @@ func (c *Connection) WaitForConnection(ctx context.Context) error {
 // Stop terminates the AMQP connection and stops reconnection attempts.
 // Safe to call multiple times.
 //
-// The amqp091 driver's close is synchronous and unaware of context, so
-// the only ctx handling we can offer is a fast-path: if ctx is already
-// cancelled at entry, return its error without invoking the broker
-// close. Once the close call starts it runs to completion.
+// The amqp091 driver's close is synchronous and unaware of context.
+// Resource release (closing c.closed and the broker connection) always
+// runs so a pre-cancelled ctx cannot leak the connection or leave the
+// reconnect loop running. A non-nil ctx only caps how long Stop waits
+// for in-flight reconnect goroutines to exit after the close; if the
+// wait is cut short Stop still returns ctx.Err() (or the close error)
+// after the broker close has completed.
 //
-// Stop waits for any in-flight reconnect goroutine to exit so the
-// Connection's goroutines are not still running when Stop returns —
-// a non-nil ctx caps the wait at ctx deadline, in which case Stop
-// returns ctx.Err() but still completes the broker close. The
-// reconnect loop honors c.closed promptly between dial attempts, so
+// The reconnect loop honors c.closed promptly between dial attempts, so
 // the wait is normally bounded by the in-flight dial timeout.
 func (c *Connection) Stop(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
+	// Capture a pre-cancelled ctx error after resource release so callers
+	// still observe the cancellation, but never skip the close.
+	var entryErr error
 	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+		entryErr = ctx.Err()
 	}
 	var closeErr error
 	c.closeOnce.Do(func() {
@@ -452,6 +457,14 @@ func (c *Connection) Stop(ctx context.Context) error {
 		}
 		c.mu.Unlock()
 	})
+	// Prefer the broker close error when both close and entry cancellation
+	// are set — the close is the more informative outcome.
+	if entryErr != nil {
+		if closeErr != nil {
+			return closeErr
+		}
+		return entryErr
+	}
 	// Wait outside closeOnce so callers that race past a completed Stop
 	// still observe the wait on this call. The Wait/Done dance is
 	// idempotent — additional Stops after the goroutine drained simply
@@ -560,6 +573,14 @@ func (c *Connection) watchConnection(conn *amqp.Connection, gen uint64) {
 			}
 			return
 		}
+		// Re-check closed under the same race window as the !ok branch so
+		// Stop's WaitGroup is not kept alive by a reconnect started after
+		// shutdown began.
+		select {
+		case <-c.closed:
+			return
+		default:
+		}
 		c.logger.Error("amqp connection lost", redact.Error(amqpErr))
 		c.startReconnect()
 	}
@@ -574,6 +595,9 @@ func (c *Connection) watchConnection(conn *amqp.Connection, gen uint64) {
 // rejects this caller, an earlier startReconnect spawned the loop that
 // dropped the connection, so reporting "down" is correct.
 func (c *Connection) startReconnect() {
+	if c.isDead() {
+		return
+	}
 	c.metrics.observeConnectionUp(c.brokerLabel, false)
 	if !c.reconnecting.CompareAndSwap(false, true) {
 		// Reconnect already running — queue a signal so it retries
@@ -610,10 +634,24 @@ func (c *Connection) startReconnect() {
 // we pick that signal up. If another startReconnect already re-acquired the
 // flag, we hand the signal back so its loop drains it.
 func (c *Connection) drainPendingReconnect() bool {
+	// Once permanently dead, never re-arm: a buffered signal from a late
+	// watcher must not spawn a fresh reconnect budget after Dead() fired.
+	if c.isDead() {
+		c.reconnecting.Store(false)
+		// Drain a stale signal so it cannot be observed later.
+		select {
+		case <-c.reconnectSignal:
+		default:
+		}
+		return false
+	}
 	c.reconnecting.Store(false)
 	select {
 	case <-c.reconnectSignal:
 	default:
+		return false
+	}
+	if c.isDead() {
 		return false
 	}
 	if c.reconnecting.CompareAndSwap(false, true) {
@@ -628,11 +666,33 @@ func (c *Connection) drainPendingReconnect() bool {
 	return false
 }
 
+// isDead reports whether the permanent-loss channel has been closed.
+func (c *Connection) isDead() bool {
+	if c == nil || c.dead == nil {
+		return false
+	}
+	select {
+	case <-c.dead:
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *Connection) reconnect() {
+	// Refuse to run once permanently lost — a late startReconnect after
+	// Dead() must not install a zombie connection with a fresh budget.
+	if c.isDead() {
+		return
+	}
+
 	bo := retry.WorkerPolicy().NewBackoff()
 	attempts := 0
 
 	for {
+		if c.isDead() {
+			return
+		}
 		if c.maxReconnectAttempts > 0 && attempts >= c.maxReconnectAttempts {
 			c.logger.Error("amqp max reconnect attempts reached", "attempts", attempts)
 			c.deadOnce.Do(func() { close(c.dead) })
@@ -643,6 +703,9 @@ func (c *Connection) reconnect() {
 		timer := time.NewTimer(delay)
 		select {
 		case <-c.closed:
+			timer.Stop()
+			return
+		case <-c.dead:
 			timer.Stop()
 			return
 		case <-timer.C:
@@ -673,7 +736,7 @@ func (c *Connection) reconnect() {
 		// never be closed — a live TCP zombie with Healthy()=true and
 		// connection_up=1 surviving shutdown, plus onReconnect running
 		// post-Stop.
-		if c.closing() {
+		if c.closing() || c.isDead() {
 			c.mu.Unlock()
 			if cerr := conn.Close(); cerr != nil {
 				c.logger.Debug("failed to close abandoned amqp connection after Stop", redact.Error(cerr))
@@ -693,14 +756,10 @@ func (c *Connection) reconnect() {
 		}
 		c.mu.Unlock()
 
-		c.logger.Info("amqp connected successfully", "attempts", attempts+1)
+		c.logger.Info("amqp connected successfully", "attempts", attempts+1, "url", sanitizeURL(c.url))
 		c.connectedOnce.Do(func() { close(c.connected) })
 		c.metrics.observeReconnectAttempt(c.brokerLabel, amqpReconnectOutcomeSuccess)
 		c.metrics.observeConnectionUp(c.brokerLabel, true)
-		// Reset backoff and attempt counter after a successful connection
-		// so the full budget is available if the connection drops again.
-		bo.Reset()
-		attempts = 0
 
 		// Start watching BEFORE onReconnect so connection drops during
 		// topology re-declaration (which can be slow) are detected.
@@ -711,12 +770,28 @@ func (c *Connection) reconnect() {
 				c.logger.Error("onReconnect callback failed, will retry connection", redact.Error(err))
 				// Topology declaration failed — the connection is alive but
 				// unusable (exchanges/queues may not exist). Close and retry
-				// to prevent silent message loss.
+				// to prevent silent message loss. Bump generation so the
+				// watcher for this dial self-terminates instead of queuing a
+				// stale reconnectSignal that would tear down the next healthy
+				// connection.
 				c.mu.Lock()
-				if c.conn != nil && !c.conn.IsClosed() {
-					_ = c.conn.Close()
+				if c.conn == conn {
+					c.generation++
+					c.conn = nil
 				}
 				c.mu.Unlock()
+				if cerr := conn.Close(); cerr != nil {
+					c.logger.Debug("failed to close amqp connection after onReconnect failure", redact.Error(cerr))
+				}
+				// Drain a signal the watcher may have raced in before the
+				// generation bump took effect.
+				select {
+				case <-c.reconnectSignal:
+				default:
+				}
+				// Do not reset attempts/backoff: a successful dial that fails
+				// onReconnect must still consume the reconnect budget and
+				// escalate delay.
 				attempts++
 				continue
 			}
@@ -736,13 +811,19 @@ func (c *Connection) reconnect() {
 			continue
 		}
 
+		// Only reset the attempt budget after dial + onReconnect succeed so
+		// a permanently broken onReconnect cannot defeat WithMaxReconnectAttempts.
+		bo.Reset()
+		attempts = 0
+
 		// Drain any queued reconnect signal before returning. If
 		// watchConnection detected a drop while we were finishing, we
 		// must loop back to handle it (prevents lost signals from R7-46).
 		select {
 		case <-c.reconnectSignal:
 			c.logger.Info("reconnect signal received during finalization, retrying")
-			bo.Reset()
+			// Connection was healthy; a real drop during finalization gets a
+			// fresh budget for the subsequent reconnect cycle.
 			continue
 		default:
 		}

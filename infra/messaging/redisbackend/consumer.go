@@ -71,6 +71,14 @@ func (c *Consumer) Consume(ctx context.Context, b messaging.Binding, handler mes
 	if b.ConsumerGroup != "" && b.ConsumerGroup != c.consumer.Group() {
 		return fmt.Errorf("redisbackend: Binding.ConsumerGroup does not match wrapped consumer group (FR-064): construct a separate Consumer per group")
 	}
+	// Binding.Retry is not applied here (retry lives on the wrapped
+	// redisstream.Consumer via WithMaxRetries/claimMinIdle). Mirror
+	// kafkabackend: refuse so callers cannot believe NormalizeBindingSpecs
+	// DefaultRetryPolicy took effect. Set Binding.WithoutRetry=true (or
+	// pass a binding with nil Retry) and configure the stream consumer.
+	if b.Retry != nil {
+		return messaging.ErrRetryUnsupported
+	}
 	// The wrapped *stream.Consumer is single-shot: a second Consume panics
 	// across the package boundary. Guard here so re-invoking Consume or
 	// ConsumeOnce (which delegates to Consume) returns a clear error
@@ -80,15 +88,23 @@ func (c *Consumer) Consume(ctx context.Context, b messaging.Binding, handler mes
 	}
 	streamName := b.Exchange
 	c.consumer.Consume(ctx, streamName, func(ctx context.Context, sm stream.Message) error {
-		d := toDelivery(sm, streamName)
+		d, err := toDelivery(sm, streamName)
+		if err != nil {
+			// Permanent: invalid transport values must not be retried forever.
+			return fmt.Errorf("%w: %v", messaging.ErrInvalidMessage, err)
+		}
 		return handler(ctx, d)
 	})
 	return ctx.Err()
 }
 
-// ConsumeOnce reads from the stream until context is cancelled or an error
-// occurs. For Redis Streams, this delegates to Consume since the underlying
-// StreamConsumer already handles reconnection internally.
+// ConsumeOnce reads from the stream until context is cancelled.
+//
+// Unlike the generic [messaging.Consumer] retry-loop guidance, Redis Streams
+// reconnection is handled inside the wrapped stream consumer, so this is a
+// single-shot, self-reconnecting call. A second invocation returns
+// [messaging.ErrInvalidConsumer]; construct a separate Consumer per
+// (stream, group) pair instead of looping ConsumeOnce.
 func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler messaging.Handler) error {
 	return c.Consume(ctx, b, handler)
 }

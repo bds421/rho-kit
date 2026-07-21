@@ -449,7 +449,7 @@ debugAuth := debughttp.BasicAuth(map[string]string{
 mux.Handle("POST /debug/consume", debughttp.Guard(
     cfg.Environment,
     debugAuth,
-    debughttp.ConsumeHandler(handlers, logger),
+    debughttp.ConsumeHandler(cfg.Environment, debughttp.BasicAuth(map[string]string{"op": secret}), handlers, logger),
 ))
 
 // List registered consumer message types:
@@ -463,7 +463,7 @@ mux.Handle("GET /debug/consume/types", debughttp.Guard(
 mux.Handle("POST /debug/publish", debughttp.Guard(
     cfg.Environment,
     debugAuth,
-    debughttp.PublishHandler(amqp.Publisher(infra), []string{"orders"}, logger),
+    debughttp.PublishHandler(cfg.Environment, debughttp.BasicAuth(map[string]string{"op": secret}), amqp.Publisher(infra), []string{"orders"}, logger),
 ))
 ```
 
