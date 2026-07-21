@@ -19,7 +19,12 @@ import (
 func setupRedis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) {
 	t.Helper()
 	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	client := redis.NewClient(&redis.Options{
+		Addr:               mr.Addr(),
+		MaxRetries:         -1,
+		DialerRetries:      1,
+		DialerRetryTimeout: time.Millisecond,
+	})
 	t.Cleanup(func() { _ = client.Close() })
 	return mr, client
 }

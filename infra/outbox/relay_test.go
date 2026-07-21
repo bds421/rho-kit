@@ -158,11 +158,9 @@ func TestRelay_RetriesOnPublishError(t *testing.T) {
 	}
 	require.NoError(t, writer.Write(ctx, params))
 
-	// maxAttempts=2: the first failure schedules a retry (NextRetryAt =
-	// now + retryBackoff(1) = now + 2s) and the second exhausts attempts and
-	// marks the entry failed. With the contract-faithful store gating the
-	// retry behind the backoff window, reaching StatusFailed takes one full
-	// backoff window, so the timeout below must exceed defaultBackoffBase.
+	// maxAttempts=2: the first failure schedules a future retry and the second
+	// exhausts attempts and marks the entry failed. The test verifies that gate,
+	// then advances the fake store past it instead of sleeping for two seconds.
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
 		outbox.WithMaxAttempts(2),
@@ -174,6 +172,18 @@ func TestRelay_RetriesOnPublishError(t *testing.T) {
 		done <- relay.Start(relayCtx)
 	}()
 
+	store.mu.Lock()
+	entryID := store.entries[0].ID
+	store.mu.Unlock()
+	var scheduledRetry time.Time
+	require.Eventually(t, func() bool {
+		var ok bool
+		scheduledRetry, ok = store.forceRetryEligible(entryID)
+		return ok
+	}, time.Second, 5*time.Millisecond)
+	assert.True(t, scheduledRetry.After(time.Now()),
+		"first failure must schedule a future retry gate")
+
 	require.Eventually(t, func() bool {
 		store.mu.Lock()
 		defer store.mu.Unlock()
@@ -181,7 +191,7 @@ func TestRelay_RetriesOnPublishError(t *testing.T) {
 			return false
 		}
 		return store.entries[0].Status == outbox.StatusFailed
-	}, 6*time.Second, 20*time.Millisecond)
+	}, time.Second, 5*time.Millisecond)
 
 	cancel()
 	require.NoError(t, <-done)
@@ -779,35 +789,33 @@ func TestRelay_RecoverStaleProcessingEntries(t *testing.T) {
 }
 
 // TestRelay_LongPublishDoesNotDuplicate pins the high-severity stale-recovery
-// finding: a publish that legitimately exceeds defaultStaleDuration must not
-// be reset to pending and double-published. The fix is heartbeating the
-// processing row + a configurable stale duration. This test wires both:
+// finding: a publish that legitimately exceeds the configured stale duration
+// must not be reset to pending and double-published. The fix is heartbeating
+// the processing row + a configurable stale duration. This test wires both:
 //
-//   - staleDuration: 1s. The heartbeat fires every staleDuration/3 ≈ 333ms,
-//     comfortably above minHeartbeatInterval (100ms) so it is NOT clamped to
-//     the floor. That gives a 3x margin between a heartbeat round-trip and
-//     the stale window, so a single delayed tick under -race on saturated CI
-//     cannot let the stale-recovery sweep fire mid-publish.
-//   - publish takes 3s (3x stale duration) — without heartbeat, the
-//     stale-recovery sweep would reset the row mid-flight.
+//   - staleDuration: 300ms, which produces the package's 100ms minimum
+//     heartbeat cadence.
+//   - the publisher is gated for at least four heartbeats (> one stale
+//     duration), after which the test drives a competing stale reset directly.
 //   - We assert exactly one publish reached the publisher AND the row ends
 //     up in published state.
 func TestRelay_LongPublishDoesNotDuplicate(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	logger := slog.Default()
 	ctx := context.Background()
 
-	pub := &slowPublisher{delay: 3 * time.Second}
-
-	require.NoError(t, writer.Write(ctx, outbox.WriteParams{
-		Topic: "t", RoutingKey: "rk", MessageID: "msg-1",
+	entryID := uuid.UUID(id.NewBytes())
+	require.NoError(t, store.Insert(ctx, outbox.Entry{
+		ID: entryID, Topic: "t", RoutingKey: "rk", MessageID: "msg-1",
 		MessageType: "test.event", Payload: []byte(`{}`),
+		Status: outbox.StatusPending, CreatedAt: time.Now().UTC().Add(-time.Hour),
 	}))
+	pub := &gatedPublisher{gate: make(chan struct{})}
+	const staleWindow = 300 * time.Millisecond
 
 	relay := outbox.NewRelay(store, pub, logger,
-		outbox.WithPollInterval(10*time.Millisecond),
-		outbox.WithStaleDuration(1*time.Second),
+		outbox.WithPollInterval(50*time.Millisecond),
+		outbox.WithStaleDuration(staleWindow),
 	)
 
 	relayCtx, cancel := context.WithCancel(context.Background())
@@ -816,13 +824,19 @@ func TestRelay_LongPublishDoesNotDuplicate(t *testing.T) {
 		done <- relay.Start(relayCtx)
 	}()
 
+	require.Eventually(t, func() bool { return pub.entered() >= 1 }, time.Second, 5*time.Millisecond)
 	require.Eventually(t, func() bool {
-		return pub.count() >= 1
-	}, 10*time.Second, 20*time.Millisecond)
+		return store.heartbeatCalls.Load() >= 4
+	}, 2*time.Second, 5*time.Millisecond,
+		"gated publish must remain active for more than one stale window")
 
-	// Give the relay one extra stale window to expose any duplicate
-	// publish that an unguarded relay would issue.
-	time.Sleep(1 * time.Second)
+	reset, err := store.ResetStaleProcessing(ctx, staleWindow)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), reset,
+		"in-flight entry must be heartbeated so a competing relay cannot reclaim it")
+
+	close(pub.gate)
+	require.Eventually(t, func() bool { return pub.count() >= 1 }, time.Second, 5*time.Millisecond)
 
 	cancel()
 	require.NoError(t, <-done)
@@ -877,15 +891,12 @@ func TestRelay_QueuedBatchEntriesAreHeartbeated(t *testing.T) {
 
 	pub := &gatedPublisher{gate: make(chan struct{})}
 
-	// staleDuration must sit comfortably above minHeartbeatInterval (100ms):
-	// the relay heartbeats every staleDuration/3, so 900ms -> ~300ms beats,
-	// giving a 3x margin that stays reliable under -race on a loaded CI runner
-	// (a 60ms window was structurally unbeatable against the 100ms floor and
-	// flaked). The test still proves the heartbeat keeps a queued claimed entry
-	// fresh across more than a full stale window while the first publish is gated.
-	const staleWindow = 900 * time.Millisecond
+	// staleDuration=300ms produces the package's 100ms minimum heartbeat.
+	// Four observed beats prove the queued claim stays fresh beyond a full
+	// stale window without relying on an imprecise wall-clock sleep.
+	const staleWindow = 300 * time.Millisecond
 	relay := outbox.NewRelay(store, pub, logger,
-		outbox.WithPollInterval(10*time.Millisecond),
+		outbox.WithPollInterval(50*time.Millisecond),
 		outbox.WithStaleDuration(staleWindow),
 	)
 
@@ -899,11 +910,12 @@ func TestRelay_QueuedBatchEntriesAreHeartbeated(t *testing.T) {
 		return pub.entered() >= 1
 	}, 2*time.Second, 5*time.Millisecond)
 
-	// Let more than a full stale window elapse so the batch heartbeat has to
-	// keep the queued entry alive across it, then simulate a competing replica
-	// reclaiming stale rows. With the bug the queued entry's updated_at is still
-	// T0 and gets reset to pending; with the fix the heartbeat keeps it fresh.
-	time.Sleep(staleWindow + 300*time.Millisecond)
+	// Observe more than a full stale window's worth of beats, then simulate a
+	// competing replica reclaiming stale rows. With the bug the queued entry's
+	// updated_at remains T0 and gets reset to pending.
+	require.Eventually(t, func() bool {
+		return store.heartbeatCalls.Load() >= 4
+	}, 2*time.Second, 5*time.Millisecond)
 	reset, err := store.ResetStaleProcessing(ctx, staleWindow)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), reset,
@@ -915,9 +927,6 @@ func TestRelay_QueuedBatchEntriesAreHeartbeated(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return pub.count() >= 2
 	}, 2*time.Second, 10*time.Millisecond)
-
-	// Give the relay one extra stale window to surface any duplicate publish.
-	time.Sleep(staleWindow + 100*time.Millisecond)
 
 	cancel()
 	require.NoError(t, <-done)
@@ -957,28 +966,6 @@ func (g *gatedPublisher) entered() int64 {
 	return g.entries.Load()
 }
 
-// slowPublisher takes a configurable delay before recording the publish.
-// Used to simulate a long-running publish that exceeds staleDuration.
-type slowPublisher struct {
-	mu        sync.Mutex
-	published []outbox.Entry
-	delay     time.Duration
-}
-
-func (s *slowPublisher) Publish(_ context.Context, entry outbox.Entry) error {
-	time.Sleep(s.delay)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.published = append(s.published, entry)
-	return nil
-}
-
-func (s *slowPublisher) count() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.published)
-}
-
 func TestRelay_RecoverAfterPublisherError(t *testing.T) {
 	store := &fakeStore{}
 	writer := outbox.NewWriterWithoutTransactionCheck(store)
@@ -1008,21 +995,25 @@ func TestRelay_RecoverAfterPublisherError(t *testing.T) {
 		done <- relay.Start(relayCtx)
 	}()
 
-	// Wait for at least one retry.
-	time.Sleep(30 * time.Millisecond)
+	store.mu.Lock()
+	entryID := store.entries[0].ID
+	store.mu.Unlock()
+	require.Eventually(t, func() bool {
+		entry, ok := store.findByID(entryID)
+		return ok && entry.Attempts == 1 && entry.NextRetryAt != nil
+	}, time.Second, 5*time.Millisecond)
 
-	// Clear error to let publish succeed.
+	// Clear the fault, then move the already-asserted retry deadline into the
+	// past. This exercises recovery through the real NextRetryAt gate without
+	// sleeping through the production 2s backoff.
 	pub.setErr(nil)
-
-	// The first failure schedules NextRetryAt = now + retryBackoff(1)
-	// (defaultBackoffBase = 2s). A contract-faithful store gates the retry
-	// until that window elapses, so the success poll cannot land sooner.
-	// Allow comfortably more than one backoff window so the test asserts
-	// "eventually recovers" deterministically rather than racing the 2s
-	// backoff boundary.
+	scheduledRetry, ok := store.forceRetryEligible(entryID)
+	require.True(t, ok)
+	assert.True(t, scheduledRetry.After(time.Now()),
+		"first failure must schedule a future retry gate")
 	require.Eventually(t, func() bool {
 		return pub.count() >= 1
-	}, 6*time.Second, 20*time.Millisecond)
+	}, time.Second, 5*time.Millisecond)
 
 	cancel()
 	require.NoError(t, <-done)

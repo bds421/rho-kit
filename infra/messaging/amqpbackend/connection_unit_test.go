@@ -352,6 +352,7 @@ func TestDial_LazyConnect_ReturnsImmediately(t *testing.T) {
 		WithoutTLS(),
 		WithLazyConnect(),
 		WithMaxReconnectAttempts(1),
+		withFastReconnect(),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, conn)
@@ -359,7 +360,8 @@ func TestDial_LazyConnect_ReturnsImmediately(t *testing.T) {
 	// Connection should not be healthy yet.
 	assert.False(t, conn.Healthy())
 
-	// Wait for the reconnect loop to give up (1 attempt with a 3s base delay).
+	// Wait for the reconnect loop to give up after one attempt. The test-only
+	// timing option keeps production's 3s worker backoff out of this unit test.
 	// We check Dead() becomes closed.
 	select {
 	case <-conn.Dead():
@@ -449,6 +451,7 @@ func TestDial_WithAllOptions(t *testing.T) {
 	conn, err := Connect("amqp://invalid-host:99999", discardLogger(),
 		WithMaxReconnectAttempts(1),
 		WithLazyConnect(),
+		withFastReconnect(),
 		WithoutTLS(),
 		OnReconnect(func(_ Connector) error {
 			reconnectCalled = true
@@ -468,6 +471,17 @@ func TestDial_WithAllOptions(t *testing.T) {
 
 	assert.False(t, reconnectCalled, "reconnect callback not called when connection never succeeds")
 	_ = conn.Stop(context.Background())
+}
+
+// withFastReconnect changes only the private policy used by same-package
+// tests. Connect still installs retry.WorkerPolicy for every production call.
+func withFastReconnect() DialOption {
+	return func(c *Connection) {
+		c.reconnectPolicy.BaseDelay = time.Millisecond
+		c.reconnectPolicy.MaxDelay = time.Millisecond
+		c.reconnectPolicy.Factor = 1
+		c.reconnectPolicy.Jitter = 0
+	}
 }
 
 func TestStop_AlreadyCancelledCtx_StillClosesConnection(t *testing.T) {

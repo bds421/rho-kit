@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
@@ -21,25 +20,19 @@ func TestWithLeaderGate_SkipsWhenNotLeader(t *testing.T) {
 		return nil
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = s.Start(ctx) }()
-
-	// Wait until at least one skip is recorded — robfig/cron's first
-	// tick latency varies, so polling beats a fixed sleep.
-	require.Eventually(t, func() bool {
-		families, _ := reg.Gather()
-		return metricValue(families, "cron_job_skipped_not_leader_total",
-			map[string]string{"name": "gated-job"}) >= 1
-	}, 3*time.Second, 50*time.Millisecond, "skipped counter must increment while not leader")
+	runFirstJob(t, s)
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	require.GreaterOrEqual(t,
+		metricValue(families, "cron_job_skipped_not_leader_total", map[string]string{"name": "gated-job"}),
+		float64(1), "skipped counter must increment while not leader")
 
 	require.Equal(t, int32(0), ran.Load(), "job must NOT run while gate denies")
 
 	// Promote to leader; the next tick should run.
 	leader.Store(true)
-	require.Eventually(t, func() bool { return ran.Load() >= 1 }, 3*time.Second, 50*time.Millisecond)
-
-	cancel()
-	_ = s.Stop(context.Background())
+	runFirstJob(t, s)
+	require.Equal(t, int32(1), ran.Load())
 }
 
 func TestWithLeaderGate_PanicSkipsJob(t *testing.T) {
@@ -80,9 +73,6 @@ func TestWithLeaderGate_NoGateMeansAlwaysRun(t *testing.T) {
 		return nil
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = s.Start(ctx) }()
-	require.Eventually(t, func() bool { return ran.Load() >= 1 }, 2*time.Second, 50*time.Millisecond)
-	cancel()
-	_ = s.Stop(context.Background())
+	runFirstJob(t, s)
+	require.Equal(t, int32(1), ran.Load())
 }

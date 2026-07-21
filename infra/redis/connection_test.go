@@ -31,7 +31,12 @@ func TestConnect_Success(t *testing.T) {
 }
 
 func TestConnect_Failure(t *testing.T) {
-	opts := &goredis.Options{Addr: "localhost:1"} // bad port
+	opts := &goredis.Options{
+		Addr:               "localhost:1",
+		MaxRetries:         -1,
+		DialerRetries:      1,
+		DialerRetryTimeout: time.Millisecond,
+	} // bad port; fail once
 
 	_, err := Connect(opts, WithLogger(slog.Default()))
 	assert.Error(t, err)
@@ -249,7 +254,12 @@ func TestConnect_OnReconnect(t *testing.T) {
 }
 
 func TestConnect_MaxReconnectAttempts(t *testing.T) {
-	opts := &goredis.Options{Addr: "localhost:1"} // bad port
+	opts := &goredis.Options{
+		Addr:               "localhost:1",
+		MaxRetries:         -1,
+		DialerRetries:      1,
+		DialerRetryTimeout: time.Millisecond,
+	} // bad port; fail once
 
 	conn, err := Connect(opts,
 		WithLazyConnect(),
