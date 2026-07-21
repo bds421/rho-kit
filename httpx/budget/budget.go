@@ -269,6 +269,9 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	estimate := t.estimate(req)
 
+	// Capture charge time before Consume so refunds credit the same period
+	// even when the upstream call straddles a budget window boundary.
+	chargedAt := time.Now()
 	allowed, _, retryAfter, err := t.b.Consume(req.Context(), t.key, estimate)
 	if err != nil {
 		// The RoundTripper contract requires the body be closed on every
@@ -293,13 +296,13 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
 		if t.cfg.refundOnError {
-			t.cleanupRefund(req.Context(), estimate, err)
+			t.cleanupRefund(req.Context(), estimate, chargedAt, err)
 		}
 		return nil, err
 	}
 
 	if t.cfg.actualHeader != "" {
-		if rerr := t.reconcile(req.Context(), resp, estimate); rerr != nil {
+		if rerr := t.reconcile(req.Context(), resp, estimate, chargedAt); rerr != nil {
 			_ = resp.Body.Close()
 			return nil, rerr
 		}
@@ -375,7 +378,7 @@ func closeRequestBody(req *http.Request) {
 // delta cannot be charged; the caller closes the response body and
 // surfaces the error. Header parse failures, refund-side errors,
 // and audit-only mode never produce an error.
-func (t *transport) reconcile(reqCtx context.Context, resp *http.Response, estimate int64) error {
+func (t *transport) reconcile(reqCtx context.Context, resp *http.Response, estimate int64, chargedAt time.Time) error {
 	v, present, ok := singletonHeaderValue(resp.Header, t.cfg.actualHeader)
 	if !present {
 		return nil
@@ -401,7 +404,7 @@ func (t *transport) reconcile(reqCtx context.Context, resp *http.Response, estim
 		return nil
 	}
 	if delta < 0 {
-		t.cleanupRefund(reqCtx, -delta, nil)
+		t.cleanupRefund(reqCtx, -delta, chargedAt, nil)
 		return nil
 	}
 
@@ -412,7 +415,7 @@ func (t *transport) reconcile(reqCtx context.Context, resp *http.Response, estim
 		t.cfg.logger.Warn("httpx/budget: reconcile charge failed",
 			redact.String("key", t.key), "delta", delta, redact.ErrorKey("err", cerr))
 		if t.cfg.enforcement == EnforcementHard {
-			t.cleanupRefund(reqCtx, estimate, cerr)
+			t.cleanupRefund(reqCtx, estimate, chargedAt, cerr)
 			return fmt.Errorf("httpx/budget: reconcile: %w", cerr)
 		}
 		return nil
@@ -462,16 +465,17 @@ func singletonHeaderValue(h http.Header, name string) (value string, present boo
 }
 
 // cleanupRefund credits `amount` back to the budget on a cleanup
-// path. The context is detached from the request so a canceled
+// path, against the period of chargedAt (the pre-charge instant).
+// The context is detached from the request so a canceled
 // caller cannot strand the refund, and is bounded by the configured
 // cleanup timeout.
-func (t *transport) cleanupRefund(reqCtx context.Context, amount int64, cause error) {
+func (t *transport) cleanupRefund(reqCtx context.Context, amount int64, chargedAt time.Time, cause error) {
 	if amount <= 0 {
 		return
 	}
 	ctx, cancel := t.cleanupContext(reqCtx)
 	defer cancel()
-	_, ok, err := budget.Refund(ctx, t.b, t.key, amount)
+	_, ok, err := budget.Refund(ctx, t.b, t.key, amount, chargedAt)
 	if err != nil {
 		t.cfg.logger.Warn("httpx/budget: refund failed",
 			redact.String("key", t.key), "amount", amount, redact.ErrorKey("err", err), redact.ErrorKey("cause", cause))

@@ -16,6 +16,10 @@ import (
 	"github.com/bds421/rho-kit/data/v2/budget/memory"
 )
 
+// testChargedAt returns wall-clock now so Refund targets the same period
+// as Consume when tests do not inject a fake clock.
+func testChargedAt() time.Time { return time.Now() }
+
 func TestNew_PanicsOnZeroCap(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -74,7 +78,7 @@ func TestInvalidReceiverReturnsError(t *testing.T) {
 			assert.Equal(t, int64(0), rem)
 			assert.ErrorIs(t, err, budget.ErrInvalidBudget)
 
-			rem, err = tc.b.Refund(ctx, "k", 1)
+			rem, err = tc.b.Refund(ctx, "k", 1, testChargedAt())
 			assert.Equal(t, int64(0), rem)
 			assert.ErrorIs(t, err, budget.ErrInvalidBudget)
 
@@ -254,7 +258,7 @@ func TestRefund_CreditsBack(t *testing.T) {
 	b := memory.New(100, time.Hour)
 	ctx := context.Background()
 	_, _, _, _ = b.Consume(ctx, "alice", 30)
-	rem, err := b.Refund(ctx, "alice", 10)
+	rem, err := b.Refund(ctx, "alice", 10, testChargedAt())
 	require.NoError(t, err)
 	assert.Equal(t, int64(80), rem)
 
@@ -269,7 +273,7 @@ func TestRefund_ClampsAtCap(t *testing.T) {
 	b := memory.New(100, time.Hour)
 	ctx := context.Background()
 	_, _, _, _ = b.Consume(ctx, "alice", 5)
-	rem, err := b.Refund(ctx, "alice", 999)
+	rem, err := b.Refund(ctx, "alice", 999, testChargedAt())
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), rem,
 		"a refund larger than the used amount must clamp at the cap")
@@ -277,26 +281,26 @@ func TestRefund_ClampsAtCap(t *testing.T) {
 
 func TestRefund_UnknownKeyIsNoop(t *testing.T) {
 	b := memory.New(100, time.Hour)
-	rem, err := b.Refund(context.Background(), "ghost", 50)
+	rem, err := b.Refund(context.Background(), "ghost", 50, testChargedAt())
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), rem)
 }
 
 func TestRefund_RejectsEmptyKey(t *testing.T) {
 	b := memory.New(100, time.Hour)
-	_, err := b.Refund(context.Background(), "", 5)
+	_, err := b.Refund(context.Background(), "", 5, testChargedAt())
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 
 func TestRefund_RejectsInvalidKey(t *testing.T) {
 	b := memory.New(100, time.Hour)
-	_, err := b.Refund(context.Background(), strings.Repeat("a", budget.MaxKeyLen+1), 5)
+	_, err := b.Refund(context.Background(), strings.Repeat("a", budget.MaxKeyLen+1), 5, testChargedAt())
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 
 func TestRefund_RejectsNegative(t *testing.T) {
 	b := memory.New(100, time.Hour)
-	_, err := b.Refund(context.Background(), "alice", -1)
+	_, err := b.Refund(context.Background(), "alice", -1, testChargedAt())
 	assert.ErrorIs(t, err, budget.ErrInvalidAmount)
 }
 
@@ -575,7 +579,7 @@ func TestHonorsCancelledContext(t *testing.T) {
 	_, err = b.Peek(ctx, "alice")
 	require.ErrorIs(t, err, context.Canceled)
 
-	_, err = b.Refund(ctx, "alice", 1)
+	_, err = b.Refund(ctx, "alice", 1, testChargedAt())
 	require.ErrorIs(t, err, context.Canceled)
 
 	// State must be untouched: a fresh (background) Consume should
@@ -680,7 +684,7 @@ func TestRace_SweepConsumePeekRefund(t *testing.T) {
 						return
 					}
 				case 6: // 1/7 ≈ 14% Refund
-					rem, err := b.Refund(ctx, key, int64(1+(i%3)))
+					rem, err := b.Refund(ctx, key, int64(1+(i%3)), testChargedAt())
 					// Refund of an unknown key (after sweep eviction) is
 					// not an error — see memory.Refund semantics. We only
 					// assert the returned remaining stays in range.
@@ -801,3 +805,46 @@ func TestRace_SweepEvictsBetweenLoadAndLock(t *testing.T) {
 	require.GreaterOrEqual(t, got, int64(0))
 	require.LessOrEqual(t, got, int64(callers*iters*5))
 }
+
+
+func TestRefund_CreditsChargePeriodAcrossRollover(t *testing.T) {
+	// Charge near the end of a period; after the window rolls, Refund with
+	// chargedAt must credit the original period (bucket still holding it)
+	// rather than treating "now" as a fresh empty window.
+	period := time.Minute
+	// Align to a period boundary.
+	start := time.Unix(0, (time.Unix(1_700_000_000, 0).UTC().UnixNano()/int64(period))*int64(period)).UTC()
+	nearEnd := start.Add(period - time.Second)
+	afterRoll := start.Add(period + time.Second)
+
+	var cur time.Time
+	b := memory.New(100, period,
+		memory.WithClock(func() time.Time { return cur }),
+		memory.WithoutSweeper(),
+	)
+	ctx := context.Background()
+
+	cur = nearEnd
+	ok, rem, _, err := b.Consume(ctx, "alice", 40)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, int64(60), rem)
+
+	// Advance past the boundary without a new Consume so the bucket still
+	// holds period-N state. Refund with chargedAt=nearEnd must credit it.
+	cur = afterRoll
+	rem, err = b.Refund(ctx, "alice", 15, nearEnd)
+	require.NoError(t, err)
+	assert.Equal(t, int64(75), rem, "refund must credit the charge period, not drop credit after rollover")
+
+	// A Consume in the new period sees a fresh cap (memory keeps one bucket
+	// per key; rolling on Consume resets used). First touch of the new
+	// period after a same-bucket refund of the old period: the bucket still
+	// has periodN=old until Consume rolls it.
+	ok, rem, _, err = b.Consume(ctx, "alice", 10)
+	require.NoError(t, err)
+	require.True(t, ok)
+	// Consume rolls to new period and charges 10 against a fresh cap.
+	assert.Equal(t, int64(90), rem)
+}
+

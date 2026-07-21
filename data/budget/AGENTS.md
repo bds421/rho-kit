@@ -12,7 +12,7 @@
 
 ## Key APIs
 
-- `Budget` interface: `Consume(ctx, key, amount)` + `Peek(ctx, key)`. Optional `Refunder` capability for two-phase reconciliation (estimate → actual usage).
+- `Budget` interface: `Consume(ctx, key, amount)` + `Peek(ctx, key)`. Optional `Refunder` capability for two-phase reconciliation (estimate → actual usage): `Refund(ctx, key, amount, chargedAt)` credits the period of `chargedAt`, not "now".
 - `data/budget/memory` — single-process backend. Good for development, single-replica services.
 - `data/budget/redis` — atomic Lua, cross-instance, `WithRedisTime` for clock-skew-free fairness. **The production backend.** Caps must fit Lua's exact integer range.
 - `httpx/middleware/budget` — inbound charge per request. Fails closed on missing/invalid keys (no key = no service). Rejects exhausted budgets with `429 + X-Budget-Remaining + Retry-After`.
@@ -22,7 +22,7 @@
 
 - **Memory backend in a multi-replica service** — different replicas have different views. Use Redis.
 - **Negative budget values** — the kit rejects them at the API surface. Always provide a non-negative integer.
-- **`Consume` for the LLM "true cost" before the call completes** — estimate up front via `Consume`, then refund via the `Refunder` capability with the actual cost. Otherwise an over-estimated charge persists even if the call was cheaper than predicted.
+- **`Consume` for the LLM "true cost" before the call completes** — estimate up front via `Consume`, then refund via the `Refunder` capability with the actual cost **and the charge timestamp** (`chargedAt`). Otherwise an over-estimated charge persists even if the call was cheaper than predicted, and a refund after a period rollover would miss the charge window.
 - **Per-tenant Redis keys with raw tenant ID** — use `data/tenant.Key(ctx, parts...)` for length-prefixed encoding.
 
 ## Observability

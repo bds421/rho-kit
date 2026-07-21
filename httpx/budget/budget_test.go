@@ -56,7 +56,10 @@ func (s *scriptedBudget) Consume(_ context.Context, key string, amount int64) (b
 func (s *scriptedBudget) Peek(_ context.Context, _ string) (int64, error) { return 0, nil }
 
 // Refund is implemented so the wrapper exercises the Refunder branch.
-func (s *scriptedBudget) Refund(_ context.Context, key string, amount int64) (int64, error) {
+func (s *scriptedBudget) Refund(_ context.Context, key string, amount int64, chargedAt time.Time) (int64, error) {
+	if chargedAt.IsZero() {
+		return 0, databudget.ErrInvalidChargedAt
+	}
 	s.refunded = append(s.refunded, consumeArg{key, amount})
 	return 0, s.refundErr
 }

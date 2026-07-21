@@ -73,6 +73,12 @@ var ErrInvalidKey = errors.New("budget: key is invalid")
 // allowed (a no-op consume / "is anything left?" probe).
 var ErrInvalidAmount = errors.New("budget: amount must not be negative")
 
+// ErrInvalidChargedAt is returned when a Refund is invoked with a zero
+// chargedAt timestamp. Period identity is derived from chargedAt the
+// same way Consume derives it from now; zero would silently credit the
+// wrong window under clock injection.
+var ErrInvalidChargedAt = errors.New("budget: chargedAt must be non-zero")
+
 // ErrInvalidBudget is returned when a Budget method/helper is invoked
 // with a nil or otherwise uninitialized budget implementation.
 var ErrInvalidBudget = errors.New("budget: budget is not initialized")
@@ -121,48 +127,50 @@ func containsInvalidKeyRune(s string) bool {
 }
 
 // Refunder is implemented by [Budget] backends that support
-// crediting a previously-consumed amount back to the current
-// period. Use it via [Refund] which falls back gracefully when the
-// backend does not implement it.
+// crediting a previously-consumed amount back to the period in which
+// the matching Consume ran. Use it via [Refund] which falls back
+// gracefully when the backend does not implement it.
 //
 // Two-phase patterns (estimate-then-reconcile, e.g. the outbound
 // RoundTripper in httpx/budget) need refunds; backends that cannot
 // safely refund (e.g. an externally-aggregated counter) can opt out
 // by simply not implementing this interface.
 type Refunder interface {
-	// Refund credits `amount` back to `key`'s current period. amount
-	// must be >= 0 (a zero refund is a no-op). The returned remaining
-	// reflects the refunded value but is capped at the configured
-	// per-period cap — refunds never inflate the budget past its
-	// limit.
-	//
-	// Backends that key counters by period id (e.g. budget/redis)
-	// refund the *current* window, not the window of the matching
-	// Consume. Cross-window reconcile can under-count or drop credit;
-	// see that backend's Refund godoc and V3_BREAKING_PROPOSALS.md.
-	Refund(ctx context.Context, key string, amount int64) (remaining int64, err error)
+	// Refund credits `amount` back to `key`'s period derived from
+	// chargedAt (the same floor(t / period) mapping Consume uses for
+	// now). amount must be >= 0 (a zero refund is a no-op). chargedAt
+	// must be non-zero — pass the timestamp of the matching Consume so
+	// estimate-then-reconcile across a window boundary credits the
+	// charge period rather than "now". The returned remaining reflects
+	// the refunded value but is capped at the configured per-period cap
+	// — refunds never inflate the budget past its limit.
+	Refund(ctx context.Context, key string, amount int64, chargedAt time.Time) (remaining int64, err error)
 }
 
-// Refund credits `amount` back to `key` if `b` implements [Refunder].
-// Returns ok=false when the backend has no refund capability so the
-// caller can decide whether to log, ignore, or wait for the next
-// period rollover. amount must be >= 0.
+// Refund credits `amount` back to `key` for the period of chargedAt if
+// `b` implements [Refunder]. Returns ok=false when the backend has no
+// refund capability so the caller can decide whether to log, ignore, or
+// wait for the next period rollover. amount must be >= 0 and chargedAt
+// must be non-zero.
 //
 // Argument validation runs at this layer so callers see consistent
 // errors regardless of optional backend capability — a bad refund
 // must not look like a harmless unsupported refund.
-func Refund(ctx context.Context, b Budget, key string, amount int64) (remaining int64, ok bool, err error) {
+func Refund(ctx context.Context, b Budget, key string, amount int64, chargedAt time.Time) (remaining int64, ok bool, err error) {
 	if err := ValidateKey(key); err != nil {
 		return 0, false, err
 	}
 	if amount < 0 {
 		return 0, false, ErrInvalidAmount
 	}
+	if chargedAt.IsZero() {
+		return 0, false, ErrInvalidChargedAt
+	}
 	if isNilBudget(b) {
 		return 0, false, ErrInvalidBudget
 	}
 	if r, isRefunder := b.(Refunder); isRefunder {
-		rem, rerr := r.Refund(ctx, key, amount)
+		rem, rerr := r.Refund(ctx, key, amount, chargedAt)
 		return rem, true, rerr
 	}
 	return 0, false, nil

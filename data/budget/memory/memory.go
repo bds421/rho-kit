@@ -356,10 +356,20 @@ func (b *Budget) Peek(ctx context.Context, key string) (int64, error) {
 // no-op (there is nothing to refund); refunds past the cap clamp at
 // `cap` so the budget never inflates above its configured limit.
 //
+// Period identity is derived from chargedAt via the same floor(t/period)
+// mapping Consume uses for now, so estimate-then-reconcile that crosses
+// a window boundary still credits the charge period. chargedAt must be
+// non-zero ([budget.ErrInvalidChargedAt]).
+//
+// If the in-memory bucket has already rolled to a different period
+// (another Consume after the boundary, or a sweeper eviction), the
+// charge-period state is gone and Refund is a no-op that returns the
+// full cap without mutating the live bucket.
+//
 // Honours context cancellation symmetrically with the Redis-backed
 // budget: a cancelled or already-expired ctx returns ctx.Err() before
 // any state mutation.
-func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, error) {
+func (b *Budget) Refund(ctx context.Context, key string, amount int64, chargedAt time.Time) (int64, error) {
 	if err := ctxErr(ctx); err != nil {
 		return 0, err
 	}
@@ -372,8 +382,10 @@ func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, e
 	if amount < 0 {
 		return 0, budget.ErrInvalidAmount
 	}
-	now := b.now()
-	periodID, _ := b.periodOf(now)
+	if chargedAt.IsZero() {
+		return 0, budget.ErrInvalidChargedAt
+	}
+	periodID, _ := b.periodOf(chargedAt)
 
 	// Loop to retry against a sweep that evicted our bucket between the
 	// load and the lock acquisition, mirroring Consume. Without this a
@@ -397,8 +409,9 @@ func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, e
 	defer bk.mu.Unlock()
 
 	if bk.periodN.Load() != periodID {
-		bk.periodN.Store(periodID)
-		bk.used.Store(0)
+		// Live bucket is a different period; charge-period state is gone.
+		// Do not roll or zero the live bucket — that would clobber current
+		// period accounting. Report full cap for the absent charge period.
 		return b.cap, nil
 	}
 	used := bk.used.Load() - amount

@@ -48,6 +48,9 @@ func TestSentinels_Distinct(t *testing.T) {
 	assert.NotErrorIs(t, budget.ErrInvalidAmount, budget.ErrInvalidKey)
 	assert.NotErrorIs(t, budget.ErrInvalidBudget, budget.ErrInvalidKey)
 	assert.NotErrorIs(t, budget.ErrInvalidBudget, budget.ErrInvalidAmount)
+	assert.NotErrorIs(t, budget.ErrInvalidChargedAt, budget.ErrInvalidKey)
+	assert.NotErrorIs(t, budget.ErrInvalidChargedAt, budget.ErrInvalidAmount)
+	assert.NotErrorIs(t, budget.ErrInvalidChargedAt, budget.ErrInvalidBudget)
 }
 
 func TestBudget_InterfaceUsable(t *testing.T) {
@@ -99,7 +102,10 @@ type refundingBudget struct {
 	refunded int64
 }
 
-func (r *refundingBudget) Refund(_ context.Context, _ string, amount int64) (int64, error) {
+func (r *refundingBudget) Refund(_ context.Context, _ string, amount int64, chargedAt time.Time) (int64, error) {
+	if chargedAt.IsZero() {
+		return 0, budget.ErrInvalidChargedAt
+	}
 	r.refunded += amount
 	r.used -= amount
 	if r.used < 0 {
@@ -110,7 +116,7 @@ func (r *refundingBudget) Refund(_ context.Context, _ string, amount int64) (int
 
 func TestRefund_DispatchesToRefunderWhenAvailable(t *testing.T) {
 	rb := &refundingBudget{staticBudget: &staticBudget{cap: 100, used: 30}}
-	rem, ok, err := budget.Refund(context.Background(), rb, "k", 10)
+	rem, ok, err := budget.Refund(context.Background(), rb, "k", 10, time.Unix(1_700_000_000, 0))
 	require.NoError(t, err)
 	assert.True(t, ok, "Refund must report ok=true when backend implements Refunder")
 	assert.Equal(t, int64(80), rem)
@@ -119,19 +125,19 @@ func TestRefund_DispatchesToRefunderWhenAvailable(t *testing.T) {
 
 func TestRefund_FallsBackWhenBackendCannotRefund(t *testing.T) {
 	plain := &staticBudget{cap: 100}
-	_, ok, err := budget.Refund(context.Background(), plain, "k", 5)
+	_, ok, err := budget.Refund(context.Background(), plain, "k", 5, time.Unix(1_700_000_000, 0))
 	require.NoError(t, err)
 	assert.False(t, ok, "non-Refunder backend must report ok=false, no error")
 }
 
 func TestRefund_RejectsNilBudget(t *testing.T) {
 	var nilBudget budget.Budget
-	_, ok, err := budget.Refund(context.Background(), nilBudget, "k", 5)
+	_, ok, err := budget.Refund(context.Background(), nilBudget, "k", 5, time.Unix(1_700_000_000, 0))
 	assert.ErrorIs(t, err, budget.ErrInvalidBudget)
 	assert.False(t, ok)
 
 	var typedNil *refundingBudget
-	_, ok, err = budget.Refund(context.Background(), typedNil, "k", 5)
+	_, ok, err = budget.Refund(context.Background(), typedNil, "k", 5, time.Unix(1_700_000_000, 0))
 	assert.ErrorIs(t, err, budget.ErrInvalidBudget)
 	assert.False(t, ok)
 }
@@ -142,21 +148,29 @@ func TestRefund_RejectsNilBudget(t *testing.T) {
 func TestRefund_ValidatesArgumentsBeforeBackendDispatch(t *testing.T) {
 	plain := &staticBudget{cap: 100}
 
-	_, ok, err := budget.Refund(context.Background(), plain, "", 5)
+	_, ok, err := budget.Refund(context.Background(), plain, "", 5, time.Unix(1_700_000_000, 0))
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 	assert.False(t, ok)
 
-	_, ok, err = budget.Refund(context.Background(), plain, strings.Repeat("a", budget.MaxKeyLen+1), 5)
+	_, ok, err = budget.Refund(context.Background(), plain, strings.Repeat("a", budget.MaxKeyLen+1), 5, time.Unix(1_700_000_000, 0))
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 	assert.False(t, ok)
 
-	_, ok, err = budget.Refund(context.Background(), plain, "k", -1)
+	_, ok, err = budget.Refund(context.Background(), plain, "k", -1, time.Unix(1_700_000_000, 0))
 	assert.ErrorIs(t, err, budget.ErrInvalidAmount)
 	assert.False(t, ok)
 
 	rb := &refundingBudget{staticBudget: &staticBudget{cap: 100, used: 30}}
-	_, ok, err = budget.Refund(context.Background(), rb, "k", -1)
+	_, ok, err = budget.Refund(context.Background(), rb, "k", -1, time.Unix(1_700_000_000, 0))
 	assert.ErrorIs(t, err, budget.ErrInvalidAmount)
 	assert.False(t, ok)
 	assert.Equal(t, int64(0), rb.refunded, "Refunder must not be invoked for invalid amounts")
+}
+
+func TestRefund_RejectsZeroChargedAt(t *testing.T) {
+	rb := &refundingBudget{staticBudget: &staticBudget{cap: 100, used: 30}}
+	_, ok, err := budget.Refund(context.Background(), rb, "k", 10, time.Time{})
+	assert.ErrorIs(t, err, budget.ErrInvalidChargedAt)
+	assert.False(t, ok)
+	assert.Equal(t, int64(0), rb.refunded)
 }

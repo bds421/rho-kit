@@ -26,6 +26,10 @@ func newTestClient(t *testing.T) (goredis.UniversalClient, *miniredis.Miniredis)
 	return client, mr
 }
 
+// testChargedAt returns wall-clock now so Refund targets the same period
+// as Consume when tests do not inject a fake clock.
+func testChargedAt() time.Time { return time.Now() }
+
 func TestNew_PanicsOnNilClient(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -131,7 +135,7 @@ func TestInvalidReceiverReturnsError(t *testing.T) {
 			assert.Equal(t, int64(0), rem)
 			assert.ErrorIs(t, err, budget.ErrInvalidBudget)
 
-			rem, err = tc.b.Refund(ctx, "k", 1)
+			rem, err = tc.b.Refund(ctx, "k", 1, testChargedAt())
 			assert.Equal(t, int64(0), rem)
 			assert.ErrorIs(t, err, budget.ErrInvalidBudget)
 		})
@@ -352,7 +356,7 @@ func TestRefund_CreditsBack(t *testing.T) {
 	ctx := context.Background()
 
 	_, _, _, _ = b.Consume(ctx, "alice", 30)
-	rem, err := b.Refund(ctx, "alice", 10)
+	rem, err := b.Refund(ctx, "alice", 10, testChargedAt())
 	require.NoError(t, err)
 	assert.Equal(t, int64(80), rem)
 
@@ -366,7 +370,7 @@ func TestRefund_ClampsAtCap(t *testing.T) {
 	ctx := context.Background()
 
 	_, _, _, _ = b.Consume(ctx, "alice", 5)
-	rem, err := b.Refund(ctx, "alice", math.MaxInt64)
+	rem, err := b.Refund(ctx, "alice", math.MaxInt64, testChargedAt())
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), rem)
 }
@@ -374,7 +378,7 @@ func TestRefund_ClampsAtCap(t *testing.T) {
 func TestRefund_UnknownKeyIsNoop(t *testing.T) {
 	client, _ := newTestClient(t)
 	b := budgetredis.New(client, 100, time.Hour)
-	rem, err := b.Refund(context.Background(), "ghost", 50)
+	rem, err := b.Refund(context.Background(), "ghost", 50, testChargedAt())
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), rem)
 }
@@ -382,21 +386,21 @@ func TestRefund_UnknownKeyIsNoop(t *testing.T) {
 func TestRefund_RejectsEmptyKey(t *testing.T) {
 	client, _ := newTestClient(t)
 	b := budgetredis.New(client, 100, time.Hour)
-	_, err := b.Refund(context.Background(), "", 5)
+	_, err := b.Refund(context.Background(), "", 5, testChargedAt())
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 
 func TestRefund_RejectsInvalidKey(t *testing.T) {
 	client, _ := newTestClient(t)
 	b := budgetredis.New(client, 100, time.Hour)
-	_, err := b.Refund(context.Background(), strings.Repeat("a", budget.MaxKeyLen+1), 5)
+	_, err := b.Refund(context.Background(), strings.Repeat("a", budget.MaxKeyLen+1), 5, testChargedAt())
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 
 func TestRefund_RejectsNegative(t *testing.T) {
 	client, _ := newTestClient(t)
 	b := budgetredis.New(client, 100, time.Hour)
-	_, err := b.Refund(context.Background(), "alice", -1)
+	_, err := b.Refund(context.Background(), "alice", -1, testChargedAt())
 	assert.ErrorIs(t, err, budget.ErrInvalidAmount)
 }
 
@@ -539,7 +543,7 @@ func TestRefund_LargeBalanceStaysIntegerParseable(t *testing.T) {
 	require.True(t, ok)
 
 	// Refund 1 so newUsed = 1.5e14 - 1 still >= 1e14 (scientific-notation danger zone).
-	rem, err := b.Refund(ctx, "big", 1)
+	rem, err := b.Refund(ctx, "big", 1, testChargedAt())
 	require.NoError(t, err)
 	assert.Equal(t, cap-(used-1), rem)
 
@@ -570,3 +574,48 @@ func TestWithKeyTTL_PanicsOnNonPositive(t *testing.T) {
 	assert.Panics(t, func() { budgetredis.WithKeyTTL(0) })
 	assert.Panics(t, func() { budgetredis.WithKeyTTL(-time.Second) })
 }
+
+
+func TestRefund_CreditsChargePeriodAcrossRollover(t *testing.T) {
+	// Charge in period N; after the clock advances into N+1, Refund with
+	// chargedAt from N must DECR the N key, not the empty N+1 key.
+	period := time.Minute
+	start := time.Unix(0, (time.Unix(1_700_000_000, 0).UTC().UnixNano()/int64(period))*int64(period)).UTC()
+	nearEnd := start.Add(period - time.Second)
+	afterRoll := start.Add(period + time.Second)
+
+	var cur time.Time
+	client, _ := newTestClient(t)
+	b := budgetredis.New(client, 100, period,
+		budgetredis.WithClock(func() time.Time { return cur }),
+	)
+	ctx := context.Background()
+
+	cur = nearEnd
+	ok, rem, _, err := b.Consume(ctx, "alice", 40)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, int64(60), rem)
+
+	cur = afterRoll
+	// Peek of "now" (period N+1) should show full cap — no charges yet.
+	peekNow, err := b.Peek(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, int64(100), peekNow)
+
+	rem, err = b.Refund(ctx, "alice", 15, nearEnd)
+	require.NoError(t, err)
+	assert.Equal(t, int64(75), rem, "refund must hit the charge-period Redis key")
+
+	// Period N+1 still untouched.
+	peekNow, err = b.Peek(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, int64(100), peekNow)
+
+	// Jump clock back to charge period: Peek must observe the refunded used.
+	cur = nearEnd
+	peekOld, err := b.Peek(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, int64(75), peekOld)
+}
+

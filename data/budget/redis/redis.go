@@ -421,17 +421,13 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 // clamps at the cap (`used` floors at zero) so refunds never
 // inflate the budget above its configured limit.
 //
-// # Window-boundary caveat
-//
-// Refund credits the *current* period bucket (computed from now), not
-// the period in which the matching Consume ran. In the estimate-then-
-// reconcile pattern (e.g. httpx/budget RoundTripper), a request charged
-// near the end of window N that completes in window N+1 refunds against
-// N+1: if N+1 already has usage the refund can under-count that window's
-// spend; if N+1 is empty the credit is dropped (script floors at 0).
-// Stay inside one period when possible. Accepting an explicit period id
-// on Refund is proposed for v3 (see V3_BREAKING_PROPOSALS.md).
-func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, error) {
+// Period identity is derived from chargedAt via the same floor(t/period)
+// mapping Consume uses for now. Pass the timestamp of the matching
+// Consume so estimate-then-reconcile that crosses a window boundary
+// credits the charge-period Redis key (`prefix+key:periodID`) rather
+// than the current period. chargedAt must be non-zero
+// ([budget.ErrInvalidChargedAt]).
+func (b *Budget) Refund(ctx context.Context, key string, amount int64, chargedAt time.Time) (int64, error) {
 	if err := b.ready(); err != nil {
 		return 0, err
 	}
@@ -441,14 +437,13 @@ func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, e
 	if amount < 0 {
 		return 0, budget.ErrInvalidAmount
 	}
+	if chargedAt.IsZero() {
+		return 0, budget.ErrInvalidChargedAt
+	}
 	if amount > b.cap {
 		amount = b.cap
 	}
-	now, err := b.now(ctx)
-	if err != nil {
-		return 0, err
-	}
-	periodID, _ := b.periodOf(now)
+	periodID, _ := b.periodOf(chargedAt)
 
 	res, err := refundScript.Run(ctx, b.client,
 		[]string{b.bucketKey(key, periodID)},
