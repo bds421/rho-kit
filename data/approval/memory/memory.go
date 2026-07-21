@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -12,9 +11,10 @@ import (
 	"github.com/bds421/rho-kit/data/v2/approval"
 )
 
-// ErrDuplicateID is returned when [Store.Create] is called with an id
-// that already exists in the store.
-var ErrDuplicateID = errors.New("approval/memory: duplicate request id")
+// ErrDuplicateID is an alias of [approval.ErrDuplicateID] retained so
+// existing callers that errors.Is against the memory package keep working.
+// New code should prefer [approval.ErrDuplicateID].
+var ErrDuplicateID = approval.ErrDuplicateID
 
 const defaultLimit = 100
 
@@ -204,15 +204,39 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 // full contract.
 // Approve implements [approval.Store.Approve].
 func (s *Store) Approve(ctx context.Context, id, decidedBy, reason string) (approval.Request, error) {
-	return s.decide(ctx, id, decidedBy, reason, true)
+	return s.decide(ctx, id, "", decidedBy, reason, true)
 }
 
 // Reject implements [approval.Store.Reject].
 func (s *Store) Reject(ctx context.Context, id, decidedBy, reason string) (approval.Request, error) {
-	return s.decide(ctx, id, decidedBy, reason, false)
+	return s.decide(ctx, id, "", decidedBy, reason, false)
 }
 
-func (s *Store) decide(ctx context.Context, id, decidedBy, reason string, approve bool) (approval.Request, error) {
+// ApproveForTenant is the tenant-scoped Approve (see postgres twin).
+func (s *Store) ApproveForTenant(ctx context.Context, tenantID, id, decidedBy, reason string) (approval.Request, error) {
+	if tenantID == "" {
+		return approval.Request{}, approval.ErrQueryTenantRequired
+	}
+	return s.decide(ctx, id, tenantID, decidedBy, reason, true)
+}
+
+// RejectForTenant is the tenant-scoped Reject.
+func (s *Store) RejectForTenant(ctx context.Context, tenantID, id, decidedBy, reason string) (approval.Request, error) {
+	if tenantID == "" {
+		return approval.Request{}, approval.ErrQueryTenantRequired
+	}
+	return s.decide(ctx, id, tenantID, decidedBy, reason, false)
+}
+
+// MarkExecutedForTenant is the tenant-scoped MarkExecuted.
+func (s *Store) MarkExecutedForTenant(ctx context.Context, tenantID, id string) (approval.Request, error) {
+	if tenantID == "" {
+		return approval.Request{}, approval.ErrQueryTenantRequired
+	}
+	return s.markExecuted(ctx, id, tenantID)
+}
+
+func (s *Store) decide(ctx context.Context, id, tenantID, decidedBy, reason string, approve bool) (approval.Request, error) {
 	if err := ctx.Err(); err != nil {
 		return approval.Request{}, err
 	}
@@ -230,6 +254,9 @@ func (s *Store) decide(ctx context.Context, id, decidedBy, reason string, approv
 
 	r, ok := s.requests[id]
 	if !ok {
+		return approval.Request{}, approval.ErrNotFound
+	}
+	if tenantID != "" && r.TenantID != tenantID {
 		return approval.Request{}, approval.ErrNotFound
 	}
 
@@ -289,6 +316,10 @@ func (s *Store) decide(ctx context.Context, id, decidedBy, reason string, approv
 // MarkExecuted). This matches the [approval.Store.MarkExecuted]
 // contract and the postgres implementation.
 func (s *Store) MarkExecuted(ctx context.Context, id string) (approval.Request, error) {
+	return s.markExecuted(ctx, id, "")
+}
+
+func (s *Store) markExecuted(ctx context.Context, id, tenantID string) (approval.Request, error) {
 	if err := ctx.Err(); err != nil {
 		return approval.Request{}, err
 	}
@@ -300,6 +331,9 @@ func (s *Store) MarkExecuted(ctx context.Context, id string) (approval.Request, 
 
 	r, ok := s.requests[id]
 	if !ok {
+		return approval.Request{}, approval.ErrNotFound
+	}
+	if tenantID != "" && r.TenantID != tenantID {
 		return approval.Request{}, approval.ErrNotFound
 	}
 

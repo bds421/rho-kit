@@ -387,11 +387,11 @@ func TestDegradedCache_BulkDegraded_Passthrough_NilFallback(t *testing.T) {
 
 	require.NoError(t, dc.MSet(ctx, map[string][]byte{"a": []byte("v")}, time.Minute))
 
-	// Mirrors single-key Set, which is a no-op claim of success when
-	// passthrough has no fallback.
+	// SetNX fails closed with no fallback: claiming a compute-once win
+	// without persistence would duplicate side effects across replicas.
 	ok, err := dc.SetNX(ctx, "a", []byte("v"), time.Minute)
 	require.NoError(t, err)
-	assert.True(t, ok)
+	assert.False(t, ok)
 }
 
 // TestDegradedCache_BulkDegraded_FailFast verifies the bulk methods

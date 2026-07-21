@@ -8,13 +8,14 @@
 //
 // Cached responses are stored as a JSON envelope under the same key, with
 // the fingerprint embedded so Get can detect "same key, different body"
-// reuse and return [idempotency.ErrLockLost] is reserved for token-mismatch
-// on Set; the Get / TryLock paths surface body-mismatch via the
-// `fingerprintMismatch` return value per the [idempotency.Store] contract.
+// reuse. Body-mismatch is surfaced via the fingerprintMismatch return value
+// on Get/TryLock (per the [idempotency.Store] contract).
+// [idempotency.ErrLockLost] is reserved for token-mismatch on Set/Unlock.
 package redisstore
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -77,6 +78,12 @@ type Option func(*Store)
 func WithKeyPrefix(prefix string) Option {
 	if prefix == "" {
 		panic("redisstore: WithKeyPrefix requires a non-empty prefix")
+	}
+	// Enforce a trailing separator so prefix+key is injective across
+	// store instances (prefix "idem:svcA" + key ":x" must not collide
+	// with prefix "idem:svc" + key "A:x").
+	if !strings.HasSuffix(prefix, ":") {
+		prefix += ":"
 	}
 	if len(prefix) > maxKeyPrefixLen {
 		panic("redisstore: WithKeyPrefix prefix exceeds maximum length")
@@ -284,14 +291,18 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 
 	var env envelope
 	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, false, redact.WrapError("idempotencystore: unmarshal cached response", err)
+		// Foreign/legacy non-JSON under the prefix: treat as miss (same as
+		// unrecognised marker), not a hard error that poisons every Get
+		// until TTL expiry. Matches doTryLock's inspect path.
+		return nil, false, nil
 	}
 	if env.Marker != respMarker {
 		// Unrecognised payload — treat as miss to avoid silently replaying
 		// arbitrary bytes.
 		return nil, false, nil
 	}
-	if fingerprint != nil && env.Fingerprint != nil && !bytes.Equal(env.Fingerprint, fingerprint) {
+	// Fail closed when caller supplies a fingerprint but the envelope has none.
+	if fingerprint != nil && (env.Fingerprint == nil || !bytes.Equal(env.Fingerprint, fingerprint)) {
 		return nil, true, nil
 	}
 	resp := env.Response
@@ -361,12 +372,10 @@ func (s *Store) doTryLock(ctx context.Context, key string, fingerprint []byte, t
 		if translated := translateUnavailable(err); translated != err {
 			return "", false, false, translated
 		}
+		return "", false, false, redact.WrapError("idempotencystore: inspect", err)
 	}
 	if len(existing) > maxStoredEntryBytes {
 		return "", false, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
-	}
-	if err != nil {
-		return "", false, false, redact.WrapError("idempotencystore: inspect", err)
 	}
 
 	// Existing slot is a lock — compare fingerprints from the lock value.
@@ -444,7 +453,7 @@ func (s *Store) doSet(ctx context.Context, key, token string, resp idempotency.C
 		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
 	}
 	curToken, fp, ok := decodeLockValue(string(existing))
-	if !ok || curToken != token {
+	if !ok || !tokenEqual(curToken, token) {
 		return idempotency.ErrLockLost
 	}
 
@@ -457,7 +466,10 @@ func (s *Store) doSet(ctx context.Context, key, token string, resp idempotency.C
 	if err != nil {
 		return redact.WrapError("idempotencystore: marshal cached response", err)
 	}
-	expectedLockValue := encodeLockValue(token, fp)
+	// Pass the raw GET bytes as the expected value so legacy encodings
+	// that decode successfully still match Redis-side compare (re-encoding
+	// would produce a different wire form and spuriously report ErrLockLost).
+	expectedLockValue := string(existing)
 	result, err := setIfLockedScript.Run(ctx, s.client,
 		[]string{s.k(key)},
 		expectedLockValue,
@@ -518,13 +530,13 @@ func (s *Store) doUnlock(ctx context.Context, key, token string) error {
 	if len(existing) > maxStoredEntryBytes {
 		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
 	}
-	curToken, fp, ok := decodeLockValue(string(existing))
-	if !ok || curToken != token {
+	curToken, _, ok := decodeLockValue(string(existing))
+	if !ok || !tokenEqual(curToken, token) {
 		// Either it's already a response envelope (Set ran), or someone
 		// else holds the lock now. Either way, nothing for us to do.
 		return nil
 	}
-	expectedLockValue := encodeLockValue(token, fp)
+	expectedLockValue := string(existing)
 	if _, err := unlockIfOwnerScript.Run(ctx, s.client, []string{s.k(key)}, expectedLockValue).Result(); err != nil && !errors.Is(err, goredis.Nil) {
 		if translated := translateUnavailable(err); translated != err {
 			return translated
@@ -552,3 +564,12 @@ func containsInvalidStringBytes(s string) bool {
 	}
 	return false
 }
+
+// tokenEqual compares owner tokens in constant time when lengths match.
+func tokenEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+

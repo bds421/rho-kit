@@ -87,10 +87,10 @@ func WithoutSweeper() Option {
 //
 // Examples:
 //
-//   - Open(1_000_000, time.Hour) — one million tokens per hour.
-//   - Open(50, 24*time.Hour)     — fifty operations per day.
+//   - New(1_000_000, time.Hour) — one million tokens per hour.
+//   - New(50, 24*time.Hour)     — fifty operations per day.
 //
-// The Open* prefix marks this constructor as side-effecting: it spawns
+// New is side-effecting: it spawns
 // a background sweeper goroutine that holds only a weak reference to
 // the budget, so a forgotten Close does not pin it forever. Pair with
 // [Budget.Close] in shutdown wiring for deterministic cleanup.

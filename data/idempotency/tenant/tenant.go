@@ -31,6 +31,17 @@
 // reported as an error from Store operations — callers that may
 // legitimately run outside a tenant scope should keep using the bare
 // store.
+//
+// # Deployment rule: do not share a backend keyspace with a bare store
+//
+// Scoped keys use the kit-canonical length-prefixed format from
+// [coretenant.KeyFor] (e.g. "tenant:1:a:3:foo"). That string is itself a
+// valid raw [idempotency.ValidateKey] input, so a deployment that wires
+// BOTH this wrapper AND a bare [idempotency.Store] against the same
+// Redis prefix / Postgres table lets a bare-path caller who controls the
+// raw key address another tenant's slot (Get replay, TryLock squat, Set
+// poisoning). Keep tenant-wrapped and bare stores on disjoint backends
+// or key prefixes; never mount both on one keyspace.
 package tenant
 
 import (

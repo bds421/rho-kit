@@ -156,7 +156,17 @@ func TestApplyRecords(t *testing.T) {
 			unknown = pgstore.ApplyRecords(scheduler, records, jobs)
 		})
 		// Unknown and invalid records are surfaced, never registered.
-		require.ElementsMatch(t, []string{"unknown", "bad-spec"}, unknown)
+		// Invalid rows carry a "[invalid: ...]" suffix so operators can
+		// distinguish "deploy new binary" from "fix the Spec".
+		require.Len(t, unknown, 2)
+		require.Contains(t, unknown, "unknown")
+		var invalidEntry string
+		for _, s := range unknown {
+			if s != "unknown" {
+				invalidEntry = s
+			}
+		}
+		require.Contains(t, invalidEntry, "bad-spec [invalid:")
 	})
 
 	t.Run("registers valid enabled records", func(t *testing.T) {

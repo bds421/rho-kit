@@ -5,9 +5,13 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -34,6 +38,17 @@ const uniqueViolation = "23505"
 // rather than corruption — callers should re-run the append, which
 // rebuilds the chain off the now-committed latest row.
 var ErrSeqCollision = errors.New("actionlog/postgres: concurrent seq collision")
+
+// ErrDuplicateID is returned by [Store.AppendChained] when the insert fails
+// because the entry id already exists (primary-key unique violation). Unlike
+// [ErrSeqCollision], this is permanent — retrying with the same id cannot
+// succeed. Callers that mint deterministic ids must generate a fresh id.
+var ErrDuplicateID = errors.New("actionlog/postgres: duplicate entry id")
+
+// tenantSeqConstraint is the unique index that enforces (tenant_id, seq).
+// Only this constraint maps to [ErrSeqCollision]; other 23505s (notably the
+// primary key on id) are permanent.
+const tenantSeqConstraint = "idx_action_log_entries_tenant_seq"
 
 // Store is a pgx-backed [actionlog.Store]. The append path holds a
 // per-tenant advisory lock (pg_advisory_xact_lock) plus SELECT FOR
@@ -100,7 +115,12 @@ func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(p
 	// both build seq=1 and one would fail the (tenant_id, seq) unique
 	// constraint. The lock is released at commit/rollback, so it never
 	// escapes this transaction.
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", tenantID); err != nil {
+	//
+	// Lock id is SHA-256/int64 of a package-namespaced key (mirrors
+	// data/lock/pgadvisory) rather than hashtext(), which is a weak 32-bit
+	// hash that collides across tenants and shares the global advisory
+	// namespace with every other consumer of hashtext.
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", actionlogLockID(tenantID)); err != nil {
 		return actionlog.Entry{}, redact.WrapError("actionlog/postgres: advisory lock", err)
 	}
 
@@ -127,8 +147,10 @@ func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(p
 	return entry, nil
 }
 
-// Get returns the entry by id. Returns [actionlog.ErrNotFound] when no
-// row matches.
+// Get returns the entry by id with no tenant predicate. This is an
+// admin/forensics lookup: callers serving a tenant-scoped principal MUST
+// compare Entry.TenantID (or use List/RangeByTenantSeq) before returning
+// the entry. Returns [actionlog.ErrNotFound] when no row matches.
 func (s *Store) Get(ctx context.Context, id string) (actionlog.Entry, error) {
 	if err := s.ready(); err != nil {
 		return actionlog.Entry{}, err
@@ -251,7 +273,7 @@ func (s *Store) RangeByTenantSeq(ctx context.Context, tenantID string, fn func(a
 		return actionlog.ErrQueryTenantRequired
 	}
 	if fn == nil {
-		return actionlog.ErrInvalidEntry
+		return fmt.Errorf("actionlog/postgres: RangeByTenantSeq requires a non-nil callback")
 	}
 	const q = `
 	SELECT id, tenant_id, actor, action, resource, outcome, reason,
@@ -352,6 +374,14 @@ func insertEntry(ctx context.Context, tx pgx.Tx, e actionlog.Entry) error {
 		}
 		metaRaw = b
 	}
+	// TIMESTAMPTZ stores microsecond precision. HMAC signatures and
+	// prev_hash are computed over RFC3339Nano of OccurredAt, so a
+	// sub-microsecond value round-trips differently after Postgres and
+	// permanently fails VerifyChain. The signed Logger truncates before
+	// signing; AppendChained callers that supply their own OccurredAt
+	// must also land on µs boundaries — normalise here as the last
+	// line of defence (mirrors approval's toPgTimestamp).
+	occurredAt := e.OccurredAt.UTC().Truncate(time.Microsecond)
 	const q = `
 INSERT INTO action_log_entries
 (id, tenant_id, actor, action, resource, outcome, reason, metadata,
@@ -359,7 +389,7 @@ INSERT INTO action_log_entries
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`
 	if _, err := tx.Exec(ctx, q,
 		e.ID, e.TenantID, e.Actor, e.Action, e.Resource, string(e.Outcome), e.Reason, metaRaw,
-		e.OccurredAt.UTC(), e.SignatureKeyID, e.Seq, e.PrevHash, e.Signature,
+		occurredAt, e.SignatureKeyID, e.Seq, e.PrevHash, e.Signature,
 	); err != nil {
 		return classifyInsertError(err)
 	}
@@ -367,31 +397,40 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`
 }
 
 // classifyInsertError maps a failed INSERT into the package's error
-// contract: a unique-constraint violation (SQLSTATE 23505) is wrapped via
-// redact.WrapSentinel so callers can errors.Is it against [ErrSeqCollision]
-// while the driver text stays redacted; every other failure keeps the
-// opaque "append" wrap. Returns nil when err is nil.
+// contract. Only the (tenant_id, seq) unique index maps to retryable
+// [ErrSeqCollision]. A primary-key (id) violation maps to permanent
+// [ErrDuplicateID] so callers do not spin forever re-appending the same
+// id. Other failures keep the opaque "append" wrap. Returns nil when
+// err is nil.
 func classifyInsertError(err error) error {
 	if err == nil {
 		return nil
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
-		return redact.WrapSentinel(ErrSeqCollision, err)
+		switch pgErr.ConstraintName {
+		case tenantSeqConstraint:
+			return redact.WrapSentinel(ErrSeqCollision, err)
+		case "action_log_entries_pkey":
+			return redact.WrapSentinel(ErrDuplicateID, err)
+		default:
+			// Unknown unique constraint: permanent, not a seq race.
+			// (Empty ConstraintName included — do not guess retryable.)
+			return redact.WrapError("actionlog/postgres: append", err)
+		}
 	}
 	return redact.WrapError("actionlog/postgres: append", err)
 }
 
 func joinAnd(parts []string) string {
-	switch len(parts) {
-	case 0:
-		return ""
-	case 1:
-		return parts[0]
-	}
-	out := parts[0]
-	for _, p := range parts[1:] {
-		out += " AND " + p
-	}
-	return out
+	return strings.Join(parts, " AND ")
 }
+
+// actionlogLockID derives a 64-bit advisory lock key from tenantID using
+// the same SHA-256/int64 scheme as data/lock/pgadvisory, namespaced so
+// actionlog locks never collide with other kit packages by construction.
+func actionlogLockID(tenantID string) int64 {
+	sum := sha256.Sum256([]byte("actionlog|" + tenantID))
+	return int64(binary.BigEndian.Uint64(sum[:8]))
+}
+

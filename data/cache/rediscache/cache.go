@@ -24,6 +24,28 @@ var _ sharedcache.Cache = (*Cache)(nil)
 // defaultMaxValueSize is the default maximum value size for cache entries (10 MiB).
 const defaultMaxValueSize = 10 << 20
 
+// cappedGetScript returns the value only when STRLEN is within the cap,
+// in a single Redis round trip. Shape:
+//
+//	{0}           — key missing
+//	{-1, strlen}  — oversize
+//	{1, value}    — hit
+//
+// Atomic relative to the STRLEN+GET pair, so the previous TOCTOU branch
+// (and its warn log) is unnecessary on the hot path.
+var cappedGetScript = goredis.NewScript(`
+local n = redis.call('STRLEN', KEYS[1])
+local cap = tonumber(ARGV[1])
+if n > cap then
+  return {-1, n}
+end
+local v = redis.call('GET', KEYS[1])
+if not v then
+  return {0}
+end
+return {1, v}
+`)
+
 // Metrics holds Prometheus collectors for cache hit/miss monitoring.
 type Metrics struct {
 	hits   *prometheus.CounterVec
@@ -96,6 +118,7 @@ var defaultMetrics = sync.OnceValue(func() *Metrics { return NewMetrics() })
 type Cache struct {
 	client       goredis.UniversalClient
 	name         string // for metrics labeling
+	prefix       string // Redis key namespace; default is name + ":"
 	maxValueSize int    // max value size in bytes; 0 = no limit
 	metrics      *Metrics
 	logger       *slog.Logger
@@ -118,14 +141,16 @@ func WithCacheMaxValueSize(n int) CacheOption {
 
 // WithMetricsRegisterer sets the Prometheus registerer for cache
 // metrics. If not set, prometheus.DefaultRegisterer is used.
+// Panics on a nil registerer — same fail-fast contract as [WithRegisterer]
+// — so a conditionally-nil registerer cannot silently pollute the global
+// default registry.
 // Replaces the v1 WithCacheRegisterer spelling so cache option naming
 // matches the kit-wide convention.
 func WithMetricsRegisterer(reg prometheus.Registerer) CacheOption {
+	if reg == nil {
+		panic("rediscache: WithMetricsRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+	}
 	return func(rc *Cache) {
-		if reg == nil {
-			rc.metrics = NewMetrics()
-			return
-		}
 		rc.metrics = NewMetrics(WithRegisterer(reg))
 	}
 }
@@ -145,8 +170,21 @@ func WithLogger(l *slog.Logger) CacheOption {
 	}
 }
 
-// NewCache creates a Redis-backed cache. The name is used for
-// Prometheus metric labels to distinguish multiple cache instances.
+// WithKeyPrefix sets the Redis key namespace prepended to every cache key.
+// Default is the cache name plus a trailing colon (e.g. name "orders" →
+// "orders:"), so two NewCache instances on a shared Redis cannot collide
+// by omitting a prefix. Pass "" only when the caller deliberately wants
+// a flat keyspace (e.g. migrating an existing unprefixed deployment);
+// an empty prefix is accepted but logs no automatic isolation.
+func WithKeyPrefix(p string) CacheOption {
+	return func(rc *Cache) {
+		rc.prefix = p
+	}
+}
+
+// NewCache creates a Redis-backed cache. The name is used for Prometheus
+// metric labels and, by default, as the Redis key namespace (name + ":").
+// Override with [WithKeyPrefix] when a different isolation key is needed.
 // Returns an error if name is invalid. Panics if client is nil — a
 // miswired cache would otherwise dereference nil on first use.
 func NewCache(client goredis.UniversalClient, name string, opts ...CacheOption) (*Cache, error) {
@@ -159,6 +197,7 @@ func NewCache(client goredis.UniversalClient, name string, opts ...CacheOption) 
 	rc := &Cache{
 		client:       client,
 		name:         name,
+		prefix:       name + ":",
 		maxValueSize: defaultMaxValueSize,
 	}
 	for _, o := range opts {
@@ -185,11 +224,10 @@ func NewCache(client goredis.UniversalClient, name string, opts ...CacheOption) 
 // redis.Nil and [sharedcache.ErrValueTooLarge] when a stored value exceeds
 // the configured cap.
 //
-// The cap is enforced via STRLEN before GET so a hostile or legacy writer
-// that stored a multi-MB value cannot force this process to allocate the
-// full response body before the cap runs. A post-GET length check still
-// runs to catch the rare TOCTOU window where the value is replaced between
-// STRLEN and GET.
+// When a positive maxValueSize is configured (the default), the cap is
+// enforced by a single Lua script that pairs STRLEN with GET atomically —
+// one Redis RTT and no TOCTOU window between the size probe and the read.
+// With maxValueSize disabled the path is a plain GET.
 func (rc *Cache) Get(ctx context.Context, key string) (val []byte, err error) {
 	ctx, span := rc.startSpan(ctx, "cache.Get")
 	defer func() { recordResult(span, err); span.End() }()
@@ -200,43 +238,57 @@ func (rc *Cache) Get(ctx context.Context, key string) (val []byte, err error) {
 		return nil, err
 	}
 	if rc.maxValueSize > 0 {
-		sz, err := rc.client.StrLen(ctx, key).Result()
+		res, err := cappedGetScript.Run(ctx, rc.client, []string{rc.redisKey(key)}, rc.maxValueSize).Result()
 		if err != nil {
-			return nil, redact.WrapError("redis cache get strlen", err)
+			if isServerCmdError(err) {
+				rc.metrics.misses.WithLabelValues(rc.name).Inc()
+				return nil, sharedcache.ErrCacheMiss
+			}
+			return nil, redact.WrapError("redis cache get", err)
 		}
-		if sz > int64(rc.maxValueSize) {
+		pair, ok := res.([]any)
+		if !ok || len(pair) < 1 {
+			return nil, errors.New("rediscache: unexpected capped-get script result shape")
+		}
+		tag, ok := pair[0].(int64)
+		if !ok {
+			return nil, errors.New("rediscache: unexpected capped-get script result shape")
+		}
+		switch tag {
+		case 0:
+			rc.metrics.misses.WithLabelValues(rc.name).Inc()
+			return nil, sharedcache.ErrCacheMiss
+		case -1:
 			rc.metrics.misses.WithLabelValues(rc.name).Inc()
 			return nil, fmt.Errorf("redis cache get: %w", sharedcache.ErrValueTooLarge)
+		case 1:
+			if len(pair) < 2 {
+				return nil, errors.New("rediscache: unexpected capped-get script result shape")
+			}
+			switch v := pair[1].(type) {
+			case string:
+				val = []byte(v)
+			case []byte:
+				val = v
+			default:
+				return nil, errors.New("rediscache: unexpected capped-get value type")
+			}
+			rc.metrics.hits.WithLabelValues(rc.name).Inc()
+			return val, nil
+		default:
+			return nil, errors.New("rediscache: unexpected capped-get script tag")
 		}
-		// STRLEN==0 covers both "missing" and "empty stored value"; both
-		// are safe to forward to GET, which distinguishes them via redis.Nil.
 	}
-	val, err = rc.client.Get(ctx, key).Bytes()
-	if errors.Is(err, goredis.Nil) {
+	val, err = rc.client.Get(ctx, rc.redisKey(key)).Bytes()
+	if errors.Is(err, goredis.Nil) || isServerCmdError(err) {
+		// WRONGTYPE and other per-key server errors are treated as miss,
+		// matching MGet, so a poisoned co-tenant key cannot fail the
+		// request path while the bulk path succeeds.
 		rc.metrics.misses.WithLabelValues(rc.name).Inc()
 		return nil, sharedcache.ErrCacheMiss
 	}
 	if err != nil {
 		return nil, redact.WrapError("redis cache get", err)
-	}
-	// TOCTOU guard: another writer may have replaced the value with a
-	// larger one between STRLEN and GET. The cap check is cheap and
-	// preserves the contract.
-	if rc.maxValueSize > 0 && len(val) > rc.maxValueSize {
-		// Surface the race so operators can correlate with writer
-		// audit logs — repeated occurrences suggest a misbehaving
-		// or hostile writer attempting to bypass the cap.
-		rc.logger.Warn("rediscache: TOCTOU value-too-large after STRLEN passed",
-			"cache", rc.name,
-			"size_bytes", len(val),
-			"max_bytes", rc.maxValueSize,
-			redact.String("key", key),
-		)
-		// Count as a miss for consistent hit-ratio accounting: this slot
-		// yielded no usable value, matching the pre-GET oversize path and
-		// the capped-MGet TOCTOU branch.
-		rc.metrics.misses.WithLabelValues(rc.name).Inc()
-		return nil, fmt.Errorf("redis cache get: %w", sharedcache.ErrValueTooLarge)
 	}
 	rc.metrics.hits.WithLabelValues(rc.name).Inc()
 	return val, nil
@@ -257,9 +309,9 @@ func (rc *Cache) Set(ctx context.Context, key string, value []byte, ttl time.Dur
 		return fmt.Errorf("cache set: TTL must not be negative")
 	}
 	if rc.maxValueSize > 0 && len(value) > rc.maxValueSize {
-		return fmt.Errorf("cache value exceeds maximum size")
+		return fmt.Errorf("cache set: %w", sharedcache.ErrValueTooLarge)
 	}
-	if err := rc.client.Set(ctx, key, value, ttl).Err(); err != nil {
+	if err := rc.client.Set(ctx, rc.redisKey(key), value, ttl).Err(); err != nil {
 		return redact.WrapError("redis cache set", err)
 	}
 	return nil
@@ -275,7 +327,7 @@ func (rc *Cache) Delete(ctx context.Context, key string) (err error) {
 	if err := sharedcache.ValidateKey(key); err != nil {
 		return err
 	}
-	if err := rc.client.Del(ctx, key).Err(); err != nil {
+	if err := rc.client.Del(ctx, rc.redisKey(key)).Err(); err != nil {
 		return redact.WrapError("redis cache delete", err)
 	}
 	return nil
@@ -291,7 +343,7 @@ func (rc *Cache) Exists(ctx context.Context, key string) (exists bool, err error
 	if err := sharedcache.ValidateKey(key); err != nil {
 		return false, err
 	}
-	n, err := rc.client.Exists(ctx, key).Result()
+	n, err := rc.client.Exists(ctx, rc.redisKey(key)).Result()
 	if err != nil {
 		return false, redact.WrapError("redis cache exists", err)
 	}
@@ -329,7 +381,11 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 	// Without a cap configured, MGET in a single round-trip is the
 	// efficient path. Skip the per-key pipeline.
 	if rc.maxValueSize <= 0 {
-		vals, mgetErr := rc.client.MGet(ctx, keys...).Result()
+		rkeys := make([]string, len(keys))
+		for i, k := range keys {
+			rkeys[i] = rc.redisKey(k)
+		}
+		vals, mgetErr := rc.client.MGet(ctx, rkeys...).Result()
 		if mgetErr != nil {
 			return nil, redact.WrapError("redis cache mget", mgetErr)
 		}
@@ -358,7 +414,7 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 	pipe := rc.client.Pipeline()
 	strLens := make([]*goredis.IntCmd, len(keys))
 	for i, k := range keys {
-		strLens[i] = pipe.StrLen(ctx, k)
+		strLens[i] = pipe.StrLen(ctx, rc.redisKey(k))
 	}
 	// Exec returns the first command error, which may be a per-key
 	// server reply (e.g. WRONGTYPE for a co-tenant's list/hash). Those
@@ -402,7 +458,7 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 	pipe = rc.client.Pipeline()
 	gets := make([]*goredis.StringCmd, len(getKeys))
 	for i, k := range getKeys {
-		gets[i] = pipe.Get(ctx, k)
+		gets[i] = pipe.Get(ctx, rc.redisKey(k))
 	}
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) && !isServerCmdError(err) {
 		return nil, redact.WrapError("redis cache mget get pipeline", err)
@@ -477,12 +533,12 @@ func (rc *Cache) MSet(ctx context.Context, items map[string][]byte, ttl time.Dur
 	}
 	for _, v := range items {
 		if rc.maxValueSize > 0 && len(v) > rc.maxValueSize {
-			return fmt.Errorf("cache mset: value exceeds maximum size")
+			return fmt.Errorf("cache mset: %w", sharedcache.ErrValueTooLarge)
 		}
 	}
 	pipe := rc.client.Pipeline()
 	for k, v := range items {
-		pipe.Set(ctx, k, v, ttl)
+		pipe.Set(ctx, rc.redisKey(k), v, ttl)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return redact.WrapError("redis cache mset", err)
@@ -507,13 +563,20 @@ func (rc *Cache) SetNX(ctx context.Context, key string, value []byte, ttl time.D
 		return false, fmt.Errorf("cache setnx: TTL must not be negative")
 	}
 	if rc.maxValueSize > 0 && len(value) > rc.maxValueSize {
-		return false, fmt.Errorf("cache setnx: value exceeds maximum size")
+		return false, fmt.Errorf("cache setnx: %w", sharedcache.ErrValueTooLarge)
 	}
-	ok, err = rc.client.SetNX(ctx, key, value, ttl).Result()
+	ok, err = rc.client.SetNX(ctx, rc.redisKey(key), value, ttl).Result()
 	if err != nil {
 		return false, redact.WrapError("redis cache setnx", err)
 	}
 	return ok, nil
+}
+
+func (rc *Cache) redisKey(key string) string {
+	if rc.prefix == "" {
+		return key
+	}
+	return rc.prefix + key
 }
 
 func (rc *Cache) ready() error {

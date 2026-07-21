@@ -378,6 +378,29 @@ func TestEntryClone_DoesNotPanicOnCyclicMetadata(t *testing.T) {
 	assert.Equal(t, clonedPtr, reflect.ValueOf(self).Pointer())
 }
 
+// TestEntryClone_PreservesDistinctAliasedSliceLengths guards the cloneVisit
+// key including slice length: two slice headers that share a backing array
+// from index 0 but differ in Len must not collapse to one cloned value.
+func TestEntryClone_PreservesDistinctAliasedSliceLengths(t *testing.T) {
+	full := []any{"a", "b", "c"}
+	metadata := map[string]any{
+		"full": full,
+		"head": full[:1],
+	}
+	cloned := Entry{Metadata: metadata}.Clone()
+
+	fullOut, ok := cloned.Metadata["full"].([]any)
+	require.True(t, ok)
+	headOut, ok := cloned.Metadata["head"].([]any)
+	require.True(t, ok)
+	assert.Equal(t, 3, len(fullOut))
+	assert.Equal(t, 1, len(headOut))
+	assert.Equal(t, "a", headOut[0])
+	// Mutations to one clone must not affect the other.
+	fullOut[0] = "mutated"
+	assert.Equal(t, "a", headOut[0])
+}
+
 func TestGet_DetectsTamper(t *testing.T) {
 	store := newMemStore()
 	logger := New(store, newTestSecrets(t))
@@ -1109,4 +1132,122 @@ func TestAppend_TruncatesCallerSuppliedOccurredAt(t *testing.T) {
 	got, err := logger.Get(context.Background(), written.ID)
 	require.NoError(t, err)
 	assert.Equal(t, written.OccurredAt, got.OccurredAt)
+}
+
+// TestSignEntry_TruncatesOccurredAtToMicrosecond is the regression pin
+// for the SignEntry/Append precision mismatch: Append truncates to µs
+// before signing so TIMESTAMPTZ stores verify, but SignEntry used to
+// sign full-ns values so off-band signatures permanently failed after
+// a store round-trip that drops sub-µs digits.
+func TestSignEntry_TruncatesOccurredAtToMicrosecond(t *testing.T) {
+	secrets := newTestSecrets(t)
+	// Non-zero nanoseconds below microsecond resolution.
+	occurred := time.Date(2026, 5, 7, 12, 0, 0, 123456789, time.UTC)
+	e := Entry{
+		ID: "e1", TenantID: "t", Actor: "a", Action: "do",
+		Resource: "r", Outcome: OutcomeSuccess, OccurredAt: occurred,
+	}
+	sig, keyID, err := SignEntry(context.Background(), e, secrets)
+	require.NoError(t, err)
+	// Re-sign with the truncated time must match; full-ns form must not
+	// be what was signed.
+	eTrunc := e
+	eTrunc.OccurredAt = occurred.Truncate(time.Microsecond)
+	eTrunc.Signature = sig
+	eTrunc.SignatureKeyID = keyID
+	require.NoError(t, VerifyEntry(context.Background(), eTrunc, secrets))
+
+	// A verifier that re-expands to the original ns value must fail —
+	// proving SignEntry did not sign the untruncated instant.
+	eNS := e
+	eNS.Signature = sig
+	eNS.SignatureKeyID = keyID
+	// Only fails when ns part is non-zero after truncation differs.
+	if !occurred.Equal(occurred.Truncate(time.Microsecond)) {
+		assert.ErrorIs(t, VerifyEntry(context.Background(), eNS, secrets), ErrSignatureInvalid)
+	}
+}
+
+// TestAppend_RejectsReasonControlChars pins audit-view injection
+// hardening: Reason must reject newlines/ANSI like approval.validReason.
+func TestAppend_RejectsReasonControlChars(t *testing.T) {
+	secrets := newTestSecrets(t)
+	log := New(newMemStore(), secrets)
+	ctx := context.Background()
+	for _, reason := range []string{"line\nbreak", "bell\x07", "esc\x1b[31m"} {
+		_, err := log.Append(ctx, Entry{
+			TenantID: "t", Actor: "a", Action: "do", Resource: "r",
+			Outcome: OutcomeSuccess, Reason: reason,
+		})
+		assert.ErrorIs(t, err, ErrInvalidEntry, "reason %q", reason)
+	}
+	// Spaces remain allowed in prose reasons.
+	_, err := log.Append(ctx, Entry{
+		TenantID: "t", Actor: "a", Action: "do", Resource: "r",
+		Outcome: OutcomeSuccess, Reason: "user asked politely",
+	})
+	assert.NoError(t, err)
+}
+
+// TestTenantLogger_CrossTenantGetReturnsNotFound pins the IDOR fix:
+// a tenant-scoped logger must not return another tenant's entry.
+func TestTenantLogger_CrossTenantGetReturnsNotFound(t *testing.T) {
+	secrets := newTestSecrets(t)
+	inner := New(newMemStore(), secrets)
+	ctx := context.Background()
+
+	written, err := inner.Append(ctx, Entry{
+		TenantID: "tenant-b", Actor: "a", Action: "do", Resource: "r",
+		Outcome: OutcomeSuccess,
+	})
+	require.NoError(t, err)
+
+	scoped := NewTenantLogger(inner, "tenant-a")
+	_, err = scoped.Get(ctx, written.ID)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	// Own-tenant read still works.
+	own, err := inner.Append(ctx, Entry{
+		TenantID: "tenant-a", Actor: "a", Action: "do", Resource: "r",
+		Outcome: OutcomeSuccess,
+	})
+	require.NoError(t, err)
+	got, err := scoped.Get(ctx, own.ID)
+	require.NoError(t, err)
+	assert.Equal(t, own.ID, got.ID)
+}
+
+// TestTenantLogger_AppendForcesTenantID ensures a caller cannot write
+// into another tenant's chain through a scoped logger.
+func TestTenantLogger_AppendForcesTenantID(t *testing.T) {
+	secrets := newTestSecrets(t)
+	inner := New(newMemStore(), secrets)
+	scoped := NewTenantLogger(inner, "tenant-a")
+	got, err := scoped.Append(context.Background(), Entry{
+		TenantID: "attacker", Actor: "a", Action: "do", Resource: "r",
+		Outcome: OutcomeSuccess,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "tenant-a", got.TenantID)
+}
+
+func TestCursorSigner_CloseZeroesKey(t *testing.T) {
+	key := make([]byte, MinCursorSigningKeyBytes)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	signer, err := NewCursorSigner(key)
+	require.NoError(t, err)
+
+	cur := signer.Encode(time.Now().UTC(), "id-1")
+	require.NotEmpty(t, cur)
+	_, _, err = signer.Decode(cur)
+	require.NoError(t, err)
+
+	require.NoError(t, signer.Close())
+	require.NoError(t, signer.Close()) // idempotent
+
+	_, _, err = signer.Decode(cur)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidCursor)
 }

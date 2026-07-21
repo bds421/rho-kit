@@ -106,7 +106,7 @@ func (dc *DegradedCache) Get(ctx context.Context, key string) ([]byte, error) {
 	if dc.conn.Healthy() {
 		return dc.primary.Get(ctx, key)
 	}
-	if err := dc.policy.OnUnavailable(ctx); err != nil {
+	if err := redis.ApplyDegradation(ctx, dc.conn, dc.policy); err != nil {
 		return nil, err
 	}
 	if dc.fallback != nil {
@@ -126,7 +126,7 @@ func (dc *DegradedCache) Set(ctx context.Context, key string, value []byte, ttl 
 	if dc.conn.Healthy() {
 		return dc.primary.Set(ctx, key, value, ttl)
 	}
-	if err := dc.policy.OnUnavailable(ctx); err != nil {
+	if err := redis.ApplyDegradation(ctx, dc.conn, dc.policy); err != nil {
 		return err
 	}
 	if dc.fallback != nil {
@@ -146,7 +146,7 @@ func (dc *DegradedCache) Delete(ctx context.Context, key string) error {
 	if dc.conn.Healthy() {
 		return dc.primary.Delete(ctx, key)
 	}
-	if err := dc.policy.OnUnavailable(ctx); err != nil {
+	if err := redis.ApplyDegradation(ctx, dc.conn, dc.policy); err != nil {
 		return err
 	}
 	if dc.fallback != nil {
@@ -167,7 +167,7 @@ func (dc *DegradedCache) Exists(ctx context.Context, key string) (bool, error) {
 	if dc.conn.Healthy() {
 		return dc.primary.Exists(ctx, key)
 	}
-	if err := dc.policy.OnUnavailable(ctx); err != nil {
+	if err := redis.ApplyDegradation(ctx, dc.conn, dc.policy); err != nil {
 		return false, err
 	}
 	if dc.fallback != nil {
@@ -187,7 +187,7 @@ func (dc *DegradedCache) MGet(ctx context.Context, keys []string) (map[string][]
 	if dc.conn.Healthy() {
 		return dc.primary.MGet(ctx, keys)
 	}
-	if err := dc.policy.OnUnavailable(ctx); err != nil {
+	if err := redis.ApplyDegradation(ctx, dc.conn, dc.policy); err != nil {
 		return nil, err
 	}
 	if dc.fallback != nil {
@@ -210,7 +210,7 @@ func (dc *DegradedCache) MSet(ctx context.Context, items map[string][]byte, ttl 
 	if dc.conn.Healthy() {
 		return dc.primary.MSet(ctx, items, ttl)
 	}
-	if err := dc.policy.OnUnavailable(ctx); err != nil {
+	if err := redis.ApplyDegradation(ctx, dc.conn, dc.policy); err != nil {
 		return err
 	}
 	if dc.fallback != nil {
@@ -222,8 +222,15 @@ func (dc *DegradedCache) MSet(ctx context.Context, items map[string][]byte, ttl 
 // SetNX stores a value only if the key does not already exist. When
 // healthy, forwards to the primary's atomic, cross-process SetNX. When
 // degraded, delegates to the fallback (preserving its native SetNX via
-// [sharedcache.SetNX]); with no fallback it mirrors [DegradedCache.Set],
-// reporting success without persisting.
+// [sharedcache.SetNX]).
+//
+// With no fallback, SetNX fails closed: it returns (false, nil) rather
+// than fabricating a compute-once win. Set/Delete may no-op under
+// passthrough degradation, but SetNX is a mutual-exclusion primitive —
+// reporting ok=true without persisting would let every replica during a
+// Redis outage believe it won the slot and duplicate side effects
+// (email, webhook, billing event). Callers that need an error rather
+// than a lost claim should use [redis.FailFastPolicy].
 func (dc *DegradedCache) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
 	if err := dc.ready(); err != nil {
 		return false, err
@@ -234,13 +241,15 @@ func (dc *DegradedCache) SetNX(ctx context.Context, key string, value []byte, tt
 	if dc.conn.Healthy() {
 		return dc.primary.SetNX(ctx, key, value, ttl)
 	}
-	if err := dc.policy.OnUnavailable(ctx); err != nil {
+	if err := redis.ApplyDegradation(ctx, dc.conn, dc.policy); err != nil {
 		return false, err
 	}
 	if dc.fallback != nil {
 		return sharedcache.SetNX(ctx, dc.fallback, key, value, ttl)
 	}
-	return true, nil
+	// Fail closed: no exclusivity was recorded, so the caller must not
+	// treat this as a compute-once win.
+	return false, nil
 }
 
 func (dc *DegradedCache) ready() error {

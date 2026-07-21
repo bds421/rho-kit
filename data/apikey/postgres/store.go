@@ -50,9 +50,23 @@ func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
+// ErrInvalidStore is returned when methods are called on a nil or
+// zero-value Store that bypassed [New].
+var ErrInvalidStore = apperror.NewUnavailable("apikey/postgres: store is not initialized")
+
+func (s *Store) ready() error {
+	if s == nil || s.pool == nil {
+		return ErrInvalidStore
+	}
+	return nil
+}
+
 // Insert implements [apikey.Repository]. A duplicate id returns a conflict
 // error so callers can distinguish it from other failures.
 func (s *Store) Insert(ctx context.Context, key apikey.Key) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
 	scopes, err := json.Marshal(key.Scopes)
 	if err != nil {
 		return redact.WrapError("apikey/postgres: marshal scopes", err)
@@ -78,6 +92,9 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`
 // FindByID implements [apikey.Repository]. Returns an [apperror] NotFound
 // when no row matches.
 func (s *Store) FindByID(ctx context.Context, id string) (apikey.Key, error) {
+	if err := s.ready(); err != nil {
+		return apikey.Key{}, err
+	}
 	const q = `
 SELECT id, prefix, hash, kind, scopes, owner, expires_at, revoked_at, rotated_from, created_at
 FROM api_keys
@@ -99,31 +116,43 @@ WHERE id = $1`
 // sentinel, so the key reads back active — matching
 // [apikey.MemoryRepository], which leaves RevokedAt zero for a zero at.
 func (s *Store) Revoke(ctx context.Context, id string, at time.Time) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
+	// Single-statement classify: UPDATE + existence probe under one
+	// snapshot so a concurrent Insert cannot make Revoke report success
+	// for a key that was never revoked (check-then-act on two implicit
+	// transactions).
 	const q = `
-UPDATE api_keys
-SET revoked_at = $2
-WHERE id = $1 AND revoked_at IS NULL`
-	tag, err := s.pool.Exec(ctx, q, id, nullTime(at))
-	if err != nil {
+WITH upd AS (
+  UPDATE api_keys
+  SET revoked_at = $2
+  WHERE id = $1 AND revoked_at IS NULL
+  RETURNING 1
+)
+SELECT
+  EXISTS(SELECT 1 FROM upd) AS updated,
+  EXISTS(SELECT 1 FROM api_keys WHERE id = $1) AS present`
+	var updated, present bool
+	if err := s.pool.QueryRow(ctx, q, id, nullTime(at)).Scan(&updated, &present); err != nil {
 		return redact.WrapError("apikey/postgres: revoke", err)
 	}
-	if tag.RowsAffected() == 1 {
+	if updated || present {
+		// updated: newly revoked; present && !updated: already revoked (idempotent).
 		return nil
 	}
-	// No row updated: either the key is missing or already revoked. Probe
-	// existence so callers get a precise NotFound only when truly absent.
-	var exists bool
-	if err := s.pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM api_keys WHERE id = $1)", id).Scan(&exists); err != nil {
-		return redact.WrapError("apikey/postgres: revoke existence check", err)
-	}
-	if !exists {
-		return apperror.NewNotFound("api key", id)
-	}
-	return nil
+	return apperror.NewNotFound("api key", id)
 }
 
 // ListByOwner implements [apikey.Repository].
+//
+// Result size is unbounded: owners are expected to keep a small key inventory
+// (rotate-and-revoke rather than accumulate). Callers that need hard bounds
+// should filter client-side or extend with pagination.
 func (s *Store) ListByOwner(ctx context.Context, owner string) ([]apikey.Key, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
 	const q = `
 SELECT id, prefix, hash, kind, scopes, owner, expires_at, revoked_at, rotated_from, created_at
 FROM api_keys

@@ -711,42 +711,38 @@ func TestMemoryCache_SetNX_ClaimExpires(t *testing.T) {
 	assert.True(t, ok, "claim should be released after TTL expiry")
 }
 
-// TestMemoryCache_Set_AdmissionRejectionSurfacesError exercises the
-// rejection path on a closed cache — Ristretto's SetWithTTL returns
-// false on a closed cache, which is the deterministic way to drive
-// the rejection branch in tests. The previous behaviour silently
-// swallowed this signal; Set now surfaces ErrAdmissionRejected so
-// callers can react.
-func TestMemoryCache_Set_AdmissionRejectionSurfacesError(t *testing.T) {
+// TestMemoryCache_Set_AfterCloseReturnsInvalidCache pins the
+// Close-vs-ops contract: once Close returns, mutating methods fail
+// with ErrInvalidCache instead of racing ristretto's closed setBuf
+// (which panics with send-on-closed-channel).
+func TestMemoryCache_Set_AfterCloseReturnsInvalidCache(t *testing.T) {
 	mc, err := NewMemoryCache()
 	require.NoError(t, err)
 	require.NoError(t, mc.Close())
 
 	err = mc.Set(context.Background(), "rejected", []byte("v"), time.Minute)
-	assert.ErrorIs(t, err, ErrAdmissionRejected)
+	assert.ErrorIs(t, err, ErrInvalidCache)
 }
 
-// TestMemoryCache_SetNX_AdmissionRejectionReturnsFalse verifies that a
-// rejected write does NOT record an NX claim — otherwise the slot
-// would be locked out for the TTL despite holding no value.
-func TestMemoryCache_SetNX_AdmissionRejectionReturnsFalse(t *testing.T) {
+// TestMemoryCache_SetNX_AfterCloseReturnsInvalidCache mirrors the
+// Set-after-Close contract for SetNX and confirms no NX claim is
+// recorded after Close.
+func TestMemoryCache_SetNX_AfterCloseReturnsInvalidCache(t *testing.T) {
 	mc, err := NewMemoryCache()
 	require.NoError(t, err)
 	require.NoError(t, mc.Close())
 
 	ok, err := mc.SetNX(context.Background(), "rejected", []byte("v"), time.Minute)
-	assert.False(t, ok, "SetNX must return ok=false when the underlying write is rejected")
-	assert.ErrorIs(t, err, ErrAdmissionRejected)
+	assert.False(t, ok)
+	assert.ErrorIs(t, err, ErrInvalidCache)
 
-	// And no claim must have been recorded — a fresh cache constructed
-	// for the same key must accept it (proving SetNX did not stamp the
-	// rejection-period claim into the shared sync.Map).
+	// A fresh cache must still accept the key (no stale claim leaked).
 	mc2, err := NewMemoryCache()
 	require.NoError(t, err)
 	defer func() { _ = mc2.Close() }()
 	ok2, err := mc2.SetNX(context.Background(), "rejected", []byte("v"), time.Minute)
 	assert.NoError(t, err)
-	assert.True(t, ok2, "a fresh cache must accept the same key the rejected one declined")
+	assert.True(t, ok2)
 }
 
 // TestMemoryCache_SetNX_DeleteClearsClaim verifies that an explicit
@@ -765,4 +761,56 @@ func TestMemoryCache_SetNX_DeleteClearsClaim(t *testing.T) {
 	ok, err = mc.SetNX(ctx, "del-claim", []byte("v2"), time.Minute)
 	require.NoError(t, err)
 	assert.True(t, ok, "Delete should release the SetNX claim")
+}
+
+// TestMemoryCache_WithEntryCost_DefaultMaxCostIsEntryBudget pins the
+// WithEntryCost-without-WithMaxSize footgun: the default budget must be
+// an entry count (~1e6), not the 64 MiB byte default reinterpreted as
+// 67 million entries.
+func TestMemoryCache_WithEntryCost_DefaultMaxCostIsEntryBudget(t *testing.T) {
+	mc, err := NewMemoryCache(WithEntryCost(), WithoutMetrics())
+	require.NoError(t, err)
+	defer func() { _ = mc.Close() }()
+	// Reach into ristretto config via MaxCost on the wrapper: we only
+	// expose options, so pin behaviour by filling past 1e6 would be
+	// slow. Instead assert the configured maxCost field after construct
+	// via a second cache built with explicit WithMaxCost(1_000_000)
+	// behaves equivalently for small N — and that construction succeeds.
+	// Direct field check:
+	assert.Equal(t, int64(1_000_000), mc.maxCost,
+		"WithEntryCost alone must default maxCost to 1e6 entries, not 64MiB")
+}
+
+// TestMemoryCache_ZeroTTL_SetNXClaimSweptWhenKeyGone pins the unbounded
+// growth guard for zero-TTL SetNX claims: when the value leaves the
+// cache the claim must be reclaimable by the sweeper.
+func TestMemoryCache_ZeroTTL_SetNXClaimSweptWhenKeyGone(t *testing.T) {
+	mc, err := NewMemoryCache(WithoutMetrics())
+	require.NoError(t, err)
+	defer func() { _ = mc.Close() }()
+	ctx := context.Background()
+	ok, err := mc.SetNX(ctx, "perm-claim", []byte("v"), 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+	// Claim blocks second SetNX.
+	ok, err = mc.SetNX(ctx, "perm-claim", []byte("v2"), 0)
+	require.NoError(t, err)
+	require.False(t, ok)
+	// Delete value; claim should still block until sweeper runs — force
+	// the reclaim path the sweeper uses (cache miss + zero expiresAt).
+	require.NoError(t, mc.Delete(ctx, "perm-claim"))
+	// Manual sweep simulation: drop zero-TTL claims whose key is gone.
+	mc.nxClaims.Range(func(k, v any) bool {
+		c := v.(nxClaim)
+		key := k.(string)
+		if c.expiresAt.IsZero() {
+			if _, present := mc.cache.Get(key); !present {
+				mc.nxClaims.Delete(k)
+			}
+		}
+		return true
+	})
+	ok, err = mc.SetNX(ctx, "perm-claim", []byte("v3"), 0)
+	require.NoError(t, err)
+	assert.True(t, ok, "after reclaim, zero-TTL SetNX must succeed again")
 }

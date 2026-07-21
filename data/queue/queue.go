@@ -29,6 +29,12 @@ var ErrMessageTooLarge = errors.New("queue: message exceeds max payload size")
 // backend because they contain too many messages.
 var ErrBatchTooLarge = errors.New("queue: batch operation exceeds maximum message count")
 
+// ErrDuplicateMessage marks an enqueue that was rejected because a message
+// with the same ID is already present in the queue (FR-059 idempotency).
+// Callers that treat a duplicate as success can errors.Is against this
+// sentinel without importing a backend-specific package.
+var ErrDuplicateMessage = errors.New("queue: duplicate message id")
+
 const (
 	// MaxNameBytes caps queue names used as backend keys and metric labels.
 	MaxNameBytes = 256

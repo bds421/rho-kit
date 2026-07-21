@@ -48,6 +48,7 @@ func StartConsumers(
 		logger = slog.Default()
 	}
 
+	seen := make(map[string]int, len(bindings))
 	for i, b := range bindings {
 		if b.Stream == "" {
 			return &redis.BindingError{Index: i, Reason: "stream name must not be empty"}
@@ -63,6 +64,10 @@ func StartConsumers(
 		if b.Handler == nil {
 			return &redis.BindingError{Index: i, Reason: "handler must not be nil"}
 		}
+		if _, dup := seen[b.Stream]; dup {
+			return &redis.BindingError{Index: i, Reason: "duplicate stream name in bindings"}
+		}
+		seen[b.Stream] = i
 	}
 
 	for i, binding := range bindings {

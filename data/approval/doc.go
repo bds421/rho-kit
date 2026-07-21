@@ -15,20 +15,19 @@
 //  2. Middleware reads tenant + actor + body, creates a [Request] in
 //     state [StatePending], and returns 202 Accepted with the
 //     approval id.
-//  3. Out-of-band, an approver calls [Store.Decide] with approve=true
-//     or false. The kit doesn't define this endpoint — services choose
+//  3. Out-of-band, an approver calls [Store.Approve] or [Store.Reject]. The kit doesn't define this endpoint — services choose
 //     where it lives — but the [Store] interface is shared.
 //  4. The original handler executes (via the middleware's optional
 //     executor callback) and the request transitions to
 //     [StateExecuted].
 //
 // Pending requests automatically transition to [StateExpired] when
-// [Store.Decide] is called past [Request.ExpiresAt]; the middleware
+// [Store.Approve] / [Store.Reject] is called past [Request.ExpiresAt]; the middleware
 // applies a 24h default unless overridden.
 //
 // # Idempotency and irreversibility
 //
-// [Store.Decide] is idempotent for the same approve value:
+// [Store.Approve] / [Store.Reject] is idempotent for the same approve value:
 // approve+approve is OK, reject+reject is OK. The transition out of a
 // terminal state is rejected with [ErrInvalidTransition], so an
 // already-executed request can't be re-rejected by a late-arriving

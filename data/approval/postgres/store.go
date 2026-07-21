@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/bds421/rho-kit/core/v2/clock"
@@ -92,9 +94,21 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`
 		string(r.State), r.DecidedBy, nullableTime(r.DecidedAt), r.Reason,
 		r.CreatedAt, r.ExpiresAt,
 	); err != nil {
-		return approval.Request{}, redact.WrapError("approval/postgres: create", err)
+		return approval.Request{}, classifyCreateError(err)
 	}
 	return r, nil
+}
+
+const uniqueViolation = "23505"
+
+// classifyCreateError maps SQLSTATE 23505 to [approval.ErrDuplicateID] so
+// callers get the same typed conflict the memory backend surfaces.
+func classifyCreateError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
+		return redact.WrapSentinel(approval.ErrDuplicateID, err)
+	}
+	return redact.WrapError("approval/postgres: create", err)
 }
 
 // Get returns the request by id.
@@ -220,15 +234,42 @@ FROM approval_requests`
 // terminal state, auto-expires past-deadline pending requests.
 // Approve implements [approval.Store.Approve].
 func (s *Store) Approve(ctx context.Context, id, decidedBy, reason string) (approval.Request, error) {
-	return s.decide(ctx, id, decidedBy, reason, true)
+	return s.decide(ctx, id, "", decidedBy, reason, true)
 }
 
 // Reject implements [approval.Store.Reject].
 func (s *Store) Reject(ctx context.Context, id, decidedBy, reason string) (approval.Request, error) {
-	return s.decide(ctx, id, decidedBy, reason, false)
+	return s.decide(ctx, id, "", decidedBy, reason, false)
 }
 
-func (s *Store) decide(ctx context.Context, id, decidedBy, reason string, approve bool) (approval.Request, error) {
+// ApproveForTenant is the tenant-scoped Approve: the SELECT FOR UPDATE and
+// UPDATE both require tenant_id = tenantID, so a leaked id from another
+// tenant cannot authorise the decision. Prefer this (or [approval.TenantStore])
+// over bare Approve in multi-tenant services.
+func (s *Store) ApproveForTenant(ctx context.Context, tenantID, id, decidedBy, reason string) (approval.Request, error) {
+	if tenantID == "" {
+		return approval.Request{}, approval.ErrQueryTenantRequired
+	}
+	return s.decide(ctx, id, tenantID, decidedBy, reason, true)
+}
+
+// RejectForTenant is the tenant-scoped Reject; see [Store.ApproveForTenant].
+func (s *Store) RejectForTenant(ctx context.Context, tenantID, id, decidedBy, reason string) (approval.Request, error) {
+	if tenantID == "" {
+		return approval.Request{}, approval.ErrQueryTenantRequired
+	}
+	return s.decide(ctx, id, tenantID, decidedBy, reason, false)
+}
+
+// MarkExecutedForTenant is the tenant-scoped MarkExecuted; see [Store.ApproveForTenant].
+func (s *Store) MarkExecutedForTenant(ctx context.Context, tenantID, id string) (approval.Request, error) {
+	if tenantID == "" {
+		return approval.Request{}, approval.ErrQueryTenantRequired
+	}
+	return s.markExecuted(ctx, id, tenantID)
+}
+
+func (s *Store) decide(ctx context.Context, id, tenantID, decidedBy, reason string, approve bool) (approval.Request, error) {
 	if err := s.ready(); err != nil {
 		return approval.Request{}, err
 	}
@@ -255,13 +296,19 @@ func (s *Store) decide(ctx context.Context, id, decidedBy, reason string, approv
 	// Commit or the preceding statement.
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	const selectForUpdate = `
+	selectForUpdate := `
 SELECT id, tenant_id, actor, action, resource, payload, state, decided_by,
        decided_at, reason, created_at, expires_at
 FROM approval_requests
-WHERE id = $1
+WHERE id = $1`
+	args := []any{id}
+	if tenantID != "" {
+		selectForUpdate += ` AND tenant_id = $2`
+		args = append(args, tenantID)
+	}
+	selectForUpdate += `
 FOR UPDATE`
-	row := tx.QueryRow(ctx, selectForUpdate, id)
+	row := tx.QueryRow(ctx, selectForUpdate, args...)
 	r, err := scanRequest(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -279,8 +326,13 @@ FOR UPDATE`
 	// ErrInvalidTransition to the caller. We commit the state change and
 	// stash the error so the next Decide cannot re-flip the row.
 	if r.State == approval.StatePending && !r.ExpiresAt.IsZero() && !now.Before(r.ExpiresAt) {
-		const expireSQL = `UPDATE approval_requests SET state = $1, decided_at = $2 WHERE id = $3`
-		if _, err := tx.Exec(ctx, expireSQL, string(approval.StateExpired), now, r.ID); err != nil {
+		expireSQL := `UPDATE approval_requests SET state = $1, decided_at = $2 WHERE id = $3`
+		expireArgs := []any{string(approval.StateExpired), now, r.ID}
+		if tenantID != "" {
+			expireSQL += ` AND tenant_id = $4`
+			expireArgs = append(expireArgs, tenantID)
+		}
+		if _, err := tx.Exec(ctx, expireSQL, expireArgs...); err != nil {
 			return approval.Request{}, redact.WrapError("approval/postgres: expire", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -304,8 +356,13 @@ FOR UPDATE`
 		return approval.Request{}, fmt.Errorf("%w: cannot flip decision once recorded", approval.ErrInvalidTransition)
 	}
 
-	const decideSQL = `UPDATE approval_requests SET state = $1, decided_by = $2, reason = $3, decided_at = $4 WHERE id = $5`
-	if _, err := tx.Exec(ctx, decideSQL, string(target), decidedBy, reason, now, r.ID); err != nil {
+	decideSQL := `UPDATE approval_requests SET state = $1, decided_by = $2, reason = $3, decided_at = $4 WHERE id = $5`
+	decideArgs := []any{string(target), decidedBy, reason, now, r.ID}
+	if tenantID != "" {
+		decideSQL += ` AND tenant_id = $6`
+		decideArgs = append(decideArgs, tenantID)
+	}
+	if _, err := tx.Exec(ctx, decideSQL, decideArgs...); err != nil {
 		return approval.Request{}, redact.WrapError("approval/postgres: decide update", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -320,6 +377,10 @@ FOR UPDATE`
 
 // MarkExecuted moves an approved request to executed.
 func (s *Store) MarkExecuted(ctx context.Context, id string) (approval.Request, error) {
+	return s.markExecuted(ctx, id, "")
+}
+
+func (s *Store) markExecuted(ctx context.Context, id, tenantID string) (approval.Request, error) {
 	if err := s.ready(); err != nil {
 		return approval.Request{}, err
 	}
@@ -335,13 +396,19 @@ func (s *Store) MarkExecuted(ctx context.Context, id string) (approval.Request, 
 	// Commit or the preceding statement.
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	const selectForUpdate = `
+	selectForUpdate := `
 SELECT id, tenant_id, actor, action, resource, payload, state, decided_by,
        decided_at, reason, created_at, expires_at
 FROM approval_requests
-WHERE id = $1
+WHERE id = $1`
+	args := []any{id}
+	if tenantID != "" {
+		selectForUpdate += ` AND tenant_id = $2`
+		args = append(args, tenantID)
+	}
+	selectForUpdate += `
 FOR UPDATE`
-	row := tx.QueryRow(ctx, selectForUpdate, id)
+	row := tx.QueryRow(ctx, selectForUpdate, args...)
 	r, err := scanRequest(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -360,8 +427,13 @@ FOR UPDATE`
 		return approval.Request{}, fmt.Errorf("%w: request is not approved", approval.ErrInvalidTransition)
 	}
 
-	const updateSQL = `UPDATE approval_requests SET state = $1 WHERE id = $2`
-	if _, err := tx.Exec(ctx, updateSQL, string(approval.StateExecuted), r.ID); err != nil {
+	updateSQL := `UPDATE approval_requests SET state = $1 WHERE id = $2`
+	updateArgs := []any{string(approval.StateExecuted), r.ID}
+	if tenantID != "" {
+		updateSQL += ` AND tenant_id = $3`
+		updateArgs = append(updateArgs, tenantID)
+	}
+	if _, err := tx.Exec(ctx, updateSQL, updateArgs...); err != nil {
 		return approval.Request{}, redact.WrapError("approval/postgres: mark executed update", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -441,15 +513,5 @@ func (s *Store) ready() error {
 }
 
 func joinAnd(parts []string) string {
-	switch len(parts) {
-	case 0:
-		return ""
-	case 1:
-		return parts[0]
-	}
-	out := parts[0]
-	for _, p := range parts[1:] {
-		out += " AND " + p
-	}
-	return out
+	return strings.Join(parts, " AND ")
 }

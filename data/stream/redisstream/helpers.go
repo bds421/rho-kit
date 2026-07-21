@@ -1,11 +1,10 @@
 package redisstream
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,19 +15,44 @@ import (
 
 // maxStreamHeadersBytes caps the raw bytes the headers JSON field is
 // allowed to occupy on the wire before parseMessage will reject a
-// delivery. 32 KiB comfortably accommodates the per-entry header caps
-// across MaxHeaderCount entries plus JSON structural overhead, while
-// stopping a hostile peer from sending a 500MB headers field that
-// OOMs the consumer at json.Unmarshal time.
-const maxStreamHeadersBytes = 32 * 1024
+// delivery. Aligned with the producer-side MaxTotalHeaderBytes cap
+// (256 KiB of name+value) plus JSON structural overhead for up to
+// MaxHeaderCount entries, so a producer-accepted header set is not
+// silently dead-lettered at consume time. Still bounds hostile peers
+// that write multi-MB headers fields before json.Unmarshal.
+const maxStreamHeadersBytes = MaxTotalHeaderBytes + 64*1024 // ~320 KiB
 
 // deadLetter moves a failed message to the dead-letter stream, then ACKs it.
 // Uses a pipeline for single round-trip, minimizing the crash window between
 // XADD and XACK that could cause DLQ duplicates.
 func (c *Consumer) deadLetter(ctx context.Context, stream, dlStream string, raw goredis.XMessage, reason string) {
-	values := make(map[string]any, len(raw.Values)+3)
+	// Cap payload/header fields so oversize/hostile entries rejected by
+	// ValidateMessage cannot amplify into the DLQ (entry-count MAXLEN is
+	// not a byte bound). Keep metadata + truncated forensic sample.
+	values := make(map[string]any, len(raw.Values)+4)
+	maxField := c.maxPayloadSize
+	if maxField <= 0 {
+		maxField = defaultStreamMaxPayloadSize
+	}
 	for k, v := range raw.Values {
-		values[k] = v
+		switch vv := v.(type) {
+		case string:
+			if len(vv) > maxField {
+				values[k] = vv[:maxField]
+				values["dl_truncated_"+k] = "true"
+			} else {
+				values[k] = vv
+			}
+		case []byte:
+			if len(vv) > maxField {
+				values[k] = string(vv[:maxField])
+				values["dl_truncated_"+k] = "true"
+			} else {
+				values[k] = string(vv)
+			}
+		default:
+			values[k] = v
+		}
 	}
 	values["dl_reason"] = reason
 	values["dl_source_stream"] = stream
@@ -44,47 +68,34 @@ func (c *Consumer) deadLetter(ctx context.Context, stream, dlStream string, raw 
 		xaddArgs.Approx = true
 	}
 
-	// Pipeline XADD+XACK for single round-trip, reducing the crash window
-	// that would leave the message in both DLQ and source PEL.
-	pipe := c.client.Pipeline()
-	pipe.XAdd(ctx, xaddArgs)
-	pipe.XAck(ctx, stream, c.group, raw.ID)
-	cmds, err := pipe.Exec(ctx)
-	if err != nil {
-		// Check which command failed for accurate logging.
-		if len(cmds) == 0 {
-			c.logger.Error("failed to execute dead-letter pipeline",
-				redact.String("stream", stream),
-				redact.String("dl_stream", dlStream),
-				redact.String("redis_id", raw.ID),
-				redact.Error(err),
-			)
-			return
-		}
-		if cmds[0].Err() != nil {
-			c.logger.Error("failed to dead-letter message",
-				redact.String("stream", stream),
-				redact.String("dl_stream", dlStream),
-				redact.String("redis_id", raw.ID),
-				redact.Error(cmds[0].Err()),
-			)
-			return // Don't count as dead-lettered if XADD failed.
-		}
-		if len(cmds) > 1 && cmds[1].Err() != nil {
-			c.logger.Error("failed to ACK dead-lettered message",
-				redact.String("stream", stream),
-				redact.String("redis_id", raw.ID),
-				redact.Error(cmds[1].Err()),
-			)
-			// XADD succeeded but XACK failed: the message stays in the source
-			// PEL and will be dead-lettered again on a later delivery, writing
-			// a second DLQ entry. Skip the increment here so the counter tracks
-			// unique dead-lettered messages rather than double-counting this one.
-			return
-		}
+	// XADD then XACK sequentially — not pipelined. Redis pipelines are
+	// not transactions: if XADD fails (OOM/WRONGTYPE) while a pipelined
+	// XACK succeeds, the message is removed from the PEL with no DLQ
+	// copy and is silently lost. Accept the extra RTT to keep
+	// at-least-once semantics under degraded Redis conditions.
+	if err := c.client.XAdd(ctx, xaddArgs).Err(); err != nil {
+		c.logger.Error("failed to dead-letter message",
+			redact.String("stream", stream),
+			redact.String("dl_stream", dlStream),
+			redact.String("redis_id", raw.ID),
+			redact.Error(err),
+		)
+		return // Message stays in source PEL for a later dead-letter attempt.
+	}
+	if err := c.client.XAck(ctx, stream, c.group, raw.ID).Err(); err != nil {
+		c.logger.Error("failed to ACK dead-lettered message",
+			redact.String("stream", stream),
+			redact.String("redis_id", raw.ID),
+			redact.Error(err),
+		)
+		// XADD succeeded but XACK failed: the message stays in the source
+		// PEL and will be dead-lettered again on a later delivery, writing
+		// a second DLQ entry. Skip the increment here so the counter tracks
+		// unique dead-lettered messages rather than double-counting this one.
+		return
 	}
 
-	c.metrics.messagesDeadLettered.WithLabelValues(streamMetricLabel(stream), groupMetricLabel(c.group)).Inc()
+	c.metrics.messagesDeadLettered.WithLabelValues(c.metricLabel(stream), c.metricGroupLabel()).Inc()
 }
 
 // claimLoop periodically scans for pending messages that have been idle too
@@ -92,6 +103,9 @@ func (c *Consumer) deadLetter(ctx context.Context, stream, dlStream string, raw 
 func (c *Consumer) claimLoop(ctx context.Context, stream, dlStream string, handler Handler) {
 	ticker := time.NewTicker(c.claimInterval)
 	defer ticker.Stop()
+	// Also sweep empty, long-idle consumer names left by prior process
+	// exits that skipped XGROUP DELCONSUMER (pending PEL at shutdown).
+	cleanupEvery := 0
 
 	for {
 		select {
@@ -99,6 +113,59 @@ func (c *Consumer) claimLoop(ctx context.Context, stream, dlStream string, handl
 			return
 		case <-ticker.C:
 			c.claimStaleMessages(ctx, stream, dlStream, handler)
+			cleanupEvery++
+			if cleanupEvery%5 == 0 {
+				c.purgeStaleConsumers(ctx, stream)
+			}
+		}
+	}
+}
+
+// staleConsumerIdle is how long a group consumer must sit with an empty
+// PEL before we XGROUP DELCONSUMER it. Generous so an idle-but-live
+// replica is never deleted mid-deploy.
+const staleConsumerIdle = 10 * time.Minute
+
+// purgeStaleConsumers deletes group consumer entries that have no pending
+// messages and have been idle longer than [staleConsumerIdle]. Complements
+// removeConsumer: crash/SIGKILL paths never clean themselves, and graceful
+// shutdown skips DELCONSUMER while PEL is non-empty — after XAUTOCLAIM
+// drains those entries the empty name would otherwise remain forever.
+func (c *Consumer) purgeStaleConsumers(ctx context.Context, stream string) {
+	if ctx.Err() != nil {
+		return
+	}
+	infos, err := c.client.XInfoConsumers(ctx, stream, c.group).Result()
+	if err != nil {
+		if ctx.Err() == nil {
+			c.logger.Debug("xinfo consumers for stale cleanup failed",
+				redact.String("stream", stream),
+				redact.Error(err),
+			)
+		}
+		return
+	}
+	for _, info := range infos {
+		if ctx.Err() != nil {
+			return
+		}
+		if info.Name == c.consumer {
+			continue // never delete ourselves
+		}
+		if info.Pending > 0 {
+			continue
+		}
+		// go-redis already converts Redis idle-ms into time.Duration.
+		if info.Idle < staleConsumerIdle {
+			continue
+		}
+		if err := c.client.XGroupDelConsumer(ctx, stream, c.group, info.Name).Err(); err != nil && ctx.Err() == nil {
+			c.logger.Debug("failed to purge stale consumer",
+				redact.String("stream", stream),
+				redact.String("group", c.group),
+				redact.String("consumer", info.Name),
+				redact.Error(err),
+			)
 		}
 	}
 }
@@ -107,8 +174,16 @@ func (c *Consumer) claimLoop(ctx context.Context, stream, dlStream string, handl
 // longer than claimMinIdle. This recovers from crashed consumers.
 func (c *Consumer) claimStaleMessages(ctx context.Context, stream, dlStream string, handler Handler) {
 	// Update pending messages gauge for observability.
+	streamLabel := c.metricLabel(stream)
+	groupLabel := c.metricGroupLabel()
 	if pending, err := c.client.XPending(ctx, stream, c.group).Result(); err == nil {
-		c.metrics.pendingMessages.WithLabelValues(streamMetricLabel(stream), groupMetricLabel(c.group)).Set(float64(pending.Count))
+		c.metrics.pendingMessages.WithLabelValues(streamLabel, groupLabel).Set(float64(pending.Count))
+	} else if ctx.Err() == nil {
+		// Surface a stale-gauge signal so operators know the metric may be frozen.
+		c.logger.Debug("xpending gauge refresh failed",
+			redact.String("stream", stream),
+			redact.Error(err),
+		)
 	}
 
 	// NOTE: Redis 7+ XAUTOCLAIM returns a third element with IDs of PEL entries
@@ -173,14 +248,15 @@ func (c *Consumer) batchDeliveryCounts(ctx context.Context, stream string, msgs 
 		return counts
 	}
 
-	// Sort IDs to ensure correct XPENDING range bounds — XAUTOCLAIM may
-	// return messages out of order during backfill. If startID > endID,
-	// Redis returns an empty result and all messages fall back to RetryCount=1.
+	// Sort IDs with a Redis stream-ID aware comparator so XPENDING range
+	// bounds are numeric (ms, seq), not lexicographic. String sort mis-orders
+	// same-millisecond seqs of differing digit widths (e.g. ...-2 vs ...-10),
+	// producing start>end and forcing the N+1 per-message fallback.
 	ids := make([]string, len(msgs))
 	for i, m := range msgs {
 		ids[i] = m.ID
 	}
-	slices.SortFunc(ids, cmp.Compare)
+	sortStreamIDs(ids)
 	startID := ids[0]
 	endID := ids[len(ids)-1]
 
@@ -199,12 +275,16 @@ func (c *Consumer) batchDeliveryCounts(ctx context.Context, stream string, msgs 
 	}).Result()
 
 	if err != nil {
-		c.logger.Warn("batch delivery count fetch failed, assuming 1 for all",
+		// Fail closed toward retry, not toward inflating the retry budget:
+		// assuming deliveryCount=1 on XPENDING failure prevents poison
+		// messages from ever reaching maxRetries. Leave 0 (unknown) so
+		// handleRetryOrDeadLetter will not dead-letter based on a guess.
+		c.logger.Warn("batch delivery count fetch failed; treating counts as unknown (will retry, not DLQ)",
 			redact.String("stream", stream),
 			redact.Error(err),
 		)
 		for _, m := range msgs {
-			counts[m.ID] = 1
+			counts[m.ID] = 0
 		}
 		return counts
 	}
@@ -237,15 +317,16 @@ func (c *Consumer) getDeliveryCount(ctx context.Context, stream, messageID strin
 	}).Result()
 
 	if err != nil {
-		c.logger.Warn("failed to get delivery count, assuming 1",
+		c.logger.Warn("failed to get delivery count; treating as unknown (will retry, not DLQ)",
 			redact.String("stream", stream),
 			redact.String("redis_id", messageID),
 			redact.Error(err),
 		)
-		return 1
+		return 0
 	}
 	if len(pending) == 0 {
-		return 1 // no pending entry found — assume first delivery
+		// No pending entry: treat as first delivery (count 1), not unknown.
+		return 1
 	}
 
 	return pending[0].RetryCount
@@ -314,3 +395,62 @@ func parseMessage(raw goredis.XMessage) (Message, error) {
 func isGroupExistsError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "BUSYGROUP")
 }
+
+// sortStreamIDs sorts Redis stream IDs in ascending (ms, seq) order in place.
+func sortStreamIDs(ids []string) {
+	// insertion sort is fine for claim batch sizes (default 10).
+	for i := 1; i < len(ids); i++ {
+		j := i
+		for j > 0 && compareStreamID(ids[j-1], ids[j]) > 0 {
+			ids[j-1], ids[j] = ids[j], ids[j-1]
+			j--
+		}
+	}
+}
+
+// compareStreamID compares Redis stream IDs ("<ms>-<seq>") numerically.
+// Malformed IDs sort after well-formed ones via string fallback.
+func compareStreamID(a, b string) int {
+	ams, aseq, aok := parseStreamID(a)
+	bms, bseq, bok := parseStreamID(b)
+	if aok && bok {
+		if ams < bms {
+			return -1
+		}
+		if ams > bms {
+			return 1
+		}
+		if aseq < bseq {
+			return -1
+		}
+		if aseq > bseq {
+			return 1
+		}
+		return 0
+	}
+	if a < b {
+		return -1
+	}
+	if a > b {
+		return 1
+	}
+	return 0
+}
+
+func parseStreamID(id string) (ms, seq uint64, ok bool) {
+	dash := strings.IndexByte(id, '-')
+	if dash <= 0 || dash == len(id)-1 {
+		return 0, 0, false
+	}
+	var err error
+	ms, err = strconv.ParseUint(id[:dash], 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	seq, err = strconv.ParseUint(id[dash+1:], 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return ms, seq, true
+}
+

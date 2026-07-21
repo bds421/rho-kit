@@ -27,6 +27,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/bds421/rho-kit/core/v2/apperror"
 	"github.com/bds421/rho-kit/core/v2/redact"
 	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 )
@@ -256,9 +257,16 @@ func (w *EnvelopeWorker) Work(ctx context.Context, job *river.Job[envelopeArgs])
 		Payload: clonePayload(job.Args.Payload),
 	}
 	if err := kitqueue.ValidateMessage(msg, w.maxPayloadBytes); err != nil {
-		return redact.WrapError("riverqueue: invalid envelope", err)
+		// Deterministic validation failures must not burn retries —
+		// cancel the job the way redisqueue maps permanent errors to
+		// asynq.SkipRetry.
+		return river.JobCancel(redact.WrapError("riverqueue: invalid envelope", err))
 	}
-	return w.handler(ctx, msg)
+	err := w.handler(ctx, msg)
+	if err != nil && apperror.IsPermanent(err) {
+		return river.JobCancel(err)
+	}
+	return err
 }
 
 func clonePayload(payload []byte) []byte {

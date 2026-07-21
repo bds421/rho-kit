@@ -1,6 +1,7 @@
 package idempotency
 
 import (
+	"fmt"
 	"context"
 	"errors"
 	"io"
@@ -187,7 +188,7 @@ func TestMemoryStore_RunRejectsSecondStart(t *testing.T) {
 	}
 }
 
-func TestMemoryStore_RunRejectsRestartAfterCancel(t *testing.T) {
+func TestMemoryStore_RunAllowsRestartAfterCancel(t *testing.T) {
 	store := NewMemoryStore()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -200,9 +201,14 @@ func TestMemoryStore_RunRejectsRestartAfterCancel(t *testing.T) {
 		t.Fatalf("Run returned %v", err)
 	}
 
-	err := store.Run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "already started") {
-		t.Fatalf("expected already started error, got %v", err)
+	// After a clean cancel the sweeper must be restartable (lifecycle restarts).
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	done2 := make(chan error, 1)
+	go func() { done2 <- store.Run(ctx2) }()
+	waitForMemoryStoreRunStarted(t, store)
+	cancel2()
+	if err := <-done2; err != nil {
+		t.Fatalf("second Run returned %v", err)
 	}
 }
 
@@ -362,5 +368,27 @@ func TestMemoryStore_SubSecondTTL_NotImmediatelyExpired(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("entry expired immediately for 500ms TTL")
+	}
+}
+
+func TestValidateCachedResponse_TotalHeaderBytesCap(t *testing.T) {
+	// Many small headers that individually pass but sum past MaxCachedHeadersBytes.
+	headers := make(map[string][]string, MaxCachedHeaders)
+	// Use MaxCachedHeaders entries with large values under per-value cap.
+	per := MaxCachedHeaderValueBytes
+	// total ~ MaxCachedHeaders * per can exceed MaxCachedHeadersBytes
+	n := MaxCachedHeadersBytes/per + 2
+	if n > MaxCachedHeaders {
+		n = MaxCachedHeaders
+	}
+	for i := 0; i < n; i++ {
+		headers[fmt.Sprintf("H%d", i)] = []string{strings.Repeat("v", per)}
+	}
+	err := ValidateCachedResponse(CachedResponse{StatusCode: 200, Headers: headers})
+	if !errors.Is(err, ErrInvalidCachedResponse) {
+		t.Fatalf("got %v, want ErrInvalidCachedResponse", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "total header size") {
+		t.Fatalf("error %v should mention total header size", err)
 	}
 }

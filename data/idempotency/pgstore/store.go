@@ -33,7 +33,8 @@ var _ idempotency.Store = (*Store)(nil)
 type Option func(*Store)
 
 // WithTableName sets the table name for idempotency entries.
-// Default: "idempotency_keys". Panics if the name contains unsafe characters.
+// Default: "idempotency_keys". The name is validated when [New] runs
+// (unsafe characters panic there), not when the option closure is built.
 func WithTableName(name string) Option {
 	return func(s *Store) { s.table = name }
 }
@@ -101,13 +102,16 @@ func New(db *sql.DB, opts ...Option) *Store {
 //	  a name up to MaxCachedHeaderNameBytes, and
 //	  up to MaxCachedHeaderValues values, each up to MaxCachedHeaderValueBytes,
 //
-// plus JSON structural overhead (quotes, colons, commas, brackets). We add a
-// generous fixed overhead per value/name to cover quoting and separators and
-// round up; the result is comfortably above any legitimate row while still a
-// hard stop short of the multi-MB blobs the gate exists to reject.
+// plus JSON structural overhead (quotes, colons, commas, brackets).
+//
+// ValidateCachedResponse permits '"' and '\' in header values; each such
+// byte doubles under JSON string escaping, and octet_length(headers::text)
+// measures the escaped form. We therefore budget 2× MaxCachedHeaderValueBytes
+// per value (plus fixed overhead for quoting/separators) so a legitimately
+// stored maximal map rich in quotes/backslashes never trips the gate.
 const maxCachedHeadersBytes = int64(idempotency.MaxCachedHeaders) *
 	(int64(idempotency.MaxCachedHeaderNameBytes) + 8 +
-		int64(idempotency.MaxCachedHeaderValues)*(int64(idempotency.MaxCachedHeaderValueBytes)+8))
+		int64(idempotency.MaxCachedHeaderValues)*(2*int64(idempotency.MaxCachedHeaderValueBytes)+8))
 
 // headersWithinBound reports whether a headers JSON column of n bytes is small
 // enough to materialise. Extracted as a pure helper so the size-gate threshold
@@ -143,33 +147,35 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 	if err := idempotency.ValidateKey(key); err != nil {
 		return nil, false, err
 	}
-	// Size-gate the response body AND headers BEFORE pulling their bytes
-	// into Go memory. Wave 66 closed a hostile-review finding that a
-	// hostile or legacy row with a multi-MB response_body would be fully
-	// scanned before ValidateCachedResponse caught the oversize; the same
-	// allocation-before-cap pattern applies to the headers JSON column,
-	// which the full SELECT json.Unmarshals. octet_length(...) lets
-	// Postgres serialise the sizes without sending the bytes. COALESCE
-	// handles legitimate cached responses with no body (e.g. 204 No
-	// Content, 200 with empty payload) where response_body is NULL, and
-	// rows with NULL headers — octet_length(NULL) returns NULL and would
-	// otherwise fail the int64 scan.
-	// headers is JSONB: octet_length has no jsonb overload (it errors
-	// "function octet_length(jsonb) does not exist"), so cast to text to
-	// measure the serialized size. response_body is BYTEA where
-	// octet_length applies directly.
-	sizeQuery := fmt.Sprintf(
-		`SELECT COALESCE(octet_length(response_body), 0),
-		        COALESCE(octet_length(headers::text), 0) FROM %s
+	// Size-gate body and headers in the same SELECT that fetches the row
+	// so a hostile swap between probe and read cannot force a multi-MB
+	// allocation (TOCTOU on the old two-query path). CASE WHEN projects
+	// NULL for oversize columns; lengths are returned alongside so the
+	// caller can distinguish oversize from a legitimate empty body.
+	// headers is JSONB: octet_length needs a text cast.
+	query := fmt.Sprintf(
+		`SELECT status_code,
+		        CASE WHEN COALESCE(octet_length(response_body), 0) <= $2 THEN response_body END,
+		        CASE WHEN COALESCE(octet_length(headers::text), 0) <= $3 THEN headers END,
+		        fingerprint,
+		        COALESCE(octet_length(response_body), 0),
+		        COALESCE(octet_length(headers::text), 0)
+		 FROM %s
 		 WHERE key = $1 AND status_code IS NOT NULL AND expires_at > now()`,
 		s.table,
 	)
+
+	var statusCode int
+	var headersJSON, body, storedFP []byte
 	var bodyLen, headersLen int64
-	if err := s.db.QueryRowContext(ctx, sizeQuery, key).Scan(&bodyLen, &headersLen); err != nil {
+
+	err := s.db.QueryRowContext(ctx, query, key, idempotency.MaxCachedBodyBytes, maxCachedHeadersBytes).
+		Scan(&statusCode, &body, &headersJSON, &storedFP, &bodyLen, &headersLen)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, false, nil
 		}
-		return nil, false, redact.WrapError("pgstore: size probe", err)
+		return nil, false, redact.WrapError("pgstore: get", err)
 	}
 	if bodyLen > int64(idempotency.MaxCachedBodyBytes) {
 		return nil, false, fmt.Errorf("pgstore: stored response body exceeds %d bytes", idempotency.MaxCachedBodyBytes)
@@ -178,26 +184,11 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 		return nil, false, fmt.Errorf("pgstore: stored response headers exceed %d bytes", maxCachedHeadersBytes)
 	}
 
-	query := fmt.Sprintf(
-		`SELECT status_code, headers, response_body, fingerprint FROM %s
-		 WHERE key = $1 AND status_code IS NOT NULL AND expires_at > now()`,
-		s.table,
-	)
-
-	var statusCode int
-	var headersJSON, body, storedFP []byte
-
-	err := s.db.QueryRowContext(ctx, query, key).Scan(&statusCode, &headersJSON, &body, &storedFP)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			// Row vanished between size probe and full SELECT (TTL
-			// expired). Treat as miss.
-			return nil, false, nil
-		}
-		return nil, false, redact.WrapError("pgstore: get", err)
-	}
-
-	if fingerprint != nil && storedFP != nil && !bytes.Equal(storedFP, fingerprint) {
+	// Fail closed when the caller supplies a fingerprint but the stored
+	// row has NULL (legacy pre-fingerprint rows, or a writer that omitted
+	// it): replaying without a body match would disable the mismatch
+	// guard the fingerprint feature exists to provide.
+	if fingerprint != nil && (storedFP == nil || !bytes.Equal(storedFP, fingerprint)) {
 		return nil, true, nil
 	}
 
@@ -313,50 +304,42 @@ func (s *Store) doTryLock(ctx context.Context, key string, fingerprint []byte, t
 		return "", false, false, err
 	}
 
+	// Atomic acquire + fingerprint observe via RETURNING. On conflict we
+	// only overwrite when the row is expired; otherwise columns keep prior
+	// values and RETURNING still yields the live owner_token/fingerprint so
+	// there is no second-statement TOCTOU window.
 	query := fmt.Sprintf(
 		`INSERT INTO %s (key, owner_token, fingerprint, expires_at)
 		 VALUES ($1, $2, $3, now() + $4::interval)
 		 ON CONFLICT (key) DO UPDATE SET
-		   owner_token   = $2,
-		   fingerprint   = $3,
-		   expires_at    = now() + $4::interval,
-		   status_code   = NULL,
-		   headers       = NULL,
-		   response_body = NULL
-		 WHERE %s.expires_at <= now()`,
+		   owner_token   = CASE WHEN %s.expires_at <= now() THEN EXCLUDED.owner_token   ELSE %s.owner_token   END,
+		   fingerprint   = CASE WHEN %s.expires_at <= now() THEN EXCLUDED.fingerprint   ELSE %s.fingerprint   END,
+		   expires_at    = CASE WHEN %s.expires_at <= now() THEN EXCLUDED.expires_at    ELSE %s.expires_at    END,
+		   status_code   = CASE WHEN %s.expires_at <= now() THEN NULL                   ELSE %s.status_code   END,
+		   headers       = CASE WHEN %s.expires_at <= now() THEN NULL                   ELSE %s.headers       END,
+		   response_body = CASE WHEN %s.expires_at <= now() THEN NULL                   ELSE %s.response_body END
+		 RETURNING owner_token, fingerprint`,
+		s.table,
+		s.table, s.table,
+		s.table, s.table,
+		s.table, s.table,
+		s.table, s.table,
+		s.table, s.table,
 		s.table, s.table,
 	)
 
-	result, err := s.db.ExecContext(ctx, query, key, token, fingerprint, intervalSeconds(ttl))
+	var returnedToken string
+	var storedFP []byte
+	err = s.db.QueryRowContext(ctx, query, key, token, fingerprint, intervalSeconds(ttl)).Scan(&returnedToken, &storedFP)
 	if err != nil {
 		return "", false, false, redact.WrapError("pgstore: lock", err)
 	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return "", false, false, redact.WrapError("pgstore: lock rows affected", err)
-	}
-	if rows == 1 {
+	if returnedToken == token {
 		return token, false, true, nil
 	}
-
-	// Acquisition failed because the row exists and is not expired. Inspect
-	// the existing fingerprint to distinguish "concurrent retry, same body"
-	// from "different body, 422".
-	var storedFP []byte
-	err = s.db.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT fingerprint FROM %s WHERE key = $1 AND expires_at > now()`, s.table),
-		key,
-	).Scan(&storedFP)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			// Race: row TTL expired between our INSERT and our SELECT. The
-			// next TryLock will succeed.
-			return "", false, false, nil
-		}
-		return "", false, false, redact.WrapError("pgstore: inspect", err)
-	}
-	if fingerprint != nil && storedFP != nil && !bytes.Equal(storedFP, fingerprint) {
+	// Live lock owned by someone else — fingerprint compare is atomic with
+	// the observe above (same RETURNING row).
+	if fingerprint != nil && (storedFP == nil || !bytes.Equal(storedFP, fingerprint)) {
 		return "", true, false, nil
 	}
 	return "", false, false, nil

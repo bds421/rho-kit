@@ -58,11 +58,11 @@ const (
 
 // Sentinel errors for the [Store] contract.
 var (
-	// ErrNotFound is returned by [Store.Get] / [Store.Decide] /
+	// ErrNotFound is returned by [Store.Get] / [Store.Approve] / [Store.Reject] /
 	// [Store.MarkExecuted] when the id is unknown.
 	ErrNotFound = errors.New("approval: request not found")
 
-	// ErrInvalidTransition is returned by [Store.Decide] when the
+	// ErrInvalidTransition is returned by [Store.Approve] / [Store.Reject] when the
 	// caller tries to move out of a terminal state ([StateExecuted] or
 	// [StateExpired]), or by [Store.MarkExecuted] when the request is
 	// not currently approved.
@@ -72,19 +72,25 @@ var (
 	// fields are missing or invalid (e.g. zero/past ExpiresAt).
 	ErrInvalidRequest = errors.New("approval: request is missing required fields")
 
-	// ErrInvalidApprover is returned by [Store.Decide] when decidedBy
+	// ErrInvalidApprover is returned by [Store.Approve] / [Store.Reject] when decidedBy
 	// is empty or otherwise invalid. A blank approver makes the audit
 	// record useless and hides the responsible operator behind state
 	// transitions on destructive operations.
 	ErrInvalidApprover = errors.New("approval: decidedBy is invalid")
 
-	// ErrInvalidReason is returned by [Store.Decide] when the optional
+	// ErrInvalidReason is returned by [Store.Approve] / [Store.Reject] when the optional
 	// reason is malformed or exceeds [MaxReasonLen].
 	ErrInvalidReason = errors.New("approval: reason is invalid")
 
 	// ErrInvalidStore is returned when a Store method is invoked on a nil
 	// or otherwise uninitialized store implementation.
 	ErrInvalidStore = errors.New("approval: store is not initialized")
+
+	// ErrDuplicateID is returned by [Store.Create] when a request with the
+	// same id already exists. Callers that retry Create after a lost
+	// response can errors.Is this to distinguish "already recorded" from
+	// a transient backend failure.
+	ErrDuplicateID = errors.New("approval: duplicate request id")
 )
 
 // Request represents a destructive operation pending human approval.
@@ -183,7 +189,7 @@ type Query struct {
 
 	// Cursor is an opaque page marker returned by a previous call to
 	// [Store.List]. Empty cursor reads from the head; opaque format
-	// is implementation-defined and verified by [DecodeCursor]. A
+	// is implementation-defined and verified by [CursorSigner.Decode]. A
 	// malformed cursor surfaces [ErrInvalidCursor].
 	Cursor string
 }

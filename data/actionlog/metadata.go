@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"math"
 	"reflect"
-	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -145,5 +144,13 @@ func validMetadataKey(key string) bool {
 }
 
 func validMetadataString(value string) bool {
-	return utf8.ValidString(value) && !strings.ContainsRune(value, '\x00')
+	if !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }

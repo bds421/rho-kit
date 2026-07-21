@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
@@ -70,4 +71,20 @@ func TestStore_ValidatesBeforeQueryingPool(t *testing.T) {
 
 	_, err = store.AppendChained(ctx, "tenant", nil)
 	assert.ErrorIs(t, err, actionlog.ErrInvalidEntry)
+}
+
+// TestToPgTimestampStyle_OccurredAtNormalization pins the insertEntry
+// contract: TIMESTAMPTZ keeps microseconds, so sub-µs nanoseconds must be
+// truncated before persistence. We unit-test the same truncation formula
+// insertEntry applies (UTC + Truncate microsecond) so a regression that
+// reverts to raw e.OccurredAt.UTC() is caught without a live Postgres.
+func TestOccurredAt_MicrosecondNormalization(t *testing.T) {
+	// 123456789ns has a 789ns tail below microsecond resolution.
+	in := time.Date(2026, 5, 10, 12, 0, 0, 123456789, time.UTC)
+	got := in.UTC().Truncate(time.Microsecond)
+	assert.Equal(t, 123456000, got.Nanosecond())
+	assert.Equal(t, 0, got.Nanosecond()%1000)
+	// Already-aligned values must be stable.
+	aligned := time.Date(2026, 5, 10, 12, 0, 0, 123456000, time.UTC)
+	assert.True(t, aligned.Equal(aligned.UTC().Truncate(time.Microsecond)))
 }

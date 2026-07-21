@@ -18,6 +18,9 @@ import (
 // not exist.
 var ErrScheduleNotFound = errors.New("pgstore: schedule not found")
 
+// ErrScheduleExists is returned by Add when the name already exists.
+var ErrScheduleExists = errors.New("pgstore: schedule already exists")
+
 // validIdent matches the same shape the kit's idempotency pgstore
 // accepts for table names: alphanumeric + underscore, optional schema
 // prefix.
@@ -71,26 +74,34 @@ func New(db *sql.DB, opts ...Option) *Store {
 	return s
 }
 
-// Add inserts a new schedule. Returns an error if the name already
-// exists (use [Store.Upsert] for create-or-update).
+// Add inserts a new schedule. Returns [ErrScheduleExists] if the name
+// already exists (use [Store.Upsert] for create-or-update).
 //
-// A newly added schedule is ENABLED by default: the enabled column is
-// omitted from the INSERT so its DEFAULT (TRUE) applies. Forwarding the
-// zero-value ScheduleRecord.Enabled would silently create a disabled
-// schedule that never runs — a footgun for the common Add({Name, Spec})
-// call. Use [Store.Upsert] for explicit enabled control, or [Store.Enable]
-// to toggle an existing schedule.
+// ScheduleRecord.Enabled is honoured. Callers that want the historical
+// "enabled by default" behaviour must set Enabled: true (the zero value
+// stages a disabled schedule). Use [Store.Enable] to toggle later.
 func (s *Store) Add(ctx context.Context, rec ScheduleRecord) error {
 	if err := s.validate(rec); err != nil {
 		return err
 	}
-	query := fmt.Sprintf(`INSERT INTO %s (name, spec, description)
-		VALUES ($1, $2, $3)`, s.table)
-	_, err := s.db.ExecContext(ctx, query, rec.Name, rec.Spec, nullString(rec.Description))
+	query := fmt.Sprintf(`INSERT INTO %s (name, spec, enabled, description)
+		VALUES ($1, $2, $3, $4)`, s.table)
+	_, err := s.db.ExecContext(ctx, query, rec.Name, rec.Spec, rec.Enabled, nullString(rec.Description))
 	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrScheduleExists
+		}
 		return redact.WrapError("pgstore: Add", err)
 	}
 	return nil
+}
+
+// isUniqueViolation detects SQLSTATE 23505 without importing a driver.
+type sqlStater interface{ SQLState() string }
+
+func isUniqueViolation(err error) bool {
+	var s sqlStater
+	return errors.As(err, &s) && s.SQLState() == "23505"
 }
 
 // Upsert inserts or updates a schedule by name.
@@ -162,6 +173,8 @@ func (s *Store) Get(ctx context.Context, name string) (ScheduleRecord, error) {
 		}
 		return ScheduleRecord{}, redact.WrapError("pgstore: Get", err)
 	}
+	rec.CreatedAt = rec.CreatedAt.UTC()
+	rec.UpdatedAt = rec.UpdatedAt.UTC()
 	return rec, nil
 }
 
@@ -180,6 +193,8 @@ func (s *Store) List(ctx context.Context) ([]ScheduleRecord, error) {
 		if err := rows.Scan(&rec.Name, &rec.Spec, &rec.Enabled, &rec.Description, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			return nil, redact.WrapError("pgstore: List scan", err)
 		}
+		rec.CreatedAt = rec.CreatedAt.UTC()
+		rec.UpdatedAt = rec.UpdatedAt.UTC()
 		out = append(out, rec)
 	}
 	if err := rows.Err(); err != nil {
@@ -199,9 +214,12 @@ type JobFunc = func(ctx context.Context) error
 // truth on which job names the binary KNOWS, the store is the source
 // of truth on which schedules are ACTIVE.
 //
-// Returns the names of stored-but-unknown schedules so the caller can
-// log them (typically a CI/CD smoke check that catches "operator
-// added a schedule for a job this binary doesn't ship").
+// Returns a skipped list of schedules that were not registered. Entries
+// use two shapes so operators can tell the failure modes apart:
+//   - bare name: job unknown to this binary (deploy a binary that ships it)
+//   - "name [invalid: <reason>]": row failed validateRecord (fix the Spec/Name)
+// A CI/CD smoke check can still detect unknown jobs by looking for entries
+// that do not contain " [invalid:".
 func (s *Store) ApplyTo(ctx context.Context, scheduler *cron.Scheduler, jobs map[string]JobFunc) ([]string, error) {
 	if scheduler == nil {
 		return nil, errors.New("pgstore: ApplyTo requires non-nil scheduler")
@@ -217,8 +235,10 @@ func (s *Store) ApplyTo(ctx context.Context, scheduler *cron.Scheduler, jobs map
 }
 
 // applyRecords registers enabled records whose name is known to jobs and
-// whose spec/name pass validation, returning the names of records that
-// were NOT registered (either unknown to this binary or invalid).
+// whose spec/name pass validation, returning skipped records that were
+// NOT registered. Unknown jobs are listed by bare name; invalid rows are
+// listed as "name [invalid: reason]" so the two operator actions
+// (deploy vs fix row) are distinguishable.
 //
 // Records are read from Postgres, which doc.go documents as editable via
 // raw SQL — that path bypasses [Store.validate]. cron.Scheduler.Add
@@ -238,7 +258,7 @@ func applyRecords(scheduler *cron.Scheduler, records []ScheduleRecord, jobs map[
 			continue
 		}
 		if err := validateRecord(rec); err != nil {
-			skipped = append(skipped, rec.Name)
+			skipped = append(skipped, fmt.Sprintf("%s [invalid: %v]", rec.Name, err))
 			continue
 		}
 		scheduler.Add(rec.Name, rec.Spec, fn)
@@ -255,6 +275,8 @@ func (s *Store) validate(rec ScheduleRecord) error {
 // an unparseable schedule is rejected at write time (Add/Upsert) and
 // treated as invalid at read time (ApplyTo) rather than panicking the
 // scheduler.
+const maxDescriptionLen = 1024
+
 func validateRecord(rec ScheduleRecord) error {
 	if !validName.MatchString(rec.Name) {
 		return fmt.Errorf("pgstore: invalid Name %q (lowercase alphanumeric + - _, max 128)", rec.Name)
@@ -264,6 +286,9 @@ func validateRecord(rec ScheduleRecord) error {
 	}
 	if len(rec.Spec) > 128 {
 		return errors.New("pgstore: Spec exceeds 128 chars")
+	}
+	if len(rec.Description) > maxDescriptionLen {
+		return errors.New("pgstore: Description exceeds 1024 chars")
 	}
 	if _, err := robcron.ParseStandard(rec.Spec); err != nil {
 		return fmt.Errorf("pgstore: invalid Spec %q: %w", rec.Spec, err)

@@ -101,22 +101,26 @@ func WithoutSweeper() Option {
 
 // New constructs a Limiter where each key has a bucket of `capacity`
 // tokens that refills at `refillPerSec` tokens per second. capacity
-// must be finite and > 0; refillPerSec must be finite, > 0, and high
+// must be finite and >= 1; refillPerSec must be finite, > 0, and high
 // enough that a one-token retry interval fits in time.Duration.
 //
 // Internally each bucket is a [*rate.Limiter] constructed with
-// `rate.NewLimiter(rate.Limit(refillPerSec), int(capacity))`. Since
-// [rate.Limiter] takes an integer burst, fractional capacity is
-// truncated; values in (0, 1) collapse to burst=0 and Allow returns
-// [ratelimit.ErrInvalidLimiter] for that bucket.
+// `rate.NewLimiter(rate.Limit(refillPerSec), int(capacity))`. Fractional
+// capacity is truncated to an integer burst (e.g. 3.9 → 3). Values
+// below 1 are rejected at construction so Allow never sees burst=0.
 //
 // New spawns a background sweeper goroutine that holds only a weak
 // reference to the limiter, so a forgotten Close does not pin it
 // forever. Pair with [Limiter.Close] in shutdown wiring for
 // deterministic cleanup.
 func New(capacity, refillPerSec float64, opts ...Option) *Limiter {
-	if !validPositiveFinite(capacity) {
-		panic("tokenbucket: New capacity must be finite and > 0")
+	if !validPositiveFinite(capacity) || capacity < 1 {
+		// rate.Limiter takes int(burst); capacity in (0,1) truncates to 0
+		// and every Allow would return ErrInvalidLimiter — fail at New.
+		panic("tokenbucket: New capacity must be finite and >= 1")
+	}
+	if capacity > float64(math.MaxInt) {
+		panic("tokenbucket: New capacity exceeds platform int range")
 	}
 	if !validRefillPerSec(refillPerSec) {
 		panic("tokenbucket: New refillPerSec must be finite, > 0, and produce a representable retry interval")
@@ -250,13 +254,20 @@ func (l *Limiter) newBucket() *bucket {
 // per-key [*rate.Limiter] (which carries its own mutex), so contended
 // keys no longer serialise through a single limiter-wide lock.
 //
-// Sweeper race: dropping the map lock before [rate.Limiter.ReserveN]
+// Sweeper race: dropping the map lock before [rate.Limiter.AllowN]
 // lets the background sweeper delete this bucket between the unlock
-// and the reservation. The sweeper only removes buckets at full
-// capacity, so any racing reservation would have been admitted anyway;
+// and the admit decision. The sweeper only removes buckets at full
+// capacity, so any racing admission would have been admitted anyway;
 // the user-visible effect is at most one extra admission per
 // sweep-cycle-per-key, far cheaper than the contention removed by
 // finer-grained locking.
+//
+// Deny path deliberately avoids ReserveN+CancelAt: under concurrent
+// denies on the same empty bucket, CancelAt only fully restores the
+// most recent reservation (x/time/rate lastEvent accounting), so each
+// interleaving permanently burns a token that no caller consumed and
+// over-throttles the key. AllowN is non-reserving on deny; retryAfter
+// is derived from TokensAt arithmetic instead.
 func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, error) {
 	if err := ctxErr(ctx); err != nil {
 		return false, 0, err
@@ -281,22 +292,34 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 	}
 	l.mu.Unlock()
 
-	r := b.lim.ReserveN(now, 1)
-	if !r.OK() {
-		// n > burst — possible only when int(capacity) == 0, i.e.
-		// capacity was a fractional value in (0, 1). Treat as an
-		// invalid limiter so the caller learns at first use rather
-		// than silently denying every request forever.
-		return false, 0, ratelimit.ErrInvalidLimiter
-	}
-	delay := r.DelayFrom(now)
-	if delay == 0 {
+	// Capture now immediately before the per-key decision so two
+	// contending goroutines cannot hand the limiter timestamps out of
+	// reservation order (which would move lim.last backward).
+	now = l.now()
+	if b.lim.AllowN(now, 1) {
 		return true, 0, nil
 	}
-	// Bucket is empty: roll back the reservation so a future caller
-	// with a fresher token isn't forced to wait behind ours, and
-	// surface the projected refill time to the caller.
-	r.CancelAt(now)
+	// Denied: compute wait without mutating reservation state.
+	tokens := b.lim.TokensAt(now)
+	if tokens >= 1 {
+		// Lost a race with a concurrent admission; next token is imminent.
+		return false, time.Nanosecond, nil
+	}
+	need := 1 - tokens
+	if l.refill <= 0 {
+		return false, 0, ratelimit.ErrInvalidLimiter
+	}
+	secs := need / l.refill
+	if secs <= 0 {
+		return false, time.Nanosecond, nil
+	}
+	if secs >= float64(maxRetryAfter)/float64(time.Second) {
+		return false, maxRetryAfter, nil
+	}
+	delay := time.Duration(secs * float64(time.Second))
+	if delay < time.Nanosecond {
+		delay = time.Nanosecond
+	}
 	return false, delay, nil
 }
 

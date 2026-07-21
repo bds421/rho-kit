@@ -30,6 +30,7 @@ package redis
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -106,6 +107,11 @@ func WithKeyPrefix(p string) Option {
 	if p == "" {
 		panic("ratelimit/redis: WithKeyPrefix requires a non-empty prefix")
 	}
+	// Enforce a trailing separator so prefix+key is injective across
+	// instances (see budget/redis WithKeyPrefix for the collision case).
+	if !strings.HasSuffix(p, ":") {
+		p += ":"
+	}
 	if len(p) > maxKeyPrefixLen {
 		panic("ratelimit/redis: WithKeyPrefix prefix exceeds maximum length")
 	}
@@ -119,11 +125,15 @@ func WithKeyPrefix(p string) Option {
 // pathological key sizes. Raw limiter keys use [ratelimit.ValidateKey].
 const maxKeyPrefixLen = 128
 
-// WithKeyTTL overrides the per-key expiration. Default: max(period,
-// 60s). Bounding TTL keeps cold keys from accumulating in Redis.
+// WithKeyTTL overrides the per-key expiration. Default:
+// max(full-burst GCRA debt horizon, 60s). Bounding TTL keeps cold keys
+// from accumulating in Redis.
 //
-// The TTL must be at least `period` — shorter and Redis can evict the
-// state mid-window, defeating the cross-replica budget for that key.
+// The TTL must be at least burst*ceil(period/burst) (the full-burst
+// debt horizon after microsecond rate rounding) — shorter and Redis can
+// evict a key that still carries TAT debt, letting a silent client
+// re-burst past the configured rate. period alone is not sufficient
+// when burst is large relative to period.
 func WithKeyTTL(d time.Duration) Option {
 	if d <= 0 {
 		panic("ratelimit/redis: WithKeyTTL requires a positive duration")
@@ -186,14 +196,18 @@ func New(client goredis.UniversalClient, period time.Duration, burst int, opts .
 	if rate <= 0 {
 		panic("ratelimit/redis: New period/burst rounds to zero (burst exceeds period in nanoseconds); pick a longer period or smaller burst")
 	}
+	rateUS := ceilDurationMicros(rate)
 	l := &Limiter{
 		client: client,
 		prefix: "ratelimit:gcra:",
 		period: period,
 		burst:  burst,
 		rate:   rate,
-		rateUS: ceilDurationMicros(rate),
-		keyTTL: maxDuration(period, time.Minute),
+		rateUS: rateUS,
+		// Default TTL covers the full-burst debt horizon (and at least
+		// one minute) so cold keys are not evicted while still carrying
+		// GCRA debt.
+		keyTTL: maxDuration(debtHorizon(burst, rateUS), time.Minute),
 		now: func(_ context.Context) (time.Time, error) {
 			return time.Now(), nil
 		},
@@ -204,10 +218,31 @@ func New(client goredis.UniversalClient, period time.Duration, burst int, opts .
 		}
 		o(l)
 	}
-	if l.keyTTL < period {
-		panic("ratelimit/redis: New key TTL must be >= period (otherwise Redis can evict mid-window)")
+	// keyTTL must cover the full-burst GCRA debt horizon after
+	// microsecond rounding of rate. rateUS = ceil(period/burst), so
+	// burst*rateUS can exceed period (nearly 2× for fine-grained
+	// bursts). Flooring only against period lets Redis EX expire the
+	// key while TAT still carries debt, and a silent client can
+	// re-burst past the configured rate.
+	minTTL := debtHorizon(l.burst, l.rateUS)
+	if l.keyTTL < minTTL {
+		panic("ratelimit/redis: New key TTL must be >= full-burst GCRA debt horizon (burst*ceil(period/burst)); otherwise Redis can evict mid-debt and over-admit")
 	}
 	return l
+}
+
+// debtHorizon is the maximum TAT lead after a full burst under the
+// microsecond-rounded emission interval used by the Lua script.
+func debtHorizon(burst int, rateUS int64) time.Duration {
+	if burst < 1 || rateUS <= 0 {
+		return 0
+	}
+	// burst * rateUS microseconds; guard overflow into Duration.
+	us := int64(burst) * rateUS
+	if us < 0 {
+		return time.Duration(1<<63 - 1)
+	}
+	return time.Duration(us) * time.Microsecond
 }
 
 func (l *Limiter) ready() error {
@@ -220,7 +255,7 @@ func (l *Limiter) ready() error {
 		l.burst < 1 ||
 		l.rate <= 0 ||
 		l.rateUS <= 0 ||
-		l.keyTTL < l.period ||
+		l.keyTTL < debtHorizon(l.burst, l.rateUS) ||
 		l.now == nil {
 		return ratelimit.ErrInvalidLimiter
 	}

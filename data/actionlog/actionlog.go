@@ -78,10 +78,12 @@ var (
 	ErrSecretTooShort = errors.New("actionlog: signature secret must be at least 32 bytes")
 
 	// ErrChainBroken is returned by [Logger.VerifyChain] when the
-	// per-tenant hash chain shows a deletion, reordering, or
-	// truncation. Distinct from [ErrSignatureInvalid] (which catches
+	// per-tenant hash chain shows a mid-chain deletion, reordering, or
+	// Seq gap. Distinct from [ErrSignatureInvalid] (which catches
 	// per-row tampering) because the remediation differs: a chain
 	// break implies missing or out-of-order rows in durable storage.
+	// Note: pure tail truncation and full-chain deletion still verify
+	// cleanly without an external head checkpoint — see VerifyChain.
 	ErrChainBroken = errors.New("actionlog: per-tenant hash chain is broken")
 
 	// ErrSecretSourceUnavailable is returned when a [SecretSource]
@@ -255,7 +257,7 @@ type Query struct {
 
 	// Cursor is an opaque page marker returned by a previous call to
 	// [Logger.List]. Empty cursor reads from the head; opaque format
-	// is implementation-defined and verified by [DecodeCursor]. A
+	// is implementation-defined and verified by [CursorSigner.Decode]. A
 	// malformed cursor surfaces [ErrInvalidCursor].
 	Cursor string
 }
@@ -323,9 +325,15 @@ type Logger interface {
 	// order (Seq ascending) and verifies that:
 	//   - each entry's Signature is valid (catches per-row tampering),
 	//   - each entry's PrevHash equals the previous entry's hash
-	//     (catches deletion / reordering),
+	//     (catches mid-chain deletion / reordering),
 	//   - Seq starts at 1 and increases by 1 each step (catches
-	//     truncation and inserted rows).
+	//     mid-chain gaps and inserted rows).
+	//
+	// Tail truncation (deleting the newest N rows) and whole-chain
+	// deletion leave a still-consistent remaining prefix (or empty
+	// set) and therefore return nil without an external head anchor.
+	// Operators who need to detect those cases must checkpoint the
+	// latest (Seq, entryHash) out-of-band and compare after verify.
 	// Returns nil on success, [ErrChainBroken] / [ErrSignatureInvalid]
 	// / [ErrUnknownKeyID] on detection.
 	VerifyChain(ctx context.Context, tenantID string) error
@@ -738,8 +746,9 @@ func (l *signedLogger) List(ctx context.Context, q Query) ([]Entry, string, erro
 	return out, next, nil
 }
 
-// VerifyChain streams the per-tenant chain and reports any deletion,
-// reordering, truncation, or row tampering.
+// VerifyChain streams the per-tenant chain and reports mid-chain
+// deletion, reordering, Seq gaps, or row tampering. Tail truncation
+// and empty chains still return nil (see Logger.VerifyChain docs).
 func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	if err := l.ready(); err != nil {
 		return err
@@ -791,10 +800,11 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 // the signature leaves SignatureKeyID empty and [VerifyEntry] will reject
 // it. This mirrors [Logger.Append], which fills both fields.
 //
-// Returns [ErrUnknownKeyID] when [SecretSource.CurrentKeyID] is empty
-// or the resolved secret is shorter than [minSignatureSecretLen]. The
-// ctx is passed through to the [SecretSource] for deadline / cancel
-// propagation; KMS/Vault-backed sources should honour it.
+// Returns [ErrUnknownKeyID] when [SecretSource.CurrentKeyID] is empty.
+// Returns [ErrSecretTooShort] when the resolved secret is shorter than
+// [minSignatureSecretLen]. The ctx is passed through to the
+// [SecretSource] for deadline / cancel propagation; KMS/Vault-backed
+// sources should honour it.
 func SignEntry(ctx context.Context, e Entry, secrets SecretSource) (signature, keyID string, err error) {
 	if secrets == nil {
 		return "", "", ErrInvalidStore
@@ -810,6 +820,9 @@ func SignEntry(ctx context.Context, e Entry, secrets SecretSource) (signature, k
 	if err != nil {
 		return "", "", redact.WrapError("actionlog: current key id", err)
 	}
+	// Match Append: truncate to microsecond so off-band SignEntry
+	// signatures verify against stores that persist TIMESTAMPTZ at µs.
+	e.OccurredAt = e.OccurredAt.UTC().Truncate(time.Microsecond)
 	e.SignatureKeyID = keyID
 	sig, err := computeSignature(e, secret)
 	if err != nil {
@@ -891,8 +904,15 @@ const (
 // (invalid byte sequence) — so [validID] rejects them at the boundary
 // like every other caller-supplied text field.
 func validate(e Entry) error {
-	if e.ID == "" ||
-		!validID(e.ID) ||
+	if e.ID == "" {
+		return ErrInvalidEntry
+	}
+	// Length before character scan so multi-MiB IDs fail fast without
+	// a full UTF-8 walk (and keep the dedicated too-long diagnostic).
+	if len(e.ID) > MaxIDLen {
+		return fmt.Errorf("%w: ID exceeds maximum length", ErrInvalidEntry)
+	}
+	if !validID(e.ID) ||
 		!validTenantID(e.TenantID) ||
 		!validTextField(e.Actor, MaxActorLen, true) ||
 		!validTextField(e.Action, MaxActionLen, true) ||
@@ -901,9 +921,6 @@ func validate(e Entry) error {
 		!validReason(e.Reason) ||
 		!validMetadata(e.Metadata) {
 		return ErrInvalidEntry
-	}
-	if len(e.ID) > MaxIDLen {
-		return fmt.Errorf("%w: ID exceeds maximum length", ErrInvalidEntry)
 	}
 	switch e.Outcome {
 	case OutcomeSuccess, OutcomeFailure, OutcomeDenied:
@@ -957,8 +974,19 @@ func validFreeText(s string) bool {
 	return utf8.ValidString(s) && !strings.ContainsRune(s, '\x00')
 }
 
+// validReason rejects control characters (newline/ANSI/ESC) so freeform
+// audit reasons cannot line-spoof forensic views or terminal renderers.
+// Spaces are allowed (unlike Actor/Action) because reasons are prose.
 func validReason(s string) bool {
-	return len(s) <= MaxReasonLen && validFreeText(s)
+	if len(s) > MaxReasonLen || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // computeSignature builds the canonical form and HMAC-SHA256s it.

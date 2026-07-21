@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"math/rand/v2"
 	"time"
 
 	"github.com/go-redsync/redsync/v4"
@@ -12,6 +11,7 @@ import (
 	goredislib "github.com/redis/go-redis/v9"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/data/lock/redislock/v2/internal/redsyncutil"
 	"github.com/bds421/rho-kit/data/v2/lock"
 )
 
@@ -24,6 +24,7 @@ type options struct {
 	maxAttempts   int
 	maxWait       time.Duration
 	logger        *slog.Logger
+	prefix        string
 }
 
 // WithTTL sets the lock expiration duration. Defaults to 30 seconds.
@@ -90,6 +91,14 @@ func WithMaxWait(d time.Duration) Option {
 	}
 }
 
+// WithKeyPrefix sets the Redis key namespace prepended to every lock key.
+// Default is "lock:" so a co-tenant cache/queue using the same logical name
+// cannot overwrite a redsync token. Pass "" only for deliberate flat-key
+// migration of existing deployments.
+func WithKeyPrefix(p string) Option {
+	return func(o *options) { o.prefix = p }
+}
+
 // Locker is a long-lived factory for per-key distributed locks. It implements
 // [lock.Locker], so callers depending on the kit-level interface can swap in
 // alternative backends (for example
@@ -107,7 +116,7 @@ type Locker struct {
 // [Locker.Acquire] / [Locker.WithLock]. Beyond this length, Redis
 // keys become awkward to inspect and large keys hurt cluster
 // performance. The cap matches the kit's tenant-scoped key cap.
-const MaxLockKeyLen = 1024
+const MaxLockKeyLen = redsyncutil.MaxLockKeyLen
 
 // validateLockKey enforces the kit's lock-key shape: non-empty, no
 // control characters or whitespace, length within MaxLockKeyLen.
@@ -117,19 +126,7 @@ const MaxLockKeyLen = 1024
 // Wave 126 preserved this guard as the kit's value-add over
 // go-redsync/redsync, which does not validate key shape.
 func validateLockKey(key string) error {
-	if key == "" {
-		return errors.New("redislock: lock key must not be empty")
-	}
-	if len(key) > MaxLockKeyLen {
-		return errors.New("redislock: lock key exceeds maximum length")
-	}
-	for i := 0; i < len(key); i++ {
-		c := key[i]
-		if c < 0x20 || c == 0x7f {
-			return errors.New("redislock: lock key contains control bytes")
-		}
-	}
-	return nil
+	return redsyncutil.ValidateLockKey("redislock", key)
 }
 
 // NewLocker creates a Locker bound to the given Redis client. The options
@@ -140,7 +137,7 @@ func NewLocker(client goredislib.UniversalClient, opts ...Option) *Locker {
 	if client == nil {
 		panic("redislock: NewLocker requires a non-nil Redis client")
 	}
-	o := options{ttl: 30 * time.Second}
+	o := options{ttl: 30 * time.Second, prefix: "lock:"}
 	for _, fn := range opts {
 		if fn == nil {
 			panic("redislock: NewLocker option must not be nil")
@@ -179,10 +176,14 @@ func (lc *Locker) doAcquire(ctx context.Context, key string) (lock.Lock, bool, e
 		return nil, false, err
 	}
 
-	mutex := lc.rs.NewMutex(key,
+	rkey := key
+	if lc.opts.prefix != "" {
+		rkey = lc.opts.prefix + key
+	}
+	mutex := lc.rs.NewMutex(rkey,
 		redsync.WithExpiry(lc.opts.ttl),
-		redsync.WithTries(tryCount(lc.opts.maxAttempts)),
-		redsync.WithRetryDelayFunc(jitteredBackoff(lc.opts.retryInterval)),
+		redsync.WithTries(redsyncutil.TryCount(lc.opts.maxAttempts)),
+		redsync.WithRetryDelayFunc(redsyncutil.JitteredBackoff(lc.opts.retryInterval)),
 	)
 
 	lockCtx := ctx
@@ -194,7 +195,7 @@ func (lc *Locker) doAcquire(ctx context.Context, key string) (lock.Lock, bool, e
 
 	err := mutex.LockContext(lockCtx)
 	if err == nil {
-		return &handle{mutex: mutex}, true, nil
+		return &handle{Handle: redsyncutil.NewHandle(mutex, "lock")}, true, nil
 	}
 
 	// Surface caller-driven cancellation as-is so existing callers can
@@ -203,16 +204,16 @@ func (lc *Locker) doAcquire(ctx context.Context, key string) (lock.Lock, bool, e
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, false, ctxErr
 	}
-	if isContentionError(err) {
+	if redsyncutil.IsContentionError(err) {
 		return nil, false, nil
 	}
 	// The internal maxWait timeout (lockCtx) can fire *during* a redsync
 	// command on the final try, in which case redsync returns the raw node
-	// error (a RedisError wrapping context.DeadlineExceeded) rather than a
-	// contention sentinel. The caller's ctx is still alive here, so this is
-	// an internal maxWait expiry: honour the documented (nil, false, nil)
-	// "contention exhausted" contract instead of leaking it as a backend error.
-	if lockCtx.Err() != nil {
+	// error wrapping context.DeadlineExceeded rather than a contention
+	// sentinel. Only absorb genuine deadline errors as "contention exhausted";
+	// hard backend failures (dial refused, auth) must still surface even if
+	// maxWait has also elapsed.
+	if lockCtx.Err() != nil && errors.Is(err, context.DeadlineExceeded) {
 		return nil, false, nil
 	}
 	return nil, false, redact.WrapError("lock: acquire failed", err)
@@ -231,10 +232,11 @@ func (lc *Locker) WithLock(ctx context.Context, key string, fn func(ctx context.
 	defer func() { recordResult(span, retErr); span.End() }()
 	l, ok, err := lc.Acquire(ctx, key)
 	if err != nil {
-		return redact.WrapError("lock: acquire failed", err)
+		// Acquire already wraps backend failures; do not double-prefix.
+		return err
 	}
 	if !ok {
-		return errors.New("lock: could not acquire lock")
+		return lock.ErrNotAcquired
 	}
 
 	defer releaseAndJoin(ctx, l, &retErr, lc.opts.logger)
@@ -247,43 +249,12 @@ func (lc *Locker) WithLock(ctx context.Context, key string, fn func(ctx context.
 // ErrLockLost are logged rather than returned, because fn's error (if any)
 // is more actionable for the caller and the lock will TTL out regardless.
 func releaseAndJoin(ctx context.Context, l lock.Lock, retErr *error, logger *slog.Logger) {
-	relCtx, cancel := detachedReleaseContext(ctx, 5*time.Second)
-	defer cancel()
-	relErr := l.Release(relCtx)
-	if errors.Is(relErr, lock.ErrLockLost) {
-		if *retErr != nil {
-			*retErr = errors.Join(*retErr, relErr)
-			return
-		}
-		*retErr = relErr
-		return
-	}
-	if relErr != nil {
-		if logger == nil {
-			logger = slog.Default()
-		}
-		logger.Error("lock: failed to release after WithLock",
-			redact.Error(relErr),
-		)
-	}
+	redsyncutil.ReleaseAndJoin(ctx, l, retErr, logger, "lock: failed to release after WithLock")
 }
 
-func detachedReleaseContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
-}
-
-// handle is the internal lock-state struct that backs the [lock.Lock]
-// returned by [Locker.Acquire]. Each successful Acquire produces a fresh
-// handle holding the redsync [*redsync.Mutex] that owns the token and
-// pool wiring; the kit's previous bespoke handle (client + token +
-// opts) was removed in wave 126 when the redsync migration took over
-// the SETNX + token-fenced release/extend Lua scripts.
+// handle wraps the shared redsync handle so Release/Extend emit kit spans.
 type handle struct {
-	mutex    *redsync.Mutex
-	released bool
+	*redsyncutil.Handle
 }
 
 // LockerWithValue acquires the lock for `key`, runs fn, releases the lock,
@@ -292,10 +263,10 @@ type handle struct {
 func LockerWithValue[T any](ctx context.Context, lc *Locker, key string, fn func(context.Context) (T, error)) (value T, retErr error) {
 	l, ok, err := lc.Acquire(ctx, key)
 	if err != nil {
-		return value, redact.WrapError("lock: acquire failed", err)
+		return value, err
 	}
 	if !ok {
-		return value, errors.New("lock: could not acquire lock")
+		return value, lock.ErrNotAcquired
 	}
 
 	defer releaseAndJoin(ctx, l, &retErr, lc.opts.logger)
@@ -321,28 +292,9 @@ func LockerWithValue[T any](ctx context.Context, lc *Locker, key string, fn func
 func (l *handle) Release(ctx context.Context) error {
 	ctx, span := startSpan(ctx, "lock.Release")
 	defer span.End()
-	err := l.doRelease(ctx)
+	err := l.DoRelease(ctx)
 	recordResult(span, err)
 	return err
-}
-
-func (l *handle) doRelease(ctx context.Context) error {
-	if l.released {
-		return lock.ErrLockLost
-	}
-	ok, err := l.mutex.UnlockContext(ctx)
-	if ok {
-		l.released = true
-		return nil
-	}
-	// Mark released for the contention/expired path too: a retry against
-	// a token we no longer own would never succeed, and the kit's
-	// previous behaviour treated ErrLockLost as terminal for the handle.
-	l.released = true
-	if err == nil || isLockLostError(err) {
-		return lock.ErrLockLost
-	}
-	return redact.WrapError("lock: release failed", err)
 }
 
 // Extend resets the lock's TTL to the configured duration, but only if
@@ -356,99 +308,7 @@ func (l *handle) doRelease(ctx context.Context) error {
 func (l *handle) Extend(ctx context.Context) (bool, error) {
 	ctx, span := startSpan(ctx, "lock.Extend")
 	defer span.End()
-	ok, err := l.doExtend(ctx)
+	ok, err := l.DoExtend(ctx)
 	recordResult(span, err)
 	return ok, err
-}
-
-func (l *handle) doExtend(ctx context.Context) (bool, error) {
-	ok, err := l.mutex.ExtendContext(ctx)
-	if ok {
-		return true, nil
-	}
-	if err == nil || isLockLostError(err) {
-		return false, nil
-	}
-	return false, redact.WrapError("lock: extend failed", err)
-}
-
-// tryCount maps the kit's maxAttempts option (0 = single shot) to
-// redsync's tries semantics (>=1, where 1 means "no retry"). Defaults
-// to 1 when the option is unset.
-func tryCount(maxAttempts int) int {
-	if maxAttempts <= 0 {
-		return 1
-	}
-	return maxAttempts
-}
-
-// jitteredBackoff returns a redsync DelayFunc that draws a delay
-// uniformly from [base*0.75, base*1.25]. base==0 falls back to
-// redsync's default delay range (50–250 ms).
-//
-// Wave 126: replaces the kit's previous fixed-interval polling, which
-// caused synchronised retry spikes when many waiters contended for
-// the same key. Jitter spreads the retries across the interval so
-// the thundering-herd resolves probabilistically rather than in
-// lockstep bursts.
-func jitteredBackoff(base time.Duration) redsync.DelayFunc {
-	if base <= 0 {
-		// Use redsync's default DelayFunc shape: rand 50–250 ms.
-		return func(int) time.Duration {
-			const lo = 50 * time.Millisecond
-			const hi = 250 * time.Millisecond
-			return lo + time.Duration(rand.Int64N(int64(hi-lo)))
-		}
-	}
-	// ±25% jitter around the base.
-	const jitterPct = 25
-	jitter := int64(base) * jitterPct / 100
-	lo := int64(base) - jitter
-	span := 2 * jitter
-	if span <= 0 {
-		return func(int) time.Duration { return base }
-	}
-	return func(int) time.Duration {
-		return time.Duration(lo + rand.Int64N(span))
-	}
-}
-
-// isContentionError reports whether err signals "lock is held by
-// another process" rather than a backend failure. Used by Acquire to
-// translate redsync's error vocabulary into the kit's
-// (nil, false, nil) contract for retry-exhausted contention.
-func isContentionError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, redsync.ErrFailed) {
-		return true
-	}
-	var taken *redsync.ErrTaken
-	if errors.As(err, &taken) {
-		return true
-	}
-	var nodeTaken *redsync.ErrNodeTaken
-	return errors.As(err, &nodeTaken)
-}
-
-// isLockLostError reports whether err carries redsync's "this token
-// no longer owns the key" signal — either the key expired
-// ([redsync.ErrLockAlreadyExpired]) or it was reclaimed by another
-// holder ([redsync.ErrNodeTaken] / [redsync.ErrTaken]). Used by
-// Release / Extend to fold both shapes into the kit's
-// [lock.ErrLockLost] / (false, nil) contracts.
-func isLockLostError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, redsync.ErrLockAlreadyExpired) {
-		return true
-	}
-	var taken *redsync.ErrTaken
-	if errors.As(err, &taken) {
-		return true
-	}
-	var nodeTaken *redsync.ErrNodeTaken
-	return errors.As(err, &nodeTaken)
 }

@@ -2,7 +2,9 @@ package pgstore
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,12 @@ import (
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/runtime/v2/saga"
 )
+
+// claimLease is how long ListResumable holds exclusive claim on a row
+// so concurrent multi-replica Resume cannot double-execute the same
+// saga. Puts do not extend the claim; a stuck resumer's lease expires
+// and another replica may pick the instance up.
+const claimLease = 2 * time.Minute
 
 // ErrConcurrentUpdate is returned by Put when the write affected no
 // row: either an insert lost the ON CONFLICT race (another writer
@@ -32,8 +40,9 @@ var validIdent = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0
 
 // Store implements [saga.StateStore] against Postgres.
 type Store struct {
-	db    *sql.DB
-	table string
+	db         *sql.DB
+	table      string
+	claimToken string // unique per Store; identifies this process's claims
 }
 
 // ready reports whether s is usable. A nil receiver or a zero-value
@@ -63,7 +72,7 @@ func New(db *sql.DB, opts ...Option) *Store {
 	if db == nil {
 		panic("pgstore: New requires non-nil *sql.DB")
 	}
-	s := &Store{db: db, table: "saga_instances"}
+	s := &Store{db: db, table: "saga_instances", claimToken: newClaimToken()}
 	for _, opt := range opts {
 		if opt == nil {
 			panic("pgstore: option must not be nil")
@@ -71,6 +80,15 @@ func New(db *sql.DB, opts ...Option) *Store {
 		opt(s)
 	}
 	return s
+}
+
+func newClaimToken() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Extremely rare; fall back to timestamp uniqueness for the process.
+		return fmt.Sprintf("claim-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // Put implements [saga.StateStore]. Routes to two distinct SQL paths
@@ -154,19 +172,25 @@ func (s *Store) putInsertOnly(ctx context.Context, inst saga.Instance, compensat
 // and this Put (e.g. a concurrent Delete) — surfaced as
 // ErrConcurrentUpdate so the executor does not silently no-op.
 func (s *Store) putUpdateOptimistic(ctx context.Context, inst saga.Instance, compensatedJSON, resultsJSON []byte) error {
+	// Refresh claim_until on every successful write so a long-running
+	// multi-step saga does not lose its multi-replica lease mid-flight.
 	query := fmt.Sprintf(`UPDATE %s SET
 		  state         = $1,
 		  current_step  = $2,
 		  compensated   = $3::jsonb,
 		  step_results  = $4::jsonb,
 		  last_error    = $5,
-		  updated_at    = now()
+		  updated_at    = now(),
+		  claim_until   = now() + $7::interval,
+		  claim_token   = $8
 		WHERE id = $6`,
 		s.table)
 	res, err := s.db.ExecContext(ctx, query,
 		string(inst.State), inst.CurrentStep,
 		string(compensatedJSON), string(resultsJSON), inst.LastError,
 		inst.ID,
+		fmt.Sprintf("%d milliseconds", claimLease.Milliseconds()),
+		s.claimToken,
 	)
 	if err != nil {
 		return redact.WrapError("pgstore: Put update", err)
@@ -194,28 +218,79 @@ func (s *Store) Get(ctx context.Context, id string) (saga.Instance, error) {
 }
 
 // ListResumable implements [saga.StateStore].
+//
+// The full resumable backlog is materialised in one call (no LIMIT). Operators
+// should keep stuck-saga counts bounded via definition health and
+// [DeleteTerminalBefore] retention; large backlogs after an outage allocate
+// proportionally.
+//
+// Multi-replica safety: rows are claimed atomically with
+// FOR UPDATE SKIP LOCKED + claim_until lease so concurrent Resume
+// callers cannot both execute the same saga. A second resumer sees
+// claim_until in the future and skips the row until the lease expires
+// (stuck process recovery). Claim columns are added by migration
+// 20260720000001_saga_claim_lease.
 func (s *Store) ListResumable(ctx context.Context, olderThan time.Duration) ([]saga.Instance, error) {
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
+	// Atomic claim: lock eligible rows, set claim_until, return them.
+	// OlderThan filters on updated_at for crash-staleness; claim_until
+	// filters out rows already leased by another replica.
 	var (
 		query string
 		args  []any
 	)
 	if olderThan > 0 {
-		query = fmt.Sprintf(`SELECT id, definition, state, current_step,
-			compensated, input, step_results, last_error, created_at, updated_at
-			FROM %s
-			WHERE state IN ('pending', 'running', 'compensating')
-			  AND updated_at < now() - $1::interval
-			ORDER BY updated_at ASC`, s.table)
-		args = []any{fmt.Sprintf("%d milliseconds", olderThan.Milliseconds())}
+		// Floor sub-millisecond olderThan at 1ms so Milliseconds()==0 cannot
+		// erase the staleness guard (double-execution window).
+		ms := olderThan.Milliseconds()
+		if ms < 1 {
+			ms = 1
+		}
+		query = fmt.Sprintf(`
+WITH candidates AS (
+  SELECT id FROM %s
+  WHERE state IN ('pending', 'running', 'compensating')
+    AND updated_at < now() - $1::interval
+    AND (claim_until IS NULL OR claim_until < now())
+  ORDER BY updated_at ASC
+  FOR UPDATE SKIP LOCKED
+)
+UPDATE %s AS s SET
+  claim_until = now() + $2::interval,
+  claim_token = $3
+FROM candidates c
+WHERE s.id = c.id
+RETURNING s.id, s.definition, s.state, s.current_step,
+  s.compensated, s.input, s.step_results, s.last_error, s.created_at, s.updated_at`,
+			s.table, s.table)
+		args = []any{
+			fmt.Sprintf("%d milliseconds", ms),
+			fmt.Sprintf("%d milliseconds", claimLease.Milliseconds()),
+			s.claimToken,
+		}
 	} else {
-		query = fmt.Sprintf(`SELECT id, definition, state, current_step,
-			compensated, input, step_results, last_error, created_at, updated_at
-			FROM %s
-			WHERE state IN ('pending', 'running', 'compensating')
-			ORDER BY updated_at ASC`, s.table)
+		query = fmt.Sprintf(`
+WITH candidates AS (
+  SELECT id FROM %s
+  WHERE state IN ('pending', 'running', 'compensating')
+    AND (claim_until IS NULL OR claim_until < now())
+  ORDER BY updated_at ASC
+  FOR UPDATE SKIP LOCKED
+)
+UPDATE %s AS s SET
+  claim_until = now() + $1::interval,
+  claim_token = $2
+FROM candidates c
+WHERE s.id = c.id
+RETURNING s.id, s.definition, s.state, s.current_step,
+  s.compensated, s.input, s.step_results, s.last_error, s.created_at, s.updated_at`,
+			s.table, s.table)
+		args = []any{
+			fmt.Sprintf("%d milliseconds", claimLease.Milliseconds()),
+			s.claimToken,
+		}
 	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

@@ -190,6 +190,12 @@ type Consumer struct {
 	// for long-running (e.g. agentic/LLM) workloads.
 	handlerTimeout time.Duration
 
+	// shutdownGrace is how long an in-flight handler may continue after the
+	// parent Consume context is cancelled. Independent of handlerTimeout so
+	// long agentic handlers do not force multi-minute graceful shutdown.
+	// Defaults to handlerShutdownTimeout (30s). Configure via [WithShutdownGrace].
+	shutdownGrace time.Duration
+
 	// deadLetterStream is the stream where failed messages are sent.
 	// Defaults to "{stream}.dead".
 	deadLetterStream string
@@ -203,6 +209,18 @@ type Consumer struct {
 	// consumed records whether Consume has been called. A Consumer is
 	// single-use to keep the consumer-name → stream mapping unambiguous.
 	consumed atomic.Bool
+
+	// Session-scoped metric labels resolved once per consumeOnce so the
+	// per-message hot path does not re-hash/normalise on every delivery.
+	sessionStreamLabel string
+	sessionGroupLabel  string
+
+	// localDelivery tracks per-message redelivery attempts observed by
+	// this process when XPENDING delivery-count lookups fail (count==0).
+	// Prevents poison messages from retrying forever under persistent
+	// XPENDING failures (fail-closed toward maxRetries).
+	localDeliveryMu sync.Mutex
+	localDelivery   map[string]int64
 }
 
 // ConsumerOption configures a Consumer.
@@ -299,6 +317,18 @@ func WithBatchSize(n int64) ConsumerOption {
 // WithMaxRetries sets how many times a message can be retried before
 // dead-lettering. Set to 0 to disable dead-lettering (nack forever).
 // Negative values panic.
+//
+// Retry cadence: after a non-permanent handler failure the entry stays in
+// this consumer's PEL and is redelivered only after it has been idle for
+// [WithClaimMinIdle] (default 5 minutes), typically by this consumer's
+// claim loop (or processPending after a session restart). A poison message
+// with the default maxRetries=5 therefore takes roughly claimMinIdle ×
+// maxRetries to reach the dead-letter stream under healthy operation.
+//
+// Zero-semantics note: 0 here means "never dead-letter". The redisqueue
+// sibling's identically-named option treats 0 as "archive on first error".
+// Do not copy a zero value between the two packages expecting the same
+// behaviour.
 func WithMaxRetries(n int64) ConsumerOption {
 	if n < 0 {
 		panic("redisstream: WithMaxRetries requires n >= 0")
@@ -314,6 +344,11 @@ func WithMaxRetries(n int64) ConsumerOption {
 // handlers (e.g. agentic/LLM workloads) that would otherwise hit the deadline,
 // fail, be retried, and eventually be dead-lettered. The duration must be
 // positive.
+//
+// claimMinIdle must exceed handlerTimeout + the 10s ack window; [NewConsumer]
+// panics when that invariant is violated. When raising this timeout, also
+// raise [WithClaimMinIdle] so XAUTOCLAIM cannot transfer a still-running
+// handler's message to another consumer.
 func WithHandlerTimeout(d time.Duration) ConsumerOption {
 	if d <= 0 {
 		panic("redisstream: WithHandlerTimeout requires a positive duration")
@@ -323,9 +358,31 @@ func WithHandlerTimeout(d time.Duration) ConsumerOption {
 	}
 }
 
+// WithShutdownGrace bounds how long an in-flight handler may continue after
+// the parent context is cancelled (process shutdown). The default is 30s
+// ([handlerShutdownTimeout]), matching typical Kubernetes
+// terminationGracePeriodSeconds headroom for a single in-flight message.
+//
+// This is independent of [WithHandlerTimeout]: a 30-minute agentic handler
+// timeout no longer forces a 30-minute worst-case Consume return on
+// shutdown. After parent cancel, the handler context is cancelled when the
+// grace elapses (or sooner if the handler already finished / hit its own
+// deadline). Zero is rejected; pass a positive duration.
+func WithShutdownGrace(d time.Duration) ConsumerOption {
+	if d <= 0 {
+		panic("redisstream: WithShutdownGrace requires a positive duration")
+	}
+	return func(c *Consumer) {
+		c.shutdownGrace = d
+	}
+}
+
 // WithConsumerMaxPayloadSize sets the maximum stream message payload size
 // accepted by the consumer before handler dispatch. The default is 1 MiB.
 // Set to 0 to disable the limit entirely. Negative values panic.
+// Keep this value >= the producer's [WithProducerMaxPayloadSize]. A
+// larger producer cap with a smaller consumer cap routes otherwise-valid
+// messages straight to the dead-letter stream as invalid_message.
 func WithConsumerMaxPayloadSize(n int) ConsumerOption {
 	if n < 0 {
 		panic("redisstream: WithConsumerMaxPayloadSize requires n >= 0")
@@ -364,11 +421,10 @@ func WithDeadLetterMaxLen(n int64) ConsumerOption {
 // the package exports both a Consumer and a Producer side-by-side; a
 // generic "WithMetricsRegisterer" would collide.
 func WithConsumerRegisterer(reg prometheus.Registerer) ConsumerOption {
+	if reg == nil {
+		panic("redisstream: WithConsumerRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+	}
 	return func(c *Consumer) {
-		if reg == nil {
-			c.metrics = NewConsumerMetrics()
-			return
-		}
 		c.metrics = NewConsumerMetrics(WithConsumerMetricsRegisterer(reg))
 	}
 }
@@ -396,6 +452,7 @@ func NewConsumer(client goredis.UniversalClient, group string, opts ...ConsumerO
 		maxRetries:       defaultMaxRetries,
 		maxPayloadSize:   defaultStreamMaxPayloadSize,
 		handlerTimeout:   handlerShutdownTimeout,
+		shutdownGrace:    handlerShutdownTimeout,
 		deadLetterMaxLen: defaultDeadLetterMaxLen,
 	}
 	for _, o := range opts {
@@ -413,6 +470,13 @@ func NewConsumer(client goredis.UniversalClient, group string, opts ...ConsumerO
 	if c.metrics == nil {
 		c.metrics = defaultConsumerMetrics()
 	}
+	// Reject claimMinIdle that cannot cover a full handler+ack window: a
+	// too-small idle threshold lets XAUTOCLAIM reassign a message whose
+	// handler is still running, making concurrent duplicate delivery routine.
+	minSafeClaim := c.handlerTimeout + ackTimeout
+	if c.claimMinIdle <= minSafeClaim {
+		panic("redisstream: claimMinIdle must exceed handlerTimeout+ackTimeout; raise WithClaimMinIdle when raising WithHandlerTimeout")
+	}
 	return c, nil
 }
 
@@ -427,6 +491,7 @@ func (c *Consumer) ready() error {
 		c.maxRetries < 0 ||
 		c.maxPayloadSize < 0 ||
 		c.handlerTimeout <= 0 ||
+		c.shutdownGrace <= 0 ||
 		c.deadLetterMaxLen < 0 ||
 		c.metrics == nil {
 		return kitstream.ErrInvalidStream
@@ -501,6 +566,7 @@ func (c *Consumer) cloneForStream() (*Consumer, error) {
 		maxRetries:       c.maxRetries,
 		maxPayloadSize:   c.maxPayloadSize,
 		handlerTimeout:   c.handlerTimeout,
+		shutdownGrace:    c.shutdownGrace,
 		deadLetterStream: c.deadLetterStream,
 		deadLetterMaxLen: c.deadLetterMaxLen,
 		metrics:          c.metrics,
@@ -512,7 +578,22 @@ func (c *Consumer) consumeOnce(ctx context.Context, stream string, handler Handl
 	dlStream := c.deadLetterStream
 	if dlStream == "" {
 		dlStream = stream + ".dead"
+		// Default DLQ name must pass the same key-shape rules as explicit
+		// WithDeadLetterStream names (max length, no whitespace/control).
+		if err := redis.ValidateName(dlStream, "dead-letter stream"); err != nil {
+			return err
+		}
 	}
+	// Self-feed guard: dead-lettering into the source stream would XADD a
+	// fresh entry that is redelivered via ">", fails again deterministically,
+	// and is dead-lettered again — an infinite hot loop.
+	if dlStream == stream {
+		return fmt.Errorf("redisstream: dead-letter stream must not equal source stream")
+	}
+
+	// Resolve metric labels once per session (hot path uses these).
+	c.sessionStreamLabel = streamMetricLabel(stream)
+	c.sessionGroupLabel = groupMetricLabel(c.group)
 
 	// Ensure the consumer group exists. MKSTREAM creates the stream if needed.
 	// Using "0" as start ID means the group will process all existing messages
@@ -526,7 +607,16 @@ func (c *Consumer) consumeOnce(ctx context.Context, stream string, handler Handl
 		return redact.WrapError("create consumer group", err)
 	}
 
-	// Start the claim loop for stale pending messages.
+	// Drain this consumer's own PEL before starting the claim loop so a
+	// delayed restart (idle > claimMinIdle) does not hand the same entries
+	// to processPending and XAUTOCLAIM concurrently.
+	if err := c.processPending(ctx, stream, dlStream, handler); err != nil {
+		return err
+	}
+
+	// Start the claim loop for stale pending messages owned by other
+	// (crashed) consumers. Deferred cancel waits for the loop to exit
+	// before removeConsumer so we do not race XAUTOCLAIM with cleanup.
 	claimCtx, claimCancel := context.WithCancel(ctx)
 	claimDone := make(chan struct{})
 	go func() {
@@ -538,14 +628,8 @@ func (c *Consumer) consumeOnce(ctx context.Context, stream string, handler Handl
 		<-claimDone // Wait for the claim loop to finish before restarting.
 		c.removeConsumer(ctx, stream)
 		// Zero the pending gauge so it doesn't report stale values after shutdown.
-		c.metrics.pendingMessages.WithLabelValues(streamMetricLabel(stream), groupMetricLabel(c.group)).Set(0)
+		c.metrics.pendingMessages.WithLabelValues(c.metricLabel(stream), c.metricGroupLabel()).Set(0)
 	}()
-
-	// First, process any messages that were previously delivered to this
-	// consumer but not yet acknowledged (pending entries after restart).
-	if err := c.processPending(ctx, stream, dlStream, handler); err != nil {
-		return err
-	}
 
 	// Then read new messages.
 	return c.readNew(ctx, stream, dlStream, handler)
@@ -649,9 +733,36 @@ func (c *Consumer) processPending(ctx context.Context, stream, dlStream string, 
 		}
 
 		batch := msgs[0].Messages
+		// History-mode XREADGROUP does not increment Redis PEL delivery
+		// counters. Re-claim via XCLAIM (MinIdle 0) so each processPending
+		// redelivery counts toward maxRetries; without this, session restarts
+		// could re-run a poison message indefinitely while RetryCount stays
+		// frozen (only XCLAIM/XAUTOCLAIM/">" deliveries bump the counter).
+		ids := make([]string, len(batch))
+		for i, m := range batch {
+			ids[i] = m.ID
+		}
+		claimed, claimErr := c.client.XClaim(ctx, &goredis.XClaimArgs{
+			Stream:   stream,
+			Group:    c.group,
+			Consumer: c.consumer,
+			MinIdle:  0,
+			Messages: ids,
+		}).Result()
+		if claimErr != nil {
+			c.logger.Warn("xclaim during processPending failed; using history batch without delivery bump",
+				redact.String("stream", stream),
+				redact.Error(claimErr),
+			)
+			claimed = batch
+		} else if len(claimed) == 0 {
+			// Entries vanished between read and claim (trimmed/acked elsewhere).
+			lastID = batch[len(batch)-1].ID
+			continue
+		}
 		// Batch-fetch delivery counts for pending messages to avoid N+1.
-		retryCounts := c.batchDeliveryCounts(ctx, stream, batch)
-		for _, raw := range batch {
+		retryCounts := c.batchDeliveryCounts(ctx, stream, claimed)
+		for _, raw := range claimed {
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -701,12 +812,9 @@ const (
 	ackTimeout = 10 * time.Second
 
 	// handlerShutdownTimeout is the default bound on a single handler
-	// invocation. It doubles as the grace period given to a handler that is
-	// still running when the parent context is cancelled: the handler context
-	// is detached from parent cancellation so an in-flight handler can keep
-	// working (up to this timeout) instead of being killed immediately,
-	// preventing avoidable mid-work aborts and duplicate processing on
-	// shutdown. Override per-consumer with [WithHandlerTimeout].
+	// invocation and the default [WithShutdownGrace]. Override the run bound
+	// with [WithHandlerTimeout] and the post-cancel grace with
+	// [WithShutdownGrace] independently.
 	handlerShutdownTimeout = 30 * time.Second
 )
 
@@ -718,6 +826,64 @@ func streamDetachedTimeout(ctx context.Context, timeout time.Duration) (context.
 		panic("redisstream: nil ctx")
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+}
+
+// streamHandlerContext builds the per-message handler context.
+//
+// The context is detached from parent cancellation so an in-flight handler
+// is not killed the instant shutdown is signalled, but after parent cancel
+// only shutdownGrace remains (capped by handlerTimeout). When the parent is
+// already cancelled at dispatch time the grace applies immediately.
+func streamHandlerContext(parent context.Context, handlerTimeout, shutdownGrace time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		panic("redisstream: nil ctx")
+	}
+	if handlerTimeout <= 0 {
+		panic("redisstream: handlerTimeout must be positive")
+	}
+	if shutdownGrace <= 0 {
+		panic("redisstream: shutdownGrace must be positive")
+	}
+	base := context.WithoutCancel(parent)
+	// Parent already cancelled at dispatch: only allow the shutdown grace
+	// (still capped by the handler run bound).
+	select {
+	case <-parent.Done():
+		d := shutdownGrace
+		if handlerTimeout < d {
+			d = handlerTimeout
+		}
+		return context.WithTimeout(base, d)
+	default:
+	}
+
+	ctx, cancel := context.WithTimeout(base, handlerTimeout)
+	// Watch parent: once cancelled, force-cancel the handler after grace.
+	stop := make(chan struct{})
+	var stopOnce sync.Once
+	stopWatch := func() { stopOnce.Do(func() { close(stop) }) }
+	go func() {
+		select {
+		case <-parent.Done():
+			timer := time.NewTimer(shutdownGrace)
+			select {
+			case <-timer.C:
+				cancel()
+			case <-stop:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			}
+		case <-stop:
+		}
+	}()
+	return ctx, func() {
+		stopWatch()
+		cancel()
+	}
 }
 
 // handleMessage parses, dispatches, and handles the result of a single message.
@@ -735,19 +901,20 @@ func (c *Consumer) handleMessage(ctx context.Context, stream, dlStream string, r
 	}
 
 	// Give the handler a shutdown-aware context: detach from parent
-	// cancellation (retaining context values) and bound it by the configured
-	// handler timeout. This grace period lets an in-flight handler complete
-	// its work when shutdown is signaled mid-dispatch, rather than being
-	// killed immediately — whether the parent is cancelled before or during
-	// the call. The timeout still guarantees the handler cannot run forever.
-	handlerCtx, handlerCancel := streamDetachedTimeout(ctx, c.handlerTimeout)
+	// cancellation (retaining context values), bound by handlerTimeout for
+	// normal operation, and by shutdownGrace once the parent is cancelled so
+	// a long WithHandlerTimeout does not pin Consume for its full duration
+	// during graceful shutdown (review-15).
+	handlerCtx, handlerCancel := streamHandlerContext(ctx, c.handlerTimeout, c.shutdownGrace)
 	defer handlerCancel()
 
 	start := time.Now()
 	err := c.callHandler(handlerCtx, handler, msg)
 	duration := time.Since(start)
 
-	c.metrics.processingDuration.WithLabelValues(streamMetricLabel(stream), groupMetricLabel(c.group)).Observe(duration.Seconds())
+	streamLabel := c.metricLabel(stream)
+	groupLabel := c.metricGroupLabel()
+	c.metrics.processingDuration.WithLabelValues(streamLabel, groupLabel).Observe(duration.Seconds())
 
 	// Use a detached context for post-handler operations (ACK, dead-letter).
 	// The handler may have cancelled the parent context, but these operations
@@ -769,12 +936,17 @@ func (c *Consumer) handleMessage(ctx context.Context, stream, dlStream string, r
 				redact.String("redis_id", raw.ID),
 				redact.Error(ackErr),
 			)
+			// Do not count as consumed: the message remains in the PEL and
+			// will be redelivered. Counting here double-counts on the
+			// successful second pass (matches deadLetter's XACK-fail policy).
+			return
 		}
-		c.metrics.messagesConsumed.WithLabelValues(streamMetricLabel(stream), groupMetricLabel(c.group)).Inc()
+		c.clearLocalDelivery(raw.ID)
+		c.metrics.messagesConsumed.WithLabelValues(streamLabel, groupLabel).Inc()
 		return
 	}
 
-	c.metrics.messagesFailed.WithLabelValues(streamMetricLabel(stream), groupMetricLabel(c.group)).Inc()
+	c.metrics.messagesFailed.WithLabelValues(streamLabel, groupLabel).Inc()
 
 	// Check if the error is permanent (no retry will help).
 	if apperror.IsPermanent(err) {
@@ -785,13 +957,21 @@ func (c *Consumer) handleMessage(ctx context.Context, stream, dlStream string, r
 			redact.Error(err),
 		)
 		c.deadLetter(ackCtx, stream, dlStream, raw, "permanent_error")
+		c.clearLocalDelivery(raw.ID)
 		return
 	}
 
 	// Use pre-fetched retry count if available, otherwise fetch via XPENDING.
+	// When XPENDING fails open with 0 (unknown), fall back to a process-local
+	// counter so poison messages still reach maxRetries and dead-letter.
 	deliveryCount := knownRetryCount
 	if deliveryCount < 0 {
 		deliveryCount = c.getDeliveryCount(ackCtx, stream, raw.ID)
+	}
+	if deliveryCount <= 0 {
+		deliveryCount = c.bumpLocalDelivery(raw.ID)
+	} else {
+		c.noteLocalDelivery(raw.ID, deliveryCount)
 	}
 	c.handleRetryOrDeadLetter(ackCtx, stream, dlStream, raw, msg, deliveryCount, err)
 }
@@ -802,7 +982,7 @@ func (c *Consumer) deadLetterInvalidMessage(ctx context.Context, stream, dlStrea
 		redact.String("redis_id", raw.ID),
 		redact.Error(err),
 	)
-	c.metrics.messagesFailed.WithLabelValues(streamMetricLabel(stream), groupMetricLabel(c.group)).Inc()
+	c.metrics.messagesFailed.WithLabelValues(c.metricLabel(stream), c.metricGroupLabel()).Inc()
 
 	ackCtx, ackCancel := streamDetachedTimeout(ctx, ackTimeout)
 	defer ackCancel()
@@ -831,11 +1011,13 @@ func (c *Consumer) handleRetryOrDeadLetter(ackCtx context.Context, stream, dlStr
 			redact.Error(err),
 		)
 		c.deadLetter(ackCtx, stream, dlStream, raw, "max_retries_exceeded")
+		c.clearLocalDelivery(raw.ID)
 		return
 	}
 
-	// Leave the message in pending — it will be redelivered on next
-	// processPending() call or claimed by another consumer.
+	// Leave the message in pending. Under healthy operation the claim loop
+	// redelivers it after claimMinIdle (usually to this same consumer);
+	// processPending only re-runs after a consumeOnce session restart.
 	c.logger.Warn("message processing failed, will retry",
 		redact.String("stream", stream),
 		redact.String("redis_id", raw.ID),
@@ -845,3 +1027,58 @@ func (c *Consumer) handleRetryOrDeadLetter(ackCtx context.Context, stream, dlStr
 		redact.Error(err),
 	)
 }
+
+// metricLabel returns the session-cached stream metric label, falling back
+// to a fresh computation when called outside consumeOnce (tests).
+func (c *Consumer) metricLabel(stream string) string {
+	if c.sessionStreamLabel != "" {
+		return c.sessionStreamLabel
+	}
+	return streamMetricLabel(stream)
+}
+
+// metricGroupLabel returns the session-cached group metric label.
+func (c *Consumer) metricGroupLabel() string {
+	if c.sessionGroupLabel != "" {
+		return c.sessionGroupLabel
+	}
+	return groupMetricLabel(c.group)
+}
+
+// bumpLocalDelivery increments and returns the process-local delivery
+// count for id. Used when XPENDING cannot supply a retry count.
+func (c *Consumer) bumpLocalDelivery(id string) int64 {
+	c.localDeliveryMu.Lock()
+	defer c.localDeliveryMu.Unlock()
+	if c.localDelivery == nil {
+		c.localDelivery = make(map[string]int64)
+	}
+	c.localDelivery[id]++
+	return c.localDelivery[id]
+}
+
+// noteLocalDelivery records an observed Redis delivery count so a later
+// XPENDING failure can continue from at least that attempt number.
+func (c *Consumer) noteLocalDelivery(id string, count int64) {
+	if count <= 0 {
+		return
+	}
+	c.localDeliveryMu.Lock()
+	defer c.localDeliveryMu.Unlock()
+	if c.localDelivery == nil {
+		c.localDelivery = make(map[string]int64)
+	}
+	if count > c.localDelivery[id] {
+		c.localDelivery[id] = count
+	}
+}
+
+// clearLocalDelivery drops tracking for a finished (acked/dead-lettered) id.
+func (c *Consumer) clearLocalDelivery(id string) {
+	c.localDeliveryMu.Lock()
+	defer c.localDeliveryMu.Unlock()
+	if c.localDelivery != nil {
+		delete(c.localDelivery, id)
+	}
+}
+

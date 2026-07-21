@@ -2,7 +2,6 @@ package idempotencytest
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -353,6 +352,4 @@ func testGetOnMissingKeyReturnsMiss(t *testing.T, factory Factory) {
 	assert.False(t, mismatch, "missing key must NOT signal mismatch even with fingerprint")
 	assert.Nil(t, resp)
 
-	// Suppress "unused" warning on errors.Is paths some backends might want to add.
-	_ = errors.Is
 }

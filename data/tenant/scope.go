@@ -8,11 +8,13 @@ import (
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 )
 
-// ErrAnonymousScope is returned by [FromContext] when the request
-// context carries no tenant ID. Services that intentionally accept
-// anonymous traffic must check for this sentinel and provide their
-// own fallback (typically rejecting the call with apperror.AuthRequired).
-var ErrAnonymousScope = errors.New("data/tenant: context has no tenant ID")
+// ErrAnonymousScope is returned when a Scope cannot be constructed
+// because no tenant ID is available — either [NewScope] received a
+// zero [coretenant.ID], or [FromContext] found none on the request
+// context. Services that intentionally accept anonymous traffic must
+// check for this sentinel and provide their own fallback (typically
+// rejecting the call with apperror.AuthRequired).
+var ErrAnonymousScope = errors.New("data/tenant: tenant ID is required")
 
 // Scope binds operations to a single [coretenant.ID]. Constructors
 // in data backends accept a Scope rather than reading the tenant ID
@@ -24,9 +26,9 @@ type Scope struct {
 	id coretenant.ID
 }
 
-// NewScope returns a Scope for id. Returns an error if id is the
-// zero value (use ErrAnonymousScope-style handling at the call
-// site if your service has an opt-in anonymous path).
+// NewScope returns a Scope for id. Returns [ErrAnonymousScope] if id
+// is the zero value (use sentinel handling at the call site if your
+// service has an opt-in anonymous path).
 func NewScope(id coretenant.ID) (Scope, error) {
 	if id.IsZero() {
 		return Scope{}, ErrAnonymousScope
@@ -92,6 +94,9 @@ func (s Scope) IsZero() bool { return s.id.IsZero() }
 // out-of-range "$0"/"$-1" that only surfaces later as an obscure
 // pgx error at query time.
 func (s Scope) WhereClause(currentArgCount int) (clause string, tenantArg any) {
+	if s.IsZero() {
+		panic("data/tenant: WhereClause called on zero-value Scope")
+	}
 	if currentArgCount < 0 {
 		panic(fmt.Sprintf("data/tenant: WhereClause: negative currentArgCount %d", currentArgCount))
 	}
@@ -107,5 +112,8 @@ func (s Scope) WhereClause(currentArgCount int) (clause string, tenantArg any) {
 // Returns an error if any part contains characters
 // [coretenant.KeyFor] rejects.
 func (s Scope) Key(parts ...string) (string, error) {
+	if s.IsZero() {
+		return "", ErrAnonymousScope
+	}
 	return coretenant.KeyFor(s.id, parts...)
 }

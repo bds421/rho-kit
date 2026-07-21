@@ -284,7 +284,7 @@ func TestGet_OversizeValueErrorsBeforeAllocation(t *testing.T) {
 	require.NoError(t, err)
 
 	// Foreign writer stores 128 bytes — twice the cap.
-	require.NoError(t, client.Set(context.Background(), "poisoned", make([]byte, 128), time.Minute).Err())
+	require.NoError(t, client.Set(context.Background(), "test:poisoned", make([]byte, 128), time.Minute).Err())
 
 	_, err = rc.Get(context.Background(), "poisoned")
 	require.ErrorIs(t, err, sharedcache.ErrValueTooLarge,
@@ -302,8 +302,8 @@ func TestMGet_OversizeValueDroppedSilently(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	require.NoError(t, client.Set(ctx, "ok", []byte("payload"), time.Minute).Err())
-	require.NoError(t, client.Set(ctx, "poisoned", make([]byte, 128), time.Minute).Err())
+	require.NoError(t, client.Set(ctx, "test:ok", []byte("payload"), time.Minute).Err())
+	require.NoError(t, client.Set(ctx, "test:poisoned", make([]byte, 128), time.Minute).Err())
 
 	out, err := rc.MGet(ctx, []string{"ok", "poisoned", "missing"})
 	require.NoError(t, err)
@@ -333,10 +333,10 @@ func TestMGet_WrongTypeKeyDoesNotFailBatch(t *testing.T) {
 			require.NoError(t, err)
 
 			ctx := context.Background()
-			require.NoError(t, client.Set(ctx, "ok", []byte("payload"), time.Minute).Err())
+			require.NoError(t, client.Set(ctx, "test:ok", []byte("payload"), time.Minute).Err())
 			// Co-tenant plants a list under "poisoned": STRLEN/GET both
 			// return WRONGTYPE for it.
-			require.NoError(t, client.RPush(ctx, "poisoned", "a", "b").Err())
+			require.NoError(t, client.RPush(ctx, "test:poisoned", "a", "b").Err())
 
 			out, err := rc.MGet(ctx, []string{"ok", "poisoned", "missing"})
 			require.NoError(t, err, "a single wrong-typed key must not fail the whole batch")
@@ -413,7 +413,7 @@ func TestGet_PreStrlenOversizeCountsMiss(t *testing.T) {
 	rc, _ := newTestCacheWithRegistry(t, WithCacheMaxValueSize(64))
 	ctx := context.Background()
 
-	require.NoError(t, rc.client.Set(ctx, "poisoned", make([]byte, 128), time.Minute).Err())
+	require.NoError(t, rc.client.Set(ctx, "test:poisoned", make([]byte, 128), time.Minute).Err())
 	_, err := rc.Get(ctx, "poisoned")
 	require.ErrorIs(t, err, sharedcache.ErrValueTooLarge)
 
@@ -452,7 +452,7 @@ func TestGet_TOCTOUOversizeCountsMiss(t *testing.T) {
 	ctx := context.Background()
 	// STRLEN (faked to 0) passes the cap, but GET returns 128 real bytes,
 	// tripping the post-GET TOCTOU guard.
-	require.NoError(t, real.Set(ctx, "poisoned", make([]byte, 128), time.Minute).Err())
+	require.NoError(t, real.Set(ctx, "test:poisoned", make([]byte, 128), time.Minute).Err())
 
 	_, err = rc.Get(ctx, "poisoned")
 	require.ErrorIs(t, err, sharedcache.ErrValueTooLarge,
@@ -471,9 +471,9 @@ func TestMGetUncapped_NonStringReplyCountsMiss(t *testing.T) {
 	rc, _ := newTestCacheWithRegistry(t, WithCacheMaxValueSize(0))
 	ctx := context.Background()
 
-	require.NoError(t, rc.client.Set(ctx, "ok", []byte("payload"), time.Minute).Err())
+	require.NoError(t, rc.client.Set(ctx, "test:ok", []byte("payload"), time.Minute).Err())
 	// A list under "wrong" makes MGET return a non-string reply for it.
-	require.NoError(t, rc.client.RPush(ctx, "wrong", "a", "b").Err())
+	require.NoError(t, rc.client.RPush(ctx, "test:wrong", "a", "b").Err())
 
 	out, err := rc.MGet(ctx, []string{"ok", "wrong", "missing"})
 	require.NoError(t, err)

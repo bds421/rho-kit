@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -154,25 +153,24 @@ func TestHeadersWithinBound_RejectsOversize(t *testing.T) {
 	}
 }
 
-// maximalValidHeaders builds the largest headers map ValidateCachedResponse
-// accepts: MaxCachedHeaders distinct names at the name-length cap, each with
-// MaxCachedHeaderValues values at the value-length cap. Used to prove the
-// size gate admits any legitimate row.
+// maximalValidHeaders builds a headers map that sits at the
+// ValidateCachedResponse total-byte budget (MaxCachedHeadersBytes) with
+// as much per-value bulk as the contract allows. Per-field maxes alone
+// (64 headers × 64 × 8KiB) far exceed the total budget, so this fixture
+// packs one large value under a short name until the total cap is full.
 func maximalValidHeaders() map[string][]string {
-	headers := make(map[string][]string, idempotency.MaxCachedHeaders)
-	value := strings.Repeat("v", idempotency.MaxCachedHeaderValueBytes)
-	for i := 0; i < idempotency.MaxCachedHeaders; i++ {
-		// Header names allow alphanumerics; pad a unique numeric suffix out
-		// to the name cap so each entry is at the maximum encoded size.
-		suffix := fmt.Sprintf("%d", i)
-		name := "h" + suffix + strings.Repeat("x", idempotency.MaxCachedHeaderNameBytes-1-len(suffix))
-		values := make([]string, idempotency.MaxCachedHeaderValues)
-		for j := range values {
-			values[j] = value
-		}
-		headers[name] = values
+	// Leave a few bytes of headroom for the name so total stays <= cap.
+	name := "H"
+	valueLen := idempotency.MaxCachedHeadersBytes - len(name)
+	if valueLen > idempotency.MaxCachedHeaderValueBytes {
+		valueLen = idempotency.MaxCachedHeaderValueBytes
 	}
-	return headers
+	if valueLen < 1 {
+		valueLen = 1
+	}
+	return map[string][]string{
+		name: {strings.Repeat("v", valueLen)},
+	}
 }
 
 // TestIntervalSeconds_RoundsSubSecondUp guards the TTL precision fix:
@@ -196,5 +194,35 @@ func TestIntervalSeconds_RoundsSubSecondUp(t *testing.T) {
 		if got := intervalSeconds(c.in); got != c.want {
 			t.Errorf("intervalSeconds(%s) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestHeadersWithinBound_AdmitsEscapeHeavyValues pins that the size gate
+// budgets for JSON string escaping of '"' and '\\' (each doubles in
+// the text form octet_length measures). Without the 2× factor a
+// value full of quotes at the per-value cap would serialize past a
+// raw-size gate and permanently break Get for a legitimately stored row.
+func TestHeadersWithinBound_AdmitsEscapeHeavyValues(t *testing.T) {
+	// Stay within MaxCachedHeadersBytes (total) while maxing escape cost:
+	// one header, one value of quotes at the per-value cap (or total budget).
+	name := "H"
+	valueLen := idempotency.MaxCachedHeaderValueBytes
+	if valueLen+len(name) > idempotency.MaxCachedHeadersBytes {
+		valueLen = idempotency.MaxCachedHeadersBytes - len(name)
+	}
+	headers := map[string][]string{
+		name: {strings.Repeat(`"`, valueLen)},
+	}
+	resp := idempotency.CachedResponse{StatusCode: 200, Headers: headers}
+	if err := idempotency.ValidateCachedResponse(resp); err != nil {
+		t.Fatalf("escape-heavy headers must be valid: %v", err)
+	}
+	encoded, err := json.Marshal(headers)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !headersWithinBound(int64(len(encoded))) {
+		t.Fatalf("headersWithinBound(%d) = false for escape-heavy headers; bound %d is too small",
+			len(encoded), maxCachedHeadersBytes)
 	}
 }

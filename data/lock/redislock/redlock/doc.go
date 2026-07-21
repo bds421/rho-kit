@@ -4,12 +4,20 @@
 // # When to use this package
 //
 // Reach for [QuorumLocker] when your deployment requires lock
-// correctness across the failure of a single Redis instance — for
+// availability across the failure of a single Redis instance — for
 // example, when one node sits in each of N availability zones and a
 // zone-loss must not silently release every lock. The kit's
 // single-instance [redislock.Locker] does NOT satisfy this property:
 // it relies on Redis replication, which is asynchronous, so a
 // failover can hand a lock to two holders simultaneously.
+//
+// Quorum protects against node loss; it does NOT provide fencing
+// tokens. A holder that stalls past TTL (GC pause, slow I/O) can still
+// overlap with a second acquirer. Schema migrations and other
+// correctness-critical mutations still need an application-layer fence
+// or a database-level lock (see [redislock] package limitations and
+// data/lock/pgadvisory). Prefer "lock durability across node failure"
+// over "lock correctness" when describing this package.
 //
 // # When NOT to use this package
 //

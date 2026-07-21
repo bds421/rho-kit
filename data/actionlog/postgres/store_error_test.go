@@ -21,8 +21,8 @@ func TestClassifyInsertError_SeqCollisionIsTyped(t *testing.T) {
 	// verbatim through Error() across a trust boundary.
 	pgErr := &pgconn.PgError{
 		Code:           uniqueViolation,
-		Message:        `duplicate key value violates unique constraint "action_log_entries_tenant_id_seq_key"`,
-		ConstraintName: "action_log_entries_tenant_id_seq_key",
+		Message:        `duplicate key value violates unique constraint "idx_action_log_entries_tenant_seq"`,
+		ConstraintName: tenantSeqConstraint,
 		Detail:         "Key (tenant_id, seq)=(tenant-secret, 1) already exists.",
 	}
 
@@ -31,6 +31,7 @@ func TestClassifyInsertError_SeqCollisionIsTyped(t *testing.T) {
 
 	// Callers can branch on the collision without touching pgconn.
 	assert.ErrorIs(t, got, ErrSeqCollision)
+	assert.NotErrorIs(t, got, ErrDuplicateID)
 
 	// The original driver error stays in the chain for triage on the log path.
 	var unwrapped *pgconn.PgError
@@ -42,6 +43,23 @@ func TestClassifyInsertError_SeqCollisionIsTyped(t *testing.T) {
 	assert.Contains(t, msg, ErrSeqCollision.Error())
 	assert.NotContains(t, msg, "tenant-secret")
 	assert.NotContains(t, msg, "already exists")
+}
+
+// TestClassifyInsertError_PrimaryKeyIsPermanent pins that a 23505 on the
+// id primary key is NOT ErrSeqCollision (retrying the same id forever is
+// wrong) and surfaces as ErrDuplicateID instead.
+func TestClassifyInsertError_PrimaryKeyIsPermanent(t *testing.T) {
+	pgErr := &pgconn.PgError{
+		Code:           uniqueViolation,
+		Message:        `duplicate key value violates unique constraint "action_log_entries_pkey"`,
+		ConstraintName: "action_log_entries_pkey",
+		Detail:         "Key (id)=(entry-secret) already exists.",
+	}
+	got := classifyInsertError(pgErr)
+	require.Error(t, got)
+	assert.ErrorIs(t, got, ErrDuplicateID)
+	assert.NotErrorIs(t, got, ErrSeqCollision)
+	assert.NotContains(t, got.Error(), "entry-secret")
 }
 
 // TestClassifyInsertError_NonCollisionIsOpaque confirms that errors which are
@@ -63,6 +81,14 @@ func TestClassifyInsertError_NonCollisionIsOpaque(t *testing.T) {
 			name: "plain non-pg error",
 			err:  errors.New("connection reset by peer"),
 		},
+		{
+			name: "unknown 23505 constraint",
+			err: &pgconn.PgError{
+				Code:           uniqueViolation,
+				ConstraintName: "some_other_unique_idx",
+				Message:        "duplicate key",
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,7 +96,8 @@ func TestClassifyInsertError_NonCollisionIsOpaque(t *testing.T) {
 			require.Error(t, got)
 
 			assert.NotErrorIs(t, got, ErrSeqCollision,
-				"only a 23505 unique violation may map to ErrSeqCollision")
+				"only the tenant_seq unique violation may map to ErrSeqCollision")
+			assert.NotErrorIs(t, got, ErrDuplicateID)
 			assert.True(t, strings.HasPrefix(got.Error(), "actionlog/postgres: append"),
 				"non-collision insert failures keep the opaque append wrap, got %q", got.Error())
 		})

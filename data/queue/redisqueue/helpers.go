@@ -54,7 +54,8 @@ func (q *Queue) updateProcessingDepth(ctx context.Context, queue string) {
 		return
 	}
 	label := queueMetricLabel(queue)
-	q.metrics.queueDepth.WithLabelValues(label).Set(float64(info.Pending))
+	// Align with Len/DepthCheck: pending work includes retry backlog.
+	q.metrics.queueDepth.WithLabelValues(label).Set(float64(info.Pending + info.Retry))
 	q.metrics.processingDepth.WithLabelValues(label).Set(float64(info.Active))
 	q.metrics.dlqDepth.WithLabelValues(label).Set(float64(info.Archived))
 }

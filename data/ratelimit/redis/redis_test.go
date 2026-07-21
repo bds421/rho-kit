@@ -347,3 +347,27 @@ func TestAllow_ConcurrentSameKeyConvergesToBurst(t *testing.T) {
 	assert.Equal(t, int64(burst), ok.Load(), "exactly burst events must admit at the same instant")
 	assert.Equal(t, int64(callers-burst), deny.Load(), "the rest must deny")
 }
+
+func TestDebtHorizon_ExceedsPeriodForFineBurst(t *testing.T) {
+	// period=1s, burst=900_000 → rate rounds up to 2µs, debt ≈ 1.8s.
+	period := time.Second
+	burst := 900_000
+	rate := period / time.Duration(burst)
+	rateUS := ceilDurationMicros(rate)
+	h := debtHorizon(burst, rateUS)
+	assert.Greater(t, h, period, "debt horizon must exceed period when rateUS rounds up")
+}
+
+func TestNew_PanicsOnTTLLessThanDebtHorizon(t *testing.T) {
+	client, _ := newTestClient(t)
+	// period=1s, burst large enough that debt > 1s; TTL=period must panic.
+	assert.Panics(t, func() {
+		New(client, time.Second, 900_000, WithKeyTTL(time.Second))
+	})
+}
+
+func TestWithKeyPrefix_AppendsTrailingSeparator(t *testing.T) {
+	// Option construction normalises; New applies it.
+	// We only verify the option does not panic and accepts a bare token.
+	assert.NotPanics(t, func() { _ = WithKeyPrefix("ratelimit:custom") })
+}

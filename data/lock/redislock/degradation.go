@@ -76,7 +76,7 @@ func (dl *DegradedLocker) checkHealth(ctx context.Context) error {
 	if dl.conn.Healthy() {
 		return nil
 	}
-	if err := dl.policy.OnUnavailable(ctx); err != nil {
+	if err := redis.ApplyDegradation(ctx, dl.conn, dl.policy); err != nil {
 		return redact.WrapSentinel(ErrUnavailable, err)
 	}
 	return nil

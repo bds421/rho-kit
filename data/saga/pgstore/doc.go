@@ -2,8 +2,7 @@
 //
 // Schema: a single saga_instances table holds one row per instance
 // with the state machine fields plus JSONB columns for the per-step
-// outputs and the compensated-index list. Apply the migration shipped
-// in `migrations/` via the kit-migrate runner.
+// outputs and the compensated-index list. Apply [Migrations] (embedded from `migrations/`) via the kit-migrate runner.
 //
 // # Use this package when
 //

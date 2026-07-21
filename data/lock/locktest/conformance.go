@@ -29,6 +29,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("AcquireOnHeldKeyReturnsContended", func(t *testing.T) { testAcquireContended(t, factory) })
 	t.Run("AcquireAfterReleaseSucceeds", func(t *testing.T) { testAcquireAfterRelease(t, factory) })
 	t.Run("DoubleReleaseReturnsErrLockLost", func(t *testing.T) { testDoubleReleaseLost(t, factory) })
+	t.Run("StaleHolderCannotReleaseOrExtendNewHolder", func(t *testing.T) { testStaleHolderCannotTakeover(t, factory) })
 	t.Run("ExtendOnHeldLockSucceeds", func(t *testing.T) { testExtendHeld(t, factory) })
 	t.Run("ExtendOnReleasedLockReturnsFalse", func(t *testing.T) { testExtendReleased(t, factory) })
 	t.Run("DifferentKeysDoNotConflict", func(t *testing.T) { testDifferentKeys(t, factory) })
@@ -93,6 +94,39 @@ func testDoubleReleaseLost(t *testing.T, factory Factory) {
 	err = got.Release(ctx)
 	require.Error(t, err, "Release on an already-released Lock must return an error")
 	assert.ErrorIs(t, err, lock.ErrLockLost, "the error MUST be lock.ErrLockLost so callers can errors.Is detect it")
+}
+
+// testStaleHolderCannotTakeover pins the ownership-token contract: after
+// holder A releases (or would have TTL-expired) and holder B acquires the
+// same key, A's Release must return lock.ErrLockLost and A's Extend must
+// return (false, nil) while B still owns the lock. A backend that DELs by
+// key instead of by owner token would silently drop B's live lock here.
+func testStaleHolderCannotTakeover(t *testing.T, factory Factory) {
+	l := factory(t)
+	ctx := context.Background()
+	const key = "key-stale-takeover"
+
+	a, ok, err := l.Acquire(ctx, key)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, a.Release(ctx))
+
+	b, ok, err := l.Acquire(ctx, key)
+	require.NoError(t, err)
+	require.True(t, ok, "after A released, B must acquire")
+	require.NotNil(t, b)
+	defer func() { _ = b.Release(ctx) }()
+
+	err = a.Release(ctx)
+	require.Error(t, err, "stale holder Release must not succeed against B's hold")
+	assert.ErrorIs(t, err, lock.ErrLockLost, "stale Release MUST be lock.ErrLockLost")
+
+	extended, err := a.Extend(ctx)
+	require.NoError(t, err, "stale Extend is a lost-race, not a backend error")
+	assert.False(t, extended, "stale holder must not extend B's lock")
+
+	// B still owns the lock and can release cleanly.
+	require.NoError(t, b.Release(ctx))
 }
 
 func testExtendHeld(t *testing.T, factory Factory) {

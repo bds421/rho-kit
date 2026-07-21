@@ -66,6 +66,21 @@ func NewCursorSigner(key []byte) (*CursorSigner, error) {
 	}, nil
 }
 
+// Close zeroes the retained signing key so a process that no longer needs
+// the signer cannot leave key material resident in memory. Callers should
+// treat a closed signer as unusable rather than relying on Encode to
+// return "". Idempotent; safe for concurrent use with in-flight Encode /
+// Decode callers (the [secret.String.Zero] path holds an internal mutex
+// against [secret.String.Use]). Always returns nil so the signature
+// matches [io.Closer].
+func (s *CursorSigner) Close() error {
+	if s == nil || s.key == nil {
+		return nil
+	}
+	s.key.Zero()
+	return nil
+}
+
 // Encode renders the keyset position (occurredAt, id) as a signed,
 // URL-safe string. Returns "" when id is empty — store implementations
 // pass "" to indicate "no more pages" so the empty case must round-trip

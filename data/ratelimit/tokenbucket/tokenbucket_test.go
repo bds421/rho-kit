@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -89,8 +90,11 @@ func TestNew_PanicsOnInvalidParams(t *testing.T) {
 	}{
 		{name: "zero capacity", capacity: 0, refill: 1},
 		{name: "negative capacity", capacity: -1, refill: 1},
+		{name: "fractional capacity below one", capacity: 0.5, refill: 1},
+		{name: "capacity just below one", capacity: 0.999, refill: 1},
 		{name: "nan capacity", capacity: math.NaN(), refill: 1},
 		{name: "infinite capacity", capacity: math.Inf(1), refill: 1},
+		{name: "capacity above MaxInt", capacity: float64(math.MaxInt) * 2, refill: 1},
 		{name: "zero refill", capacity: 1, refill: 0},
 		{name: "nan refill", capacity: 1, refill: math.NaN()},
 		{name: "infinite refill", capacity: 1, refill: math.Inf(1)},
@@ -165,13 +169,9 @@ func TestRefill_HighRateAllowsImmediateRetry(t *testing.T) {
 // satisfy a 1-token reservation. Allow surfaces
 // [ratelimit.ErrInvalidLimiter] so callers learn at first use.
 func TestNew_FractionalCapacityRejectsAllRequests(t *testing.T) {
-	l := New(0.5, 1)
-	t.Cleanup(func() { _ = l.Close() })
-
-	ok, retry, err := l.Allow(context.Background(), "k")
-	assert.False(t, ok)
-	assert.Zero(t, retry)
-	assert.ErrorIs(t, err, ratelimit.ErrInvalidLimiter)
+	// capacity in (0,1) would truncate to burst=0; New now panics instead
+	// of constructing a permanently-broken limiter.
+	assert.Panics(t, func() { New(0.5, 10) })
 }
 
 func mustAllow(t *testing.T, l *Limiter, key string) bool {
@@ -283,4 +283,50 @@ func TestAllow_HonorsCancelledContext(t *testing.T) {
 	ok, _, err = l.Allow(context.Background(), "k")
 	require.NoError(t, err)
 	require.True(t, ok)
+}
+
+func TestNew_PanicsOnFractionalCapacityBelowOne(t *testing.T) {
+	assert.Panics(t, func() { New(0.5, 1) })
+}
+
+func TestNew_PanicsOnCapacityAboveMaxInt(t *testing.T) {
+	assert.Panics(t, func() { New(float64(math.MaxInt)+1e10, 1) })
+}
+
+// TestAllow_ConcurrentDeniesDoNotBurnTokens pins that a storm of concurrent
+// denies on an empty bucket must not permanently deplete tokens via the
+// ReserveN+CancelAt lastEvent interaction in x/time/rate. After the storm,
+// advancing one full refill interval must admit again.
+func TestAllow_ConcurrentDeniesDoNotBurnTokens(t *testing.T) {
+	now := time.Now()
+	var mu sync.Mutex
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	// capacity 1, refill 1/sec — empty after one admit.
+	l := New(1, 1, WithClock(clock), WithoutSweeper())
+	require.True(t, mustAllow(t, l, "k"))
+
+	const storm = 64
+	var wg sync.WaitGroup
+	for i := 0; i < storm; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, _, err := l.Allow(context.Background(), "k")
+			require.NoError(t, err)
+			assert.False(t, ok)
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	now = now.Add(time.Second)
+	mu.Unlock()
+
+	ok, _, err := l.Allow(context.Background(), "k")
+	require.NoError(t, err)
+	assert.True(t, ok, "after one refill interval, concurrent denials must not have burned the token")
 }

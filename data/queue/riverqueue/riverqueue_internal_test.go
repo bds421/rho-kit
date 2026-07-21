@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/core/v2/apperror"
 	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 )
 
@@ -102,7 +103,40 @@ func TestEnvelopeWorker_WorkRejectsInvalidEnvelopeBeforeHandler(t *testing.T) {
 			err := tt.worker.Work(context.Background(), &river.Job[envelopeArgs]{Args: tt.args})
 
 			assert.True(t, errors.Is(err, tt.wantErr), "err=%v", err)
+			var cancel *river.JobCancelError
+			assert.ErrorAs(t, err, &cancel, "invalid envelopes must JobCancel (no retry)")
 			assert.False(t, called)
 		})
 	}
+}
+
+func TestEnvelopeWorker_WorkPermanentErrorJobCancels(t *testing.T) {
+	permanent := apperror.NewPermanent("handler will never succeed")
+	w := NewEnvelopeWorker(func(context.Context, kitqueue.Message) error {
+		return permanent
+	})
+
+	err := w.Work(context.Background(), &river.Job[envelopeArgs]{
+		Args: envelopeArgs{ID: "msg-1", Type: "user.created", Payload: []byte(`{}`)},
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, permanent)
+	var cancel *river.JobCancelError
+	assert.ErrorAs(t, err, &cancel, "permanent errors must JobCancel so River discards without retry")
+}
+
+func TestEnvelopeWorker_WorkTransientErrorRemainsRetryable(t *testing.T) {
+	transient := errors.New("downstream 503")
+	w := NewEnvelopeWorker(func(context.Context, kitqueue.Message) error {
+		return transient
+	})
+
+	err := w.Work(context.Background(), &river.Job[envelopeArgs]{
+		Args: envelopeArgs{ID: "msg-1", Type: "user.created", Payload: []byte(`{}`)},
+	})
+
+	require.ErrorIs(t, err, transient)
+	var cancel *river.JobCancelError
+	assert.False(t, errors.As(err, &cancel), "transient errors must remain retryable")
 }

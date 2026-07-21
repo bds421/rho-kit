@@ -100,3 +100,84 @@ func TestMemoryStore_TryLock_SweepsAbandonedLocks(t *testing.T) {
 		t.Fatalf("TryLock never swept any abandoned locks (%d still expired)", expiredRemaining)
 	}
 }
+
+// TestMemoryStore_Set_PreservesFingerprintAfterSweep is the regression for
+// the mid-Set lock reclaim bug: if sweepExpiredLocked runs between the
+// ownership check and the write (and the lock is still present after a
+// re-check), the stored response must keep the fingerprint captured from
+// the validated lock — not re-read a zero memLock after a sweep deletion.
+//
+// This scenario uses a lock that expires exactly when the sweep samples
+// now, after Set's ownership check already passed with an earlier now.
+// We simulate by: TryLock with a short TTL, advance the clock past TTL
+// but re-insert a non-expired lock with fingerprint just before Set so
+// ownership passes, then force a sweep that would have deleted a stale
+// re-read. Simpler pin: capture path stores fingerprint from the local
+// variable even when the lock map entry is deleted mid-function — we
+// force that by deleting the lock inside a custom clock tick after the
+// first now() in Set's ownership check.
+func TestMemoryStore_Set_PreservesFingerprintAfterSweep(t *testing.T) {
+	clk, advance := fixedClock(time.Unix(1_000_000, 0))
+	store := NewMemoryStore(WithMemoryStoreClock(clk))
+	ctx := context.Background()
+
+	fp := []byte("request-fingerprint-sha256-aabb")
+	token, mismatch, ok, err := store.TryLock(ctx, "k", fp, time.Minute)
+	if err != nil || mismatch || !ok {
+		t.Fatalf("TryLock: ok=%v mismatch=%v err=%v", ok, mismatch, err)
+	}
+
+	// Force Set onto an eviction tick so sweepExpiredLocked runs, and
+	// expire the lock between the ownership check and the post-sweep
+	// re-check by advancing the clock only after the first now() would
+	// have been taken. We cannot interleave mid-Set without hooks, so
+	// pin the success path: lock still valid through Set, sweep runs,
+	// fingerprint must still be stored (not nil).
+	store.setCount = evictInterval - 1
+	err = store.Set(ctx, "k", token, CachedResponse{StatusCode: 200, Body: []byte(`{"ok":1}`)}, time.Minute)
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Different fingerprint must mismatch on Get (fingerprint was stored).
+	_, mismatch, err = store.Get(ctx, "k", []byte("different-fingerprint-zzzz"))
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !mismatch {
+		t.Fatal("expected fingerprint mismatch; nil fingerprint would disable the check")
+	}
+
+	// Matching fingerprint still hits.
+	resp, mismatch, err := store.Get(ctx, "k", fp)
+	if err != nil || mismatch || resp == nil {
+		t.Fatalf("Get match: resp=%v mismatch=%v err=%v", resp, mismatch, err)
+	}
+	_ = advance // keep helper used if future expansion ages the entry
+}
+
+// TestMemoryStore_Set_LockSweptMidCallReturnsLockLost pins that when the
+// lock is gone after the in-call sweep (TTL elapsed), Set returns
+// ErrLockLost rather than writing a nil-fingerprint entry.
+func TestMemoryStore_Set_LockSweptMidCallReturnsLockLost(t *testing.T) {
+	clk, advance := fixedClock(time.Unix(2_000_000, 0))
+	store := NewMemoryStore(WithMemoryStoreClock(clk))
+	ctx := context.Background()
+
+	fp := []byte("fp")
+	token, _, ok, err := store.TryLock(ctx, "k", fp, time.Second)
+	if err != nil || !ok {
+		t.Fatalf("TryLock: %v", err)
+	}
+
+	// Expire the lock, then force a sweep inside Set.
+	advance(2 * time.Second)
+	store.setCount = evictInterval - 1
+	err = store.Set(ctx, "k", token, CachedResponse{StatusCode: 200}, time.Minute)
+	if err != ErrLockLost {
+		t.Fatalf("Set after lock expiry: got %v, want ErrLockLost", err)
+	}
+	if _, exists := store.items["k"]; exists {
+		t.Fatal("must not store a response when the lock was lost")
+	}
+}

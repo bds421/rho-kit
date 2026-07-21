@@ -97,7 +97,9 @@ type Message struct {
 	Type      string          `json:"type"`
 	Payload   json.RawMessage `json:"payload"`
 	Timestamp time.Time       `json:"timestamp"`
-	Attempt   int             `json:"attempt"`
+	// Attempt is populated by the consumer at dispatch (asynq retry count + 1).
+	// Any producer-supplied value is overwritten and ignored on consume.
+	Attempt int `json:"attempt"`
 }
 
 // NewMessage creates a Message with a UUID v7 ID and current timestamp.
@@ -348,6 +350,16 @@ func WithLogger(l *slog.Logger) Option {
 // WithMaxRetries sets the maximum processing attempts before the task is
 // archived (asynq's "dead-letter"). Negative values panic. Zero archives
 // on the first handler error.
+//
+// This option is applied at [Queue.Enqueue] / [Queue.EnqueueBatch] time as
+// a per-task asynq option. Configuring it on a Process-only Queue instance
+// (a worker that never enqueues) is a silent no-op — the values baked in by
+// the producer at enqueue time win. Set it on the producer Queue.
+//
+// Note: zero means "archive on first error" here. The redisstream sibling's
+// identically-named option treats 0 as "never dead-letter (nack forever)".
+// Do not copy a zero value between the two packages expecting the same
+// behaviour.
 func WithMaxRetries(n int) Option {
 	if n < 0 {
 		panic("redisqueue: WithMaxRetries requires n >= 0")
@@ -390,17 +402,17 @@ func WithMetricsRegisterer(reg prometheus.Registerer) Option {
 // affect asynq's task-claim semantics (asynq scopes claims by server
 // instance, not by a kit-supplied identifier).
 //
-// Panics on IDs longer than [maxConsumerIDLen] or containing characters
-// outside [A-Za-z0-9_-]. Long IDs inflate every log line; ':' and other
-// delimiters confuse downstream operators reading logs.
+// Panics on empty IDs, IDs longer than [maxConsumerIDLen], or IDs
+// containing characters outside [A-Za-z0-9_-]. Long IDs inflate every
+// log line; ':' and other delimiters confuse downstream operators
+// reading logs. Pass a concrete ID — omit the option entirely to keep
+// the auto-generated default.
 func WithConsumerID(id string) Option {
-	if id != "" && !validConsumerID(id) {
+	if !validConsumerID(id) {
 		panic("redisqueue: WithConsumerID requires a safe bounded token")
 	}
 	return func(q *Queue) {
-		if id != "" {
-			q.consumerID = id
-		}
+		q.consumerID = id
 	}
 }
 
@@ -450,6 +462,10 @@ func WithConcurrency(n int) Option {
 //
 // The name is retained for v2 API compatibility; treat it as a per-handler run
 // timeout.
+//
+// Like [WithMaxRetries], this option is applied only at Enqueue time as a
+// per-task asynq.Timeout. Setting it on a Process-only worker Queue is a
+// silent no-op; configure it on the producing Queue.
 func WithInvisibilityTimeout(d time.Duration) Option {
 	if d <= 0 {
 		panic("redisqueue: WithInvisibilityTimeout requires a positive duration")
@@ -507,8 +523,10 @@ func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 		invisibilityTO:    0,
 		shutdownTimeout:   defaultShutdownTimeout,
 		healthCheckPeriod: defaultHealthCheckInterval,
-		metrics:           defaultMetrics(),
-		activeQueues:      make(map[string]bool),
+		// metrics left nil so WithMetricsRegisterer can install a custom
+		// registry without first materialising collectors on
+		// prometheus.DefaultRegisterer (sibling redisstream pattern).
+		activeQueues: make(map[string]bool),
 	}
 	q.serverFactory = func(cfg asynq.Config) asynqServer {
 		return asynq.NewServerFromRedisClient(client, cfg)
@@ -518,6 +536,9 @@ func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 			panic("redisqueue: NewQueue option must not be nil")
 		}
 		o(q)
+	}
+	if q.metrics == nil {
+		q.metrics = defaultMetrics()
 	}
 	if q.consumerID == "" {
 		q.consumerID = newQueueConsumerID()
@@ -597,8 +618,8 @@ func isSharedConnectionCloseErr(err error) bool {
 // Message.ID is not a safe identifier (see [validateMessageID]).
 // Caller-supplied IDs are used as asynq's per-queue unique TaskID: while a
 // task with the same (queue, id) still exists, a second Enqueue returns
-// [asynq.ErrTaskIDConflict] wrapped in a non-nil error, giving FR-059
-// idempotency.
+// [kitqueue.ErrDuplicateMessage] (errors.Is), giving FR-059 idempotency
+// without requiring callers to import hibiken/asynq.
 //
 // The dedupe window lasts only as long as the task exists. asynq deletes a
 // completed task immediately unless retention is configured, and the default
@@ -613,26 +634,7 @@ func (q *Queue) Enqueue(ctx context.Context, queue string, msg Message) error {
 	if err := redis.ValidateName(queue, "queue"); err != nil {
 		return err
 	}
-	if err := validateMessage(msg, q.maxPayloadSize); err != nil {
-		return err
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return redact.WrapError("marshal message", err)
-	}
-	// Belt-and-braces cap on the full envelope (validateMessage already
-	// bounded the inner Payload). Use the same headroom the handler side
-	// applies so a max-sized payload is never rejected after marshal
-	// purely because the JSON envelope adds structural bytes.
-	if envelopeLimit := q.envelopeLimit(); envelopeLimit > 0 && len(data) > envelopeLimit {
-		return &kitqueue.MessageTooLargeError{Size: len(data), Limit: envelopeLimit}
-	}
-	task := asynq.NewTask(envelopeTaskType, data)
-	if _, err := q.client.EnqueueContext(ctx, task, q.enqueueOpts(queue, msg.ID)...); err != nil {
-		return redact.WrapError("asynq enqueue", err)
-	}
-	q.metrics.messagesEnqueued.WithLabelValues(queueMetricLabel(queue)).Inc()
-	return nil
+	return q.enqueueOne(ctx, queue, queueMetricLabel(queue), msg, "", false)
 }
 
 // EnqueueBatch adds multiple messages by issuing one asynq.Enqueue per
@@ -653,31 +655,62 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 	if len(msgs) > kitqueue.MaxBatchMessages {
 		return kitqueue.ErrBatchTooLarge
 	}
+	// Pre-validate every message before any Redis write so a later invalid
+	// entry cannot leave earlier batch members already enqueued.
 	for i, msg := range msgs {
 		if err := validateMessage(msg, q.maxPayloadSize); err != nil {
 			return redact.WrapError(fmt.Sprintf("message [%d]", i), err)
 		}
 	}
-
 	label := queueMetricLabel(queue)
-	envelopeLimit := q.envelopeLimit()
 	for i, msg := range msgs {
-		data, err := json.Marshal(msg)
-		if err != nil {
-			return redact.WrapError(fmt.Sprintf("marshal message [%d]", i), err)
+		if err := q.enqueueOne(ctx, queue, label, msg, fmt.Sprintf(" [%d]", i), true); err != nil {
+			return err
 		}
-		// Envelope cap matches the handler side (maxPayloadSize +
-		// queueEnvelopeOverhead) so a max-sized payload that survived
-		// validateMessage cannot fail this belt-and-braces check.
-		if envelopeLimit > 0 && len(data) > envelopeLimit {
-			return redact.WrapError(fmt.Sprintf("message [%d]", i), &kitqueue.MessageTooLargeError{Size: len(data), Limit: envelopeLimit})
-		}
-		task := asynq.NewTask(envelopeTaskType, data)
-		if _, err := q.client.EnqueueContext(ctx, task, q.enqueueOpts(queue, msg.ID)...); err != nil {
-			return redact.WrapError(fmt.Sprintf("asynq enqueue [%d]", i), err)
-		}
-		q.metrics.messagesEnqueued.WithLabelValues(label).Inc()
 	}
+	return nil
+}
+
+// enqueueOne marshals, size-caps, and enqueues a single message.
+// Shared by Enqueue and EnqueueBatch so send-side envelope limits stay in
+// one place (mirrored by handlerForQueue via envelopeLimit).
+// When prevalidated is true, validateMessage is skipped (batch pre-pass).
+// idxSuffix is appended to error prefixes for batch index context ("" or " [i]").
+func (q *Queue) enqueueOne(ctx context.Context, queue, label string, msg Message, idxSuffix string, prevalidated bool) error {
+	if !prevalidated {
+		if err := validateMessage(msg, q.maxPayloadSize); err != nil {
+			if idxSuffix == "" {
+				return err
+			}
+			return redact.WrapError(fmt.Sprintf("message%s", idxSuffix), err)
+		}
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return redact.WrapError(fmt.Sprintf("marshal message%s", idxSuffix), err)
+	}
+	// Belt-and-braces cap on the full envelope (validateMessage already
+	// bounded the inner Payload). Use the same headroom the handler side
+	// applies so a max-sized payload is never rejected after marshal
+	// purely because the JSON envelope adds structural bytes.
+	if envelopeLimit := q.envelopeLimit(); envelopeLimit > 0 && len(data) > envelopeLimit {
+		tooLarge := &kitqueue.MessageTooLargeError{Size: len(data), Limit: envelopeLimit}
+		if idxSuffix == "" {
+			return tooLarge
+		}
+		return redact.WrapError(fmt.Sprintf("message%s", idxSuffix), tooLarge)
+	}
+	task := asynq.NewTask(envelopeTaskType, data)
+	if _, err := q.client.EnqueueContext(ctx, task, q.enqueueOpts(queue, msg.ID)...); err != nil {
+		if errors.Is(err, asynq.ErrTaskIDConflict) {
+			return fmt.Errorf("%w", kitqueue.ErrDuplicateMessage)
+		}
+		if idxSuffix == "" {
+			return redact.WrapError("asynq enqueue", err)
+		}
+		return redact.WrapError(fmt.Sprintf("asynq enqueue%s", idxSuffix), err)
+	}
+	q.metrics.messagesEnqueued.WithLabelValues(label).Inc()
 	return nil
 }
 
@@ -757,7 +790,7 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 		q.activeQueuesMu.Unlock()
 	}()
 
-	cfg := q.buildServerConfig(queue, handler)
+	cfg := q.buildServerConfig(queue)
 	srv := q.serverFactory(cfg)
 
 	depthStop := q.startDepthPoller(ctx, queue)
@@ -802,7 +835,7 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 // than via a per-server knob — this method only translates server-scoped
 // concerns. Crash recovery uses asynq's lease/heartbeat model and is not
 // configured here.
-func (q *Queue) buildServerConfig(queue string, _ Handler) asynq.Config {
+func (q *Queue) buildServerConfig(queue string) asynq.Config {
 	return asynq.Config{
 		Concurrency: q.concurrency,
 		Queues: map[string]int{
@@ -824,8 +857,8 @@ func (q *Queue) handlerForQueue(queue string, handler Handler) asynq.Handler {
 	label := queueMetricLabel(queue)
 	return asynq.HandlerFunc(func(ctx context.Context, task *asynq.Task) error {
 		data := task.Payload()
-		if q.maxPayloadSize > 0 && len(data) > q.maxPayloadSize+queueEnvelopeOverhead {
-			err := fmt.Errorf("payload+envelope exceeds %d bytes", q.maxPayloadSize+queueEnvelopeOverhead)
+		if limit := q.envelopeLimit(); limit > 0 && len(data) > limit {
+			err := fmt.Errorf("payload+envelope exceeds %d bytes", limit)
 			q.logger.Error("discarding oversize queue message",
 				redact.String("queue", queue),
 				redact.Error(err),
@@ -934,9 +967,14 @@ func (q *Queue) healthCheckFunc(queue string) func(error) {
 	}
 }
 
-// Len returns the number of pending (waiting) messages in the named queue
-// using asynq's Inspector. Reports zero (no error) for an unknown queue,
-// matching pre-v2 LLEN-of-missing-key behaviour.
+// Len returns the depth signal used by [DepthCheck]: asynq Pending plus
+// Retry. Scheduled tasks are excluded (they are intentional future work,
+// not overflow). Reports zero (no error) for an unknown queue, matching
+// pre-v2 LLEN-of-missing-key behaviour.
+//
+// asynq.Inspector.GetQueueInfo does not accept a context; Len races the
+// call against ctx so a cancelled or timed-out health probe cannot hang
+// indefinitely on a black-holed Redis.
 func (q *Queue) Len(ctx context.Context, queue string) (int64, error) {
 	if err := q.ready(); err != nil {
 		return 0, err
@@ -944,20 +982,32 @@ func (q *Queue) Len(ctx context.Context, queue string) (int64, error) {
 	if err := redis.ValidateName(queue, "queue"); err != nil {
 		return 0, err
 	}
-	// asynq.Inspector.GetQueueInfo doesn't accept a context; wrap a
-	// best-effort cancellation check so callers passing a cancelled ctx
-	// don't pay for a Redis round-trip.
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	info, err := q.inspector.GetQueueInfo(queue)
-	if err != nil {
-		if isQueueNotFoundError(err) {
-			return 0, nil
-		}
-		return 0, redact.WrapError("inspect queue", err)
+	type result struct {
+		info *asynq.QueueInfo
+		err  error
 	}
-	return int64(info.Pending), nil
+	ch := make(chan result, 1)
+	go func() {
+		info, err := q.inspector.GetQueueInfo(queue)
+		ch <- result{info: info, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case r := <-ch:
+		if r.err != nil {
+			if isQueueNotFoundError(r.err) {
+				return 0, nil
+			}
+			return 0, redact.WrapError("inspect queue", r.err)
+		}
+		// Pending (waiting) + Retry (failed, awaiting re-run) form the
+		// backlog health signal; Active is already in flight.
+		return int64(r.info.Pending + r.info.Retry), nil
+	}
 }
 
 // isQueueNotFoundError detects asynq's "queue does not exist" condition.
@@ -988,7 +1038,10 @@ func (a asynqSlogAdapter) log(level slog.Level, args ...any) {
 	if a.logger == nil {
 		return
 	}
-	msg := fmt.Sprint(args...)
+	// asynq formats internal errors into the message text; treat the whole
+	// message as untrusted broker text so host:port / task ids are redacted
+	// consistently with the rest of this package.
+	msg := redact.ErrorValue(fmt.Errorf("%s", fmt.Sprint(args...)))
 	a.logger.Log(context.Background(), level, msg, redact.String("consumer_id", a.consumerID))
 }
 

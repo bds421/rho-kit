@@ -19,10 +19,17 @@
 // Idle keys are evicted by an optional sweeper goroutine (see
 // [WithSweeper]); without one the map can grow unbounded for
 // high-cardinality keyspaces.
+//
+// Hot-path concurrency: the TAT map is sharded so distinct keys do not
+// serialise on a single limiter-wide mutex (same motivation as the
+// tokenbucket package's per-key locking). Sweep passes are budgeted so
+// a high-cardinality map walk cannot stall every Allow for a full O(n)
+// scan under the shard lock.
 package gcra
 
 import (
 	"context"
+	"hash/fnv"
 	"sync"
 	"time"
 	"weak"
@@ -35,22 +42,41 @@ import (
 // remove cold keys whose theoretical arrival time has elapsed.
 const defaultSweepInterval = 5 * time.Minute
 
+// numShards spreads Allow contention across independent mutexes. 16 is
+// enough to keep high-cardinality multi-tenant traffic from pile-ups on
+// one lock while remaining cheap to iterate in the sweeper.
+const numShards = 16
+
+// sweepBudget caps how many map entries a single sweep pass inspects
+// per shard under that shard's mutex. Mirrors idempotency.MemoryStore's
+// evictBudget: unbounded full-map walks under the same lock Allow needs
+// create avoidable hot-path tail latency.
+const sweepBudget = 256
+
 // Limiter is a per-key GCRA [ratelimit.Limiter].
 //
-// Safe for concurrent use — Allow takes the internal mutex; Close is
-// idempotent and joins the sweeper goroutine.
+// Safe for concurrent use — Allow takes the per-shard mutex for the
+// key; Close is idempotent and joins the sweeper goroutine.
 type Limiter struct {
 	rate  time.Duration
 	burst int
 	now   clock.Func
 
-	mu   sync.Mutex
-	tats map[string]time.Time
+	shards [numShards]gcraShard
 
 	sweepInterval time.Duration
-	stopOnce      sync.Once
-	stopCh        chan struct{}
-	doneCh        chan struct{}
+	// sweepCursor resumes budgeted sweeps across ticks so cold keys
+	// in every shard are eventually reclaimed even when a single pass
+	// hits the budget.
+	sweepCursor uint32
+	stopOnce    sync.Once
+	stopCh      chan struct{}
+	doneCh      chan struct{}
+}
+
+type gcraShard struct {
+	mu   sync.Mutex
+	tats map[string]time.Time
 }
 
 // Option configures a [Limiter].
@@ -106,10 +132,12 @@ func New(period time.Duration, burst int, opts ...Option) *Limiter {
 		rate:          rate,
 		burst:         burst,
 		now:           time.Now,
-		tats:          make(map[string]time.Time),
 		sweepInterval: defaultSweepInterval,
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
+	}
+	for i := range l.shards {
+		l.shards[i].tats = make(map[string]time.Time)
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -129,8 +157,13 @@ func New(period time.Duration, burst int, opts ...Option) *Limiter {
 }
 
 func (l *Limiter) ready() error {
-	if l == nil || l.rate <= 0 || l.burst < 1 || l.now == nil || l.tats == nil {
+	if l == nil || l.rate <= 0 || l.burst < 1 || l.now == nil {
 		return ratelimit.ErrInvalidLimiter
+	}
+	for i := range l.shards {
+		if l.shards[i].tats == nil {
+			return ratelimit.ErrInvalidLimiter
+		}
 	}
 	return nil
 }
@@ -182,18 +215,39 @@ func runSweeper(weakL weak.Pointer[Limiter], interval time.Duration, stopCh, don
 	}
 }
 
+func (l *Limiter) shardIndex(key string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return h.Sum32() % numShards
+}
+
+func (l *Limiter) shardFor(key string) *gcraShard {
+	return &l.shards[l.shardIndex(key)]
+}
+
 // sweep drops keys whose TAT is in the past — those have no live
-// rate-limit state (the next Allow would treat them as fresh).
+// rate-limit state (the next Allow would treat them as fresh). Each
+// pass walks at most sweepBudget entries of one shard (round-robin
+// via sweepCursor) so Allow on other keys is not blocked by a full
+// high-cardinality map scan.
 func (l *Limiter) sweep() {
 	if l.ready() != nil {
 		return
 	}
 	now := l.now()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for k, tat := range l.tats {
+	idx := l.sweepCursor % numShards
+	l.sweepCursor++
+	sh := &l.shards[idx]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	n := 0
+	for k, tat := range sh.tats {
+		if n >= sweepBudget {
+			return
+		}
+		n++
 		if !tat.After(now) {
-			delete(l.tats, k)
+			delete(sh.tats, k)
 		}
 	}
 }
@@ -218,14 +272,15 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 	}
 	now := l.now()
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	sh := l.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 
 	if err := ctxErr(ctx); err != nil {
 		return false, 0, err
 	}
 
-	tat, ok := l.tats[key]
+	tat, ok := sh.tats[key]
 	if !ok || tat.Before(now) {
 		tat = now
 	}
@@ -233,7 +288,7 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 	if now.Before(allowAt) {
 		return false, allowAt.Sub(now) + time.Nanosecond, nil
 	}
-	l.tats[key] = tat.Add(l.rate)
+	sh.tats[key] = tat.Add(l.rate)
 	return true, 0, nil
 }
 
@@ -242,7 +297,12 @@ func (l *Limiter) Len() int {
 	if l == nil {
 		return 0
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.tats)
+	total := 0
+	for i := range l.shards {
+		sh := &l.shards[i]
+		sh.mu.Lock()
+		total += len(sh.tats)
+		sh.mu.Unlock()
+	}
+	return total
 }

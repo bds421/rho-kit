@@ -217,9 +217,11 @@ func validateHeader(name, value string) error {
 	if !utf8.ValidString(value) {
 		return fmt.Errorf("%w: value contains invalid UTF-8", ErrInvalidHeader)
 	}
-	for i := 0; i < len(value); i++ {
-		switch value[i] {
-		case 0, '\r', '\n':
+	// Reject the full C0 control range plus DEL, matching ID/Type validation
+	// via unicode.IsControl. Headers may be forwarded into logs and other
+	// transports; accepting ESC/etc. enables log/terminal injection.
+	for _, r := range value {
+		if unicode.IsControl(r) {
 			return fmt.Errorf("%w: value contains invalid character", ErrInvalidHeader)
 		}
 	}

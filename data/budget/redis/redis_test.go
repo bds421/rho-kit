@@ -520,3 +520,53 @@ func TestRetryAfter_UsesSameTimeSource(t *testing.T) {
 	assert.InDelta(t, float64(expectedRetry), float64(retry), float64(time.Millisecond),
 		"retry-after must be derived from the pinned clock, not the host clock")
 }
+
+// TestRefund_LargeBalanceStaysIntegerParseable is the runtime pin for the
+// refundScript %.14g fix: after a Refund that leaves used >= 1e14, a
+// subsequent Consume must still succeed (INCRBY requires an integer string).
+// Without string.format("%.0f", newUsed), Redis stores "1e+14" and INCRBY
+// fails permanently on that key.
+func TestRefund_LargeBalanceStaysIntegerParseable(t *testing.T) {
+	client, _ := newTestClient(t)
+	// Cap high enough that used can sit at 1e14 after a partial refund.
+	const cap int64 = 200_000_000_000_000  // 2e14
+	const used int64 = 150_000_000_000_000 // 1.5e14
+	b := budgetredis.New(client, cap, time.Hour)
+	ctx := context.Background()
+
+	ok, _, _, err := b.Consume(ctx, "big", used)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// Refund 1 so newUsed = 1.5e14 - 1 still >= 1e14 (scientific-notation danger zone).
+	rem, err := b.Refund(ctx, "big", 1)
+	require.NoError(t, err)
+	assert.Equal(t, cap-(used-1), rem)
+
+	// Next Consume must still work — proves the counter is still an integer string.
+	ok, rem, _, err = b.Consume(ctx, "big", 1)
+	require.NoError(t, err, "Consume after large Refund must not fail with non-integer counter")
+	require.True(t, ok)
+	assert.Equal(t, cap-used, rem)
+}
+
+func TestWithKeyPrefix_AppendsTrailingSeparator(t *testing.T) {
+	client, _ := newTestClient(t)
+	// Prefix without trailing colon must not collide with a longer neighbour.
+	a := budgetredis.New(client, 10, time.Hour, budgetredis.WithKeyPrefix("budget:team"))
+	b := budgetredis.New(client, 10, time.Hour, budgetredis.WithKeyPrefix("budget:teamA"))
+	ctx := context.Background()
+	_, _, _, err := a.Consume(ctx, "Ax", 5)
+	require.NoError(t, err)
+	// If prefixes were concatenated without a separator, b's key "x" would
+	// share a's bucket. With the trailing ":" they must be independent.
+	ok, rem, _, err := b.Consume(ctx, "x", 5)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, int64(5), rem)
+}
+
+func TestWithKeyTTL_PanicsOnNonPositive(t *testing.T) {
+	assert.Panics(t, func() { budgetredis.WithKeyTTL(0) })
+	assert.Panics(t, func() { budgetredis.WithKeyTTL(-time.Second) })
+}

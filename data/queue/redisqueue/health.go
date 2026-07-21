@@ -11,9 +11,10 @@ import (
 // The check is non-critical by default — set DependencyCheck.Critical = true
 // after creation to make queue overflow a readiness failure.
 //
-// Each evaluation calls [Queue.Len], which delegates to asynq's
-// Inspector.GetQueueInfo (a single Lua EVAL round-trip on the queue's
-// pending-state key); cost is comparable to the pre-v2 LLEN poll.
+// Depth is [Queue.Len]: asynq Pending + Retry (not Scheduled). A systemic
+// handler failure that piles work into Retry is therefore visible to
+// readiness. Each evaluation calls Inspector.GetQueueInfo via Len, which
+// is cancelled when the health probe context ends.
 func (q *Queue) DepthCheck(queueName string, threshold int64) health.DependencyCheck {
 	return health.DependencyCheck{
 		Name: health.OpaqueCheckName("queue-depth", queueName),

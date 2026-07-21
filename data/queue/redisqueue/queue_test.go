@@ -485,13 +485,11 @@ func TestWithConsumerID_OverridesDefault(t *testing.T) {
 	assert.Equal(t, "worker-pod-7", q.ConsumerID())
 }
 
-func TestWithConsumerID_EmptyKeepsGenerated(t *testing.T) {
-	client := newTestClient(t)
-	t.Cleanup(func() { _ = client.Close() })
-
-	q := NewQueue(client, WithConsumerID(""))
-	t.Cleanup(func() { _ = q.Close() })
-	assert.NotEmpty(t, q.ConsumerID(), "empty override must not clear the auto-generated ID")
+func TestWithConsumerID_EmptyPanics(t *testing.T) {
+	assert.PanicsWithValue(t,
+		"redisqueue: WithConsumerID requires a safe bounded token",
+		func() { WithConsumerID("") },
+	)
 }
 
 func TestWithConsumerID_PanicDoesNotReflectInvalidID(t *testing.T) {

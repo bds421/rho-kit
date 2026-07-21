@@ -246,6 +246,9 @@ func SetNX(ctx context.Context, c Cache, key string, value []byte, ttl time.Dura
 	if c == nil {
 		return false, ErrInvalidCache
 	}
+	if err := ValidateKey(key); err != nil {
+		return false, err
+	}
 	if bc, ok := c.(BulkCache); ok {
 		return bc.SetNX(ctx, key, value, ttl)
 	}

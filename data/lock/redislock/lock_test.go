@@ -141,7 +141,7 @@ func TestLocker_ReleaseOnlyByOwner(t *testing.T) {
 	// Simulate another process reclaiming the key under a different
 	// token (e.g. after a TTL race). The handle no longer owns the key.
 	const foreignToken = "owned-by-someone-else"
-	require.NoError(t, mr.Set("test:lock", foreignToken))
+	require.NoError(t, mr.Set("lock:test:lock", foreignToken))
 
 	// The original handle's Release must be token-fenced: it surfaces
 	// ErrLockLost rather than silently succeeding...
@@ -151,7 +151,7 @@ func TestLocker_ReleaseOnlyByOwner(t *testing.T) {
 
 	// ...and it must NOT delete the foreign holder's key. An unfenced
 	// (unconditional DEL) release would clobber the other owner here.
-	got, getErr := mr.Get("test:lock")
+	got, getErr := mr.Get("lock:test:lock")
 	require.NoError(t, getErr)
 	assert.Equal(t, foreignToken, got,
 		"Release must not delete a key owned by a different token")
@@ -168,10 +168,37 @@ func TestLocker_ReleaseSurfacesErrLockLost(t *testing.T) {
 
 	// TTL expires, someone else takes the key.
 	mr.FastForward(2 * time.Second)
-	require.NoError(t, mr.Set("test:lock", "stolen-by-someone-else"))
+	require.NoError(t, mr.Set("lock:test:lock", "stolen-by-someone-else"))
 
 	relErr := l.Release(ctx)
 	assert.ErrorIs(t, relErr, lock.ErrLockLost)
+}
+
+// TestLocker_ReleaseTransportErrorDoesNotPoisonHandle ensures a Redis
+// transport failure on Release leaves the handle retryable. Marking the
+// handle released on every non-ok Unlock would strand a still-held lock.
+func TestLocker_ReleaseTransportErrorDoesNotPoisonHandle(t *testing.T) {
+	mr, client := setupRedis(t)
+	ctx := context.Background()
+
+	lc := redislock.NewLocker(client, redislock.WithTTL(30*time.Second))
+	l, ok, err := lc.Acquire(ctx, "test:transport-lock")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	mr.Close() // simulate transport outage
+
+	relErr := l.Release(ctx)
+	require.Error(t, relErr)
+	assert.False(t, errors.Is(relErr, lock.ErrLockLost),
+		"transport failure must not map to ErrLockLost / terminal released")
+
+	// Second attempt must still attempt the backend rather than short-circuit
+	// as double-release (ErrLockLost from the local released flag).
+	relErr2 := l.Release(ctx)
+	require.Error(t, relErr2)
+	assert.False(t, errors.Is(relErr2, lock.ErrLockLost),
+		"handle must remain retryable after transport error on Release")
 }
 
 func TestLocker_WithLockSuccess(t *testing.T) {
@@ -228,7 +255,7 @@ func TestLocker_WithLockSurfacesErrLockLost(t *testing.T) {
 
 	err := lc.WithLock(ctx, "test:lock", func(_ context.Context) error {
 		mr.FastForward(2 * time.Second)
-		if setErr := mr.Set("test:lock", "stolen-by-someone-else"); setErr != nil {
+		if setErr := mr.Set("lock:test:lock", "stolen-by-someone-else"); setErr != nil {
 			return setErr
 		}
 		return nil
@@ -245,7 +272,7 @@ func TestLocker_WithLockJoinsFnErrAndLockLost(t *testing.T) {
 
 	err := lc.WithLock(ctx, "test:lock", func(_ context.Context) error {
 		mr.FastForward(2 * time.Second)
-		if setErr := mr.Set("test:lock", "stolen-by-someone-else"); setErr != nil {
+		if setErr := mr.Set("lock:test:lock", "stolen-by-someone-else"); setErr != nil {
 			return setErr
 		}
 		return fnErr

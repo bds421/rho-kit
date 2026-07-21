@@ -32,25 +32,25 @@ var ErrTenantMismatch = errors.New("approval: request does not belong to the sco
 //
 // # TOCTOU window on state transitions (L057)
 //
-// Decide / Approve / Reject / MarkExecuted use a check-then-modify
-// pattern: TenantStore reads the row to confirm ownership, then calls
-// the inner Store's mutation method (which takes only an id). If a
-// concurrent operator action reassigns the row's TenantID between the
-// read and the write, the underlying state transition runs against
-// the reassigned tenant's record. TenantStore detects this by re-
-// reading TenantID after the write and returns ErrTenantMismatch, but
-// at that point the state transition (and any audit log entry written
-// inside the inner Store) has already happened.
+// Kit backends ([memory], [postgres]) implement the optional
+// ApproveForTenant / RejectForTenant / MarkExecutedForTenant methods;
+// TenantStore prefers those and pushes the tenant predicate into the
+// same mutation, closing the Get-then-mutate window for production
+// wiring.
 //
-// This is an interface-level limitation: the [Store] mutation methods
-// do not accept a TenantID argument, so the wrapper cannot push tenant
-// scoping into the same SQL statement that performs the transition.
+// Against a third-party [Store] that only implements the id-only
+// mutation methods, TenantStore falls back to check-then-modify: it
+// reads the row to confirm ownership, then calls the inner mutation.
+// If a concurrent operator action reassigns the row's TenantID
+// between the read and the write, the underlying state transition can
+// run against the reassigned tenant's record. TenantStore detects this
+// by re-reading TenantID after the write and returns ErrTenantMismatch,
+// but at that point the state transition (and any audit log entry
+// written inside the inner Store) has already happened.
+//
 // Operators MUST treat in-place TenantID reassignment as a privileged
-// administrative action (covered by a separate maintenance runbook)
-// and not a routine API; the wrapper's post-write check is a
-// best-effort tripwire, not a primary defense. The audit-log
-// downstream of the transition is the canonical record of which
-// tenant context invoked the action.
+// administrative action and not a routine API; the post-write check is
+// a best-effort tripwire for non-atomic backends, not a primary defense.
 type TenantStore struct {
 	inner    Store
 	tenantID string
@@ -125,9 +125,25 @@ func (t *TenantStore) Reject(ctx context.Context, id, decidedBy, reason string) 
 	return t.decideTenant(ctx, id, decidedBy, reason, false)
 }
 
+// tenantScopedMutator is optionally implemented by backends that can push
+// the tenant predicate into the same statement that performs the state
+// transition (closing the Get-then-mutate TOCTOU on TenantStore).
+type tenantScopedMutator interface {
+	ApproveForTenant(ctx context.Context, tenantID, id, decidedBy, reason string) (Request, error)
+	RejectForTenant(ctx context.Context, tenantID, id, decidedBy, reason string) (Request, error)
+	MarkExecutedForTenant(ctx context.Context, tenantID, id string) (Request, error)
+}
+
 func (t *TenantStore) decideTenant(ctx context.Context, id, decidedBy, reason string, approve bool) (Request, error) {
 	if err := t.ready(); err != nil {
 		return Request{}, err
+	}
+	// Prefer atomic tenant-scoped backends when available.
+	if m, ok := t.inner.(tenantScopedMutator); ok {
+		if approve {
+			return m.ApproveForTenant(ctx, t.tenantID, id, decidedBy, reason)
+		}
+		return m.RejectForTenant(ctx, t.tenantID, id, decidedBy, reason)
 	}
 	if _, err := t.Get(ctx, id); err != nil {
 		return Request{}, err
@@ -154,6 +170,9 @@ func (t *TenantStore) decideTenant(ctx context.Context, id, decidedBy, reason st
 func (t *TenantStore) MarkExecuted(ctx context.Context, id string) (Request, error) {
 	if err := t.ready(); err != nil {
 		return Request{}, err
+	}
+	if m, ok := t.inner.(tenantScopedMutator); ok {
+		return m.MarkExecutedForTenant(ctx, t.tenantID, id)
 	}
 	if _, err := t.Get(ctx, id); err != nil {
 		return Request{}, err

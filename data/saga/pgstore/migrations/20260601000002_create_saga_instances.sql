@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS saga_instances (
     updated_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_saga_instances_resumable
+CREATE INDEX IF NOT EXISTS idx_saga_instances_resumable
     ON saga_instances (state, updated_at)
     WHERE state IN ('pending', 'running', 'compensating');
 

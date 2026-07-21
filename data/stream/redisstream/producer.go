@@ -123,7 +123,7 @@ func WithProducerLogger(l *slog.Logger) ProducerOption {
 // for better performance). 0 disables length-based trimming. Negative values
 // panic.
 //
-// Mutually exclusive with WithRetention — if both are set, MaxLen takes precedence.
+// Mutually exclusive with [WithRetention] — [NewProducer] panics if both are set.
 func WithMaxStreamLen(n int64) ProducerOption {
 	if n < 0 {
 		panic("redisstream: WithMaxStreamLen requires n >= 0")
@@ -152,7 +152,7 @@ func WithProducerMaxPayloadSize(n int) ProducerOption {
 // one week of entries. The duration must be positive; use
 // [WithUnboundedStream] to opt out of default retention.
 //
-// Mutually exclusive with WithMaxStreamLen — if both are set, MaxLen takes precedence.
+// Mutually exclusive with [WithMaxStreamLen] — [NewProducer] panics if both are set.
 func WithRetention(d time.Duration) ProducerOption {
 	if d <= 0 {
 		panic("redisstream: WithRetention requires a positive duration")
@@ -167,11 +167,10 @@ func WithRetention(d time.Duration) ProducerOption {
 // consumer/producer naming distinction stays here because the package
 // exports both side-by-side.
 func WithProducerRegisterer(reg prometheus.Registerer) ProducerOption {
+	if reg == nil {
+		panic("redisstream: WithProducerRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+	}
 	return func(p *Producer) {
-		if reg == nil {
-			p.metrics = NewProducerMetrics()
-			return
-		}
 		p.metrics = NewProducerMetrics(WithProducerMetricsRegisterer(reg))
 	}
 }
@@ -204,6 +203,9 @@ func NewProducer(client goredis.UniversalClient, opts ...ProducerOption) *Produc
 		}
 		o(p)
 	}
+	if p.maxLen > 0 && p.retention > 0 {
+		panic("redisstream: WithMaxStreamLen and WithRetention are mutually exclusive")
+	}
 	// Materialise the default metrics only if no option supplied a registerer.
 	// Doing this eagerly before the option loop would register the
 	// redis_stream_* collector on prometheus.DefaultRegisterer even when the
@@ -221,6 +223,11 @@ func NewProducer(client goredis.UniversalClient, opts ...ProducerOption) *Produc
 	}
 	if p.maxLen == 0 && p.retention == 0 && !p.unbounded {
 		p.retention = defaultStreamRetention
+		// MINID trimming ignores consumer-group delivery state: entries
+		// never delivered (or still pending) older than retention are
+		// deleted. Callers needing longer at-least-once windows must set
+		// WithRetention / WithMaxLen explicitly, or WithUnboundedStream.
+		p.logger.Warn("redisstream: producer installed default 7-day MINID retention; undelivered/pending entries older than retention are deleted (override with WithRetention/WithMaxLen/WithUnboundedStream)")
 	}
 	return p
 }
@@ -242,6 +249,11 @@ func (p *Producer) ready() error {
 // defaultStreamRetention bounds Redis-stream growth when no
 // retention option is set (audit FR-062). 7 days is generous for
 // most event streams and prevents unbounded retention by default.
+//
+// WARNING: MINID trimming is delivery-state-unaware. A consumer group
+// down or backlogged longer than this window permanently loses messages
+// with no DLQ record. Prefer an explicit WithRetention that matches your
+// recovery SLO, or WithMaxLen when entry-count bounds are enough.
 const defaultStreamRetention = 7 * 24 * time.Hour
 
 // WithUnboundedStream opts a producer out of the default retention
@@ -274,7 +286,7 @@ func (p *Producer) Publish(ctx context.Context, stream string, msg Message) (str
 	if err := redis.ValidateName(stream, "stream"); err != nil {
 		return "", err
 	}
-	args, msgID, err := p.buildXAddArgs(stream, msg)
+	args, msgID, err := p.buildXAddArgs(stream, msg, false)
 	if err != nil {
 		return "", err
 	}
@@ -328,7 +340,9 @@ func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Messa
 	cmds := make([]*goredis.StringCmd, len(msgs))
 
 	for i, msg := range msgs {
-		args, _, err := p.buildXAddArgs(stream, msg)
+		// skipValidate: messages were already validated above; re-running
+		// json.Valid over multi-MiB payloads doubles CPU on the batch path.
+		args, _, err := p.buildXAddArgs(stream, msg, true)
 		if err != nil {
 			return nil, redact.WrapError(fmt.Sprintf("message [%d]", i), err)
 		}
@@ -384,15 +398,20 @@ func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Messa
 // resolved idempotency ID (the caller-supplied ID, or the generated UUID v7
 // when the caller left ID empty) so callers can log/observe the value that is
 // actually persisted rather than the original empty string.
-func (p *Producer) buildXAddArgs(stream string, msg Message) (*goredis.XAddArgs, string, error) {
+// When skipValidate is true the
+// caller has already run ValidateMessage (e.g. PublishBatch pre-pass); only
+// defaults for empty ID/timestamp are filled before encoding.
+func (p *Producer) buildXAddArgs(stream string, msg Message, skipValidate bool) (*goredis.XAddArgs, string, error) {
 	if msg.ID == "" {
 		msg.ID = id.New()
 	}
 	if msg.Timestamp.IsZero() {
 		msg.Timestamp = time.Now().UTC()
 	}
-	if err := ValidateMessage(msg, p.maxPayloadSize); err != nil {
-		return nil, "", err
+	if !skipValidate {
+		if err := ValidateMessage(msg, p.maxPayloadSize); err != nil {
+			return nil, "", err
+		}
 	}
 
 	values := map[string]any{

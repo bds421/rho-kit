@@ -29,19 +29,16 @@
 //
 // # Canonicalisation rule
 //
-// The signed payload is the entry's fields joined by '\n' in this exact
-// order:
+// The signed payload is a length-prefixed field form (see [canonicalForm]
+// in canonical.go). Each field is rendered as "<decimal-len>:<bytes>\n"
+// so a value containing newlines cannot shift field boundaries. Fields
+// appear in this exact order:
 //
-//	id
-//	tenant_id
-//	actor (convention: "<kind>:<id>" via httpx/middleware/auth.FormatActorFromContext)
-//	action
-//	resource
-//	outcome
-//	reason
-//	occurred_at (RFC3339Nano, UTC)
+//	id, tenant_id, actor, action, resource, outcome, reason,
+//	occurred_at (RFC3339Nano, UTC, microsecond-truncated),
 //	metadata (canonical JSON: keys sorted lexicographically; nested maps
-//	          recursively sorted; no insignificant whitespace)
+//	          recursively sorted; no insignificant whitespace),
+//	seq, prev_hash
 //
 // The signature is HMAC-SHA256(secret, canonical) hex-encoded. Use
 // [SignEntry] / [VerifyEntry] if you need to verify off-band — both are

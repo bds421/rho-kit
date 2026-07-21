@@ -135,6 +135,11 @@ type Refunder interface {
 	// reflects the refunded value but is capped at the configured
 	// per-period cap — refunds never inflate the budget past its
 	// limit.
+	//
+	// Backends that key counters by period id (e.g. budget/redis)
+	// refund the *current* window, not the window of the matching
+	// Consume. Cross-window reconcile can under-count or drop credit;
+	// see that backend's Refund godoc and V3_BREAKING_PROPOSALS.md.
 	Refund(ctx context.Context, key string, amount int64) (remaining int64, err error)
 }
 

@@ -524,6 +524,8 @@ func TestHandleMessage_HandlerDeadlineUsesConfiguredTimeout(t *testing.T) {
 	c, err := NewConsumer(client, group,
 		WithConsumerName("worker-timeout"),
 		WithHandlerTimeout(90*time.Minute),
+		// claimMinIdle must exceed handlerTimeout+ackTimeout (review-15).
+		WithClaimMinIdle(91*time.Minute),
 	)
 	require.NoError(t, err)
 
@@ -605,4 +607,66 @@ func TestHandleMessage_InFlightHandlerGetsGracePeriod(t *testing.T) {
 
 	assert.NoError(t, errDuringHandler,
 		"in-flight handler must keep a live context (grace period), not be cancelled mid-work")
+}
+
+// TestHandleMessage_ShutdownGraceCapsLongHandlerTimeout verifies that after
+// parent cancel, the handler context is cancelled within shutdownGrace even
+// when WithHandlerTimeout is much larger (review-15).
+func TestHandleMessage_ShutdownGraceCapsLongHandlerTimeout(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	stream := "test:stream:shutdown-grace"
+	group := "g"
+	dlStream := stream + ":dead"
+	require.NoError(t, client.XGroupCreateMkStream(ctx, stream, group, "0").Err())
+
+	c, err := NewConsumer(client, group,
+		WithConsumerName("worker-grace-cap"),
+		WithHandlerTimeout(30*time.Minute),
+		WithShutdownGrace(50*time.Millisecond),
+		WithClaimMinIdle(31*time.Minute),
+	)
+	require.NoError(t, err)
+
+	raw := goredis.XMessage{
+		ID: "1-0",
+		Values: map[string]any{
+			"id":      "msg-1",
+			"type":    "test.event",
+			"payload": `{"ok":true}`,
+			"ts":      time.Now().UTC().Format(time.RFC3339Nano),
+		},
+	}
+
+	dispatchCtx, cancel := context.WithCancel(context.Background())
+	// Cancel parent before dispatch so the grace path applies immediately.
+	cancel()
+
+	started := time.Now()
+	var handlerErr error
+	c.handleMessage(dispatchCtx, stream, dlStream, raw, func(hctx context.Context, _ Message) error {
+		<-hctx.Done()
+		handlerErr = hctx.Err()
+		return handlerErr
+	}, 1)
+
+	elapsed := time.Since(started)
+	assert.ErrorIs(t, handlerErr, context.DeadlineExceeded)
+	assert.Less(t, elapsed, 5*time.Second, "handler must not wait for the 30m handlerTimeout after parent cancel")
+	assert.GreaterOrEqual(t, elapsed, 40*time.Millisecond, "handler should observe roughly the shutdown grace")
+}
+
+func TestWithShutdownGrace_PanicsOnNonPositive(t *testing.T) {
+	assert.Panics(t, func() { WithShutdownGrace(0) })
+	assert.Panics(t, func() { WithShutdownGrace(-time.Second) })
+}
+
+func TestWithShutdownGrace_Default(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+	c, err := NewConsumer(client, "g")
+	require.NoError(t, err)
+	assert.Equal(t, handlerShutdownTimeout, c.shutdownGrace)
 }

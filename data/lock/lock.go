@@ -17,6 +17,12 @@ import (
 // inspect the Release return value with errors.Is(err, lock.ErrLockLost).
 var ErrLockLost = errors.New("lock: ownership lost")
 
+// ErrNotAcquired is returned by convenience wrappers ([redislock.Locker.WithLock]
+// and peers) when Acquire reports contention (ok=false) rather than a backend
+// error. Callers can errors.Is this sentinel; Acquire itself still surfaces
+// contention as (nil, false, nil).
+var ErrNotAcquired = errors.New("lock: could not acquire lock")
+
 // Lock represents an acquired distributed lock. Implementations must be safe
 // to call Release/Extend from a single goroutine; concurrent access from
 // multiple goroutines on the same Lock value is not required to be safe.

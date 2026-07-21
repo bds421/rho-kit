@@ -228,3 +228,83 @@ func (s *tenantStoreTestStore) MarkExecuted(_ context.Context, id string) (Reque
 	s.requests[id] = r
 	return r, nil
 }
+
+// TestTenantStore_PrefersAtomicForTenantMethods pins that backends implementing
+// ApproveForTenant / RejectForTenant / MarkExecutedForTenant are used so the
+// tenant predicate and state transition share one call (review-11 / L057).
+func TestTenantStore_PrefersAtomicForTenantMethods(t *testing.T) {
+	ctx := context.Background()
+	inner := &atomicTenantMutator{
+		tenantStoreTestStore: *newTenantStoreTestStore(),
+	}
+	inner.requests["r1"] = Request{
+		ID:        "r1",
+		TenantID:  "tenant-a",
+		Actor:     "agent",
+		Action:    "user.delete",
+		State:     StatePending,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	store := NewTenantStore(inner, "tenant-a")
+
+	_, err := store.Approve(ctx, "r1", "approver", "ok")
+	assert.NoError(t, err)
+	assert.True(t, inner.approveForTenantCalled, "must use ApproveForTenant")
+	assert.False(t, inner.approveCalled, "must not fall back to id-only Approve")
+
+	// Cross-tenant via atomic path returns not found without committing.
+	inner.requests["other"] = Request{
+		ID:       "other",
+		TenantID: "tenant-b",
+		State:    StatePending,
+	}
+	_, err = store.Approve(ctx, "other", "approver", "ok")
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.Equal(t, StatePending, inner.requests["other"].State)
+}
+
+type atomicTenantMutator struct {
+	tenantStoreTestStore
+	approveForTenantCalled bool
+	approveCalled          bool
+}
+
+func (s *atomicTenantMutator) Approve(ctx context.Context, id, decidedBy, reason string) (Request, error) {
+	s.approveCalled = true
+	return s.tenantStoreTestStore.Approve(ctx, id, decidedBy, reason)
+}
+
+func (s *atomicTenantMutator) ApproveForTenant(_ context.Context, tenantID, id, decidedBy, reason string) (Request, error) {
+	s.approveForTenantCalled = true
+	r, ok := s.requests[id]
+	if !ok || r.TenantID != tenantID {
+		return Request{}, ErrNotFound
+	}
+	r.State = StateApproved
+	r.DecidedBy = decidedBy
+	r.Reason = reason
+	s.requests[id] = r
+	return r, nil
+}
+
+func (s *atomicTenantMutator) RejectForTenant(_ context.Context, tenantID, id, decidedBy, reason string) (Request, error) {
+	r, ok := s.requests[id]
+	if !ok || r.TenantID != tenantID {
+		return Request{}, ErrNotFound
+	}
+	r.State = StateRejected
+	r.DecidedBy = decidedBy
+	r.Reason = reason
+	s.requests[id] = r
+	return r, nil
+}
+
+func (s *atomicTenantMutator) MarkExecutedForTenant(_ context.Context, tenantID, id string) (Request, error) {
+	r, ok := s.requests[id]
+	if !ok || r.TenantID != tenantID {
+		return Request{}, ErrNotFound
+	}
+	r.State = StateExecuted
+	s.requests[id] = r
+	return r, nil
+}

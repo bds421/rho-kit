@@ -39,6 +39,12 @@ type MemoryCache struct {
 	// missing" and both write — defeating the whole point of NX.
 	setNXMu sync.Mutex
 
+	// opsMu serialises Close against in-flight Get/Set/Delete/etc.
+	// Ops take RLock; Close takes Lock. Without this, concurrent
+	// Close closes ristretto's setBuf while another goroutine still
+	// sends on it (panic: send on closed channel).
+	opsMu sync.RWMutex
+
 	// stopSweeper signals the background nxClaims-sweeper goroutine to
 	// exit. Closed by Close.
 	stopSweeper chan struct{}
@@ -254,11 +260,18 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 	maxCost := mc.maxCost
 	numCounters := mc.numCounters
 	if maxCost <= 0 {
-		maxCost = int64(64 * 1024 * 1024)
 		if mc.maxSize > 0 {
 			maxCost = int64(mc.maxSize)
+		} else if mc.entryCost {
+			// WithEntryCost without WithMaxSize/WithMaxCost used to
+			// inherit the 64 MiB *byte* default as a ~67-million-entry
+			// cap. Prefer a 1e6-entry budget when counting entries.
+			maxCost = 1_000_000
+		} else {
+			maxCost = int64(64 * 1024 * 1024)
 		}
 	}
+	mc.maxCost = maxCost // record effective budget for inspection / tests
 	if numCounters <= 0 {
 		numCounters = int64(1_000_000)
 		if mc.maxSize > 0 {
@@ -355,8 +368,19 @@ func runNXClaimsSweeper(weakCache weak.Pointer[MemoryCache], stop <-chan struct{
 				if !ok {
 					return true
 				}
+				key, _ := k.(string)
+				// Drop expired TTL claims. Zero-TTL claims never expire
+				// by wall clock, so also drop when the underlying cache
+				// no longer holds the key (evicted/deleted) — otherwise
+				// the map grows unbounded (review-11 zero-TTL SetNX).
 				if !c.expiresAt.IsZero() && now.After(c.expiresAt) {
 					mc.nxClaims.Delete(k)
+					return true
+				}
+				if c.expiresAt.IsZero() && key != "" {
+					if _, present := mc.cache.Get(key); !present {
+						mc.nxClaims.Delete(k)
+					}
 				}
 				return true
 			})
@@ -400,6 +424,11 @@ func (mc *MemoryCache) Get(ctx context.Context, key string) ([]byte, error) {
 	if err := ValidateKey(key); err != nil {
 		return nil, err
 	}
+	mc.opsMu.RLock()
+	defer mc.opsMu.RUnlock()
+	if err := mc.readyClosed(); err != nil {
+		return nil, err
+	}
 	value, ok := mc.cache.Get(key)
 	if !ok {
 		return nil, ErrCacheMiss
@@ -426,6 +455,16 @@ func (mc *MemoryCache) Set(ctx context.Context, key string, value []byte, ttl ti
 	if ttl < 0 {
 		return fmt.Errorf("cache set: TTL must not be negative")
 	}
+	mc.opsMu.RLock()
+	defer mc.opsMu.RUnlock()
+	if err := mc.readyClosed(); err != nil {
+		return err
+	}
+	return mc.setLocked(key, value, ttl)
+}
+
+// setLocked writes under the caller's opsMu hold (RLock or Lock).
+func (mc *MemoryCache) setLocked(key string, value []byte, ttl time.Duration) error {
 	stored := make([]byte, len(value))
 	copy(stored, value)
 
@@ -443,6 +482,11 @@ func (mc *MemoryCache) Set(ctx context.Context, key string, value []byte, ttl ti
 // This is primarily useful in tests to ensure deterministic read-after-write.
 func (mc *MemoryCache) Sync() {
 	if mc == nil || mc.cache == nil {
+		return
+	}
+	mc.opsMu.RLock()
+	defer mc.opsMu.RUnlock()
+	if mc.closer != nil && mc.closer.closed.Load() {
 		return
 	}
 	mc.cache.Wait()
@@ -502,7 +546,18 @@ func (mc *MemoryCache) SetNX(ctx context.Context, key string, value []byte, ttl 
 	if err := mc.ready(); err != nil {
 		return false, err
 	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if err := ValidateKey(key); err != nil {
+		return false, err
+	}
+	if ttl < 0 {
+		return false, fmt.Errorf("cache setnx: TTL must not be negative")
+	}
+	mc.opsMu.RLock()
+	defer mc.opsMu.RUnlock()
+	if err := mc.readyClosed(); err != nil {
 		return false, err
 	}
 	mc.setNXMu.Lock()
@@ -526,13 +581,18 @@ func (mc *MemoryCache) SetNX(ctx context.Context, key string, value []byte, ttl 
 		return false, nil
 	}
 
-	if err := mc.Set(ctx, key, value, ttl); err != nil {
+	if err := mc.setLocked(key, value, ttl); err != nil {
 		// Admission rejection means the value never made it into the cache,
 		// so recording a claim would block legitimate retries against an
 		// empty slot until the recorded TTL elapsed.
 		return false, err
 	}
 	mc.cache.Wait()
+	// TinyLFU can still reject after SetWithTTL returned true (buffer
+	// processed). Re-check visibility before claiming the key.
+	if _, ok := mc.cache.Get(key); !ok {
+		return false, ErrAdmissionRejected
+	}
 
 	claim := nxClaim{}
 	if ttl > 0 {
@@ -558,6 +618,11 @@ func (mc *MemoryCache) Delete(ctx context.Context, key string) error {
 	if err := ValidateKey(key); err != nil {
 		return err
 	}
+	mc.opsMu.RLock()
+	defer mc.opsMu.RUnlock()
+	if err := mc.readyClosed(); err != nil {
+		return err
+	}
 	mc.setNXMu.Lock()
 	defer mc.setNXMu.Unlock()
 	mc.cache.Del(key)
@@ -581,6 +646,11 @@ func (mc *MemoryCache) Exists(ctx context.Context, key string) (bool, error) {
 	if err := ValidateKey(key); err != nil {
 		return false, err
 	}
+	mc.opsMu.RLock()
+	defer mc.opsMu.RUnlock()
+	if err := mc.readyClosed(); err != nil {
+		return false, err
+	}
 	_, ok := mc.cache.Get(key)
 	return ok, nil
 }
@@ -602,11 +672,17 @@ func (mc *MemoryCache) Exists(ctx context.Context, key string) (bool, error) {
 // strategy.
 //
 // Idempotent and safe for concurrent calls — the underlying ristretto
-// cache is Close()-d exactly once. MemoryCache is safe for concurrent use
-// across all methods.
+// cache is Close()-d exactly once. Safe for concurrent use with Get/Set/
+// Delete/SetNX/Exists/Sync: Close takes the exclusive opsMu lock so no
+// in-flight op can still touch ristretto after setBuf is closed.
 func (mc *MemoryCache) Close() error {
-	if err := mc.ready(); err != nil {
-		return err
+	if mc == nil || mc.cache == nil {
+		return ErrInvalidCache
+	}
+	mc.opsMu.Lock()
+	defer mc.opsMu.Unlock()
+	if mc.closer != nil && mc.closer.closed.Load() {
+		return nil
 	}
 	mc.stopBackgroundSweeper()
 	mc.closer.close()
@@ -615,6 +691,17 @@ func (mc *MemoryCache) Close() error {
 
 func (mc *MemoryCache) ready() error {
 	if mc == nil || mc.cache == nil {
+		return ErrInvalidCache
+	}
+	if mc.closer != nil && mc.closer.closed.Load() {
+		return ErrInvalidCache
+	}
+	return nil
+}
+
+// readyClosed re-checks closure under opsMu (caller must hold RLock/Lock).
+func (mc *MemoryCache) readyClosed() error {
+	if mc.closer != nil && mc.closer.closed.Load() {
 		return ErrInvalidCache
 	}
 	return nil

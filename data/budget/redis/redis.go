@@ -35,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -67,7 +68,13 @@ local cap    = tonumber(ARGV[2])
 local ttl    = tonumber(ARGV[3])
 
 if amount == 0 then
-  local cur = tonumber(redis.call("GET", KEYS[1])) or 0
+  local raw = redis.call("GET", KEYS[1])
+  local cur = tonumber(raw) or 0
+  -- Zero-amount Consume is a peek equivalent: refresh TTL when the
+  -- counter exists so the window does not expire mid-session.
+  if raw ~= false then
+    redis.call("EXPIRE", KEYS[1], ttl)
+  end
   local rem = cap - cur
   if rem < 0 then rem = 0 end
   return {1, rem}
@@ -91,7 +98,7 @@ if amount > cap - cur then
   return {0, rem}
 end
 
-local newUsed = redis.call("INCRBY", KEYS[1], amount)
+local newUsed = redis.call("INCRBY", KEYS[1], ARGV[1]) -- string ARGV keeps 64-bit precision
 redis.call("EXPIRE", KEYS[1], ttl)
 return {1, cap - newUsed}
 `)
@@ -122,6 +129,16 @@ return rem
 // floor at zero protects against an over-credit (caller refunding
 // more than was charged) inflating future Consume calls past the
 // cap — refunds should never grant more headroom than the cap.
+//
+// newUsed is written with string.format("%.0f", ...) rather than as a
+// raw Lua number. Redis serialises a Lua NUMBER SET argument with
+// %.14g; for newUsed >= 1e14 that emits scientific notation (e.g.
+// "1e+14"), after which INCRBY permanently fails with "value is not
+// an integer". Formatting to a full-precision decimal string keeps
+// the counter integer-parseable up to maxLuaExactInteger (~9e15).
+// The remaining value is also clamped to >= 0 so a counter that
+// already exceeds cap (cap lowered mid-window, shared prefix) never
+// surfaces a negative remaining.
 var refundScript = goredis.NewScript(`
 local amount = tonumber(ARGV[1])
 local cap    = tonumber(ARGV[2])
@@ -139,9 +156,11 @@ if newUsed < 0 then newUsed = 0 end
 if newUsed == 0 then
   redis.call("DEL", KEYS[1])
 else
-  redis.call("SET", KEYS[1], newUsed, "KEEPTTL")
+  redis.call("SET", KEYS[1], string.format("%.0f", newUsed), "KEEPTTL")
 end
-return cap - newUsed
+local rem = cap - newUsed
+if rem < 0 then rem = 0 end
+return rem
 `)
 
 // Budget is a per-key Redis-backed [budget.Budget].
@@ -169,6 +188,12 @@ func WithKeyPrefix(p string) Option {
 	if p == "" {
 		panic("budget/redis: WithKeyPrefix requires a non-empty prefix")
 	}
+	// Enforce a trailing separator so prefix+key is injective across
+	// instances (prefix "budget:team" + key "Ax" must not collide with
+	// prefix "budget:teamA" + key "x"). Defaults already end in ':'.
+	if !strings.HasSuffix(p, ":") {
+		p += ":"
+	}
 	if len(p) > maxKeyPrefixLen {
 		panic("budget/redis: WithKeyPrefix prefix exceeds maximum length")
 	}
@@ -194,6 +219,9 @@ const (
 // the state mid-window, defeating the cross-replica budget for that
 // key.
 func WithKeyTTL(d time.Duration) Option {
+	if d <= 0 {
+		panic("budget/redis: WithKeyTTL requires a positive duration")
+	}
 	return func(b *Budget) { b.keyTTL = d }
 }
 
@@ -247,7 +275,10 @@ func New(client goredis.UniversalClient, cap int64, period time.Duration, opts .
 	}
 	b := &Budget{
 		client: client,
-		prefix: "budget:",
+		// Config-scoped default: different (cap, period) budgets no longer
+		// share one keyspace when WithKeyPrefix is omitted. Same-config
+		// logical budgets still need WithKeyPrefix for isolation.
+		prefix: fmt.Sprintf("budget:c%d:p%d:", cap, period.Nanoseconds()),
 		cap:    cap,
 		period: period,
 		keyTTL: defaultKeyTTL(period),
@@ -389,6 +420,17 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 // Refund implements [budget.Refunder]. Refunding past the cap
 // clamps at the cap (`used` floors at zero) so refunds never
 // inflate the budget above its configured limit.
+//
+// # Window-boundary caveat
+//
+// Refund credits the *current* period bucket (computed from now), not
+// the period in which the matching Consume ran. In the estimate-then-
+// reconcile pattern (e.g. httpx/budget RoundTripper), a request charged
+// near the end of window N that completes in window N+1 refunds against
+// N+1: if N+1 already has usage the refund can under-count that window's
+// spend; if N+1 is empty the credit is dropped (script floors at 0).
+// Stay inside one period when possible. Accepting an explicit period id
+// on Refund is proposed for v3 (see V3_BREAKING_PROPOSALS.md).
 func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, error) {
 	if err := b.ready(); err != nil {
 		return 0, err

@@ -1,13 +1,9 @@
-// Package idempotency defines the Store interface and types for idempotent
-// request handling. The HTTP middleware implementation lives in
-// [httpx/middleware/idempotency], with backend-specific stores in
-// [pgstore] (PostgreSQL) and [redisstore] (Redis).
 package idempotency
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -171,6 +167,11 @@ const (
 
 	// MaxCachedHeaderValueBytes caps each response header value.
 	MaxCachedHeaderValueBytes = 8 * 1024
+
+	// MaxCachedHeadersBytes caps the sum of all header name+value
+	// bytes so a huge multi-header set cannot pass per-field caps
+	// while still being ~32 MiB when serialized.
+	MaxCachedHeadersBytes = 64 * 1024
 )
 
 // ValidateCachedResponse checks that resp can be safely stored and replayed as
@@ -187,10 +188,12 @@ func ValidateCachedResponse(resp CachedResponse) error {
 	if len(resp.Headers) > MaxCachedHeaders {
 		return fmt.Errorf("%w: header count exceeds maximum", ErrInvalidCachedResponse)
 	}
+	totalHeaderBytes := 0
 	for name, values := range resp.Headers {
 		if err := validateCachedHeaderName(name); err != nil {
 			return err
 		}
+		totalHeaderBytes += len(name)
 		if len(values) > MaxCachedHeaderValues {
 			return fmt.Errorf("%w: header value count exceeds maximum", ErrInvalidCachedResponse)
 		}
@@ -198,7 +201,11 @@ func ValidateCachedResponse(resp CachedResponse) error {
 			if err := validateCachedHeaderValue(value); err != nil {
 				return err
 			}
+			totalHeaderBytes += len(value)
 		}
+	}
+	if totalHeaderBytes > MaxCachedHeadersBytes {
+		return fmt.Errorf("%w: total header size exceeds maximum", ErrInvalidCachedResponse)
 	}
 	return nil
 }
@@ -348,10 +355,18 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 
 func (m *MemoryStore) now() time.Time { return m.clock() }
 
+
+func ctxErr(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("idempotency: nil context")
+	}
+	return ctx.Err()
+}
+
 // Get returns a cached response for the key, applying fingerprint comparison
 // if a non-nil fingerprint is supplied.
 func (m *MemoryStore) Get(ctx context.Context, key string, fingerprint []byte) (*CachedResponse, bool, error) {
-	if err := ctx.Err(); err != nil {
+	if err := ctxErr(ctx); err != nil {
 		return nil, false, err
 	}
 	if err := m.ready(); err != nil {
@@ -374,7 +389,7 @@ func (m *MemoryStore) Get(ctx context.Context, key string, fingerprint []byte) (
 		m.mu.Unlock()
 		return nil, false, nil
 	}
-	if fingerprint != nil && entry.fingerprint != nil && !bytes.Equal(entry.fingerprint, fingerprint) {
+	if fingerprint != nil && (entry.fingerprint == nil || len(entry.fingerprint) != len(fingerprint) || subtle.ConstantTimeCompare(entry.fingerprint, fingerprint) != 1) {
 		// Same Idempotency-Key, different request body fingerprint.
 		// Almost always a buggy retry; occasionally a replay attempt
 		// with mutated body. Surface so security monitoring can spot
@@ -419,7 +434,7 @@ const sweepInterval = 30 * time.Second
 // the lock for the key has been taken by another caller (or has expired).
 // Returns [ErrInvalidTTL] when ttl <= 0.
 func (m *MemoryStore) Set(ctx context.Context, key, token string, resp CachedResponse, ttl time.Duration) error {
-	if err := ctx.Err(); err != nil {
+	if err := ctxErr(ctx); err != nil {
 		return err
 	}
 	if err := m.ready(); err != nil {
@@ -438,10 +453,17 @@ func (m *MemoryStore) Set(ctx context.Context, key, token string, resp CachedRes
 	defer m.mu.Unlock()
 
 	// Verify the caller still holds the lock (token match + not expired).
+	// Capture the fingerprint from the validated lock entry *before* any
+	// opportunistic sweep: sweepExpiredLocked takes a fresh m.now() and can
+	// delete this lock if its TTL elapsed between the ownership check and
+	// the write, which would make m.locks[key] a zero value and silently
+	// store a nil fingerprint (disabling body-mismatch detection).
+	var fingerprint []byte
 	if l, ok := m.locks[key]; ok {
-		if l.token != token || m.now().After(l.expiresAt) {
+		if subtle.ConstantTimeCompare([]byte(l.token), []byte(token)) != 1 || m.now().After(l.expiresAt) {
 			return ErrLockLost
 		}
+		fingerprint = l.fingerprint
 	} else {
 		// No lock present — either it expired and was reclaimed, or Set
 		// was called without TryLock. Either way the caller has no
@@ -454,9 +476,15 @@ func (m *MemoryStore) Set(ctx context.Context, key, token string, resp CachedRes
 		m.sweepExpiredLocked(evictBudget)
 	}
 
+	// Re-check ownership after the sweep: if the lock was reclaimed mid-
+	// call the documented ErrLockLost contract applies.
+	if l, ok := m.locks[key]; !ok || subtle.ConstantTimeCompare([]byte(l.token), []byte(token)) != 1 {
+		return ErrLockLost
+	}
+
 	m.items[key] = memEntry{
 		resp:        copyResponseForStorage(resp),
-		fingerprint: cloneBytes(m.locks[key].fingerprint),
+		fingerprint: cloneBytes(fingerprint),
 		expiresAt:   m.now().Add(ttl),
 	}
 	delete(m.locks, key)
@@ -466,7 +494,7 @@ func (m *MemoryStore) Set(ctx context.Context, key, token string, resp CachedRes
 // TryLock implements the contract from [Store.TryLock]. Returns
 // [ErrInvalidTTL] when ttl <= 0.
 func (m *MemoryStore) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
-	if err := ctx.Err(); err != nil {
+	if err := ctxErr(ctx); err != nil {
 		return "", false, false, err
 	}
 	if err := m.ready(); err != nil {
@@ -495,8 +523,8 @@ func (m *MemoryStore) TryLock(ctx context.Context, key string, fingerprint []byt
 
 	// If a cached response with mismatched fingerprint exists and is still
 	// fresh, the key has been *consumed* with different bytes — 422.
-	if entry, ok := m.items[key]; ok && now.Before(entry.expiresAt) {
-		if fingerprint != nil && entry.fingerprint != nil && !bytes.Equal(entry.fingerprint, fingerprint) {
+	if entry, ok := m.items[key]; ok && !now.After(entry.expiresAt) {
+		if fingerprint != nil && (entry.fingerprint == nil || len(entry.fingerprint) != len(fingerprint) || subtle.ConstantTimeCompare(entry.fingerprint, fingerprint) != 1) {
 			m.logger.Info("idempotency: fingerprint mismatch on cached response (TryLock)",
 				redact.String("key", key),
 			)
@@ -508,8 +536,8 @@ func (m *MemoryStore) TryLock(ctx context.Context, key string, fingerprint []byt
 		return "", false, false, nil
 	}
 
-	if l, locked := m.locks[key]; locked && now.Before(l.expiresAt) {
-		if fingerprint != nil && l.fingerprint != nil && !bytes.Equal(l.fingerprint, fingerprint) {
+	if l, locked := m.locks[key]; locked && !now.After(l.expiresAt) {
+		if fingerprint != nil && (l.fingerprint == nil || len(l.fingerprint) != len(fingerprint) || subtle.ConstantTimeCompare(l.fingerprint, fingerprint) != 1) {
 			m.logger.Info("idempotency: fingerprint mismatch on in-progress lock",
 				redact.String("key", key),
 			)
@@ -533,7 +561,7 @@ func (m *MemoryStore) TryLock(ctx context.Context, key string, fingerprint []byt
 // Unlock releases the processing lock if the caller's token still owns it.
 // Best-effort cleanup: token mismatch is silently ignored (returns nil).
 func (m *MemoryStore) Unlock(ctx context.Context, key, token string) error {
-	if err := ctx.Err(); err != nil {
+	if err := ctxErr(ctx); err != nil {
 		return err
 	}
 	if err := m.ready(); err != nil {
@@ -545,7 +573,7 @@ func (m *MemoryStore) Unlock(ctx context.Context, key, token string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if l, ok := m.locks[key]; ok {
-		if l.token == token {
+		if subtle.ConstantTimeCompare([]byte(l.token), []byte(token)) == 1 {
 			delete(m.locks, key)
 		} else {
 			// Best-effort no-op: caller's token doesn't match the
@@ -622,6 +650,11 @@ func (m *MemoryStore) Run(ctx context.Context) error {
 	}
 	m.started = true
 	m.runMu.Unlock()
+	defer func() {
+		m.runMu.Lock()
+		m.started = false
+		m.runMu.Unlock()
+	}()
 
 	t := time.NewTicker(sweepInterval)
 	defer t.Stop()
@@ -645,18 +678,7 @@ func (m *MemoryStore) ready() error {
 }
 
 func cloneResponse(resp CachedResponse) *CachedResponse {
-	cp := CachedResponse{
-		StatusCode: resp.StatusCode,
-		Headers:    make(map[string][]string, len(resp.Headers)),
-	}
-	if resp.Body != nil {
-		cp.Body = append([]byte(nil), resp.Body...)
-	}
-	for k, vals := range resp.Headers {
-		vcp := make([]string, len(vals))
-		copy(vcp, vals)
-		cp.Headers[k] = vcp
-	}
+	cp := copyResponseForStorage(resp)
 	return &cp
 }
 
@@ -675,6 +697,7 @@ func copyResponseForStorage(resp CachedResponse) CachedResponse {
 	}
 	return cp
 }
+
 
 // cloneBytes returns an independent copy of b that preserves nil-vs-empty
 // distinction. A non-nil empty fingerprint ([]byte{}) must stay non-nil:

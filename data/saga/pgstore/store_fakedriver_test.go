@@ -40,6 +40,8 @@ type fakeRow struct {
 	lastError   string
 	createdAt   time.Time
 	updatedAt   time.Time
+	claimUntil  time.Time
+	claimToken  string
 }
 
 type fakeStore struct {
@@ -113,12 +115,14 @@ func (c *fakeConn) execInsert(args []driver.NamedValue) (driver.Result, error) {
 	return fakeResult{rows: 1}, nil
 }
 
-// execUpdate models: UPDATE ... SET ..., updated_at=now() WHERE id=$6.
-// Args order matches putUpdateOptimistic: state, current_step, compensated,
-// step_results, last_error, id. The store stamps a fresh updated_at on
-// every write (so a stale caller snapshot is observable), but matches the
-// row by ID only — mirroring the corrected query.
+// execUpdate models either:
+//   - putUpdateOptimistic: SET state.., claim_until, claim_token WHERE id=$6
+//     args: state, current_step, compensated, step_results, last_error, id, lease, token
+//   - ListResumable claim bulk update (handled via QueryContext RETURNING path)
 func (c *fakeConn) execUpdate(args []driver.NamedValue) (driver.Result, error) {
+	if len(args) < 6 {
+		return nil, errors.New("fakeConn: update needs >=6 args")
+	}
 	id := args[5].Value.(string)
 	row, exists := c.store.rows[id]
 	if !exists {
@@ -131,6 +135,12 @@ func (c *fakeConn) execUpdate(args []driver.NamedValue) (driver.Result, error) {
 	row.stepResults = args[3].Value.(string)
 	row.lastError = args[4].Value.(string)
 	row.updatedAt = now
+	if len(args) >= 8 {
+		if tok, ok := args[7].Value.(string); ok {
+			row.claimToken = tok
+			row.claimUntil = now.Add(2 * time.Minute)
+		}
+	}
 	c.store.rows[id] = row
 	return fakeResult{rows: 1}, nil
 }
@@ -143,6 +153,10 @@ func (c *fakeConn) execDelete(args []driver.NamedValue) (driver.Result, error) {
 func (c *fakeConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	c.store.mu.Lock()
 	defer c.store.mu.Unlock()
+	// ListResumable claim path: WITH candidates ... UPDATE ... RETURNING
+	if strings.Contains(query, "FOR UPDATE SKIP LOCKED") || strings.Contains(query, "claim_until") && strings.Contains(query, "RETURNING") {
+		return c.queryClaimResumable(args)
+	}
 	if !strings.Contains(query, "SELECT") {
 		return nil, errors.New("fakeConn: unrecognised query")
 	}
@@ -155,12 +169,41 @@ func (c *fakeConn) QueryContext(_ context.Context, query string, args []driver.N
 		}
 		return &fakeRows{data: [][]driver.Value{rowValues(row)}}, nil
 	}
-	// ListResumable: return all non-terminal rows (test does not exercise this).
+	// Fallback list without claim.
 	var data [][]driver.Value
 	for _, row := range c.store.rows {
 		if row.state == "completed" || row.state == "failed" {
 			continue
 		}
+		data = append(data, rowValues(row))
+	}
+	return &fakeRows{data: data}, nil
+}
+
+// queryClaimResumable models multi-replica claim: only unclaimed (or
+// expired-lease) non-terminal rows are returned, and claim_until is set
+// so a second concurrent ListResumable sees zero rows.
+func (c *fakeConn) queryClaimResumable(args []driver.NamedValue) (driver.Rows, error) {
+	now := c.store.now()
+	var token string
+	// olderThan path: $1 interval, $2 lease, $3 token
+	// no-olderThan path: $1 lease, $2 token
+	if len(args) >= 3 {
+		token, _ = args[2].Value.(string)
+	} else if len(args) >= 2 {
+		token, _ = args[1].Value.(string)
+	}
+	var data [][]driver.Value
+	for id, row := range c.store.rows {
+		if row.state == "completed" || row.state == "failed" {
+			continue
+		}
+		if !row.claimUntil.IsZero() && row.claimUntil.After(now) {
+			continue // still leased by another resumer
+		}
+		row.claimToken = token
+		row.claimUntil = now.Add(2 * time.Minute)
+		c.store.rows[id] = row
 		data = append(data, rowValues(row))
 	}
 	return &fakeRows{data: data}, nil
