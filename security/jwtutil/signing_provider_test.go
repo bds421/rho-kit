@@ -72,6 +72,11 @@ func verifierForKey(t *testing.T, pub any, alg jwa.SignatureAlgorithm) *KeySet {
 	if err != nil {
 		t.Fatalf("ParseKeySet: %v", err)
 	}
+	// Test helper defaults to explicit AllowAny*; call sites that pin
+	// ExpectedIssuer/Audience override via field assignment (Expected wins
+	// over AllowAny at freeze time).
+	ks.AllowAnyIssuer = true
+	ks.AllowAnyAudience = true
 	return ks
 }
 

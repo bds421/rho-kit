@@ -652,6 +652,8 @@ func (p *Provider) KeySet() *KeySet {
 		set:              ks.set,
 		ExpectedIssuer:   p.expectedIssuer,
 		ExpectedAudience: p.expectedAudience,
+		AllowAnyIssuer:   p.allowAnyIssuer,
+		AllowAnyAudience: p.allowAnyAudience,
 	}
 }
 

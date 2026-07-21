@@ -43,6 +43,20 @@ func newTestJWKSServerFunc(t *testing.T, handler func(http.ResponseWriter, *http
 	return httptest.NewServer(http.HandlerFunc(handler))
 }
 
+
+// allowAnyPolicy marks ks as explicitly opting out of issuer and audience
+// checks so signature/claim-focused unit tests can Verify without pinning
+// iss/aud. Production code must set Expected* or AllowAny* before Verify.
+func allowAnyPolicy(ks *KeySet) *KeySet {
+	if ks == nil {
+		return nil
+	}
+	ks.AllowAnyIssuer = true
+	ks.AllowAnyAudience = true
+	return ks
+}
+
+
 func ecdsaPublicKeyPEM(t *testing.T, pub *ecdsa.PublicKey) []byte {
 	t.Helper()
 	der, err := x509.MarshalPKIXPublicKey(pub)
@@ -132,6 +146,7 @@ func TestParseKeySet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	allowAnyPolicy(ks)
 
 	// Verify the keyset works by signing and verifying a token.
 	now := time.Now()
@@ -205,6 +220,7 @@ func TestParseKeySet_AcceptsVerificationKeyOps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	allowAnyPolicy(ks)
 
 	now := time.Now()
 	token := signJWT(t, key, "verify-key", map[string]any{
@@ -238,6 +254,7 @@ func TestParseKeySet_StripsPrivateKeyMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	allowAnyPolicy(ks)
 
 	stored, ok := ks.set.Key(0)
 	if !ok {
@@ -276,6 +293,7 @@ func TestKeySet_InvalidReceiverReturnsError(t *testing.T) {
 func TestVerify_ValidToken(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -307,6 +325,7 @@ func TestVerify_ValidToken(t *testing.T) {
 func TestVerify_PopulatesJWTID(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -329,6 +348,7 @@ func TestVerify_MissingExp(t *testing.T) {
 	// bearer tokens are indistinguishable from a stolen credential.
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -344,6 +364,7 @@ func TestVerify_MissingExp(t *testing.T) {
 func TestVerify_FutureExp(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -363,6 +384,7 @@ func TestVerify_FutureExp(t *testing.T) {
 func TestVerify_ExpiredToken(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -379,6 +401,7 @@ func TestVerify_ExpiredToken(t *testing.T) {
 func TestVerify_ZeroTimeUsesWallClock(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 
 	token := signJWT(t, key, "kid-1", map[string]any{
 		"sub": "user-1",
@@ -394,6 +417,7 @@ func TestVerify_ZeroTimeUsesWallClock(t *testing.T) {
 func TestVerify_NotYetValid(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -411,6 +435,7 @@ func TestVerify_NotYetValid(t *testing.T) {
 func TestVerify_ClockSkew(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 	now := time.Now()
 
 	// Token expired 20 seconds ago — within 30s clock skew.
@@ -429,6 +454,7 @@ func TestVerify_WrongKey(t *testing.T) {
 	signingKey := testKey(t)
 	otherKey := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, otherKey, "kid-1"))
+	allowAnyPolicy(ks)
 
 	token := signJWT(t, signingKey, "kid-1", map[string]any{
 		"sub": "user-1",
@@ -444,6 +470,7 @@ func TestVerify_WrongKey(t *testing.T) {
 func TestVerify_UnknownKid(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 
 	token := signJWT(t, key, "kid-unknown", map[string]any{
 		"sub": "user-1",
@@ -459,6 +486,7 @@ func TestVerify_UnknownKid(t *testing.T) {
 func TestVerify_MissingSub(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 
 	token := signJWT(t, key, "kid-1", map[string]any{
 		"exp": time.Now().Add(5 * time.Minute).Unix(),
@@ -473,6 +501,7 @@ func TestVerify_MissingSub(t *testing.T) {
 func TestVerify_MalformedToken(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 
 	_, err := ks.Verify("not.a.valid-token", time.Now())
 	if err == nil {
@@ -488,6 +517,7 @@ func TestVerify_MalformedToken(t *testing.T) {
 func TestVerify_UnsupportedAlgorithm(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 
 	// Manually construct a token with RS256 header.
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"kid-1","typ":"JWT"}`))
@@ -503,6 +533,7 @@ func TestVerify_UnsupportedAlgorithm(t *testing.T) {
 func TestVerify_TamperedPayload(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 
 	token := signJWT(t, key, "kid-1", map[string]any{
 		"sub": "user-1",
@@ -530,6 +561,7 @@ func TestParseKeySetFromPEM_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseKeySetFromPEM: %v", err)
 	}
+	allowAnyPolicy(ks)
 
 	now := time.Now()
 	token := signJWT(t, key, "pem-kid", map[string]any{
@@ -557,6 +589,7 @@ func TestVerify_ExpectedIssuer_Match(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
 	ks.ExpectedIssuer = "https://oathkeeper"
+	ks.AllowAnyAudience = true
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -578,6 +611,7 @@ func TestVerify_ExpectedIssuer_Mismatch(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
 	ks.ExpectedIssuer = "https://oathkeeper"
+	ks.AllowAnyAudience = true
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -596,6 +630,7 @@ func TestVerify_FreezesPolicyAfterFirstCall(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
 	ks.ExpectedIssuer = "https://oathkeeper"
+	ks.AllowAnyAudience = true
 	now := time.Now()
 
 	good := signJWT(t, key, "kid-1", map[string]any{
@@ -609,6 +644,7 @@ func TestVerify_FreezesPolicyAfterFirstCall(t *testing.T) {
 
 	// Post-freeze mutation must be ignored — original issuer still required.
 	ks.ExpectedIssuer = "https://other"
+	ks.AllowAnyAudience = true
 	other := signJWT(t, key, "kid-1", map[string]any{
 		"sub": "user-1",
 		"iss": "https://other",
@@ -1760,6 +1796,7 @@ func TestProviderFetch_RespectsExplicitCustomRedirectPolicy(t *testing.T) {
 func TestVerify_NoPermissions(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -1814,6 +1851,7 @@ func TestPermissionsClaim_MalformedRejectsToken(t *testing.T) {
 	// outright with an authentication error.
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -1853,6 +1891,7 @@ func TestPermissionsClaim_NumericArrayElementRejectsToken(t *testing.T) {
 	// instead of silently dropping privileges.
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -1873,6 +1912,7 @@ func TestPermissionsClaim_NumericArrayElementRejectsToken(t *testing.T) {
 func TestPermissionsClaim_WellFormedSucceeds(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -1895,6 +1935,7 @@ func TestScopesClaim_MalformedRejectsToken(t *testing.T) {
 	// to log-and-continue with empty scopes. Now rejected.
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	allowAnyPolicy(ks)
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -1916,6 +1957,7 @@ func TestVerify_ConfiguredAudienceMatch(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
 	ks.ExpectedAudience = "svc-A"
+	ks.AllowAnyIssuer = true
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -1933,6 +1975,7 @@ func TestVerify_ConfiguredAudienceMismatch(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
 	ks.ExpectedAudience = "svc-A"
+	ks.AllowAnyIssuer = true
 	now := time.Now()
 
 	token := signJWT(t, key, "kid-1", map[string]any{
@@ -2306,6 +2349,7 @@ func TestVerify_TimingFloorClosesKidExistenceSideChannel(t *testing.T) {
 	if parseErr != nil {
 		t.Fatalf("ParseKeySet: %v", parseErr)
 	}
+	allowAnyPolicy(ks)
 
 	now := time.Now()
 	// Token signed with a kid the JWKS does not recognise.
@@ -2373,5 +2417,137 @@ func TestJWKSHTTPClient_HardensWrappedTransportBase(t *testing.T) {
 	}
 	if tr.TLSClientConfig.ServerName != "jwks.wrap.test" {
 		t.Fatalf("ServerName not preserved: %q", tr.TLSClientConfig.ServerName)
+	}
+}
+
+
+func TestVerify_PolicyRequired_MissingIssuerAndAudience(t *testing.T) {
+	key := testKey(t)
+	ks, err := ParseKeySet(testJWKS(t, key, "kid-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	_, err = ks.Verify(token, now)
+	if !errors.Is(err, ErrPolicyRequired) {
+		t.Fatalf("Verify without policy error = %v, want ErrPolicyRequired", err)
+	}
+}
+
+func TestVerify_PolicyRequired_IssuerOnly(t *testing.T) {
+	key := testKey(t)
+	ks, err := ParseKeySet(testJWKS(t, key, "kid-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks.ExpectedIssuer = "https://issuer"
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"iss": "https://issuer",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	_, err = ks.Verify(token, now)
+	if !errors.Is(err, ErrPolicyRequired) {
+		t.Fatalf("Verify without audience policy error = %v, want ErrPolicyRequired", err)
+	}
+}
+
+func TestVerify_PolicyRequired_AudienceOnly(t *testing.T) {
+	key := testKey(t)
+	ks, err := ParseKeySet(testJWKS(t, key, "kid-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks.ExpectedAudience = "svc"
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"aud": "svc",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	_, err = ks.Verify(token, now)
+	if !errors.Is(err, ErrPolicyRequired) {
+		t.Fatalf("Verify without issuer policy error = %v, want ErrPolicyRequired", err)
+	}
+}
+
+func TestVerify_AllowAnyOptOut(t *testing.T) {
+	key := testKey(t)
+	ks, err := ParseKeySet(testJWKS(t, key, "kid-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks = ks.WithAllowAnyIssuer().WithAllowAnyAudience()
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	if _, err := ks.Verify(token, now); err != nil {
+		t.Fatalf("AllowAny* opt-out must verify: %v", err)
+	}
+}
+
+func TestVerify_FreezeCapturesAllowAny(t *testing.T) {
+	key := testKey(t)
+	ks, err := ParseKeySet(testJWKS(t, key, "kid-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks.AllowAnyIssuer = true
+	ks.AllowAnyAudience = true
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	if _, err := ks.Verify(token, now); err != nil {
+		t.Fatalf("first verify: %v", err)
+	}
+	// Post-freeze clear of AllowAny must be ignored.
+	ks.AllowAnyIssuer = false
+	ks.AllowAnyAudience = false
+	if _, err := ks.Verify(token, now); err != nil {
+		t.Fatalf("frozen AllowAny policy should still verify: %v", err)
+	}
+	// Fresh copy without AllowAny fails closed.
+	ks2 := &KeySet{set: ks.set}
+	if _, err := ks2.Verify(token, now); !errors.Is(err, ErrPolicyRequired) {
+		t.Fatalf("fresh KeySet without policy error = %v, want ErrPolicyRequired", err)
+	}
+}
+
+func TestVerify_WithExpectedHelpersIndependentFreeze(t *testing.T) {
+	key := testKey(t)
+	ks, err := ParseKeySet(testJWKS(t, key, "kid-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// First Verify freezes empty policy → ErrPolicyRequired, but freezes.
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"iss": "https://issuer",
+		"aud": "svc",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	if _, err := ks.Verify(token, now); !errors.Is(err, ErrPolicyRequired) {
+		t.Fatalf("expected ErrPolicyRequired, got %v", err)
+	}
+	// Mutating fields after freeze must not help.
+	ks.ExpectedIssuer = "https://issuer"
+	ks.ExpectedAudience = "svc"
+	if _, err := ks.Verify(token, now); !errors.Is(err, ErrPolicyRequired) {
+		t.Fatalf("post-freeze mutation must not unstick policy, got %v", err)
+	}
+	// With* helpers return independent freeze state.
+	ks2 := ks.WithExpectedIssuer("https://issuer").WithExpectedAudience("svc")
+	if _, err := ks2.Verify(token, now); err != nil {
+		t.Fatalf("WithExpected* copy should verify: %v", err)
 	}
 }

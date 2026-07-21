@@ -17,11 +17,21 @@ import (
 
 // KeySet holds a JWKS key set for JWT signature verification.
 //
-// ExpectedIssuer / ExpectedAudience are the construction-time policy knobs
-// for the low-level [KeySet.Verify] path. Prefer the immutable copy helpers
-// [KeySet.WithExpectedIssuer] / [KeySet.WithExpectedAudience] (or a
-// [Provider], which carries policy on the Provider itself) over mutating
-// fields on a shared KeySet.
+// Issuer and audience policy are construction-time knobs for the low-level
+// [KeySet.Verify] path. Every KeySet must declare an explicit policy before
+// the first Verify:
+//
+//   - non-empty [KeySet.ExpectedIssuer] or [KeySet.AllowAnyIssuer]
+//   - non-empty [KeySet.ExpectedAudience] or [KeySet.AllowAnyAudience]
+//
+// Prefer the immutable copy helpers ([KeySet.WithExpectedIssuer],
+// [KeySet.WithExpectedAudience], [KeySet.WithAllowAnyIssuer],
+// [KeySet.WithAllowAnyAudience]) or a [Provider] (which carries policy on
+// the Provider itself) over mutating fields on a shared KeySet.
+//
+// [ParseKeySet] / [ParseKeySetFromPEM] return a KeySet with no policy set;
+// callers must apply policy before Verify (Provider construction already
+// enforces the same rule).
 //
 // Concurrency contract: the first call to [KeySet.Verify] freezes the
 // issuer/audience policy into an internal snapshot. Subsequent Verifys
@@ -29,7 +39,9 @@ import (
 // ignored. Set policy once before the first Verify (or use With* to get
 // a fresh KeySet) — toggling fields under concurrent Verifys was always
 // a data race; freeze makes the post-first-Verify half of that race a
-// no-op rather than a silent policy flip.
+// no-op rather than a silent policy flip. A Verify that fails with
+// [ErrPolicyRequired] still freezes the (empty) snapshot; recover with
+// With* helpers that return an independent KeySet, not by mutating fields.
 type KeySet struct {
 	set jwk.Set
 	// ExpectedIssuer, when non-empty, is validated against the "iss" claim.
@@ -43,17 +55,30 @@ type KeySet struct {
 	// Captured on the first [KeySet.Verify]; later mutations are ignored.
 	// Prefer [KeySet.WithExpectedAudience] for a frozen copy.
 	ExpectedAudience string
+	// AllowAnyIssuer opts out of issuer validation. Mutually exclusive with
+	// a non-empty ExpectedIssuer at freeze time (ExpectedIssuer wins when
+	// both are set). Prefer [KeySet.WithAllowAnyIssuer].
+	AllowAnyIssuer bool
+	// AllowAnyAudience opts out of audience validation. Mutually exclusive
+	// with a non-empty ExpectedAudience at freeze time (ExpectedAudience
+	// wins when both are set). Prefer [KeySet.WithAllowAnyAudience].
+	AllowAnyAudience bool
 
-	policyOnce     sync.Once
-	frozenIssuer   string
-	frozenAudience string
+	policyOnce             sync.Once
+	frozenIssuer           string
+	frozenAudience         string
+	frozenAllowAnyIssuer   bool
+	frozenAllowAnyAudience bool
 }
 
-// WithExpectedIssuer returns a shallow copy of ks with ExpectedIssuer set.
-// The copy shares the underlying jwk.Set (immutable through its public API)
-// and has an independent freeze state, so concurrent Verifys on the
-// original are unaffected. Prefer this over mutating ExpectedIssuer on a
-// KeySet that may already be shared.
+// WithExpectedIssuer returns a shallow copy of ks with ExpectedIssuer set
+// and AllowAnyIssuer cleared. The copy shares the underlying jwk.Set
+// (immutable through its public API) and has an independent freeze state,
+// so concurrent Verifys on the original are unaffected. Prefer this over
+// mutating ExpectedIssuer on a KeySet that may already be shared.
+//
+// Audience policy is copied from ks so a fully-configured KeySet remains
+// fully-configured after changing only the issuer.
 func (ks *KeySet) WithExpectedIssuer(issuer string) *KeySet {
 	if ks == nil {
 		return &KeySet{ExpectedIssuer: issuer}
@@ -62,11 +87,13 @@ func (ks *KeySet) WithExpectedIssuer(issuer string) *KeySet {
 		set:              ks.set,
 		ExpectedIssuer:   issuer,
 		ExpectedAudience: ks.ExpectedAudience,
+		AllowAnyAudience: ks.AllowAnyAudience,
 	}
 }
 
 // WithExpectedAudience returns a shallow copy of ks with ExpectedAudience
-// set. See [KeySet.WithExpectedIssuer] for the copy/freeze contract.
+// set and AllowAnyAudience cleared. See [KeySet.WithExpectedIssuer] for
+// the copy/freeze contract.
 func (ks *KeySet) WithExpectedAudience(audience string) *KeySet {
 	if ks == nil {
 		return &KeySet{ExpectedAudience: audience}
@@ -75,23 +102,70 @@ func (ks *KeySet) WithExpectedAudience(audience string) *KeySet {
 		set:              ks.set,
 		ExpectedIssuer:   ks.ExpectedIssuer,
 		ExpectedAudience: audience,
+		AllowAnyIssuer:   ks.AllowAnyIssuer,
 	}
 }
 
-// frozenPolicy returns the issuer/audience captured on the first Verify.
-// Safe for concurrent use; the sync.Once publishes the snapshot before
-// any concurrent reader observes it.
-func (ks *KeySet) frozenPolicy() (issuer, audience string) {
+// WithAllowAnyIssuer returns a shallow copy of ks that opts out of issuer
+// validation (clears ExpectedIssuer). Use only when a service genuinely
+// federates across many issuers; prefer pinning ExpectedIssuer. The copy
+// has an independent freeze state.
+func (ks *KeySet) WithAllowAnyIssuer() *KeySet {
+	if ks == nil {
+		return &KeySet{AllowAnyIssuer: true}
+	}
+	return &KeySet{
+		set:              ks.set,
+		ExpectedAudience: ks.ExpectedAudience,
+		AllowAnyIssuer:   true,
+		AllowAnyAudience: ks.AllowAnyAudience,
+	}
+}
+
+// WithAllowAnyAudience returns a shallow copy of ks that opts out of
+// audience validation (clears ExpectedAudience). Use only when a service
+// deliberately accepts tokens minted for sibling audiences — that is the
+// confused-deputy hazard the audience claim exists to prevent
+// (RFC 7519 §4.1.3). The copy has an independent freeze state.
+func (ks *KeySet) WithAllowAnyAudience() *KeySet {
+	if ks == nil {
+		return &KeySet{AllowAnyAudience: true}
+	}
+	return &KeySet{
+		set:              ks.set,
+		ExpectedIssuer:   ks.ExpectedIssuer,
+		AllowAnyIssuer:   ks.AllowAnyIssuer,
+		AllowAnyAudience: true,
+	}
+}
+
+// frozenPolicy returns the issuer/audience policy captured on the first
+// Verify. Safe for concurrent use; the sync.Once publishes the snapshot
+// before any concurrent reader observes it.
+//
+// When ExpectedIssuer is non-empty it wins over AllowAnyIssuer (and
+// likewise for audience); the frozen allow-any flags are only true when
+// the corresponding expected value is empty.
+func (ks *KeySet) frozenPolicy() (issuer, audience string, allowAnyIssuer, allowAnyAudience bool) {
 	ks.policyOnce.Do(func() {
 		ks.frozenIssuer = ks.ExpectedIssuer
 		ks.frozenAudience = ks.ExpectedAudience
+		ks.frozenAllowAnyIssuer = ks.AllowAnyIssuer && ks.ExpectedIssuer == ""
+		ks.frozenAllowAnyAudience = ks.AllowAnyAudience && ks.ExpectedAudience == ""
 	})
-	return ks.frozenIssuer, ks.frozenAudience
+	return ks.frozenIssuer, ks.frozenAudience, ks.frozenAllowAnyIssuer, ks.frozenAllowAnyAudience
 }
 
 // ErrInvalidKeySet is returned when verification is attempted with a
 // KeySet that was not constructed by ParseKeySet or ParseKeySetFromPEM.
 var ErrInvalidKeySet = errors.New("jwtutil: key set is not initialized")
+
+// ErrPolicyRequired is returned by [KeySet.Verify] when the KeySet has
+// neither a non-empty ExpectedIssuer/ExpectedAudience nor the matching
+// AllowAnyIssuer/AllowAnyAudience opt-out. Fail-closed against the
+// confused-deputy path that previously skipped empty issuer/audience
+// checks for raw KeySet users.
+var ErrPolicyRequired = errors.New("jwtutil: issuer and audience policy required (set Expected* or AllowAny*)")
 
 var (
 	errMalformedPermissionsClaim = errors.New("malformed permissions claim")
@@ -99,6 +173,11 @@ var (
 )
 
 // ParseKeySet parses a JWKS JSON document into a KeySet.
+//
+// The returned KeySet has no issuer/audience policy. Callers must set
+// ExpectedIssuer / ExpectedAudience (or AllowAnyIssuer / AllowAnyAudience)
+// before [KeySet.Verify], or wrap the KeySet in a [Provider] / 
+// [NewProviderWithKeySet] which enforces policy at construction.
 //
 // Symmetric (HMAC / kty=oct) keys are rejected to prevent the classic
 // alg-confusion attack, where a token signed with HS256 is accepted by a
@@ -190,6 +269,8 @@ func allowsSignatureAlgorithm(k jwk.Key) bool {
 // ParseKeySetFromPEM parses a PEM-encoded public key into a KeySet with a
 // single key using the given key ID.
 //
+// The returned KeySet has no issuer/audience policy; see [ParseKeySet].
+//
 // Private PEM material is reduced to its public part before retention so a
 // misconfigured signer private key mounted as the verifier input cannot leave
 // live signing material in process memory.
@@ -218,25 +299,27 @@ func ParseKeySetFromPEM(pemData []byte, kid string) (*KeySet, error) {
 // without an `exp` claim are rejected — non-expiring bearer tokens are
 // indistinguishable from a stolen credential and have no place in this kit.
 //
-// Issuer and audience are validated against the policy frozen on the
-// first Verify call (seeded from [KeySet.ExpectedIssuer] /
-// [KeySet.ExpectedAudience], or set via [KeySet.WithExpectedIssuer] /
-// [KeySet.WithExpectedAudience]). Empty values skip the corresponding
-// check (signature-only verification). This is a deliberate low-level
-// escape hatch; production services MUST set both (or use [Provider] /
-// [NewProvider], which refuse to construct without an explicit
-// issuer/audience policy or AllowAny opt-out). Leaving both empty
-// accepts tokens minted for any sibling audience that trusts the same
-// signer (RFC 7519 confused-deputy). Prefer [Provider.Verify] for
-// service auth.
+// Issuer and audience policy is mandatory. The policy frozen on the first
+// Verify call (seeded from ExpectedIssuer / ExpectedAudience /
+// AllowAnyIssuer / AllowAnyAudience, or set via the With* helpers) must
+// include an explicit choice for both dimensions. Empty Expected* without
+// the matching AllowAny* returns [ErrPolicyRequired] without accepting the
+// token. This closes the confused-deputy path for raw KeySet users
+// (RFC 7519 §4.1.3); [Provider] already enforced the same rule at
+// construction.
 //
-// A future major version may fail closed when ExpectedIssuer /
-// ExpectedAudience are unset; see V3_BREAKING_PROPOSALS.md.
+// Prefer [Provider.Verify] for service auth.
 func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
-	if ks == nil {
+	if ks == nil || ks.set == nil || ks.set.Len() == 0 {
 		return nil, ErrInvalidKeySet
 	}
-	iss, aud := ks.frozenPolicy()
+	iss, aud, allowAnyIss, allowAnyAud := ks.frozenPolicy()
+	if iss == "" && !allowAnyIss {
+		return nil, fmt.Errorf("%w: issuer (set ExpectedIssuer or AllowAnyIssuer before first Verify)", ErrPolicyRequired)
+	}
+	if aud == "" && !allowAnyAud {
+		return nil, fmt.Errorf("%w: audience (set ExpectedAudience or AllowAnyAudience before first Verify)", ErrPolicyRequired)
+	}
 	return verifyToken(ks.set, tokenString, now, iss, aud, defaultStringClaims)
 }
 
