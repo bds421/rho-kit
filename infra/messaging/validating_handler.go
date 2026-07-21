@@ -8,48 +8,58 @@ import (
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
-// ErrUnknownSchemaVersion is returned by a validating handler in strict
-// mode ([WithStrictUnknownVersion]) when a delivery's type has at least
-// one registered schema but the delivery's (transport-header-controlled)
-// schema version is not one of them. It is an [apperror.ValidationError]
-// so HTTP and gRPC adapters map it to 400/InvalidArgument.
+// ErrUnknownSchemaVersion is returned by a validating handler (default
+// strict mode) and by [InMemorySchemaRegistry.ValidatePayload] when a
+// delivery's type has at least one registered schema but the delivery's
+// (transport-header-controlled) schema version is not one of them —
+// including version 0 / missing version when no v0 schema is registered.
+// It is an [apperror.ValidationError] so HTTP and gRPC adapters map it to
+// 400/InvalidArgument.
 var ErrUnknownSchemaVersion = apperror.NewValidation("messaging: unknown schema version for a type with registered schemas")
 
 // ValidatingHandlerOption configures [NewValidatingHandler].
 type ValidatingHandlerOption func(*validatingHandlerConfig)
 
 type validatingHandlerConfig struct {
+	// strictUnknownVersion defaults to true. When true, unregistered
+	// versions (including 0) of types that have schemas are rejected.
 	strictUnknownVersion bool
 }
 
-// WithStrictUnknownVersion makes the validating handler reject a delivery
-// whose message type HAS registered schemas but whose delivery-level
-// SchemaVersion is not among them, instead of passing the unvalidated
-// payload through.
+// WithLooseUnknownVersion restores the legacy fail-open behaviour: an
+// unregistered schema version (including version 0) of a type that has
+// registered schemas is allowed through without payload validation.
 //
-// Why this is opt-in: the schema version is populated from a transport
-// header the producer (or any peer that can publish) controls, so the
-// default pass-through means a peer can set X-Schema-Version to an
+// Why the default is strict: the schema version is populated from a
+// transport header the producer (or any peer that can publish) controls,
+// so pass-through means a peer can set X-Schema-Version to an
 // unregistered value and skip validation entirely for a type that
 // otherwise enforces a schema. Strict mode closes that bypass.
 //
-// Strict mode still passes through the two intentional legacy cases:
-//   - version 0 (unversioned/legacy messages), and
-//   - message types with NO registered schemas at all.
+// Prefer the default. Use this only for staged migrations of unversioned
+// or multi-version peers. Pair with [WithSchemaLegacyPassThrough] when
+// the registry is also [InMemorySchemaRegistry] so both layers agree.
 //
-// Only an unregistered NON-zero version of a type that has at least one
-// registered schema is rejected.
-func WithStrictUnknownVersion() ValidatingHandlerOption {
-	return func(c *validatingHandlerConfig) { c.strictUnknownVersion = true }
+// [WithLegacyPassThrough] is an alias of this option.
+func WithLooseUnknownVersion() ValidatingHandlerOption {
+	return func(c *validatingHandlerConfig) { c.strictUnknownVersion = false }
+}
+
+// WithLegacyPassThrough is an alias of [WithLooseUnknownVersion].
+func WithLegacyPassThrough() ValidatingHandlerOption {
+	return WithLooseUnknownVersion()
 }
 
 // NewValidatingHandler returns a handler that validates each delivery's payload
 // against the schema registered for its SchemaVersion before delegating to next.
 // If validation fails, the error is returned (the consumer decides ACK/NACK policy).
-// If no schema is registered for the version, the message passes through
-// (backward compat: unversioned messages are not rejected). Pass
-// [WithStrictUnknownVersion] to reject unregistered non-zero versions of
-// types that have registered schemas.
+//
+// Default (strict): when a message type has at least one registered schema
+// and the delivery's SchemaVersion is not among them — including version 0
+// / unversioned when no v0 schema is registered — the handler rejects with
+// [ErrUnknownSchemaVersion]. Message types with no registered schemas still
+// pass through. Pass [WithLooseUnknownVersion] / [WithLegacyPassThrough] to
+// restore legacy pass-through for unknown versions.
 //
 // Panics if registry or next is nil (fail-fast on misconfiguration).
 //
@@ -64,7 +74,7 @@ func NewValidatingHandler(registry SchemaRegistry, next Handler, opts ...Validat
 		panic("messaging: NewValidatingHandler requires a non-nil next handler")
 	}
 
-	var cfg validatingHandlerConfig
+	cfg := validatingHandlerConfig{strictUnknownVersion: true}
 	for _, opt := range opts {
 		if opt == nil {
 			panic("messaging: NewValidatingHandler option must not be nil")
@@ -81,11 +91,11 @@ func NewValidatingHandler(registry SchemaRegistry, next Handler, opts ...Validat
 			Payload:       msg.Payload,
 			SchemaVersion: d.SchemaVersion,
 		}
-		// Strict mode: reject an unregistered non-zero version of a type
-		// that has registered schemas, before the registry's pass-through
-		// would silently skip validation. Version 0 (legacy) and types
-		// with no schemas remain pass-through.
-		if cfg.strictUnknownVersion && d.SchemaVersion != 0 {
+		// Strict mode: reject an unregistered version (including 0) of a
+		// type that has registered schemas, before a legacy/loose registry
+		// pass-through would silently skip validation. Types with no
+		// schemas remain pass-through.
+		if cfg.strictUnknownVersion {
 			if _, err := registry.Lookup(msg.Type, d.SchemaVersion); err != nil {
 				if len(registry.Versions(msg.Type)) > 0 {
 					// Do not echo the attacker-controlled version value to

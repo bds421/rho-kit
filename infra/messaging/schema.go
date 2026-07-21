@@ -31,19 +31,29 @@ type SchemaRegistry interface {
 	Versions(msgType string) []SchemaVersion
 
 	// ValidateMessage validates the message payload against the schema
-	// registered for its SchemaVersion. Returns nil when no schema is
-	// registered for the version (backward-compat pass-through).
+	// registered for its SchemaVersion. Behaviour for unknown versions is
+	// implementation-defined; [InMemorySchemaRegistry] rejects unknown
+	// versions of types that have any registered schema unless constructed
+	// with [WithSchemaLegacyPassThrough].
 	ValidateMessage(msg Message) error
 }
 
 // InMemorySchemaRegistry is a thread-safe, in-memory implementation of SchemaRegistry.
 // Suitable for testing and single-process applications.
+//
+// By default ValidatePayload / ValidateMessage are strict: when a message
+// type has at least one registered schema, an unknown version (including
+// version 0 / missing version when no v0 schema is registered) is rejected
+// with [ErrUnknownSchemaVersion]. Pass [WithSchemaLegacyPassThrough] to
+// restore the legacy fail-open behaviour for migration.
 type InMemorySchemaRegistry struct {
 	mu      sync.RWMutex
 	schemas map[schemaKey]schemaEntry
 	// byType indexes versions per message type so Versions is O(versions)
 	// rather than O(all registered schemas).
 	byType map[string][]SchemaVersion
+	// looseUnknownVersion restores legacy pass-through for unknown versions.
+	looseUnknownVersion bool
 }
 
 type schemaKey struct {
@@ -57,12 +67,35 @@ type schemaEntry struct {
 	compiled *jsonschema.Schema
 }
 
+// InMemorySchemaRegistryOption configures [NewInMemorySchemaRegistry].
+type InMemorySchemaRegistryOption func(*InMemorySchemaRegistry)
+
+// WithSchemaLegacyPassThrough restores the pre-v3 fail-open behaviour on
+// [InMemorySchemaRegistry]: unknown schema versions (and version 0 when no
+// v0 schema is registered) pass through without validation even when the
+// message type has other registered schemas. Prefer the default strict mode
+// in production; use this only for staged migrations of unversioned peers.
+//
+// The validating-handler equivalent is [WithLooseUnknownVersion] /
+// [WithLegacyPassThrough].
+func WithSchemaLegacyPassThrough() InMemorySchemaRegistryOption {
+	return func(r *InMemorySchemaRegistry) { r.looseUnknownVersion = true }
+}
+
 // NewInMemorySchemaRegistry creates a new empty InMemorySchemaRegistry.
-func NewInMemorySchemaRegistry() *InMemorySchemaRegistry {
-	return &InMemorySchemaRegistry{
+// Validation is strict by default; see [WithSchemaLegacyPassThrough].
+func NewInMemorySchemaRegistry(opts ...InMemorySchemaRegistryOption) *InMemorySchemaRegistry {
+	r := &InMemorySchemaRegistry{
 		schemas: make(map[schemaKey]schemaEntry),
 		byType:  make(map[string][]SchemaVersion),
 	}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("messaging: NewInMemorySchemaRegistry option must not be nil")
+		}
+		opt(r)
+	}
+	return r
 }
 
 // Register stores a schema for the given message type and version.
@@ -140,23 +173,32 @@ func (r *InMemorySchemaRegistry) Versions(msgType string) []SchemaVersion {
 // ValidatePayload validates the message payload against the schema registered
 // for its SchemaVersion. It does NOT run metadata validation ([ValidateMessage]
 // on package messaging); use that separately for id/type/headers.
-// Returns nil if no schema is registered for the version (backward compat:
-// unversioned messages and unknown versions pass through).
 //
-// SECURITY: the version header is producer-controlled. In the default
-// non-strict configuration a hostile/buggy peer can set an unregistered
-// X-Schema-Version (or omit it → version 0) and skip payload validation
-// for a type that otherwise has schemas. Prefer
-// [NewValidatingHandler] with [WithStrictUnknownVersion] in production;
-// making strict the default is a v3 candidate (see V3_BREAKING_PROPOSALS.md).
+// Strict default (v3): when the message type has at least one registered
+// schema and no schema is registered for msg.SchemaVersion (including
+// version 0 / unversioned when no v0 schema exists), returns
+// [ErrUnknownSchemaVersion]. Message types with no registered schemas still
+// pass through. Construct the registry with [WithSchemaLegacyPassThrough]
+// to restore the legacy fail-open behaviour.
+//
+// SECURITY: the version header is producer-controlled. The strict default
+// closes the bypass where a peer sets an unregistered X-Schema-Version
+// (or omits it → version 0) to skip payload validation for a type that
+// otherwise has schemas.
 func (r *InMemorySchemaRegistry) ValidatePayload(msg Message) error {
 	key := schemaKey{msgType: msg.Type, version: msg.SchemaVersion}
 
 	r.mu.RLock()
 	entry, ok := r.schemas[key]
+	hasType := len(r.byType[msg.Type]) > 0
+	loose := r.looseUnknownVersion
 	r.mu.RUnlock()
 
 	if !ok {
+		if !loose && hasType {
+			// Do not echo the attacker-controlled version value.
+			return fmt.Errorf("%w", ErrUnknownSchemaVersion)
+		}
 		return nil
 	}
 
