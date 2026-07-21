@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -210,42 +209,44 @@ func TestQueue_DoubleProcessGuard(t *testing.T) {
 	queueName := fmt.Sprintf("test:queue:double:%d", time.Now().UnixNano())
 
 	processCtx, cancel := context.WithCancel(context.Background())
-	// Use Len to detect that the first Process has registered with asynq —
-	// Len performs an Inspector.GetQueueInfo call which only succeeds after
-	// the asynq.Server inside Process has booted. This is a more reliable
-	// readiness signal than a sleep, and it removes the race that previously
-	// allowed the test-driver goroutine to win the activeQueues
-	// CompareAndSwap and panic the foreground Process instead.
-	var wg sync.WaitGroup
-	wg.Add(1)
+	processReady := make(chan struct{}, 1)
+	processDone := make(chan error, 1)
 	go func() {
-		defer wg.Done()
-		q.Process(processCtx, queueName, func(context.Context, redisqueue.Message) error { return nil })
-	}()
-	// Wait for the goroutine's Process to register: poll until Len
-	// succeeds OR a second Process call panics (whichever happens
-	// first). Once we observe the panic, we know the first Process is
-	// holding activeQueues; the assertion below is then deterministic.
-	require.Eventually(t, func() bool {
-		_, err := q.Len(context.Background(), queueName)
-		return err == nil
-	}, 5*time.Second, 25*time.Millisecond, "first Process never booted its asynq server")
-
-	// A second Process on the same queue MUST panic now that the
-	// first has registered itself in activeQueues. Use recover
-	// directly — assert.Panics(new(testing.T), ...) can itself panic
-	// on a zero-value *testing.T and mask the real assertion.
-	panicked := false
-	func() {
 		defer func() {
-			if recover() != nil {
-				panicked = true
+			if recovered := recover(); recovered != nil {
+				processDone <- fmt.Errorf("first Process panicked: %v", recovered)
 			}
 		}()
-		q.Process(context.Background(), queueName, func(context.Context, redisqueue.Message) error { return nil })
+		processDone <- q.Process(processCtx, queueName, func(context.Context, redisqueue.Message) error {
+			select {
+			case processReady <- struct{}{}:
+			default:
+			}
+			return nil
+		})
 	}()
-	require.True(t, panicked, "second Process on the same queue must panic")
+
+	msg, err := redisqueue.NewMessage("guard-ready", map[string]bool{"ready": true})
+	require.NoError(t, err)
+	require.NoError(t, q.Enqueue(context.Background(), queueName, msg))
+	select {
+	case <-processReady:
+		// Handling a message proves the first Process owns the queue guard.
+	case err := <-processDone:
+		require.NoError(t, err, "first Process exited before handling its readiness message")
+	case <-time.After(10 * time.Second):
+		t.Fatal("first Process never handled its readiness message")
+	}
+
+	// A second Process on the same queue MUST panic now that the
+	// first has handled a message and therefore owns activeQueues.
+	assert.PanicsWithValue(t,
+		"redisqueue: Process queue already has an active Process goroutine",
+		func() {
+			_ = q.Process(context.Background(), queueName, func(context.Context, redisqueue.Message) error { return nil })
+		},
+	)
 
 	cancel()
-	wg.Wait()
+	require.ErrorIs(t, <-processDone, context.Canceled)
 }
