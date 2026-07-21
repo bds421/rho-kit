@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.5.0 — 2026-07-21
+
+Repository-wide review-remediation and hardening release (coordination tag
+`release/v2.5.0`). This release contains intentional v2 API and behavior
+changes; downstreams should review the affected package documentation before
+upgrading.
+
+- **security and transport.** Harden JWT issuer/audience policy, HTTP and gRPC
+  service identity and entitlement propagation, secret handling, KMS adapters,
+  webhook SSRF protection, websocket liveness, and fail-closed middleware.
+- **data and messaging.** Make tenant idempotency keys unforgeable, require
+  atomic tenant approval mutations, correct budget refund windows, reject
+  unknown message schemas by default, and return lifecycle errors from queue
+  and stream consumers.
+- **runtime and infrastructure.** Harden claim leases, leader callback drains,
+  SQL pools, Redis locks, secrets caches, storage bounds, journal safety, saga
+  recovery, retry redaction, audit chains, and readiness caching.
+- **API cleanup.** Unify the redislock option export surface, make package-level
+  websocket handling track connections by default, and retire dead storage
+  capability APIs.
+- **release engineering.** Synchronize all 107 workspace modules after the
+  upstream dependency bump, enforce tidy-command failures, standardize Go
+  1.26.5, and make the Redis queue double-process guard deterministic.
+- **documentation.** Close completed review/backlog trackers while retaining
+  durable operational runbooks and dashboard guidance.
+
 ## v2.4.0 — 2026-07-18
 
 Additive storage and portability-fix release (coordination tag

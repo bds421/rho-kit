@@ -1,51 +1,29 @@
-# Continuous supply-chain scanning for the workspace.
-#
-# Two jobs run in parallel:
-#
-#   govulncheck   - Go-aware. Cross-references the Go vulnerability
-#                   database against imported call sites with
-#                   reachability analysis, not just dep manifests.
-#                   Sufficient for a Go-only library; the kit ships no
-#                   Dockerfiles or other-ecosystem lockfiles that
-#                   warrant a multi-ecosystem scanner. (Dependabot
-#                   covers GitHub Actions vuln flagging.)
-#
-#   check-licenses - Walks every workspace module declared in go.work,
-#                    runs go-licenses over each module's transitive dep
-#                    graph, and asserts each declared license is on the
-#                    allowlist documented in tools/check-licenses.sh.
-#
-# Inform-only:
-#
-#   Both jobs set continue-on-error so a finding shows up in the run
-#   UI but the workflow conclusion stays green and is not a required
-#   merge check. The kit is a library — consumers run their own scans
-#   before deploying. Triage at your own cadence; the weekly cron is
-#   the safety net for transitive drift that didn't accompany a code
-#   change.
-#
-# Path-filtered: docs-only commits do not trigger this workflow.
+name: Dependency Security
 
-name: Supply Chain
-
+# Dependency scans run when dependency inputs change. The weekly schedule is
+# retained only for govulncheck because the vulnerability database can change
+# while this repository is idle; licenses cannot drift without a repository
+# change and therefore are not rechecked on the timer.
 on:
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
-      - 'CHANGELOG.md'
-      - 'NOTICE'
+    paths:
+      - "**/go.mod"
+      - "**/go.sum"
+      - "go.work"
+      - "go.work.sum"
+      - "tools/check-licenses.sh"
+      - ".github/workflows/supply-chain.yml"
   push:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
-      - 'CHANGELOG.md'
-      - 'NOTICE'
+    paths:
+      - "**/go.mod"
+      - "**/go.sum"
+      - "go.work"
+      - "go.work.sum"
+      - "tools/check-licenses.sh"
+      - ".github/workflows/supply-chain.yml"
   schedule:
-    # Weekly Monday 00:00 UTC. Catches CVEs and license drift since the
-    # last commit. The schedule run scans all modules.
     - cron: "0 0 * * 1"
   workflow_dispatch:
 
@@ -61,22 +39,18 @@ env:
   GOWORK: ${{ github.workspace }}/go.work
   GOPRIVATE: github.com/bds421/*
   GONOSUMDB: github.com/bds421/*
-  VULN_FAIL_LEVEL: ${{ vars.VULN_FAIL_LEVEL || 'HIGH' }}
 
 jobs:
-  govulncheck:
-    name: govulncheck
+  dependencies:
+    name: Vulnerabilities and licenses
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    continue-on-error: true
+    timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.5"
           cache-dependency-path: "**/go.sum"
@@ -86,148 +60,9 @@ jobs:
           TOKEN: ${{ github.token }}
         run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
 
-      - name: Install govulncheck
-        # Pin to a known-good version. Bump deliberately during
-        # security-review windows.
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      - name: Check reachable vulnerabilities
+        run: make vulncheck
 
-      - name: Discover Go modules to scan
-        id: discover
-        run: |
-          set -euo pipefail
-          modules_file="$(mktemp)"
-          # tools/* modules are stdlib-only CI helpers (no external deps,
-          # not shipped to consumers). They cannot host a meaningful CVE
-          # and they fail govulncheck when GOWORK is on because they are
-          # outside go.work. Skip them.
-          while IFS= read -r modfile; do
-            dir="$(dirname "$modfile")"
-            case "$dir" in
-              tools/*) continue ;;
-            esac
-            echo "$dir" >> "$modules_file"
-          done < <(git ls-files | awk '/(^|\/)go\.mod$/')
-          sort -u "$modules_file" -o "$modules_file"
-          echo "Modules selected for govulncheck:"
-          cat "$modules_file"
-          echo "modules_file=$modules_file" >> "$GITHUB_OUTPUT"
-
-      - name: Run govulncheck per module
-        env:
-          MODULES_FILE: ${{ steps.discover.outputs.modules_file }}
-          FAIL_LEVEL: ${{ env.VULN_FAIL_LEVEL }}
-        run: |
-          set -uo pipefail
-          if [ ! -s "$MODULES_FILE" ]; then
-            echo "Empty module list - skipping." | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          fail=0
-          findings_dir="$(mktemp -d)"
-          while IFS= read -r module_dir; do
-            [ -z "$module_dir" ] && continue
-            echo "::group::govulncheck (${module_dir})"
-            json_out="${findings_dir}/$(echo "$module_dir" | tr '/' '_').json"
-            # govulncheck returns 3 when called vulnerabilities are found,
-            # 0 otherwise. Anything else is a tooling failure.
-            #
-            # GOWORK stays inherited (on) so cross-module imports resolve
-            # through go.work; this is what kit modules' go.sum assumes.
-            # Tool modules outside go.work are filtered in the discover
-            # step above.
-            if (cd "$module_dir" && govulncheck -json -mode source ./...) > "$json_out" 2> "${json_out}.err"; then
-              echo "clean: $module_dir"
-            else
-              rc=$?
-              if [ "$rc" -ne 3 ]; then
-                echo "govulncheck tooling error (rc=$rc) in $module_dir" >&2
-                cat "${json_out}.err" >&2
-                fail=1
-                echo "::endgroup::"
-                continue
-              fi
-            fi
-            python3 - "$json_out" "$FAIL_LEVEL" "$module_dir" <<'PY' || fail=1
-          import json, sys
-          path, fail_level, mod_dir = sys.argv[1], sys.argv[2], sys.argv[3]
-          order = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
-          threshold = order.index(fail_level.upper())
-          osvs = {}
-          findings = []
-          with open(path) as f:
-              for line in f:
-                  line = line.strip()
-                  if not line:
-                      continue
-                  try:
-                      rec = json.loads(line)
-                  except json.JSONDecodeError:
-                      continue
-                  if "osv" in rec:
-                      osv = rec["osv"]
-                      osvs[osv["id"]] = osv
-                  if "finding" in rec:
-                      findings.append(rec["finding"])
-          called = [f for f in findings if f.get("trace") and f.get("trace")[0].get("function")]
-          if not called:
-              sys.exit(0)
-          fatal = 0
-          for f in called:
-              osv = osvs.get(f.get("osv", ""), {})
-              # Findings without parseable severity metadata default to MEDIUM
-              # (fail-safe, not fail-open): with the default FAIL_LEVEL=HIGH
-              # they only warn, but if VULN_FAIL_LEVEL is lowered to MEDIUM/LOW
-              # an unscored called vuln is still surfaced as fatal rather than
-              # silently dropped to LOW. The classifier only ever escalates
-              # from this baseline via CVSS substrings or database_specific.
-              sev = "MEDIUM"
-              for affected in osv.get("affected", []):
-                  for sv in affected.get("severity", []) or []:
-                      score = sv.get("score", "")
-                      if "AV:N" in score and "I:H" in score:
-                          sev = "HIGH"
-                      if "C:H" in score and "I:H" in score and "A:H" in score:
-                          sev = "CRITICAL"
-              dbsev = osv.get("database_specific", {}).get("severity", "")
-              if dbsev.upper() in order:
-                  sev = dbsev.upper()
-              level = order.index(sev) if sev in order else 1
-              marker = "FAIL" if level >= threshold else "warn"
-              print(f"  [{marker}] {osv.get('id','?')} ({sev}) in {mod_dir}: {osv.get('summary','')[:120]}")
-              if level >= threshold:
-                  fatal += 1
-          if fatal:
-              sys.exit(2)
-          sys.exit(0)
-          PY
-            echo "::endgroup::"
-          done < "$MODULES_FILE"
-          if [ "$fail" -ne 0 ]; then
-            echo "::error::govulncheck found at least one >= $FAIL_LEVEL finding"
-            exit 1
-          fi
-
-  check-licenses:
-    name: check-licenses
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    continue-on-error: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: "1.26.5"
-          cache-dependency-path: "**/go.sum"
-
-      - name: Configure git for private modules
-        env:
-          TOKEN: ${{ github.token }}
-        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
-
-      - name: Check transitive licenses against the kit allowlist
-        run: bash tools/check-licenses.sh
+      - name: Check dependency licenses
+        if: github.event_name != 'schedule'
+        run: make check-licenses

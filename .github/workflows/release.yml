@@ -1,18 +1,14 @@
-name: Release Readiness
+name: Release Rehearsal
 
+# The exhaustive release candidate runs locally before this workflow. This
+# manual workflow performs only release-specific checks and never publishes.
 on:
   workflow_dispatch:
     inputs:
       target_version:
-        description: 'Version to rehearse releasing (e.g. v2.2.0). Defaults to the next minor after the latest release tag.'
+        description: "Version to rehearse (for example v2.6.0); defaults to the next minor"
         required: false
         type: string
-  push:
-    branches:
-      - 'release/**'
-  pull_request:
-    types: [labeled, synchronize]
-    branches: [main]
 
 permissions:
   contents: read
@@ -28,11 +24,10 @@ env:
   GONOSUMDB: github.com/bds421/*
 
 jobs:
-  readiness:
-    name: Validate v2 readiness
+  rehearsal:
+    name: Rehearse module release
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-candidate')
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,83 +43,42 @@ jobs:
           TOKEN: ${{ github.token }}
         run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
 
-      - name: Verify working tree
-        run: |
-          set -euo pipefail
-          git status --short
-          test -z "$(git status --short)"
-          git diff --check
-
       - name: Determine release versions
         id: versions
         env:
-          # User-controlled (workflow_dispatch input): consumed via env, never
-          # interpolated into the shell, and format-validated before use.
-          INPUT_TARGET: ${{ github.event.inputs.target_version }}
+          INPUT_TARGET: ${{ inputs.target_version }}
         run: |
           set -euo pipefail
-          # current = the latest released coordination tag. Internal requires
-          # on a releasable commit must already point at it — the release dance
-          # is the only thing that bumps them to the next version.
           current="$(git tag -l 'release/v*' | sed 's#release/##' | sort -V | tail -1)"
           if [ -z "$current" ]; then current="v2.0.0"; fi
-          # target = the version being rehearsed: explicit input or next minor.
           target="$INPUT_TARGET"
           if [ -n "$target" ]; then
             if ! printf '%s' "$target" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-              echo "ERROR: target_version must be vMAJOR.MINOR.PATCH (got: $target)" >&2
+              echo "target_version must be vMAJOR.MINOR.PATCH (got: $target)" >&2
               exit 1
             fi
           else
-            ver="${current#v}"; IFS=. read -r maj min _pat <<< "$ver"
-            target="v${maj}.$((min + 1)).0"
+            ver="${current#v}"
+            IFS=. read -r major minor _patch <<< "$ver"
+            target="v${major}.$((minor + 1)).0"
           fi
-          {
-            echo "current=$current"
-            echo "target=$target"
-          } >> "$GITHUB_OUTPUT"
-          echo "Internal-require invariant version (current): $current"
-          echo "Rehearsal target version: $target"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
 
-      - name: Check v2 workspace dependency invariants
+      - name: Check publishable module invariants
         env:
           EXPECTED_INTERNAL_VERSION: ${{ steps.versions.outputs.current }}
         run: make check-publishable
 
-      - name: Compute dependency-ordered release plan
+      - name: Rehearse dependency-ordered release
         env:
           RELEASE_VERSION: ${{ steps.versions.outputs.target }}
-        run: RELEASE_MODE=all make release-plan
+        run: bash tools/rehearse-v2-release.sh
 
-      - name: Rehearse dependency-ordered release locally
-        env:
-          RELEASE_VERSION: ${{ steps.versions.outputs.target }}
-        run: tools/rehearse-v2-release.sh
-
-      - name: Run release-candidate gates
-        run: make release-candidate
-
-      - name: Reproducible build sample
-        # Evidence-gathering: not a gate. Produces dist/cmd/kit-doctor/kit-doctor
-        # with the flag set documented in tools/verify-reproducible-build.sh and
-        # prints its sha256 so the release rehearsal log captures it.
-        run: make release-bin BIN=kit-doctor
-
-      - name: Verify target version not already tagged
+      - name: Verify target version is unused
         env:
           TARGET: ${{ steps.versions.outputs.target }}
         run: |
           set -euo pipefail
-          # The rehearsal target must be unreleased — guards against
-          # accidentally re-tagging an already-published version.
           test -z "$(git tag --list "*${TARGET}")"
           test -z "$(git ls-remote --tags origin "*${TARGET}")"
-
-      - name: Summarize next manual steps
-        run: |
-          {
-            echo "Release readiness passed."
-            echo
-            echo "This workflow does not create tags or GitHub releases."
-            echo "When the release owner is ready, follow the 'How to publish a release' section in README.md."
-          } >> "$GITHUB_STEP_SUMMARY"
