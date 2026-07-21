@@ -13,6 +13,7 @@ import (
 	"github.com/bds421/rho-kit/resilience/v2/circuitbreaker"
 )
 
+
 // stubRoundTripper returns a fixed response/error and records how many times
 // it was invoked and the request bodies it observed.
 type stubRoundTripper struct {
@@ -69,7 +70,7 @@ func (b *trackingBody) isClosed() bool {
 // constructor so the test exercises the exact breaker wiring used by
 // NewResilientHTTPClient.
 func newCBTransport(base http.RoundTripper, shouldTrip func(*http.Response, error) bool, threshold int, reset time.Duration) *circuitBreakerTransport {
-	return newCircuitBreakerTransport(base, shouldTrip, threshold, reset, nil)
+	return newCircuitBreakerTransport(base, shouldTrip, threshold, reset, nil, false)
 }
 
 // Finding 1: WithCBShouldTrip must be able to exclude transport errors from
@@ -300,4 +301,89 @@ func TestCircuitBreaker_OpenCircuit_ClosesRequestBody(t *testing.T) {
 	if !body.isClosed() {
 		t.Fatal("req.Body was not closed when circuit was open (RoundTripper contract violation)")
 	}
+}
+
+
+// Excluded errors must not erase consecutive-failure progress: after
+// threshold-1 counted failures, an interleaving cancel, then one more
+// failure, the breaker must open.
+func TestCircuitBreaker_ExcludedDoesNotResetFailureStreak(t *testing.T) {
+	var n int
+	// First 2 calls fail with 5xx; call 3 is canceled; call 4 is 5xx → open.
+	rt := newCBTransport(roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		n++
+		if n == 3 {
+			return nil, context.Canceled
+		}
+		return &http.Response{StatusCode: http.StatusBadGateway, Body: http.NoBody}, nil
+	}), defaultShouldTrip, 3, time.Minute)
+
+	for i := 0; i < 3; i++ {
+		req, _ := http.NewRequest(http.MethodGet, "http://example.test", nil)
+		resp, err := rt.RoundTrip(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if i == 2 {
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("call 3: err = %v, want context.Canceled", err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("call %d: unexpected err %v", i+1, err)
+		}
+	}
+	// 3rd counted failure.
+	req, _ := http.NewRequest(http.MethodGet, "http://example.test", nil)
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("4th call (3rd failure) err = %v", err)
+	}
+	req, _ = http.NewRequest(http.MethodGet, "http://example.test", nil)
+	resp, err = rt.RoundTrip(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("expected open after streak survives cancel, got %v", err)
+	}
+}
+
+func TestCircuitBreaker_HostIsolation(t *testing.T) {
+	// Host A always 5xx; host B always 200. Shared breaker would open for both.
+	// With per-host isolation, B stays healthy.
+	rt := newCircuitBreakerTransport(roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "bad.example" {
+			return &http.Response{StatusCode: http.StatusBadGateway, Body: http.NoBody}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	}), defaultShouldTrip, 2, time.Minute, nil, true)
+
+	for i := 0; i < 2; i++ {
+		req, _ := http.NewRequest(http.MethodGet, "http://bad.example/x", nil)
+		resp, err := rt.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("bad host call %d: %v", i, err)
+		}
+		_ = resp.Body.Close()
+	}
+	req, _ := http.NewRequest(http.MethodGet, "http://bad.example/x", nil)
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("bad host should be open, got %v", err)
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, "http://good.example/x", nil)
+	resp, err = rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("good host must not be affected by bad host breaker: %v", err)
+	}
+	_ = resp.Body.Close()
 }

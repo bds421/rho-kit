@@ -250,7 +250,7 @@ func TestSeenOrStore_InvalidNonceRejectedBeforeRedis(t *testing.T) {
 		"nonce value",
 		"nonce\tvalue",
 		string([]byte{'n', 'o', 0xff}),
-		strings.Repeat("a", 65),
+		strings.Repeat("a", 256+1+64+1), // keyIDMaxLen + sep + nonceMaxLen + 1
 	}
 	for _, nonce := range cases {
 		ok, err := store.SeenOrStore(context.Background(), nonce)
@@ -260,7 +260,7 @@ func TestSeenOrStore_InvalidNonceRejectedBeforeRedis(t *testing.T) {
 		if ok {
 			t.Fatalf("invalid nonce %q must not be admitted", nonce)
 		}
-		if len(nonce) > 64 && (strings.Contains(err.Error(), "64") || strings.Contains(err.Error(), "65")) {
+		if len(nonce) > 300 && (strings.Contains(err.Error(), "321") || strings.Contains(err.Error(), "322")) {
 			t.Fatalf("nonce length error leaked limits: %v", err)
 		}
 	}

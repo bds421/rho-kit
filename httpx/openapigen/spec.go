@@ -188,10 +188,16 @@ func (s *Spec) AddSecurityScheme(name string, scheme SecurityScheme) *Spec {
 }
 
 // SetGlobalSecurity sets the document-level `security` requirement.
-// Operations may override per-operation via [WithSecurity].
+// Operations may override per-operation via [WithSecurity]. The slice is
+// copied so later mutation of the caller's req cannot race with encode.
 func (s *Spec) SetGlobalSecurity(req []map[string][]string) *Spec {
+	var cp []map[string][]string
+	if req != nil {
+		cp = make([]map[string][]string, len(req))
+		copy(cp, req)
+	}
 	s.mu.Lock()
-	s.security = req
+	s.security = cp
 	s.cacheLoaded = false
 	s.mu.Unlock()
 	return s

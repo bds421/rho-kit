@@ -5,6 +5,7 @@ import (
 	"errors"
 	"hash"
 	"io"
+	"math"
 	"net/http"
 	"os"
 )
@@ -60,8 +61,13 @@ func readSpooledBody(r *http.Request, max int64, inMemoryMax int64) (*spooledBod
 	sb := &spooledBody{}
 
 	// limited grants one extra byte over max so we can detect overflow
-	// without consuming arbitrarily large input.
-	limited := io.LimitReader(originalBody, max+1)
+	// without consuming arbitrarily large input. Guard against MaxInt64
+	// so max+1 does not wrap to a negative LimitReader limit.
+	limit := max
+	if limit < math.MaxInt64 {
+		limit = max + 1
+	}
+	limited := io.LimitReader(originalBody, limit)
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := limited.Read(buf)
@@ -76,7 +82,10 @@ func readSpooledBody(r *http.Request, max int64, inMemoryMax int64) (*spooledBod
 		}
 		if err != nil {
 			sb.cleanup()
-			return nil, [32]byte{}, safeWrap("signedrequest: read body failed", err)
+			// Client-attributable transport failure (not a server fault).
+			// Stable redacted Error() text; errors.Is matches ErrBodyReadFailed
+			// and the underlying cause without leaking it into Error().
+			return nil, [32]byte{}, newBodyReadError(err)
 		}
 	}
 	if sb.size > max {

@@ -326,11 +326,20 @@ func shouldSetHSTS(r *http.Request, cfg *config) bool {
 
 func forwardedProtoHTTPS(h http.Header) bool {
 	values := h.Values("X-Forwarded-Proto")
-	if len(values) != 1 {
+	if len(values) == 0 {
 		return false
 	}
+	// Multi-hop proxies commonly append additional XFP values or emit a
+	// comma-joined list ("https, http"). When RemoteAddr is already a
+	// trusted proxy (caller gate), accept the left-most / first field's
+	// first comma-separated token. Reject CR/LF/NUL before TrimSpace —
+	// TrimSpace would otherwise strip trailing CR/LF and accept "https\n"
+	// as a legitimate https hop.
 	value := values[0]
-	if strings.TrimSpace(value) == "" || !httpguts.ValidHeaderFieldValue(value) {
+	if i := strings.IndexByte(value, ','); i >= 0 {
+		value = value[:i]
+	}
+	if value == "" || !httpguts.ValidHeaderFieldValue(value) {
 		return false
 	}
 	for i := 0; i < len(value); i++ {
@@ -339,7 +348,11 @@ func forwardedProtoHTTPS(h http.Header) bool {
 			return false
 		}
 	}
-	return strings.EqualFold(strings.TrimSpace(value), "https")
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	return strings.EqualFold(value, "https")
 }
 
 func isTrustedRemote(remoteAddr string, trusted []*net.IPNet) bool {

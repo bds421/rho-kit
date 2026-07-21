@@ -55,6 +55,13 @@ func (cw *compressWriter) WriteHeader(status int) {
 	if cw.wroteHeader {
 		return
 	}
+	// 1xx interim responses (e.g. 103 Early Hints) must not latch the
+	// final status / wroteHeader — they are informational and may be
+	// followed by the real status. Forward and return immediately.
+	if status >= 100 && status < 200 {
+		cw.ResponseWriter.WriteHeader(status)
+		return
+	}
 	cw.status = status
 	cw.wroteHeader = true
 	// Decide eligibility based on headers set so far. If the handler
@@ -95,8 +102,11 @@ func (cw *compressWriter) Write(p []byte) (int, error) {
 	// response we already know is large enough to compress).
 	if cw.buf.Len()+len(p) >= cw.cfg.minSize {
 		cw.buf.Write(p)
+		// p was fully accepted into the response pipeline; return len(p)
+		// even when the flush fails so io.Copy / bufio.Writer do not
+		// retry bytes that were already consumed (io.Writer contract).
 		if err := cw.commitCompressed(); err != nil {
-			return 0, err
+			return len(p), err
 		}
 		return len(p), nil
 	}
@@ -132,11 +142,20 @@ func (cw *compressWriter) Flush() {
 			cw.commitPassthrough()
 		} else {
 			_ = cw.commitCompressed()
+			// Undecided→compressed transition: flush the newly acquired
+			// encoder so buffered compressed bytes actually reach the
+			// client on this Flush call (not only on the next one).
+			if cw.cw != nil {
+				_ = cw.cw.Flush()
+			}
 		}
 	case modeCompressed:
 		// Force the encoder to push any buffered bytes to the wire.
-		if flusher, ok := cw.cw.(interface{ Flush() error }); ok {
-			_ = flusher.Flush()
+		// WriterReleaser.Flush reaches the dynamic gzip/zstd writer
+		// (poolWriter delegates); a type-assert on the interface
+		// embed alone would always fail.
+		if cw.cw != nil {
+			_ = cw.cw.Flush()
 		}
 	}
 	if f, ok := cw.ResponseWriter.(http.Flusher); ok {

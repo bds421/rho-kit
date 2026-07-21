@@ -42,13 +42,14 @@ func RequireScope(requiredScope string) func(http.Handler) http.Handler {
 	}
 }
 
-// RequireScopeStrict returns middleware that enforces API key scope authorization
-// with fail-closed semantics. Unlike RequireScope, this rejects requests when
-// scopes are absent — it does NOT fall through to cookie-session auth.
+// RequireScopeStrict returns middleware that enforces scope authorization with
+// fail-closed semantics identical to [RequireScope] for absent/empty scopes
+// (both reject). The difference is that RequireScopeStrict does NOT bypass the
+// check for trusted-S2S mTLS callers — use it for machine-to-machine endpoints
+// that must only be accessible via explicit scopes, even from internal peers.
 //
-// Use this for machine-to-machine endpoints
-// that must only be accessible via API keys with specific scopes, preventing
-// privilege escalation via missing-header spoofing from adjacent containers.
+// The 403 message distinguishes "scope header required" (absent/empty scopes)
+// from "insufficient scope" (scopes present but missing the required token).
 func RequireScopeStrict(requiredScope string) func(http.Handler) http.Handler {
 	if requiredScope == "" {
 		panic("auth: RequireScopeStrict requires a non-empty scope name")

@@ -43,8 +43,8 @@ var defaultTrustedProxyCIDRs = func() []*net.IPNet {
 // ClientIP extracts the real client IP from a request using the most
 // trustworthy source available:
 //
-//  1. X-Real-IP — single-value header set by the edge proxy (nginx).
-//  2. X-Forwarded-For — walked right-to-left, skipping trusted proxy IPs.
+//  1. X-Forwarded-For — walked right-to-left, skipping trusted proxy IPs.
+//  2. X-Real-IP — single-value header, used only when XFF is absent.
 //  3. RemoteAddr — direct connection address (final fallback).
 //
 // X-Real-IP and X-Forwarded-For are only trusted when RemoteAddr itself
@@ -53,6 +53,14 @@ var defaultTrustedProxyCIDRs = func() []*net.IPNet {
 // supplies them via [ClientIPWithTrustedProxies]. This is a fail-closed
 // default: an unconfigured ingress chain returns the direct peer rather
 // than a forwarded header an upstream tenant could have set.
+//
+// XFF is preferred over X-Real-IP because many proxies (default nginx
+// without proxy_set_header X-Real-IP, Envoy, some ALB paths) forward an
+// inbound client-supplied X-Real-IP verbatim while still appending to
+// XFF. Trusting X-Real-IP first would let any client spoof the IP used
+// for rate limiting and audit attribution. Operators whose edge overwrites
+// X-Real-IP and does not set XFF still get the correct value via step 2.
+// Operators MUST strip or overwrite inbound X-Real-IP at the edge.
 func ClientIP(r *http.Request) string {
 	return ClientIPWithTrustedProxies(r, nil)
 }
@@ -69,12 +77,6 @@ func ClientIPWithTrustedProxies(r *http.Request, trusted []*net.IPNet) string {
 	}
 	if !isTrustedAddr(r.RemoteAddr, trusted) {
 		return remoteIPString(r.RemoteAddr)
-	}
-
-	if realIP, ok := singletonHeaderValue(r.Header, "X-Real-IP"); ok && realIP != "" {
-		if ip := net.ParseIP(realIP); ip != nil {
-			return ip.String()
-		}
 	}
 
 	if forwarded := strings.Join(r.Header.Values("X-Forwarded-For"), ","); forwarded != "" {
@@ -107,6 +109,13 @@ func ClientIPWithTrustedProxies(r *http.Request, trusted []*net.IPNet) string {
 			if !isIPInTrustedCIDRs(candidateIP, trusted) {
 				return candidateIP.String()
 			}
+		}
+		// All XFF hops were trusted — fall through to X-Real-IP / RemoteAddr.
+	}
+
+	if realIP, ok := singletonHeaderValue(r.Header, "X-Real-IP"); ok && realIP != "" {
+		if ip := net.ParseIP(realIP); ip != nil {
+			return ip.String()
 		}
 	}
 

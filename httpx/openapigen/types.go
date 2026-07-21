@@ -2,6 +2,7 @@ package openapigen
 
 import (
 	"encoding/json"
+	"errors"
 
 	jsonschema "github.com/google/jsonschema-go/jsonschema"
 )
@@ -178,8 +179,8 @@ type Components struct {
 
 // SecurityScheme is the `securityScheme` object. Only the fields the
 // kit currently supports are modelled; advanced flows (`oauth2.flows`)
-// can be wired in by callers that need them (the [json.RawMessage]
-// `Extensions` map is the escape hatch).
+// can be wired in by callers that need them via [SecurityScheme.Extensions],
+// which [SecurityScheme.MarshalJSON] inlines into the emitted object.
 type SecurityScheme struct {
 	Type             string          `json:"type"`
 	Description      string          `json:"description,omitempty"`
@@ -188,5 +189,57 @@ type SecurityScheme struct {
 	Scheme           string          `json:"scheme,omitempty"`
 	BearerFormat     string          `json:"bearerFormat,omitempty"`
 	OpenIDConnectURL string          `json:"openIdConnectUrl,omitempty"`
-	Extensions       json.RawMessage `json:"-"`
+	// Extensions is a JSON object whose members are inlined into the
+	// securityScheme object on marshal (e.g. oauth2 `flows`). Must be a
+	// JSON object when non-empty; keys must not collide with modelled fields.
+	Extensions json.RawMessage `json:"-"`
+}
+
+// MarshalJSON serialises the securityScheme, inlining [Extensions] at the
+// top level so oauth2 flows and other OAS members not modelled as fields
+// still appear in the published document.
+func (s SecurityScheme) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Type             string `json:"type"`
+		Description      string `json:"description,omitempty"`
+		Name             string `json:"name,omitempty"`
+		In               string `json:"in,omitempty"`
+		Scheme           string `json:"scheme,omitempty"`
+		BearerFormat     string `json:"bearerFormat,omitempty"`
+		OpenIDConnectURL string `json:"openIdConnectUrl,omitempty"`
+	}
+	base, err := json.Marshal(wire{
+		Type:             s.Type,
+		Description:      s.Description,
+		Name:             s.Name,
+		In:               s.In,
+		Scheme:           s.Scheme,
+		BearerFormat:     s.BearerFormat,
+		OpenIDConnectURL: s.OpenIDConnectURL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(s.Extensions) == 0 {
+		return base, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(base, &m); err != nil {
+		return nil, err
+	}
+	var ext map[string]json.RawMessage
+	if err := json.Unmarshal(s.Extensions, &ext); err != nil {
+		return nil, errors.New("openapigen: SecurityScheme.Extensions must be a JSON object")
+	}
+	reserved := map[string]struct{}{
+		"type": {}, "description": {}, "name": {}, "in": {},
+		"scheme": {}, "bearerFormat": {}, "openIdConnectUrl": {},
+	}
+	for k, v := range ext {
+		if _, hit := reserved[k]; hit {
+			return nil, errors.New("openapigen: SecurityScheme.Extensions collides with modelled field " + k)
+		}
+		m[k] = v
+	}
+	return json.Marshal(m)
 }

@@ -131,7 +131,7 @@ func TestSignedRequestMetrics_CountsByReason(t *testing.T) {
 
 // TestClassifyVerifyFailure_KnownSentinels guards the bounded
 // reason-label set: every documented sentinel must classify to one
-// of the package's six reason constants. A bare error must not leak
+// of the package's closed reason constants. A bare error must not leak
 // into a new label series.
 func TestClassifyVerifyFailure_KnownSentinels(t *testing.T) {
 	cases := map[error]string{
@@ -139,10 +139,10 @@ func TestClassifyVerifyFailure_KnownSentinels(t *testing.T) {
 		ErrTimestampInvalid:   verifyReasonMalformedSignature,
 		ErrNonceInvalid:       verifyReasonMalformedSignature,
 		ErrInvalidRequest:     verifyReasonMalformedSignature,
-		ErrBodyTooLarge:       verifyReasonMalformedSignature,
+		ErrBodyTooLarge:       verifyReasonBodyTooLarge,
 		ErrNonceReplayed:      verifyReasonReplayNonce,
 		ErrSignatureInvalid:   verifyReasonBadSignature,
-		ErrSecretTooShort:     verifyReasonBadSignature,
+		ErrSecretTooShort:     verifyReasonMisconfigured,
 		errTimestampExpired:   verifyReasonExpired,
 		errTimestampClockSkew: verifyReasonClockSkew,
 	}

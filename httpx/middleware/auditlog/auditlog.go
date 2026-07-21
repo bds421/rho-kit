@@ -173,7 +173,13 @@ func Middleware(l *auditlog.Logger, opts ...Option) func(http.Handler) http.Hand
 // recovery) can share the same code without duplicating the filter and
 // extractor logic.
 func writeAuditEntry(l *auditlog.Logger, r *http.Request, rec *middleware.ResponseRecorder, cfg config, panicked bool) {
+	// Hijacked connections (WebSocket upgrades) never call WriteHeader, so
+	// the recorder defaults to 200. Record the upgrade status (101) so the
+	// audit trail matches access logs / metrics rather than a false success.
 	statusCode := rec.Status()
+	if rec.WasHijacked() {
+		statusCode = http.StatusSwitchingProtocols
+	}
 	if !panicked && !safeStatusFilter(cfg.errLogger, cfg.statusFilter, statusCode) {
 		return
 	}

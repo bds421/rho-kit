@@ -362,6 +362,9 @@ func ChainMiddleware(strategies ...Authenticator) func(http.Handler) http.Handle
 // via [session.Validator]. Tokens without a Bearer header return
 // [ErrUnauthenticated] so a [Chain] can fall through to API-key strategies.
 func NewSessionAuthenticator(v session.Validator) Authenticator {
+	if v.Signer == nil {
+		panic("middleware/auth: NewSessionAuthenticator requires a non-nil Signer")
+	}
 	return AuthenticatorFunc(func(r *http.Request) (Identity, error) {
 		token, status := parseBearerToken(r)
 		switch status {

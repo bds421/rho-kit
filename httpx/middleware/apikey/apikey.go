@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"golang.org/x/net/http/httpguts"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
 	"github.com/bds421/rho-kit/httpx/v2"
@@ -26,6 +29,11 @@ var (
 
 // apiKeyHeader is the fallback header checked when no Bearer token is present.
 const apiKeyHeader = "X-API-Key"
+
+// maxTokenLen caps credential length before repository lookup, matching
+// middleware/auth's maxBearerTokenLen so oversized headers cannot force
+// unbounded parse/hash work.
+const maxTokenLen = 8 * 1024
 
 // Config configures [Middleware].
 type Config struct {
@@ -96,22 +104,45 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 	}
 }
 
-// extractToken reads the API key from the Authorization: Bearer header, then
-// falls back to the X-API-Key header. Returns ("", false) when neither holds
-// a non-empty value.
+// extractToken reads the API key from a singleton Authorization: Bearer
+// header, then falls back to a singleton X-API-Key header. Multiple
+// header instances are rejected (ambiguous which value wins across
+// proxies). Oversized / invalid header field values return ("", false)
+// so the middleware answers 401 without invoking the repository.
 func extractToken(r *http.Request) (string, bool) {
-	if h := r.Header.Get("Authorization"); h != "" {
+	if authValues := r.Header.Values("Authorization"); len(authValues) > 0 {
+		if len(authValues) != 1 {
+			return "", false
+		}
+		h := authValues[0]
+		if h == "" || strings.TrimSpace(h) != h || !utf8.ValidString(h) || !httpguts.ValidHeaderFieldValue(h) {
+			return "", false
+		}
 		const bearer = "bearer "
 		if len(h) > len(bearer) && strings.EqualFold(h[:len(bearer)], bearer) {
-			if token := strings.TrimSpace(h[len(bearer):]); token != "" {
-				return token, true
+			token := strings.TrimSpace(h[len(bearer):])
+			if token == "" || len(token) > maxTokenLen {
+				return "", false
 			}
+			return token, true
 		}
+		// Non-Bearer Authorization present: do not fall through to
+		// X-API-Key (would change auth mode mid-request).
+		return "", false
 	}
-	if token := strings.TrimSpace(r.Header.Get(apiKeyHeader)); token != "" {
-		return token, true
+	keyValues := r.Header.Values(apiKeyHeader)
+	switch len(keyValues) {
+	case 0:
+		return "", false
+	case 1:
+	default:
+		return "", false
 	}
-	return "", false
+	token := strings.TrimSpace(keyValues[0])
+	if token == "" || len(token) > maxTokenLen || !utf8.ValidString(token) || !httpguts.ValidHeaderFieldValue(token) {
+		return "", false
+	}
+	return token, true
 }
 
 func unauthorized(w http.ResponseWriter, logger *slog.Logger, reason string, cause error) {

@@ -3,7 +3,11 @@ package httpx
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -358,5 +362,30 @@ func TestWithMinTimeout_PanicsOnNonPositive(t *testing.T) {
 			}()
 			WithMinTimeout(d)
 		})
+	}
+}
+
+
+func TestCancelOnCloseBody_ConcurrentClose(t *testing.T) {
+	// Concurrent Close must be race-free under -race and cancel exactly once.
+	var canceled atomic.Int32
+	body := &cancelOnCloseBody{
+		ReadCloser: io.NopCloser(strings.NewReader("x")),
+		cancel: func() {
+			canceled.Add(1)
+		},
+	}
+	const n = 32
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_ = body.Close()
+		}()
+	}
+	wg.Wait()
+	if got := canceled.Load(); got != 1 {
+		t.Fatalf("cancel invocations = %d, want 1", got)
 	}
 }

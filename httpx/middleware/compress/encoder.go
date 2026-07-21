@@ -27,8 +27,16 @@ type Encoder interface {
 // WriterReleaser is a Writer that returns underlying resources to a
 // pool on Release. Implementations typically also implement io.Closer
 // to flush buffered bytes; the middleware closes before releasing.
+//
+// Flush is required so mid-stream Flush() from the response wrapper
+// can push encoder-buffered bytes (e.g. gzip.Writer) to the wire for
+// SSE / chunked streaming. A no-op Flush is acceptable for encoders
+// that buffer nothing between Writes.
 type WriterReleaser interface {
 	io.WriteCloser
+	// Flush pushes any encoder-buffered bytes to the underlying
+	// writer. Called by compressWriter.Flush in compressed mode.
+	Flush() error
 	// Release returns the writer to its owner's pool. Calling Release
 	// without first calling Close may leak buffered bytes; the
 	// middleware always Closes first.
@@ -41,6 +49,20 @@ type WriterReleaser interface {
 type poolWriter struct {
 	io.WriteCloser
 	pool *sync.Pool
+}
+
+// Flush delegates to the underlying writer when it implements
+// Flush() error (gzip.Writer, flate.Writer, …). Without this method
+// the interface-typed WriteCloser embed would hide the dynamic
+// Flush, and mid-stream Flush would never reach the encoder.
+func (p *poolWriter) Flush() error {
+	if p == nil || p.WriteCloser == nil {
+		return nil
+	}
+	if f, ok := p.WriteCloser.(interface{ Flush() error }); ok {
+		return f.Flush()
+	}
+	return nil
 }
 
 func (p *poolWriter) Release() {

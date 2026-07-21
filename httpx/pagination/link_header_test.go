@@ -106,8 +106,9 @@ func TestWriteLinkHeader_lastPageOmitsNext(t *testing.T) {
 	if _, ok := links["next"]; ok {
 		t.Error("next should be omitted on last page")
 	}
-	if _, ok := links["last"]; ok {
-		t.Error("last should be omitted on last page")
+	wantLast := "https://example.com/items?limit=10&offset=90"
+	if links["last"] != wantLast {
+		t.Errorf("last = %q, want %q on final page", links["last"], wantLast)
 	}
 
 	wantPrev := "https://example.com/items?limit=10&offset=80"
@@ -150,8 +151,10 @@ func TestWriteLinkHeader_offsetBeyondTotalOmitsNextAndLast(t *testing.T) {
 	if _, ok := links["next"]; ok {
 		t.Error("next should be omitted when offset > total")
 	}
-	if _, ok := links["last"]; ok {
-		t.Error("last should be omitted when offset > total")
+	// last is still useful so clients can recover to the final page.
+	wantLast := "https://example.com/items?limit=10&offset=40"
+	if links["last"] != wantLast {
+		t.Errorf("last = %q, want %q when offset > total", links["last"], wantLast)
 	}
 	// prev/first still emitted because offset > 0.
 	if _, ok := links["first"]; !ok {
@@ -260,7 +263,7 @@ func TestWriteLinkHeader_unknownTotalOffsetOverflowOmitsNext(t *testing.T) {
 	}
 }
 
-func TestWriteLinkHeader_knownTotalOffsetOverflowOmitsNextAndLast(t *testing.T) {
+func TestWriteLinkHeader_knownTotalOffsetOverflowOmitsNext(t *testing.T) {
 	w := httptest.NewRecorder()
 	u, _ := url.Parse("https://example.com/items")
 	maxInt := int(^uint(0) >> 1)
@@ -271,8 +274,9 @@ func TestWriteLinkHeader_knownTotalOffsetOverflowOmitsNextAndLast(t *testing.T) 
 	if _, ok := links["next"]; ok {
 		t.Error("next should be omitted when offset+limit overflows")
 	}
-	if _, ok := links["last"]; ok {
-		t.Error("last should be omitted when offset+limit overflows")
+	// last still emitted when total is known (even if offset is extreme).
+	if _, ok := links["last"]; !ok {
+		t.Error("last should still be emitted when total is known")
 	}
 	if _, ok := links["first"]; !ok {
 		t.Error("first should still be emitted")

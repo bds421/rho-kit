@@ -87,7 +87,9 @@ func (tw *timeoutWriter) WriteHeader(code int) {
 		return
 	}
 	if code < 100 || code > 999 {
-		panic("middleware/timeout: WriteHeader received invalid status code")
+		// Sibling buffered writers map invalid codes to 500 rather than
+		// panicking the handler goroutine; stay consistent with them.
+		code = http.StatusInternalServerError
 	}
 	// 1xx informational responses are not the final status; ignore them so a
 	// later WriteHeader/Write can still set the real status code.
@@ -163,27 +165,16 @@ func (tw *timeoutWriter) writeToReal() {
 	}
 }
 
-// Unwrap returns the underlying ResponseWriter for http.ResponseController
-// compatibility (Go 1.20+).
+// Unwrap always returns nil.
 //
-// Returns nil after the timeout has fired or the response has already been
-// flushed, preventing writes that would corrupt the already-sent response.
-//
-// This is an intentional escape hatch: before the timeout fires it hands the
-// real ResponseWriter to http.ResponseController, so rc.Hijack() and
-// rc.SetWriteDeadline() reach the real connection and bypass the buffering and
-// write deadline this middleware enforces. After a successful hijack the
-// connection is owned by the caller and a subsequent writeTimeout 503 is
-// dropped by the stdlib. Routes that legitimately hijack (WebSocket, raw
-// streaming) should bypass the timeout via [WithWebSocketUpgradeBypass] or by
-// not wrapping the route, rather than relying on this Unwrap path.
+// Returning the raw ResponseWriter would let a handler goroutine reach the
+// real connection via http.ResponseController (Hijack / SetWriteDeadline)
+// while the middleware goroutine may concurrently call writeTimeout on the
+// same writer — a data race on net/http response internals. Routes that
+// legitimately hijack or stream (WebSocket, SSE) must bypass the timeout
+// via [WithWebSocketUpgradeBypass] or by not wrapping the route.
 func (tw *timeoutWriter) Unwrap() http.ResponseWriter {
-	tw.mu.Lock()
-	defer tw.mu.Unlock()
-	if tw.written {
-		return nil
-	}
-	return tw.w
+	return nil
 }
 
 // Flush implements http.Flusher. Since the timeout writer buffers the response,

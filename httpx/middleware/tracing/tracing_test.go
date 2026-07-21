@@ -13,6 +13,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/bds421/rho-kit/httpx/v2/middleware/metrics"
 )
 
 func setupTestProvider(t *testing.T) *tracetest.SpanRecorder {
@@ -253,4 +255,32 @@ func stringAttribute(attrs []attribute.KeyValue, key string) string {
 		}
 	}
 	return ""
+}
+
+func TestHTTPMiddleware_renamesSpanViaCaptureRoutePastWithContextClone(t *testing.T) {
+	recorder := setupTestProvider(t)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Simulate stack.Default: tracing → intermediate WithContext clone → CaptureRoute → mux
+	inner := metrics.CaptureRoute(mux)
+	cloning := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner.ServeHTTP(w, r.WithContext(r.Context()))
+	})
+	handler := HTTPMiddleware(cloning)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/users/42", nil)
+	handler.ServeHTTP(w, r)
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	if got := spans[0].Name(); got != "GET /users/{id}" {
+		t.Fatalf("span name = %q, want %q (CaptureRoute must survive WithContext clone)", got, "GET /users/{id}")
+	}
 }

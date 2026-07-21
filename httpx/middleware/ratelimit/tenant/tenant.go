@@ -83,6 +83,10 @@ func New(lim ratelimit.Limiter) func(http.Handler) http.Handler {
 
 			allowed, retryAfter, err := safeAllow(r.Context(), lim, string(id))
 			if err != nil {
+				httpx.Logger(r.Context(), slog.Default()).Error(
+					"ratelimit/tenant: limiter Allow failed",
+					redact.Error(err),
+				)
 				httpx.WriteError(w, http.StatusInternalServerError, "rate limit check failed")
 				return
 			}

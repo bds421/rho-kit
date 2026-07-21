@@ -291,7 +291,7 @@ func TestHSTS_UntrustedProxyXFPRejected(t *testing.T) {
 	}
 }
 
-func TestHSTS_TrustedProxyDuplicateXFPRejected(t *testing.T) {
+func TestHSTS_TrustedProxyDuplicateXFPUsesFirst(t *testing.T) {
 	_, ipnet, _ := net.ParseCIDR("10.0.0.0/8")
 	handler := New(WithTrustedProxiesForProto([]*net.IPNet{ipnet}))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -299,13 +299,15 @@ func TestHSTS_TrustedProxyDuplicateXFPRejected(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.5:9999"
+	// Multi-hop proxies append XFP values; accept the left-most (first)
+	// hop under the operator's trusted-proxy declaration.
 	req.Header.Add("X-Forwarded-Proto", "https")
 	req.Header.Add("X-Forwarded-Proto", "http")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if got := rec.Header().Get("Strict-Transport-Security"); got != "" {
-		t.Errorf("HSTS = %q with duplicate X-Forwarded-Proto, want empty", got)
+	if got := rec.Header().Get("Strict-Transport-Security"); got == "" {
+		t.Fatalf("expected HSTS when first X-Forwarded-Proto is https (multi-value)")
 	}
 }
 

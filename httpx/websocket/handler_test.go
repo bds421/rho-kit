@@ -684,3 +684,51 @@ func TestHandle_IsStdHandlerFunc(t *testing.T) {
 	)
 	_ = http.HandlerFunc(h)
 }
+
+// TestHub_ShutdownCancelsOpenConnection pins review-09: WithoutCancel severs
+// request-context cancellation, but Hub.Shutdown cancels tracked conns and
+// unblocks handlers parked on conn.Context().Done().
+func TestHub_ShutdownCancelsOpenConnection(t *testing.T) {
+	handlerEntered := make(chan struct{})
+	handlerDone := make(chan struct{})
+
+	hub := websocket.NewHub(
+		websocket.WithHandler(func(ctx context.Context, c *websocket.Conn) error {
+			close(handlerEntered)
+			<-c.Context().Done()
+			close(handlerDone)
+			return nil
+		}),
+		websocket.WithReadDrain(),
+	)
+
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(coderws.StatusNormalClosure, "") }()
+
+	select {
+	case <-handlerEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, hub.Shutdown(shutdownCtx))
+
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not observe context cancel after Hub.Shutdown")
+	}
+}
+
+func TestNewHub_PanicsWithoutHandler(t *testing.T) {
+	assert.Panics(t, func() { websocket.NewHub() })
+}

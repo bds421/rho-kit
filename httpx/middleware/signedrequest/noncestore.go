@@ -132,7 +132,7 @@ func (m *MemoryNonceStore) ready() error {
 }
 
 func invalidStoreNonce(nonce string) bool {
-	if nonce == "" || len(nonce) > nonceMaxLen || !utf8.ValidString(nonce) {
+	if nonce == "" || len(nonce) > storeNonceKeyMaxLen || !utf8.ValidString(nonce) {
 		return true
 	}
 	for _, r := range nonce {
@@ -149,6 +149,15 @@ func (m *MemoryNonceStore) sweepLocked(now time.Time) {
 			delete(m.seen, k)
 		}
 	}
+}
+
+// TTL implements [NonceStoreTTL] so [Middleware] can enforce the
+// TTL >= 2×maxClockSkew replay-protection invariant at construction.
+func (m *MemoryNonceStore) TTL() time.Duration {
+	if m == nil {
+		return 0
+	}
+	return m.ttl
 }
 
 // Len returns the count of entries currently held. Useful in tests.

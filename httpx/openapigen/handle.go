@@ -220,7 +220,10 @@ func hasResponseOption(opts []RouteOption) bool {
 		}
 		_ = o(&probe)
 	}
+	// Descriptions alone (WithResponseDescription) and headers do NOT
+	// suppress the default success schema — only an explicit body schema,
+	// multi-content registration, or body-less WithResponseStatus does.
 	return len(probe.responseSchemas) > 0 ||
 		len(probe.responseExtraContent) > 0 ||
-		len(probe.responseDescriptions) > 0
+		len(probe.responseBodyless) > 0
 }

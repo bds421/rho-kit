@@ -30,8 +30,9 @@ const (
 // and outcome is one of the package-defined outcome constants. Raw keys, IPs,
 // tenant IDs, user IDs, and paths are never exported as labels.
 type Metrics struct {
-	decisions  *prometheus.CounterVec
-	retryAfter *prometheus.HistogramVec
+	decisions    *prometheus.CounterVec
+	retryAfter   *prometheus.HistogramVec
+	lruEvictions *prometheus.CounterVec
 
 	// activeKeys is a custom Collector that walks each registered
 	// KeyedLimiter's shards on demand at scrape time. A
@@ -84,8 +85,15 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 			Buckets:   []float64{1, 2, 5, 10, 30, 60, 300, 900, 3600},
 		}, []string{"limiter", "kind"}),
 	}
+	m.lruEvictions = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "http",
+		Subsystem: "ratelimit",
+		Name:      "lru_evictions_total",
+		Help:      "LRU evictions of non-expired visitor/key entries under shard capacity pressure. Elevated values indicate a key/IP spray that can reset rate-limit counters (fail-open eviction).",
+	}, []string{"limiter", "kind"})
 	m.decisions = promutil.MustRegisterOrGet(cfg.registerer, m.decisions)
 	m.retryAfter = promutil.MustRegisterOrGet(cfg.registerer, m.retryAfter)
+	m.lruEvictions = promutil.MustRegisterOrGet(cfg.registerer, m.lruEvictions)
 
 	m.activeKeys = &keyedActiveKeysCollector{
 		desc: prometheus.NewDesc(
@@ -197,4 +205,11 @@ func normalizeLimiterName(name string) string {
 		panic("middleware/ratelimit: invalid limiter name")
 	}
 	return name
+}
+
+func (m *Metrics) observeLRUEviction(limiter, kind string) {
+	if m == nil || m.lruEvictions == nil {
+		return
+	}
+	m.lruEvictions.WithLabelValues(limiter, kind).Inc()
 }

@@ -17,6 +17,7 @@ import (
 
 	"github.com/bds421/rho-kit/httpx/v2"
 	mw "github.com/bds421/rho-kit/httpx/v2/middleware"
+	mwmetrics "github.com/bds421/rho-kit/httpx/v2/middleware/metrics"
 )
 
 const httpTracerName = "kit/http"
@@ -53,10 +54,10 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 		// Inject trace context into response headers for downstream consumers.
 		prop.Inject(ctx, propagation.HeaderCarrier(w.Header()))
 
-		// Pass the context-bearing request to next; a ServeMux router sets
-		// r.Pattern on the pointer it receives, so finishHTTPSpan must read
-		// the same instance (r2) to observe the matched route. Reading the
-		// original r would always see an empty Pattern.
+		// Install a route-pattern slot so [metrics.CaptureRoute] (innermost
+		// in stack.Default) can write the ServeMux pattern back past any
+		// intermediate r.WithContext clones (timeout, request-logger).
+		ctx = mwmetrics.EnsureRoutePatternSlot(ctx)
 		r2 := r.WithContext(ctx)
 
 		rec := mw.NewResponseRecorder(w)
@@ -72,11 +73,17 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 }
 
 func finishHTTPSpan(span trace.Span, r *http.Request, rec *mw.ResponseRecorder, panicked bool) {
-	// Update span name with route pattern if available (more stable than URL path).
-	// A ServeMux stores the registered pattern in method-qualified form
-	// ("GET /users/{id}"), so reuse it verbatim to avoid double-prefixing the
-	// method; only synthesize the "{method} {route}" form for bare patterns.
-	if pattern := r.Pattern; pattern != "" {
+	// Prefer the pattern captured by metrics.CaptureRoute (survives
+	// intermediate WithContext clones in stack.Default). Fall back to
+	// r.Pattern for stacks that wrap the mux without CaptureRoute.
+	pattern := mwmetrics.RoutePatternFromContext(r.Context())
+	if pattern == "" {
+		pattern = r.Pattern
+	}
+	if pattern != "" {
+		// A ServeMux stores the registered pattern in method-qualified form
+		// ("GET /users/{id}"), so reuse it verbatim to avoid double-prefixing
+		// the method; only synthesize the "{method} {route}" form for bare patterns.
 		span.SetName(spanNameForPattern(r.Method, pattern))
 	}
 

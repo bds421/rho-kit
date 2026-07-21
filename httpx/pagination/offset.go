@@ -35,10 +35,19 @@ var ErrInvalidOffsetConfig = errors.New("pagination: invalid offset configuratio
 // the offset-side equivalent of the runaway-limit bug. Use
 // [ParseOffsetWithMax] when you want the kit to cap the offset too.
 //
-// Returns (limit, offset, error) in that order. The OffsetParams struct is
-// also exposed for callers that prefer named fields.
+// Returns (limit, offset, error) in that order. Prefer [ParseOffsetParams]
+// when named fields are clearer at the call site.
 func ParseOffset(r *http.Request, defaultLimit, defaultOffset, maxLimit int) (limit, offset int, err error) {
 	return ParseOffsetWithMax(r, defaultLimit, defaultOffset, maxLimit, 0)
+}
+
+// ParseOffsetParams is [ParseOffset] returning [OffsetParams].
+func ParseOffsetParams(r *http.Request, defaultLimit, defaultOffset, maxLimit int) (OffsetParams, error) {
+	limit, offset, err := ParseOffset(r, defaultLimit, defaultOffset, maxLimit)
+	if err != nil {
+		return OffsetParams{}, err
+	}
+	return OffsetParams{Limit: limit, Offset: offset}, nil
 }
 
 // ParseOffsetWithMax behaves like [ParseOffset] but additionally clamps the

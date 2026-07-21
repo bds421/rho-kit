@@ -37,6 +37,11 @@ to `httpx/middleware/signedrequest` (receiver).
 - Kit headers (X-Kit-Signature / Timestamp / Delivery-Id) OVERWRITE
   caller-supplied entries with the same name, so a misconfigured
   caller can't accidentally suppress the signature.
+- Default `CheckRedirect` (installed by `New` when the client has none)
+  refuses redirects to non-https or private/reserved nets via
+  `security/netutil.ResolveAndValidate`. Explicit client policies
+  (e.g. `httpx.NewResilientHTTPClient`) are never overwritten. Still
+  wire an SSRF-aware transport for untrusted destinations.
 
 ## Tests
 

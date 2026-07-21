@@ -511,14 +511,8 @@ func TestWithIDFuncE_PanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() { WithIDFuncE(nil) })
 }
 
-func TestWithLogger_NilNormalizesToDefault(t *testing.T) {
-	store := newApprovalStore(t)
-	mw := Middleware(store, headerActor(), WithLogger(nil))
-	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, newRequest(http.MethodPost, "/v1/x", "{}"))
-	assert.Equal(t, http.StatusAccepted, rec.Code)
+func TestWithLogger_NilPanics(t *testing.T) {
+	assert.Panics(t, func() { WithLogger(nil) })
 }
 
 func TestMiddleware_IDFuncLogRedactsError(t *testing.T) {

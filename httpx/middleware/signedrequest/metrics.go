@@ -25,6 +25,14 @@ const (
 	// rather than being lumped under bad_signature where an infra outage
 	// would masquerade as a forged-signature attack spike.
 	verifyReasonStoreError = "store_error"
+	// verifyReasonBodyTooLarge is a client payload-size rejection (HTTP 413),
+	// not a malformed signature. Keeping it distinct stops a partner
+	// exceeding WithBodyMaxSize from looking like a tampering spike.
+	verifyReasonBodyTooLarge = "body_too_large"
+	// verifyReasonMisconfigured covers server-side wiring faults such as
+	// ErrSecretTooShort (resolver returned a key shorter than the MAC
+	// requires). These are operator-actionable 500s, not client forgeries.
+	verifyReasonMisconfigured = "misconfigured"
 )
 
 // Metrics holds Prometheus collectors for signed-request verification.
@@ -70,7 +78,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 		verifyFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "signing",
 			Name:      "verify_failures_total",
-			Help:      "Total signed-request verification failures by reason. Reasons are a closed set: expired, clock_skew, bad_signature, missing_header, malformed_signature, replay_nonce, store_error.",
+			Help:      "Total signed-request verification failures by reason. Reasons are a closed set: expired, clock_skew, bad_signature, missing_header, malformed_signature, replay_nonce, store_error, body_too_large, misconfigured.",
 		}, []string{"reason"}),
 	}
 	m.verifyFailures = promutil.MustRegisterOrGet(cfg.registerer, m.verifyFailures)
@@ -120,17 +128,20 @@ func classifyVerifyFailure(err error) string {
 		// dependency fault, not a client-attributable rejection. Keep it
 		// out of bad_signature so an outage is not misread as an attack.
 		return verifyReasonStoreError
+	case errors.Is(err, ErrBodyTooLarge):
+		return verifyReasonBodyTooLarge
+	case errors.Is(err, ErrSecretTooShort):
+		return verifyReasonMisconfigured
 	case errors.Is(err, ErrNonceInvalid),
 		errors.Is(err, ErrTimestampInvalid),
 		errors.Is(err, ErrInvalidRequest),
-		errors.Is(err, ErrBodyTooLarge):
+		errors.Is(err, ErrBodyReadFailed):
 		return verifyReasonMalformedSignature
 	default:
-		// ErrSignatureInvalid and ErrSecretTooShort collapse into
-		// "bad_signature" — operators investigating either case
-		// land in the same dashboard panel. Server-side resolver
-		// errors also funnel here because the wire-level failure
-		// mode is identical (the request did not authenticate).
+		// ErrSignatureInvalid collapses into "bad_signature". Other
+		// unresolved errors (including unexpected resolver faults that
+		// are not ErrSecretTooShort) also funnel here because the
+		// wire-level failure mode is identical (request did not auth).
 		return verifyReasonBadSignature
 	}
 }

@@ -21,7 +21,17 @@ import (
 // Handle panics if no [WithHandler] option is supplied. Serving a
 // WebSocket endpoint with no handler is always a wiring bug rather
 // than a runtime condition to absorb.
+//
+// Handle does not participate in process-level graceful shutdown of
+// open sockets — use [NewHub] + [Hub.Shutdown] when connection
+// contexts must cancel on service stop (review-09).
 func Handle(opts ...Option) http.HandlerFunc {
+	return handleWithHooks(opts, nil, nil)
+}
+
+// buildConfig applies options and validates the resulting config.
+// Shared by [Handle] and [NewHub] so both fail fast identically.
+func buildConfig(opts ...Option) config {
 	cfg := defaultConfig()
 	for _, opt := range opts {
 		if opt == nil {
@@ -40,6 +50,13 @@ func Handle(opts ...Option) http.HandlerFunc {
 	if cfg.pongTimeout > 0 && cfg.pingInterval <= 0 {
 		panic("httpx/websocket: WithPongTimeout requires WithPingInterval (the pong timeout is inert without a heartbeat)")
 	}
+	return cfg
+}
+
+// handleWithHooks is the shared upgrade path for [Handle] and [Hub.Handler].
+// onOpen/onClose are optional lifecycle hooks (Hub uses them to track conns).
+func handleWithHooks(opts []Option, onOpen, onClose func(*Conn)) http.HandlerFunc {
+	cfg := buildConfig(opts...)
 	logger := cfg.logger
 	if logger == nil {
 		logger = slog.Default()
@@ -107,21 +124,38 @@ func Handle(opts ...Option) http.HandlerFunc {
 			writeTimeout: writeTimeout,
 		}
 		metrics.connOpened()
+		if onOpen != nil {
+			onOpen(conn)
+		}
+		defer func() {
+			if onClose != nil {
+				onClose(conn)
+			}
+		}()
 
+		// WithReadDrain: own the read side so push-only handlers that
+		// never Read still detect peer disconnect. CloseRead is
+		// independent of the heartbeat; it is not silently dropped when
+		// WithPingInterval is unset.
+		//
+		// coder/websocket's CloseRead cancels only the *derived* context
+		// it returns — not the kit's per-connection parent. Watch that
+		// derived context and cancel the kit Conn so push handlers parked
+		// on conn.Context().Done() observe peer disconnect promptly.
+		if readDrain {
+			drainCtx := raw.CloseRead(ctx)
+			go func() {
+				<-drainCtx.Done()
+				// Cancel promptly so push handlers parked on
+				// conn.Context().Done() exit without waiting for
+				// the next heartbeat failure.
+				conn.cancelCtx()
+			}()
+		}
 		// Idle keepalive — spawned only when WithPingInterval is set.
 		// Closes the connection if the peer stops responding to pings,
-		// which causes the read loop below to unblock with an error.
+		// which causes in-flight reads/writes to unblock with an error.
 		if pingInterval > 0 {
-			// WithReadDrain: own the read side so the heartbeat's Pong
-			// is pumped for push-only handlers that never read. Driving
-			// the internal reader also cancels the per-connection
-			// context when the peer goes away, even with no handler
-			// read in flight. coder/websocket's CloseRead is idempotent
-			// and a no-op for handlers that do read (they simply do not
-			// opt in).
-			if readDrain {
-				raw.CloseRead(ctx)
-			}
 			go runHeartbeat(ctx, conn, pingInterval, pongTimeout, logger, metrics)
 		}
 

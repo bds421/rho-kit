@@ -61,6 +61,11 @@ type config struct {
 	originPatterns []string
 }
 
+// defaultConfig leaves heartbeat and write timeout disabled. Callers
+// serving untrusted clients SHOULD set [WithPingInterval] and
+// [WithWriteTimeout] (and usually [WithMaxConnections]) so a peer that
+// stops reading cannot pin a goroutine/fd indefinitely. Safe non-zero
+// defaults are a v3 candidate (see V3_BREAKING_PROPOSALS.md).
 func defaultConfig() config {
 	return config{
 		maxMessageSize: DefaultMaxMessageBytes,
@@ -210,12 +215,15 @@ func WithPongTimeout(d time.Duration) Option {
 //   - If the peer sends a data message, the connection is closed with
 //     [StatusPolicyViolation] — a push-only endpoint does not expect
 //     inbound application data.
-//   - The per-connection [Conn.Context] is still cancelled when the
-//     connection closes for any reason, so a push loop should select on
-//     ctx.Done() to exit.
+//   - Peer disconnect cancels the per-connection [Conn.Context]
+//     promptly (the kit watches CloseRead's derived context). A push
+//     loop should select on ctx.Done() to exit without waiting for a
+//     heartbeat failure.
 //
-// This option is a no-op unless [WithPingInterval] is also set; without
-// a heartbeat there is no Pong to pump.
+// WithReadDrain is independent of [WithPingInterval]: CloseRead still
+// pumps control/close frames and detects peer disconnect without a
+// heartbeat. Pairing both is recommended for idle dead-peer detection
+// under half-open TCP.
 func WithReadDrain() Option {
 	return func(c *config) { c.readDrain = true }
 }

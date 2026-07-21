@@ -320,3 +320,15 @@ func TestClientIP_XForwardedFor_UnparseableFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestClientIP_PrefersXFFOverXRealIP(t *testing.T) {
+	// Trusted proxy forwards client X-Real-IP spoof while appending to XFF.
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "127.0.0.1:8080"
+	req.Header.Set("X-Real-IP", "1.2.3.4") // attacker-controlled, forwarded verbatim
+	req.Header.Set("X-Forwarded-For", "203.0.113.50")
+	got := ClientIP(req)
+	if got != "203.0.113.50" {
+		t.Errorf("ClientIP = %q, want XFF client (not spoofed X-Real-IP)", got)
+	}
+}

@@ -212,9 +212,18 @@ func (rl *KeyedLimiter) AllowKey(key string) (allowed bool, retryAfter int, err 
 		return false, seconds, nil
 	}
 
-	s.entries.Add(key, &keyedRateLimitEntry{count: 1, windowEnd: now.Add(rl.window)})
+	if s.entries.Add(key, &keyedRateLimitEntry{count: 1, windowEnd: now.Add(rl.window)}) {
+		rl.observeLRUEviction()
+	}
 	rl.observeDecision(rateLimitOutcomeAllowed)
 	return true, 0, nil
+}
+
+func (rl *KeyedLimiter) observeLRUEviction() {
+	if rl == nil || rl.metrics == nil {
+		return
+	}
+	rl.metrics.observeLRUEviction(rl.name, "keyed")
 }
 
 // Name returns the limiter's configured name so the type satisfies the
@@ -326,8 +335,10 @@ func (rl *KeyedLimiter) cleanup() {
 	now := rl.now()
 	for i := range rl.shards {
 		s := &rl.shards[i]
-		// Match the IP limiter's two-phase cleanup: Keys allocates a
-		// snapshot, so do it outside the shard lock that protects AllowKey.
+		// Match the IP limiter's two-phase cleanup: snapshot Keys under the
+		// shard lock (Keys is not concurrent-safe), then re-lock for the
+		// per-key Peek/Remove pass so AllowKey is not blocked during the
+		// Keys allocation window only briefly.
 		s.mu.Lock()
 		keys := s.entries.Keys()
 		s.mu.Unlock()

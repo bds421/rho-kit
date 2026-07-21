@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,51 @@ import (
 	mw "github.com/bds421/rho-kit/httpx/v2/middleware"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
+
+// routePatternKey holds a pointer to the matched ServeMux pattern so
+// outer middleware (this package) can read it after intermediate
+// handlers have cloned the request via WithContext.
+type routePatternKey struct{}
+
+// routePatternSlot is shared via context between [CaptureRoute]
+// (innermost, writes) and [HTTPMetrics.Middleware] (outer, reads).
+type routePatternSlot struct {
+	pattern string
+}
+
+// CaptureRoute is the innermost middleware that records r.Pattern into
+// a context slot after the handler returns. ServeMux sets Pattern on
+// the exact *http.Request it receives; every WithContext clone between
+// the metrics/tracing middleware and the mux leaves the outer request's
+// Pattern empty. Place CaptureRoute immediately around the mux
+// (stack.Default does this) so route labels and span names are accurate.
+func CaptureRoute(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+		if slot, ok := r.Context().Value(routePatternKey{}).(*routePatternSlot); ok && slot != nil {
+			slot.pattern = r.Pattern
+		}
+	})
+}
+
+// EnsureRoutePatternSlot installs a capture slot on ctx when one is not
+// already present. Outer middleware (metrics, tracing) call this before
+// invoking next so [CaptureRoute] has somewhere to write.
+func EnsureRoutePatternSlot(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(routePatternKey{}).(*routePatternSlot); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, routePatternKey{}, &routePatternSlot{})
+}
+
+// RoutePatternFromContext returns the ServeMux pattern recorded by
+// [CaptureRoute], or "" if none was captured.
+func RoutePatternFromContext(ctx context.Context) string {
+	if slot, ok := ctx.Value(routePatternKey{}).(*routePatternSlot); ok && slot != nil {
+		return slot.pattern
+	}
+	return ""
+}
 
 // HTTPMetrics holds Prometheus collectors for HTTP request monitoring.
 type HTTPMetrics struct {
@@ -97,6 +143,13 @@ func NewHTTPMetrics(opts ...MetricsOption) *HTTPMetrics {
 }
 
 // Middleware returns an HTTP middleware that records Prometheus metrics.
+//
+// Route labels: Prefer the pattern recorded by [CaptureRoute] (via
+// context) over r.Pattern on this request. Intermediate middleware that
+// calls r.WithContext leaves the outer request's Pattern empty even when
+// ServeMux matched a route on an inner clone. stack.Default installs
+// CaptureRoute innermost so labels stay accurate under the canonical
+// chain.
 func (m *HTTPMetrics) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.requestsInFlight.Inc()
@@ -104,6 +157,8 @@ func (m *HTTPMetrics) Middleware(next http.Handler) http.Handler {
 
 		start := time.Now()
 		rec := mw.NewResponseRecorder(w)
+		r = r.WithContext(EnsureRoutePatternSlot(r.Context()))
+		slot, _ := r.Context().Value(routePatternKey{}).(*routePatternSlot)
 
 		defer func() {
 			recovered := recover()
@@ -126,9 +181,14 @@ func (m *HTTPMetrics) Middleware(next http.Handler) http.Handler {
 			method := promutil.HTTPMethodLabel(r.Method)
 			status := strconv.Itoa(statusCode)
 
-			// Use r.Pattern (Go 1.22+) to get the registered route pattern
-			// instead of r.URL.Path which would cause cardinality explosion.
-			route := routePatternLabel(r.Pattern)
+			// Prefer the innermost CaptureRoute pattern; fall back to this
+			// request's Pattern for stacks that wrap the mux without
+			// intermediate WithContext clones.
+			pattern := slot.pattern
+			if pattern == "" {
+				pattern = r.Pattern
+			}
+			route := routePatternLabel(pattern)
 
 			m.requestsTotal.WithLabelValues(method, route, status).Inc()
 			m.requestDuration.WithLabelValues(method, route).Observe(duration)

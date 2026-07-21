@@ -346,6 +346,12 @@ func WithBestEffortAuditOnMissingTenant() ServerOption {
 }
 
 // WithAsyncAuditDispatch enables best-effort async audit append.
+//
+// Async dispatch voids the strict-audit fail-closed invariant: queue
+// saturation or a hung store can drop entries for already-executed tools.
+// Combine with [WithBestEffortAuditOnMissingTenant] to acknowledge
+// best-effort audit; [NewServer] panics if async is enabled while strict
+// audit remains on (the default).
 func WithAsyncAuditDispatch() ServerOption {
 	return func(c *serverConfig) { c.asyncAudit = true }
 }
@@ -433,6 +439,12 @@ func NewServer(opts ...ServerOption) *Server {
 	}
 	sdkOpts := &sdkmcp.ServerOptions{
 		Logger: cfg.logger,
+	}
+	if cfg.asyncAudit && cfg.strictAudit {
+		// Async append is best-effort (drops on queue saturation). Strict
+		// audit promises every executed tool call produces a signed entry.
+		// Combining them silently voids that promise — fail loud instead.
+		panic("mcp: WithAsyncAuditDispatch requires WithBestEffortAuditOnMissingTenant (async dispatch is best-effort and voids strict audit)")
 	}
 	s := &Server{
 		cfg:      cfg,
@@ -1133,8 +1145,7 @@ func mapErrorForCaller(s *Server, ctx context.Context, err error) string {
 	case apperror.IsRateLimit(err):
 		return "rate limit exceeded"
 	case apperror.IsConflict(err):
-		s.logInternalError(ctx, "mcp: tool returned conflict error", err)
-		return "internal error"
+		return "conflict"
 	default:
 		s.logInternalError(ctx, "mcp: tool returned internal error", err)
 		return "internal error"

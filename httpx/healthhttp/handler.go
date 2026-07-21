@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"net/url"
 	"time"
 
@@ -148,8 +149,18 @@ func httpCheck(name, rawURL string, client *http.Client, critical bool) health.D
 	if rawURL == "" {
 		panic("healthhttp: HTTPCheck requires a non-empty URL")
 	}
-	if _, err := url.Parse(rawURL); err != nil {
+	u, err := url.Parse(rawURL)
+	if err != nil {
 		panic("healthhttp: HTTPCheck requires a parseable URL: " + err.Error())
+	}
+	// Reject scheme-less / relative values (url.Parse accepts them).
+	// Health probes must hit an absolute http(s) endpoint with a host.
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		panic("healthhttp: HTTPCheck URL must use http or https scheme")
+	}
+	if u.Host == "" {
+		panic("healthhttp: HTTPCheck URL must include a host")
 	}
 	client = dependencyHTTPClient(client)
 	return health.DependencyCheck{

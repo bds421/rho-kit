@@ -84,12 +84,12 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 }
 
 // WithLogger overrides the default slog.Default() logger.
+// Panics if l is nil — omit the option to keep slog.Default().
 func WithLogger(l *slog.Logger) Option {
-	return func(c *config) {
-		if l != nil {
-			c.logger = l
-		}
+	if l == nil {
+		panic("middleware/recover: WithLogger requires a non-nil logger (omit the option to use slog.Default)")
 	}
+	return func(c *config) { c.logger = l }
 }
 
 // WithStatusCode overrides the response status. Default: 500.
@@ -199,6 +199,15 @@ func handlePanic(rec *recordingWriter, r *http.Request, rv any, cfg *config) {
 		attrs = append(attrs, "stack", string(debug.Stack()))
 	}
 
+	if rec.hijacked {
+		// Connection was upgraded/hijacked; the client owns the raw stream.
+		// Do not attempt a JSON 500 — it would corrupt the upgraded protocol
+		// and net/http would log "WriteHeader on hijacked connection".
+		attrs = append(attrs, "hijacked", true)
+		cfg.logger.Error("http: panic after connection hijacked — cannot recover response", attrs...)
+		return
+	}
+
 	if rec.wroteHeader {
 		// Response already in flight. We cannot cleanly send a 500 — the
 		// status line and some bytes have already been written. Log loudly
@@ -275,6 +284,7 @@ type recordingWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
 	statusCode  int
+	hijacked    bool
 }
 
 func (rw *recordingWriter) WriteHeader(code int) {
@@ -297,15 +307,31 @@ func (rw *recordingWriter) Write(b []byte) (int, error) {
 func (rw *recordingWriter) Unwrap() http.ResponseWriter { return rw.ResponseWriter }
 
 // Hijack delegates if supported; matches the rest of the kit's response
-// wrappers. After hijack the wroteHeader flag stays false because hijacked
-// connections write their own framing.
+// wrappers. On success we mark the connection hijacked so handlePanic will
+// not attempt to write a JSON 500 onto a raw stream.
 //
 //nolint:wrapcheck // direct delegation by design
 func (rw *recordingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
-		return h.Hijack()
+		c, brw, err := h.Hijack()
+		if err == nil {
+			rw.hijacked = true
+		}
+		return c, brw, err
 	}
 	return nil, nil, fmt.Errorf("recover: underlying ResponseWriter does not implement http.Hijacker")
+}
+
+// Push delegates to the underlying writer when it implements [http.Pusher],
+// preserving HTTP/2 server push through the outermost recover wrapper
+// that stack.Default installs.
+//
+//nolint:wrapcheck // direct delegation by design
+func (rw *recordingWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := rw.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
 }
 
 // markStarted records that the response has been committed. net/http's Flush

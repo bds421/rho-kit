@@ -62,6 +62,10 @@ type routeConfig struct {
 	responseDescriptions map[int]string
 	responseSchemas      map[int]*jsonschema.Schema
 	responseTypes        map[int]string
+	// responseBodyless marks statuses registered via [WithResponseStatus]
+	// (intentional empty body). Distinct from [WithResponseDescription],
+	// which only customises text and must not suppress the default schema.
+	responseBodyless map[int]struct{}
 
 	// Multi-content registrations: status -> mediaType -> schema.
 	// Populated by [WithResponseContent] / [WithResponseContentT]
@@ -402,12 +406,18 @@ func WithResponseDescription(status int, desc string) RouteOption {
 
 // WithResponseStatus registers a status with a description but no
 // body schema. Use for 204 No Content or other empty-body responses.
+// Unlike [WithResponseDescription], this marks the status as intentionally
+// body-less so [Handle] helpers skip the default 200 schema.
 func WithResponseStatus(status int, desc string) RouteOption {
 	return func(c *routeConfig) error {
 		if !validHTTPStatus(status) {
 			return fmt.Errorf("openapigen: WithResponseStatus: invalid status %d", status)
 		}
 		c.responseDescriptions[status] = desc
+		if c.responseBodyless == nil {
+			c.responseBodyless = map[int]struct{}{}
+		}
+		c.responseBodyless[status] = struct{}{}
 		return nil
 	}
 }

@@ -2,6 +2,8 @@ package webhook_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -362,4 +364,136 @@ func TestSend_CustomHeadersDoNotOverrideKitHeaders(t *testing.T) {
 	}))
 	require.NotEqual(t, "attacker-attempt-to-override", gotSig,
 		"kit must overwrite caller-supplied X-Kit-Signature")
+}
+
+func TestSend_RetriesOn429ThenSucceeds(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := attempts.Add(1)
+		if n < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	d := newDispatcher(t, srv.Client(),
+		webhook.WithRetryPolicy(retry.DefaultPolicy()),
+	)
+	require.NoError(t, d.Send(context.Background(), webhook.Delivery{URL: srv.URL}))
+	require.GreaterOrEqual(t, attempts.Load(), int32(3), "429 must be retried")
+}
+
+func TestSend_RetriesOn408ThenSucceeds(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := attempts.Add(1)
+		if n < 2 {
+			w.WriteHeader(http.StatusRequestTimeout)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	d := newDispatcher(t, srv.Client(),
+		webhook.WithRetryPolicy(retry.DefaultPolicy()),
+	)
+	require.NoError(t, d.Send(context.Background(), webhook.Delivery{URL: srv.URL}))
+	require.GreaterOrEqual(t, attempts.Load(), int32(2), "408 must be retried")
+}
+
+// TestNew_InstallsSafeCheckRedirectWhenUnset verifies New clones a client
+// without CheckRedirect and installs the SSRF-safe policy.
+func TestNew_InstallsSafeCheckRedirectWhenUnset(t *testing.T) {
+	client := &http.Client{}
+	d, err := webhook.New(webhook.Config{
+		HTTPClient: client,
+		Signer:     signing.NewSigner(),
+		Secret:     signing.Secret("test-secret-32-bytes-padded-12345"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, d)
+
+	// Original must not be mutated.
+	require.Nil(t, client.CheckRedirect, "New must clone, not mutate caller's client")
+}
+
+// TestNew_PreservesExplicitCheckRedirect pins that an already-configured
+// redirect policy is never overwritten (kit resilient clients block all
+// redirects).
+func TestNew_PreservesExplicitCheckRedirect(t *testing.T) {
+	sentinel := errors.New("caller policy")
+	policy := func(*http.Request, []*http.Request) error { return sentinel }
+	client := &http.Client{CheckRedirect: policy}
+	d, err := webhook.New(webhook.Config{
+		HTTPClient: client,
+		Signer:     signing.NewSigner(),
+		Secret:     signing.Secret("test-secret-32-bytes-padded-12345"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	// Caller's client and its CheckRedirect must be untouched.
+	require.Equal(t, fmt.Sprintf("%p", policy), fmt.Sprintf("%p", client.CheckRedirect))
+	err = client.CheckRedirect(nil, nil)
+	require.ErrorIs(t, err, sentinel)
+}
+
+// TestSend_BlocksRedirectToPrivateIP is the SSRF-via-redirect regression:
+// a receiver that 302s to a link-local/metadata address must not receive
+// the signed delivery body. The default CheckRedirect refuses private nets.
+func TestSend_BlocksRedirectToPrivateIP(t *testing.T) {
+	// Redirector returns a 302 to a literal private IP URL. CheckRedirect
+	// must refuse before following (no dial to 169.254.169.254).
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	client := redirector.Client()
+	client.CheckRedirect = nil // so New installs the safe policy
+
+	d := newDispatcher(t, client, webhook.WithRetryPolicy(retry.Policy{
+		MaxRetries: 0,
+		BaseDelay:  time.Millisecond,
+		MaxDelay:   time.Millisecond,
+		Factor:     1,
+		Jitter:     0,
+	}))
+
+	err := d.Send(context.Background(), webhook.Delivery{
+		URL:  redirector.URL,
+		Body: []byte(`{"ok":true}`),
+	})
+	require.Error(t, err, "redirect to private IP must fail the delivery")
+}
+
+// TestSend_BlocksRedirectToNonHTTPS refuses http upgrade targets that are
+// not https — the default policy only allows public https hops.
+func TestSend_BlocksRedirectToNonHTTPS(t *testing.T) {
+	next := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer next.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, next.URL, http.StatusFound) // http, not https
+	}))
+	defer redirector.Close()
+
+	client := redirector.Client()
+	client.CheckRedirect = nil
+
+	d := newDispatcher(t, client, webhook.WithRetryPolicy(retry.Policy{
+		MaxRetries: 0,
+		BaseDelay:  time.Millisecond,
+		MaxDelay:   time.Millisecond,
+		Factor:     1,
+		Jitter:     0,
+	}))
+
+	err := d.Send(context.Background(), webhook.Delivery{
+		URL:  redirector.URL,
+		Body: []byte(`{"ok":true}`),
+	})
+	require.Error(t, err, "redirect to non-https must be refused")
 }

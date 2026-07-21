@@ -16,7 +16,10 @@ import (
 // Compile-time assertion that *RedisNonceStore implements the
 // kit's NonceStore contract. If the interface ever drifts the build
 // fails here, not at the consumer's [signedrequest.Middleware] call.
-var _ signedrequest.NonceStore = (*RedisNonceStore)(nil)
+var (
+	_ signedrequest.NonceStore    = (*RedisNonceStore)(nil)
+	_ signedrequest.NonceStoreTTL = (*RedisNonceStore)(nil)
+)
 
 // ErrInvalidStore is returned when SeenOrStore is invoked on a nil or
 // otherwise uninitialized RedisNonceStore.
@@ -138,6 +141,14 @@ func New(client goredis.UniversalClient, ttl time.Duration, opts ...Option) *Red
 // FR-027 [LOW]: rejects nonces longer than the verifier's wire
 // limit and non-portable bytes so a caller bypassing the middleware
 // (e.g. test harness) cannot construct unbounded or corrupt Redis keys.
+// TTL implements [signedrequest.NonceStoreTTL].
+func (s *RedisNonceStore) TTL() time.Duration {
+	if s == nil {
+		return 0
+	}
+	return s.ttl
+}
+
 func (s *RedisNonceStore) SeenOrStore(ctx context.Context, nonce string) (bool, error) {
 	if err := s.ready(); err != nil {
 		return false, err
@@ -181,7 +192,9 @@ func (s *RedisNonceStore) ready() error {
 // accept as a Redis key suffix. Mirrors the verifier's cap (audit
 // FR-026 / FR-027); the redis store independently enforces this so
 // direct callers cannot bypass it.
-const maxNonceLen = 64
+// maxNonceLen caps store keys including key-scoped nonces
+// (keyID + ":" + wire nonce). Mirrors signedrequest.storeNonceKeyMaxLen.
+const maxNonceLen = 256 + 1 + 64 // keyIDMaxLen + sep + nonceMaxLen
 
 func (s *RedisNonceStore) key(nonce string) string {
 	return s.prefix + nonce

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -143,7 +144,7 @@ func TestVerify_ClosesOriginalBodyAfterRewind(t *testing.T) {
 }
 
 // TestReadSpooledBodyErrorsAreStable pins that a body-read failure surfaces
-// the stable, redacted "signedrequest: read body failed" message (via safeWrap)
+// the stable, redacted "signedrequest: failed to read request body" message (via safeWrap)
 // while keeping the underlying error chain intact for errors.Is and never
 // leaking the raw reader-error text. This is the server-side verifier's body
 // path (readSpooledBody) — the previous offline streamBody/readBody helpers
@@ -156,7 +157,7 @@ func TestReadSpooledBodyErrorsAreStable(t *testing.T) {
 	sb, _, err := readSpooledBody(readReq, 1024, 0)
 	require.Error(t, err)
 	assert.Nil(t, sb)
-	assert.Equal(t, "signedrequest: read body failed", err.Error())
+	assert.Equal(t, "signedrequest: failed to read request body", err.Error())
 	assert.ErrorIs(t, err, readErr)
 	assert.NotContains(t, err.Error(), "secret-token")
 }
@@ -534,7 +535,7 @@ func TestMiddleware_PanicsWithoutNonceStore(t *testing.T) {
 
 func TestMiddleware_PanicsWithoutResolver(t *testing.T) {
 	assert.Panics(t, func() {
-		Middleware(nil, NewMemoryNonceStore(time.Minute))
+		Middleware(nil, NewMemoryNonceStore(10*time.Minute))
 	})
 }
 
@@ -918,7 +919,7 @@ func TestMemoryNonceStore_RejectsUnsafeNonce(t *testing.T) {
 	store := NewMemoryNonceStore(time.Minute)
 	for _, nonce := range []string{
 		"",
-		strings.Repeat("a", nonceMaxLen+1),
+		strings.Repeat("a", storeNonceKeyMaxLen+1),
 		"nonce\nvalue",
 		"nonce value",
 		"nonce\tvalue",
@@ -1066,4 +1067,107 @@ func TestVerify_HandlerClosingBodyIsNotDoubleClosedHarmfully(t *testing.T) {
 	require.NoError(t, readErr)
 	require.NoError(t, closeErr)
 	require.Equal(t, body, string(observed), "handler must still observe the full body")
+}
+
+func TestMiddleware_PanicsWhenNonceTTLBelowTwiceSkew(t *testing.T) {
+	store := NewMemoryNonceStore(time.Minute) // 1m TTL
+	require.Panics(t, func() {
+		// default maxClockSkew is 5m; 2*5m = 10m > 1m
+		_ = Middleware(func(context.Context, string) ([]byte, error) {
+			return bytes.Repeat([]byte("s"), 32), nil
+		}, store)
+	})
+}
+
+func TestMiddleware_AcceptsNonceTTLAtLeastTwiceSkew(t *testing.T) {
+	store := NewMemoryNonceStore(10 * time.Minute)
+	require.NotPanics(t, func() {
+		_ = Middleware(func(context.Context, string) ([]byte, error) {
+			return bytes.Repeat([]byte("s"), 32), nil
+		}, store)
+	})
+}
+
+func TestMiddleware_AcceptsShortTTLWhenSkewReduced(t *testing.T) {
+	store := NewMemoryNonceStore(time.Minute)
+	require.NotPanics(t, func() {
+		_ = Middleware(func(context.Context, string) ([]byte, error) {
+			return bytes.Repeat([]byte("s"), 32), nil
+		}, store, WithMaxClockSkew(20*time.Second)) // 2*20s = 40s < 1m
+	})
+}
+
+func TestIsServerSideVerifyError_BodyReadFailedIsClient(t *testing.T) {
+	assert.False(t, isServerSideVerifyError(ErrBodyReadFailed))
+	assert.False(t, isServerSideVerifyError(fmt.Errorf("%w: reset", ErrBodyReadFailed)))
+}
+
+func TestClassifyVerifyFailure_BodyReadFailedIsMalformed(t *testing.T) {
+	assert.Equal(t, verifyReasonMalformedSignature, classifyVerifyFailure(ErrBodyReadFailed))
+}
+
+func TestWriteError_BodyReadFailedIs400(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeError(rec, ErrBodyReadFailed)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestVerify_NonceScopedByKeyID(t *testing.T) {
+	// Two different key IDs reusing the same wire nonce must both succeed;
+	// a holder of key A must not be able to burn nonces for key B.
+	secretA := bytes.Repeat([]byte("a"), 32)
+	secretB := bytes.Repeat([]byte("b"), 32)
+	resolver := func(_ context.Context, id string) ([]byte, error) {
+		switch id {
+		case "key-a":
+			return secretA, nil
+		case "key-b":
+			return secretB, nil
+		default:
+			return nil, errors.New("unknown")
+		}
+	}
+	store := NewMemoryNonceStore(10 * time.Minute)
+	handler := Middleware(resolver, store)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	now := time.Now()
+	nonce := makeNonce("shared")
+	sign := func(secret []byte, id string) *http.Request {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/x", nil)
+		tsUnix := now.UTC().Unix()
+		req.Header.Set(HeaderTimestamp, formatUnix(tsUnix))
+		req.Header.Set(HeaderNonce, nonce)
+		req.Header.Set(HeaderKeyID, id)
+		sig, err := SignCanonical(SignRequest{
+			Secret:    secret,
+			Request:   req,
+			Timestamp: formatUnix(tsUnix),
+			Nonce:     nonce,
+		})
+		require.NoError(t, err)
+		req.Header.Set(HeaderSignature, sig)
+		return req
+	}
+	for _, tc := range []struct {
+		id     string
+		secret []byte
+	}{
+		{"key-a", secretA},
+		{"key-b", secretB},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, sign(tc.secret, tc.id))
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("key %s status = %d, want 204 (cross-key nonce must not collide)", tc.id, rec.Code)
+		}
+	}
+	// Replay with key-a must now fail.
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, sign(secretA, "key-a"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("replay status = %d, want 401", rec.Code)
+	}
 }

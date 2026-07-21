@@ -68,8 +68,8 @@ func JSONStatus[Req, Resp any](logger *slog.Logger, fn func(ctx context.Context,
 			WriteServiceError(w, r, logger, err)
 			return
 		}
-		if !isValidHTTPStatus(status) {
-			WriteServiceError(w, r, logger, fmt.Errorf("httpx: handler returned invalid status %d (expected 100..999)", status))
+		if !isJSONBodyStatus(status) {
+			WriteServiceError(w, r, logger, fmt.Errorf("httpx: handler returned status %d incompatible with a JSON body (use 2xx/3xx/4xx/5xx other than 204/304; for 204 use NoContent)", status))
 			return
 		}
 		_ = WriteJSON(w, r, status, resp)
@@ -78,7 +78,9 @@ func JSONStatus[Req, Resp any](logger *slog.Logger, fn func(ctx context.Context,
 
 // JSONNoBodyStatus returns an http.Handler with no request body decoding that
 // lets the handler specify the HTTP status code. Useful for endpoints that need
-// to return different success statuses (e.g. 200, 202, 204) without a request body.
+// to return different success statuses (e.g. 200, 202) without a request body.
+// Statuses that must not carry a body (1xx, 204, 304) are rejected — use
+// [NoContent] for 204.
 func JSONNoBodyStatus[Resp any](logger *slog.Logger, fn func(ctx context.Context, r *http.Request) (int, Resp, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		status, resp, err := fn(r.Context(), r)
@@ -86,8 +88,8 @@ func JSONNoBodyStatus[Resp any](logger *slog.Logger, fn func(ctx context.Context
 			WriteServiceError(w, r, logger, err)
 			return
 		}
-		if !isValidHTTPStatus(status) {
-			WriteServiceError(w, r, logger, fmt.Errorf("httpx: handler returned invalid status %d (expected 100..999)", status))
+		if !isJSONBodyStatus(status) {
+			WriteServiceError(w, r, logger, fmt.Errorf("httpx: handler returned status %d incompatible with a JSON body (use 2xx/3xx/4xx/5xx other than 204/304; for 204 use NoContent)", status))
 			return
 		}
 		_ = WriteJSON(w, r, status, resp)
@@ -101,6 +103,25 @@ func JSONNoBodyStatus[Resp any](logger *slog.Logger, fn func(ctx context.Context
 // which panics on values outside 100..999.
 func isValidHTTPStatus(status int) bool {
 	return status >= 100 && status <= 999
+}
+
+// isJSONBodyStatus reports whether status may carry a JSON body under
+// net/http rules. 1xx, 204, and 304 suppress the body, so WriteJSON would
+// write headers that claim a body net/http then drops — reject them at the
+// typed-handler boundary instead of emitting a misleading Content-Type.
+func isJSONBodyStatus(status int) bool {
+	if !isValidHTTPStatus(status) {
+		return false
+	}
+	if status < 200 {
+		return false
+	}
+	switch status {
+	case 204, 304:
+		return false
+	default:
+		return true
+	}
 }
 
 // NoContent returns an http.Handler that calls fn and returns 204 No Content

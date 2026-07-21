@@ -84,6 +84,26 @@ func safeWrap(msg string, cause error) error {
 	return safeCauseError{msg: msg, cause: cause}
 }
 
+// bodyReadError is a client-attributable body transport failure. Error()
+// is the stable [ErrBodyReadFailed] text (no transport detail); Unwrap
+// joins ErrBodyReadFailed and the underlying cause for errors.Is.
+type bodyReadError struct {
+	cause error
+}
+
+func (e bodyReadError) Error() string { return ErrBodyReadFailed.Error() }
+
+func (e bodyReadError) Unwrap() []error {
+	if e.cause == nil {
+		return []error{ErrBodyReadFailed}
+	}
+	return []error{ErrBodyReadFailed, e.cause}
+}
+
+func newBodyReadError(cause error) error {
+	return bodyReadError{cause: cause}
+}
+
 // newNonceStoreError wraps a [NonceStore] backend failure so it matches
 // both errors.Is(_, ErrNonceStore) (for classification and the 500
 // mapping) and errors.Is(_, cause) (so server-side logging can surface
@@ -114,6 +134,11 @@ var (
 	// forged-signature attack spike. The underlying cause is wrapped and
 	// reachable via errors.Unwrap / errors.Is.
 	ErrNonceStore = errors.New("signedrequest: nonce store backend error")
+	// ErrBodyReadFailed marks a client-side body transport failure
+	// (connection reset, truncated upload). Mapped to 400 and excluded
+	// from server-side error logs so a flaky or hostile client cannot
+	// flood logs or pollute the bad_signature metric.
+	ErrBodyReadFailed = errors.New("signedrequest: failed to read request body")
 )
 
 // nonceMaxLen caps the wire-level nonce header. The kit's signing
@@ -133,6 +158,17 @@ const nonceMaxLen = 64
 // Audit FR-026: bounding length and demanding a canonical decode
 // prevents an attacker from inflating nonce-store keys with arbitrary
 // strings or smuggling unprintable bytes via Redis.
+// storeNonceKeyMaxLen is the max length of a key-scoped nonce store
+// entry (keyID + ":" + wire nonce). Wider than [nonceMaxLen] because
+// the store key includes the signing key id.
+const storeNonceKeyMaxLen = keyIDMaxLen + 1 + nonceMaxLen
+
+// storeNonceKey scopes a wire nonce by signing key id so distinct
+// principals cannot burn each other's nonces in a shared NonceStore.
+func storeNonceKey(keyID, nonce string) string {
+	return keyID + ":" + nonce
+}
+
 func validNonce(nonce string) bool {
 	if len(nonce) == 0 || len(nonce) > nonceMaxLen {
 		return false
@@ -299,6 +335,14 @@ func WithLogger(l *slog.Logger) Option {
 // resolver is called once per request to obtain the secret keyed by
 // the X-Signature-Key-Id header. nonceStore is the replay-protection
 // store; the constructor panics if nil to fail loudly at startup.
+// NonceStoreTTL is an optional capability for [NonceStore]
+// implementations that can report their retention TTL. When present,
+// [Middleware] panics at construction if TTL < 2× max clock skew so a
+// misconfigured store cannot silently re-open the replay window.
+type NonceStoreTTL interface {
+	TTL() time.Duration
+}
+
 func Middleware(resolver KeyResolver, nonceStore NonceStore, opts ...Option) func(http.Handler) http.Handler {
 	if resolver == nil {
 		panic("signedrequest: KeyResolver must not be nil")
@@ -320,6 +364,13 @@ func Middleware(resolver KeyResolver, nonceStore NonceStore, opts ...Option) fun
 			panic("signedrequest: Middleware option must not be nil")
 		}
 		o(&cfg)
+	}
+	if ts, ok := nonceStore.(NonceStoreTTL); ok {
+		ttl := ts.TTL()
+		minTTL := 2 * cfg.maxClockSkew
+		if ttl > 0 && ttl < minTTL {
+			panic("signedrequest: NonceStore TTL must be >= 2 * max clock skew (replay protection invariant)")
+		}
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -410,23 +461,25 @@ func verify(r *http.Request, cfg *config) error {
 	// unauthenticated caller can force the server to buffer up to
 	// bodyMaxSize bytes per request — a memory-amplification primitive
 	// against any endpoint that mounts this middleware.
-	secret, err := cfg.resolver(r.Context(), keyID)
-	if err != nil || len(secret) == 0 {
+	resolved, err := cfg.resolver(r.Context(), keyID)
+	if err != nil || len(resolved) == 0 {
 		return ErrSignatureInvalid
 	}
+	// Copy before any zeroing. KeyResolver does not transfer ownership
+	// of the returned slice — resolvers typically hand back a shared
+	// cached key (see examples/webhook-receiver). Mutating that slice
+	// would zero the operator's live key after the first request.
+	secret := append([]byte(nil), resolved...)
 	if len(secret) < minSecretLen {
-		// Wipe the over-short secret before returning — the resolver
-		// may have leaked the operator's actual key material into a
-		// new []byte and we should not let it linger on the heap any
-		// longer than necessary.
+		// Wipe the over-short copy before returning.
 		for i := range secret {
 			secret[i] = 0
 		}
 		return ErrSecretTooShort
 	}
-	// Ensure the per-request copy of the HMAC key is zeroed before
-	// verify() returns — bounds the lifetime of plaintext key bytes
-	// to the duration of a single MAC compute (Lens F A.7).
+	// Zero only the middleware-owned copy before verify() returns —
+	// bounds the lifetime of plaintext key bytes to the duration of a
+	// single MAC compute (Lens F A.7).
 	defer func() {
 		for i := range secret {
 			secret[i] = 0
@@ -455,7 +508,9 @@ func verify(r *http.Request, cfg *config) error {
 		return ErrSignatureInvalid
 	}
 
-	first, err := cfg.nonceStore.SeenOrStore(r.Context(), nonce)
+	// Scope the nonce by key ID so a holder of key A cannot burn
+	// nonces observed for key B (cross-key nonce-burning DoS).
+	first, err := cfg.nonceStore.SeenOrStore(r.Context(), storeNonceKey(keyID, nonce))
 	if err != nil {
 		spooled.cleanup()
 		return newNonceStoreError(err)
@@ -525,7 +580,7 @@ func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrBodyTooLarge):
 		httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request entity too large")
-	case errors.Is(err, ErrMissingHeaders), errors.Is(err, ErrTimestampInvalid), errors.Is(err, ErrNonceInvalid), errors.Is(err, ErrInvalidRequest):
+	case errors.Is(err, ErrMissingHeaders), errors.Is(err, ErrTimestampInvalid), errors.Is(err, ErrNonceInvalid), errors.Is(err, ErrInvalidRequest), errors.Is(err, ErrBodyReadFailed):
 		httpx.WriteError(w, http.StatusBadRequest, "bad request")
 	case errors.Is(err, ErrSignatureInvalid), errors.Is(err, ErrNonceReplayed):
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
@@ -581,6 +636,7 @@ func isServerSideVerifyError(err error) bool {
 		errors.Is(err, ErrNonceReplayed),
 		errors.Is(err, ErrNonceInvalid),
 		errors.Is(err, ErrBodyTooLarge),
+		errors.Is(err, ErrBodyReadFailed),
 		errors.Is(err, ErrInvalidRequest):
 		return false
 	default:

@@ -400,6 +400,50 @@ func TestDecodeJSON_TooLarge(t *testing.T) {
 
 // --- WriteServiceError ---
 
+// TestDecodeJSONWithLimit_RaisesCeiling verifies that DecodeJSONWithLimit
+// can accept bodies larger than the default 1 MB DecodeJSON cap — the
+// documented remedy for endpoints that legitimately exceed 1 MB JSON.
+func TestDecodeJSONWithLimit_RaisesCeiling(t *testing.T) {
+	// Body slightly over the default 1 MB maxBodySize but under a 2 MB limit.
+	largeValue := strings.Repeat("A", maxBodySize+100)
+	body := strings.NewReader(`{"data":"` + largeValue + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	var dst struct {
+		Data string `json:"data"`
+	}
+	ok := DecodeJSONWithLimit(rec, req, &dst, int64(maxBodySize)*2)
+	if !ok {
+		t.Fatalf("expected ok=true for body under explicit limit, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if dst.Data != largeValue {
+		t.Fatal("decoded data mismatch")
+	}
+}
+
+// TestDecodeJSONWithLimit_EnforcesExplicitCap still returns 413 when the
+// body exceeds the caller-supplied limit.
+func TestDecodeJSONWithLimit_EnforcesExplicitCap(t *testing.T) {
+	largeValue := strings.Repeat("A", 200)
+	body := strings.NewReader(`{"data":"` + largeValue + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	var dst struct {
+		Data string `json:"data"`
+	}
+	ok := DecodeJSONWithLimit(rec, req, &dst, 64)
+	if ok {
+		t.Fatal("expected ok=false for body over explicit limit")
+	}
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", rec.Code)
+	}
+}
+
 func TestWriteServiceError_NotFound(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	rec := httptest.NewRecorder()

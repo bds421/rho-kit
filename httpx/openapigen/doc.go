@@ -55,10 +55,11 @@
 //
 // The initial wave deliberately ships a narrow surface:
 //
-//   - Request body schema only for routes registered with a Req type;
-//     query / path parameters are NOT auto-discovered (Go's net/http
-//     pattern grammar does not expose typed parameters at registration
-//     time). Callers can attach parameters explicitly via
+//   - Request body schema for routes registered with a Req type.
+//     Path parameters matching `{name}` segments in the route pattern
+//     ARE auto-discovered (see mergePathParameters) as required string
+//     parameters; query parameters are still NOT auto-discovered.
+//     Callers can attach additional parameters explicitly via
 //     [WithParameter].
 //   - Single response per status code per route. Callers needing
 //     multiple statuses register the response per-status via

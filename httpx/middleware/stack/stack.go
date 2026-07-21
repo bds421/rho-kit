@@ -72,8 +72,8 @@ type Config struct {
 	// the handler always emits uncompressed bytes; everything outside
 	// the compress layer (request logger, timeout, access log, tracing
 	// span) sees the compressed wire bytes.
-	EnableCompress   bool
-	CompressOptions  []compress.Option
+	EnableCompress  bool
+	CompressOptions []compress.Option
 }
 
 // Option mutates the Config.
@@ -133,6 +133,14 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 	}
 
 	h := handler
+
+	// CaptureRoute must sit immediately around the mux so r.Pattern is
+	// recorded into the shared context slot after ServeMux sets it.
+	// Without this, every WithContext clone between metrics/tracing
+	// (outer) and the mux leaves route="unmatched" and span names bare.
+	if cfg.EnableMetrics || cfg.EnableTracing {
+		h = mwmetrics.CaptureRoute(h)
+	}
 
 	// Audit-log middleware is the innermost stack-managed wrapper: applied
 	// before Inner so the Inner wedge (typically auth) runs OUTSIDE it, and

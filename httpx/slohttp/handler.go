@@ -32,9 +32,15 @@ type StatusJSON struct {
 
 func toJSON(s slo.SLOStatus) StatusJSON {
 	var current *float64
-	if !math.IsNaN(s.Current) {
+	// NaN and ±Inf are not legal JSON numbers; omit as null so
+	// encoding/json does not fail the whole /slo response body.
+	if !math.IsNaN(s.Current) && !math.IsInf(s.Current, 0) {
 		v := s.Current
 		current = &v
+	}
+	burn := s.BurnRate
+	if math.IsNaN(burn) || math.IsInf(burn, 0) {
+		burn = 0
 	}
 	return StatusJSON{
 		Name:      s.Name,
@@ -42,7 +48,7 @@ func toJSON(s slo.SLOStatus) StatusJSON {
 		Threshold: s.Threshold,
 		Current:   current,
 		Breached:  s.Breached,
-		BurnRate:  s.BurnRate,
+		BurnRate:  burn,
 		Window:    s.Window.String(),
 	}
 }

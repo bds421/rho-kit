@@ -350,9 +350,11 @@ func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Se
 }
 
 // maxBodySize is the default JSON request body cap (1 MB) used by
-// [DecodeJSON]. Callers that need a different cap should install
-// [github.com/bds421/rho-kit/httpx/middleware/maxbody.MaxBodySize] in
-// their middleware stack rather than relying on a global constant.
+// [DecodeJSON]. Middleware such as
+// [github.com/bds421/rho-kit/httpx/middleware/maxbody.MaxBodySize] can
+// only *tighten* the effective limit (stacked MaxBytesReaders honour the
+// smallest cap); it cannot raise the DecodeJSON ceiling above 1 MB.
+// Callers that need a larger JSON body must use [DecodeJSONWithLimit].
 const maxBodySize = 1 << 20
 
 // APIError is the standard error response envelope.
@@ -383,6 +385,12 @@ func WriteJSON(w http.ResponseWriter, r *http.Request, status int, v any) error 
 	logger := slog.Default()
 	if r != nil {
 		logger = Logger(r.Context(), logger)
+	}
+	// http.ResponseWriter.WriteHeader panics on out-of-range codes;
+	// map to 500 so a buggy caller cannot take down the handler.
+	if status < 100 || status > 999 {
+		logger.Error("httpx: WriteJSON called with out-of-range status", "status", status)
+		status = http.StatusInternalServerError
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if status >= 400 {
@@ -434,8 +442,9 @@ func ParseID(r *http.Request) (uint, bool) {
 	return uint(id), true
 }
 
-// DecodeJSON reads and decodes a JSON request body with a size limit.
-// Returns false and writes an error response if decoding fails.
+// DecodeJSON reads and decodes a JSON request body with the default 1 MB
+// size limit ([maxBodySize]). Returns false and writes an error response if
+// decoding fails. Equivalent to [DecodeJSONWithLimit](w, r, dst, 1<<20).
 //
 // The request must carry exactly one JSON Content-Type header (application/json
 // or a structured +json media type). This keeps the JSON boundary safe even
@@ -449,7 +458,25 @@ func ParseID(r *http.Request) (uint, bool) {
 //
 // Note: this replaces r.Body with an http.MaxBytesReader wrapper. Any
 // subsequent reads of r.Body will go through the size-limited reader.
+// Middleware MaxBytesReaders can only lower the effective cap further;
+// they cannot raise it above 1 MB — use [DecodeJSONWithLimit] for a
+// larger (or smaller) explicit ceiling.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	return DecodeJSONWithLimit(w, r, dst, maxBodySize)
+}
+
+// DecodeJSONWithLimit is [DecodeJSON] with an explicit body-size ceiling.
+// maxBytes must be positive; non-positive values are treated as the
+// default [maxBodySize] so a misconfigured caller cannot accidentally
+// disable the DoS cap.
+//
+// Use this for endpoints that legitimately accept JSON larger than 1 MB
+// (bulk imports, document payloads). Prefer keeping the default for
+// ordinary request shapes.
+func DecodeJSONWithLimit(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64) bool {
+	if maxBytes <= 0 {
+		maxBytes = maxBodySize
+	}
 	if r == nil || r.Body == nil {
 		WriteError(w, http.StatusBadRequest, "invalid request body")
 		return false
@@ -459,7 +486,7 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 		return false
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {

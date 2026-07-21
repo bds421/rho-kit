@@ -14,9 +14,13 @@ import (
 type CursorListOpts[T any] struct {
 	DefaultLimit int
 	MaxLimit     int
-	ListFn       func(ctx context.Context, cursor string, limit int) ([]T, error)
-	IDFn         func(T) string
-	Logger       *slog.Logger
+	// ListFn fetches one page. The limit argument is the client page size;
+	// ListFn MUST fetch up to limit+1 rows so [BuildResult] can detect
+	// HasMore (len(items) > limit). Returning exactly limit rows always
+	// yields HasMore=false and silently truncates multi-page results.
+	ListFn func(ctx context.Context, cursor string, limit int) ([]T, error)
+	IDFn   func(T) string
+	Logger *slog.Logger
 	// Validator validates the cursor format. Defaults to ValidateCursorUUID
 	// when Signer is nil; ignored when Signer is set (the signer's verify
 	// step replaces format validation since the payload is recovered as
@@ -34,6 +38,10 @@ type CursorListOpts[T any] struct {
 // HandleCursorList is a generic handler for cursor-based paginated list endpoints.
 // It parses cursor params, validates the cursor, calls ListFn, builds the
 // CursorResult, and writes the JSON response.
+//
+// ListFn contract: the limit passed to ListFn is the client page size.
+// Implementations MUST over-fetch by one row (SELECT ... LIMIT limit+1) so
+// [BuildResult] can set HasMore / NextCursor. See [CursorListOpts.ListFn].
 //
 // When opts.Signer is non-nil, the incoming cursor is decoded and HMAC-verified
 // before reaching ListFn, and the outgoing next_cursor is signed before

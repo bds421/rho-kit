@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/bds421/rho-kit/resilience/v2/circuitbreaker"
@@ -20,6 +21,7 @@ type resilientConfig struct {
 	cbReset           time.Duration
 	shouldTrip        func(resp *http.Response, err error) bool
 	onStateChange     func(from, to circuitbreaker.State)
+	hostCircuitBreakers bool
 	deadlineBudget    bool
 	deadlineBudgetCfg deadlineBudgetConfig
 	checkRedirect     func(*http.Request, []*http.Request) error
@@ -96,9 +98,10 @@ func WithCBResetTimeout(d time.Duration) ResilientOption {
 // cancellation (context.Canceled), which is never counted.
 //
 // Returning false for a non-nil error excludes that error from the failure
-// count: the breaker does not advance toward tripping, and the caller still
-// receives the original error from RoundTrip. This lets callers exclude e.g.
-// context.Canceled or DNS errors from opening the breaker.
+// count: the breaker neither advances toward tripping nor resets the
+// consecutive-failure streak, and the caller still receives the original
+// error from RoundTrip. This lets callers exclude e.g. context.Canceled or
+// DNS errors from opening the breaker without healing a half-open circuit.
 //
 // Panics if fn is nil — a nil predicate would compile but crash on the
 // first outbound request through the transport, long after construction.
@@ -118,6 +121,16 @@ func WithCBOnStateChange(fn func(from, to circuitbreaker.State)) ResilientOption
 		panic("httpx: WithCBOnStateChange requires a non-nil callback")
 	}
 	return func(c *resilientConfig) { c.onStateChange = fn }
+}
+
+// WithHostCircuitBreakers isolates circuit-breaker state per request host
+// (req.URL.Host). Use when a single *http.Client fans out to multiple
+// downstreams and one failing host must not fail-fast the others.
+//
+// Without this option the client shares one breaker across all hosts — the
+// safer default when the client is scoped to a single dependency.
+func WithHostCircuitBreakers() ResilientOption {
+	return func(c *resilientConfig) { c.hostCircuitBreakers = true }
 }
 
 // WithDeadlineBudget enables deadline budget propagation. When the caller's
@@ -153,8 +166,9 @@ func WithDeadlineBudget(opts ...DeadlineBudgetOption) ResilientOption {
 // [circuitbreaker.ErrCircuitOpen] instead of waiting for timeouts.
 //
 // The transport is cloned from http.DefaultTransport to inherit production
-// defaults. The circuit breaker wraps the transport layer — all requests
-// through this client are protected.
+// defaults. By default a single circuit breaker protects every host the
+// client contacts — create one resilient client per downstream dependency,
+// or pass [WithHostCircuitBreakers] for per-host isolation.
 //
 // For retry logic, use [retry.Do] at the call site — retrying at the transport
 // level is unsafe because request bodies are consumed on the first attempt.
@@ -182,7 +196,7 @@ func NewResilientHTTPClient(opts ...ResilientOption) *http.Client {
 	}
 
 	var rt http.RoundTripper = newCircuitBreakerTransport(
-		transport, cfg.shouldTrip, cfg.cbThreshold, cfg.cbReset, stateChange,
+		transport, cfg.shouldTrip, cfg.cbThreshold, cfg.cbReset, stateChange, cfg.hostCircuitBreakers,
 	)
 
 	if cfg.deadlineBudget {
@@ -211,6 +225,7 @@ func newCircuitBreakerTransport(
 	threshold int,
 	reset time.Duration,
 	onStateChange func(from, to circuitbreaker.State),
+	perHost bool,
 ) *circuitBreakerTransport {
 	var cbOpts []circuitbreaker.Option
 	if onStateChange != nil {
@@ -218,24 +233,31 @@ func newCircuitBreakerTransport(
 			onStateChange(from, to)
 		}))
 	}
+	// Only nil is a success. Predicate-excluded transport errors are wrapped
+	// as notCountedError and passed to IsExcluded so they neither trip the
+	// breaker nor reset consecutive-failure progress / heal half-open.
 	cbOpts = append(cbOpts, circuitbreaker.WithIsSuccessful(func(err error) bool {
-		// Errors from the circuit-breaker transport are either failures the
-		// shouldTrip predicate decided should count (transport errors or the
-		// sentinel serverError for 5xx) or a notCountedError wrapping an error
-		// the predicate explicitly excluded. Only the former count as failures;
-		// the latter and a nil error are successes.
-		if err == nil {
-			return true
-		}
+		return err == nil
+	}))
+	cbOpts = append(cbOpts, circuitbreaker.WithIsExcluded(func(err error) bool {
 		var nc *notCountedError
 		return errors.As(err, &nc)
 	}))
 
-	return &circuitBreakerTransport{
+	t := &circuitBreakerTransport{
 		base:       base,
-		cb:         circuitbreaker.NewCircuitBreaker(threshold, reset, cbOpts...),
 		shouldTrip: shouldTrip,
+		threshold:  threshold,
+		reset:      reset,
+		cbOpts:     cbOpts,
+		perHost:    perHost,
 	}
+	if perHost {
+		t.breakers = make(map[string]*circuitbreaker.CircuitBreaker)
+	} else {
+		t.cb = circuitbreaker.NewCircuitBreaker(threshold, reset, cbOpts...)
+	}
+	return t
 }
 
 // circuitBreakerTransport wraps an http.RoundTripper with circuit breaker logic.
@@ -243,6 +265,35 @@ type circuitBreakerTransport struct {
 	base       http.RoundTripper
 	cb         *circuitbreaker.CircuitBreaker
 	shouldTrip func(resp *http.Response, err error) bool
+
+	// Per-host isolation (WithHostCircuitBreakers).
+	perHost   bool
+	threshold int
+	reset     time.Duration
+	cbOpts    []circuitbreaker.Option
+	mu        sync.Mutex
+	breakers  map[string]*circuitbreaker.CircuitBreaker
+}
+
+func (t *circuitBreakerTransport) breakerFor(req *http.Request) *circuitbreaker.CircuitBreaker {
+	if !t.perHost {
+		return t.cb
+	}
+	host := ""
+	if req != nil && req.URL != nil {
+		host = req.URL.Host
+	}
+	if host == "" {
+		host = "_"
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if cb, ok := t.breakers[host]; ok {
+		return cb
+	}
+	cb := circuitbreaker.NewCircuitBreaker(t.threshold, t.reset, t.cbOpts...)
+	t.breakers[host] = cb
+	return cb
 }
 
 // RoundTrip executes the request through the circuit breaker. If the circuit
@@ -250,7 +301,7 @@ type circuitBreakerTransport struct {
 func (t *circuitBreakerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var resp *http.Response
 	var executed bool
-	err := t.cb.Execute(func() error {
+	err := t.breakerFor(req).Execute(func() error {
 		executed = true
 		var rtErr error
 		resp, rtErr = t.base.RoundTrip(req)
@@ -264,9 +315,9 @@ func (t *circuitBreakerTransport) RoundTrip(req *http.Request) (*http.Response, 
 		}
 		if rtErr != nil {
 			// The predicate excluded this error from the failure count. Wrap it
-			// in a non-counting sentinel so the breaker's IsSuccessful predicate
-			// treats it as a success; it is unwrapped before returning so the
-			// caller still observes the original error.
+			// in a non-counting sentinel so the breaker's IsExcluded predicate
+			// ignores it; it is unwrapped before returning so the caller still
+			// observes the original error.
 			return &notCountedError{err: rtErr}
 		}
 		return nil
@@ -322,9 +373,10 @@ func (e *serverError) Error() string {
 }
 
 // notCountedError wraps a transport error that the shouldTrip predicate
-// explicitly excluded from the failure count. The breaker's IsSuccessful
-// predicate recognises it as a success so it does not advance the failure
-// threshold; RoundTrip unwraps it before returning to the caller.
+// explicitly excluded from the failure count. The breaker's IsExcluded
+// predicate recognises it so it neither advances the failure threshold nor
+// resets consecutive failures; RoundTrip unwraps it before returning to the
+// caller.
 type notCountedError struct {
 	err error
 }

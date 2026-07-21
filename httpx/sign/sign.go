@@ -324,6 +324,10 @@ type transport struct {
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err := validateRequest(req); err != nil {
+		// http.RoundTripper contract: close the body when not using it.
+		if req != nil && req.Body != nil && req.Body != http.NoBody {
+			_ = req.Body.Close()
+		}
 		return nil, err
 	}
 	// FR-023 [HIGH]: http.Request.Clone shares the Body field with the
@@ -363,16 +367,16 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("sign: resolve current key: %w", err)
 	}
 	// Per the KeyStore contract, CurrentKeyID returns a fresh per-call
-	// secret copy the transport owns (the built-in static and reloading
-	// stores both copy on read). Zero it immediately after the
-	// signature is computed so the secret does not sit on the heap
-	// until the next GC sweep. SignCanonical does not retain a
-	// reference, so wiping after the call is safe.
-	defer func() {
+	// secret copy the transport owns. Zero it immediately after
+	// SignCanonical — not after RoundTrip — so the plaintext key does
+	// not sit on the heap for the full network exchange. Defer remains
+	// as a safety net for early-error paths before that wipe.
+	wipe := func() {
 		for i := range secret {
 			secret[i] = 0
 		}
-	}()
+	}
+	defer wipe()
 	if err := validateSigningKey(keyID, secret); err != nil {
 		return nil, err
 	}
@@ -392,6 +396,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	wipe() // drop secret before the network round trip
 	clone.Header.Set(signedrequest.HeaderSignature, sig)
 
 	return t.base.RoundTrip(clone)

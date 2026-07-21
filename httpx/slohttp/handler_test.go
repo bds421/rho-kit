@@ -1,7 +1,9 @@
 package slohttp
 
 import (
+	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -110,4 +112,29 @@ func TestHandler_Empty(t *testing.T) {
 
 func TestHandler_PanicsNilChecker(t *testing.T) {
 	assert.Panics(t, func() { Handler(nil) })
+}
+
+func TestToJSON_InfCurrentSerialisesAsNull(t *testing.T) {
+	st := toJSON(slo.SLOStatus{
+		Name:      "lat",
+		Type:      slo.TypeLatency,
+		Threshold: 0.99,
+		Current:   math.Inf(1),
+		BurnRate:  math.Inf(1),
+		Breached:  true,
+	})
+	if st.Current != nil {
+		t.Fatalf("Current for +Inf must be nil, got %v", *st.Current)
+	}
+	if st.BurnRate != 0 {
+		t.Fatalf("BurnRate for +Inf must be 0, got %v", st.BurnRate)
+	}
+	// Encoding must succeed (no empty body).
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"current":null`)) {
+		t.Fatalf("want current null, got %s", b)
+	}
 }

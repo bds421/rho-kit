@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -103,16 +104,20 @@ func (t *deadlineBudgetTransport) RoundTrip(req *http.Request) (*http.Response, 
 
 // cancelOnCloseBody runs cancel exactly once when the body is closed,
 // keeping the request context alive until the caller is done reading.
+// concurrent Close is safe: sync.Once serialises the cancel call and
+// CancelFunc is itself idempotent.
 type cancelOnCloseBody struct {
 	io.ReadCloser
 	cancel context.CancelFunc
+	once   sync.Once
 }
 
 func (b *cancelOnCloseBody) Close() error {
 	err := b.ReadCloser.Close()
-	if b.cancel != nil {
-		b.cancel()
-		b.cancel = nil
-	}
+	b.once.Do(func() {
+		if b.cancel != nil {
+			b.cancel()
+		}
+	})
 	return err
 }

@@ -210,3 +210,12 @@ type healthRoundTripper func(*http.Request) (*http.Response, error)
 func (f healthRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
+
+func TestHTTPCheck_PanicsOnSchemeLessURL(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = HTTPCheck("upstream-api", "/ready", &http.Client{})
+	})
+	assert.Panics(t, func() {
+		_ = HTTPCheck("upstream-api", "ftp://example.com/ready", &http.Client{})
+	})
+}

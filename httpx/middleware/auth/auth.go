@@ -353,7 +353,7 @@ func matchCertIdentity(cert *x509.Certificate, cfg mtlsIdentityConfig) (bool, st
 		}
 	}
 	if cn := cert.Subject.CommonName; cn != "" {
-		if _, ok := cfg.allowedCNs[cn]; ok {
+		if _, ok := cfg.allowedCNs[strings.ToLower(cn)]; ok {
 			return true, "cn:" + cn
 		}
 	}

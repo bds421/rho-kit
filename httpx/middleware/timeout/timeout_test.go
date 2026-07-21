@@ -182,20 +182,16 @@ func TestTimeout_PanicBeforeDeadlinePropagates(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 }
 
-func TestTimeout_InvalidWriteHeaderPanics(t *testing.T) {
-	handler := Timeout(time.Second)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestTimeout_InvalidWriteHeaderMapsTo500(t *testing.T) {
+	h := Timeout(50*time.Millisecond)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(42)
 	}))
-
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected invalid WriteHeader code to panic")
-		}
-	}()
-
-	req := httptest.NewRequest(http.MethodGet, "/bad-status", nil)
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("invalid WriteHeader code = %d, want 500", rec.Code)
+	}
 }
 
 func TestTimeout_PanicAfterReturnIsCaptured(t *testing.T) {

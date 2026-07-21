@@ -163,6 +163,10 @@ func Middleware(b budget.Budget, opts ...Option) func(http.Handler) http.Handler
 			if err != nil {
 				// Backend errors are surfaced as 503; we don't fail
 				// open silently because that would defeat the budget.
+				httpx.Logger(r.Context(), slog.Default()).Error(
+					"middleware/budget: consume failed",
+					redact.Error(err),
+				)
 				httpx.WriteError(w, http.StatusServiceUnavailable, "budget unavailable")
 				return
 			}

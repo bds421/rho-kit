@@ -251,15 +251,15 @@ func WithHeader(name string) Option {
 	return func(c *config) { c.header = name }
 }
 
-// WithLogger sets the logger for idempotency store errors. A nil logger is
-// normalized to slog.Default() so error paths cannot panic.
+// WithLogger sets the logger for idempotency store errors.
+// Panics if l is nil — omit the option to keep slog.Default(), matching
+// the kit's dominant middleware WithLogger contract (signedrequest,
+// timeout, auditlog).
 func WithLogger(l *slog.Logger) Option {
-	return func(c *config) {
-		if l == nil {
-			l = slog.Default()
-		}
-		c.logger = l
+	if l == nil {
+		panic("middleware/idempotency: WithLogger requires a non-nil logger (omit the option to use slog.Default)")
 	}
+	return func(c *config) { c.logger = l }
 }
 
 // WithMetrics enables Prometheus metrics for the middleware.
@@ -605,6 +605,34 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 				return
 			}
 			if !locked {
+				// A concurrent request may have completed between our Get miss
+				// and TryLock, leaving a cached response now. Re-Get once so
+				// we replay the success instead of returning a spurious 409.
+				cached, fpMismatch2, getErr := store.Get(r.Context(), key, bodyFingerprint)
+				if getErr != nil {
+					cfg.logger.Error("idempotency: store Get after contended TryLock failed",
+						redact.Error(getErr), redact.String("key", rawKey))
+					if cfg.metrics != nil {
+						cfg.metrics.errors.Inc()
+					}
+					httpx.WriteError(w, http.StatusInternalServerError, "idempotency store error")
+					return
+				}
+				if fpMismatch2 {
+					if cfg.metrics != nil {
+						cfg.metrics.conflicts.Inc()
+					}
+					httpx.WriteError(w, http.StatusUnprocessableEntity,
+						"idempotency key reused with a different request body")
+					return
+				}
+				if cached != nil {
+					if cfg.metrics != nil {
+						cfg.metrics.hits.Inc()
+					}
+					replay(w, cached, cfg.replayHeader)
+					return
+				}
 				if cfg.metrics != nil {
 					cfg.metrics.conflicts.Inc()
 				}
@@ -644,9 +672,20 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 			// cache snapshot below recorded the unsent headers — every replay
 			// then carried headers the original response never emitted. Flush
 			// the captured headers to the underlying writer so the first
-			// caller and the cached/replayed response agree.
-			if !rec.wroteHeader {
+			// caller and the cached/replayed response agree. Skip when the
+			// connection was hijacked — WriteHeader on a hijacked conn only
+			// produces a spurious net/http error log.
+			if !rec.wroteHeader && !rec.hijacked {
 				rec.WriteHeader(rec.statusCode)
+			}
+			if rec.hijacked {
+				ctx, cancel := postHandlerContext(r.Context(), cfg.postHandlerTimeout)
+				defer cancel()
+				if unlockErr := store.Unlock(ctx, key, token); unlockErr != nil {
+					cfg.logger.Error("idempotency: failed to unlock after hijack",
+						redact.Error(unlockErr), redact.String("key", rawKey))
+				}
+				return
 			}
 
 			if rec.bodyOverflow {
@@ -706,6 +745,9 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 					cfg.logger.Warn("idempotency: lock lost before Set; another caller now owns the slot",
 						redact.String("key", rawKey))
 				} else {
+					if cfg.metrics != nil {
+						cfg.metrics.errors.Inc()
+					}
 					cfg.logger.Error("idempotency: failed to cache response, lock held until TTL expiry",
 						redact.Error(setErr), redact.String("key", rawKey))
 					// Do NOT unlock — keeping the lock prevents duplicate execution
@@ -921,6 +963,7 @@ type responseCapture struct {
 	body            *bytes.Buffer
 	wroteHeader     bool
 	bodyOverflow    bool
+	hijacked       bool
 }
 
 func (rc *responseCapture) Header() http.Header {
@@ -934,6 +977,12 @@ func (rc *responseCapture) WriteHeader(code int) {
 	// would lock statusCode and suppress the real final status, and every
 	// replay would serve the 1xx code with a body as the final response.
 	if code >= 100 && code < 200 {
+		// Sync staged headers so 103 Early Hints (Link preload, etc.)
+		// actually reaches the client. Header() returns the private
+		// capture map; without this copy the interim response is bare.
+		for k, vals := range rc.capturedHeaders {
+			rc.ResponseWriter.Header()[k] = vals
+		}
 		rc.ResponseWriter.WriteHeader(code)
 		return
 	}
@@ -989,8 +1038,14 @@ func (rc *responseCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if !ok {
 		return nil, nil, fmt.Errorf("idempotency: underlying ResponseWriter does not implement http.Hijacker")
 	}
-	rc.bodyOverflow = true
-	return h.Hijack()
+	c, brw, err := h.Hijack()
+	if err == nil {
+		rc.hijacked = true
+		// Suppress caching of whatever bytes we already captured — the
+		// caller has taken control of the connection.
+		rc.bodyOverflow = true
+	}
+	return c, brw, err
 }
 
 // Push forwards to the underlying ResponseWriter when it implements

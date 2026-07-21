@@ -168,6 +168,7 @@ func TestOptions_PanicOnInvalidInput(t *testing.T) {
 	require.Panics(t, func() { budget.WithEstimateHeader("Bad Header") })
 	require.Panics(t, func() { budget.WithActualHeader("Bad Header") })
 	require.Panics(t, func() { budget.WithDefaultAmount(-1) })
+	require.Panics(t, func() { budget.WithDefaultAmount(0) })
 	require.Panics(t, func() { budget.WithEnforcement(budget.Enforcement(99)) })
 }
 
@@ -580,7 +581,8 @@ func TestSentinelDistinctFromBudgetSentinels(t *testing.T) {
 // new spec contract: when reconcile reveals the upstream cost > what
 // the budget can pay, the response is closed and ErrBudgetExceeded
 // surfaces so the caller cannot read bytes the budget did not
-// authorize.
+// authorize. The pre-charge is retained (not refunded) so repeated
+// over-actual loops drain budget instead of spending free.
 func TestRoundTrip_HardEnforcementRejectsOnDeltaExceedsBudget(t *testing.T) {
 	srv := upstream(t, http.Header{"X-Actual-Tokens": {"100"}})
 	t.Cleanup(srv.Close)
@@ -602,8 +604,7 @@ func TestRoundTrip_HardEnforcementRejectsOnDeltaExceedsBudget(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, budget.ErrBudgetExceeded),
 		"hard enforcement must surface ErrBudgetExceeded for delta-denied")
-	require.Len(t, b.refunded, 1, "rejected response must refund the original estimate")
-	assert.Equal(t, int64(20), b.refunded[0].amount)
+	require.Empty(t, b.refunded, "hard over-actual must retain the pre-charge (no free loop)")
 }
 
 // TestRoundTrip_HardEnforcementRejectsOnDeltaBackendError covers the

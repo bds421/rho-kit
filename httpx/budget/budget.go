@@ -152,10 +152,12 @@ func WithActualHeader(name string) Option {
 }
 
 // WithDefaultAmount sets the per-request charge when no estimate
-// header is set. Default: 1.
+// header is set. Default: 1. Zero is rejected: a zero default silently
+// disables outbound spend enforcement when the estimate header is
+// absent (every request would pre-charge 0).
 func WithDefaultAmount(n int64) Option {
-	if n < 0 {
-		panic("httpx/budget: WithDefaultAmount requires a non-negative amount")
+	if n <= 0 {
+		panic("httpx/budget: WithDefaultAmount requires a positive amount")
 	}
 	return func(c *config) { c.defaultAmount = n }
 }
@@ -328,7 +330,10 @@ func (t *transport) estimate(req *http.Request) int64 {
 // the caller's request) only when the header is configured and present; the
 // clone shares the original body, so the body-close contract is unaffected.
 func (t *transport) stripEstimateHeader(req *http.Request) *http.Request {
-	if t.cfg.estimateHeader == "" || req.Header.Get(t.cfg.estimateHeader) == "" {
+	// Use Values (not Get): an empty first value or multi-valued header
+	// must still be stripped so the internal accounting hint never
+	// reaches the third-party upstream.
+	if t.cfg.estimateHeader == "" || len(req.Header.Values(t.cfg.estimateHeader)) == 0 {
 		return req
 	}
 	// Clone makes a shallow copy of Body (same io.ReadCloser), so the
@@ -398,7 +403,11 @@ func (t *transport) reconcile(reqCtx context.Context, resp *http.Response, estim
 		t.cfg.logger.Warn("httpx/budget: reconcile delta exceeded budget",
 			redact.String("key", t.key), "delta", delta)
 		if t.cfg.enforcement == EnforcementHard {
-			t.cleanupRefund(reqCtx, estimate, nil)
+			// Retain the pre-charge. Refunding after the upstream already
+			// ran would let a client loop free over-actual requests
+			// (zero net budget cost while still spending upstream).
+			// The pre-charge continues to drain the budget so repeated
+			// overruns eventually fail at the pre-charge gate.
 			return ErrBudgetExceeded
 		}
 	}

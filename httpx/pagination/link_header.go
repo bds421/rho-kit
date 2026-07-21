@@ -64,8 +64,11 @@ func WriteLinkHeader(w http.ResponseWriter, u *url.URL, total, offset, limit int
 		}
 		if next, ok := nextPageOffset(offset, limit); ok && next < total {
 			parts = appendLink(parts, u, "next", next, limit)
-			lastOffset := lastPageOffset(total, limit)
-			parts = appendLink(parts, u, "last", lastOffset, limit)
+		}
+		// Always emit rel=last when total is known so clients on the final
+		// page still receive a last link (RFC 8288 paginated collections).
+		if total > 0 {
+			parts = appendLink(parts, u, "last", lastPageOffset(total, limit), limit)
 		}
 	}
 

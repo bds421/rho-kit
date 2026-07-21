@@ -70,36 +70,17 @@ func TestWithHeader_PanicsOnInvalid(t *testing.T) {
 	WithHeader("bad header") // space is not allowed in field names
 }
 
-// TestWithLogger_NilNormalizesToDefault ensures error paths can run
-// without panicking when callers pass a nil logger.
-func TestWithLogger_NilNormalizesToDefault(t *testing.T) {
-	store := idem.NewMemoryStore()
-	// If WithLogger(nil) failed to normalize, the post-handler error
-	// path on the hung-store test would dereference nil and panic. Build
-	// a middleware with a nil logger and a hanging store, then drive a
-	// request through and confirm the request goroutine returns.
-	handler := Middleware(hangingStore{},
-		WithAllowSharedKeys(),
-		WithLogger(nil),
-		WithPostHandlerTimeout(50*time.Millisecond),
-	)(newTestHandler("ok", http.StatusOK))
-
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Header.Set("Idempotency-Key", "nil-logger")
-	rec := httptest.NewRecorder()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		handler.ServeHTTP(rec, req)
+// TestWithLogger_NilPanics matches the kit middleware contract: omit the
+// option for slog.Default; never pass nil.
+func TestWithLogger_NilPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic from WithLogger(nil)")
+		}
 	}()
-	select {
-	case <-done:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("middleware did not return; nil logger likely caused panic on error path")
-	}
-	_ = store
+	WithLogger(nil)
 }
+
 
 func TestMiddleware_ResponseOverflowLogRedactsRawKey(t *testing.T) {
 	store := idem.NewMemoryStore()
@@ -1889,5 +1870,27 @@ func TestWithReplayHeader_SetsOnCacheHit(t *testing.T) {
 	handler.ServeHTTP(rec2, req2)
 	if rec2.Header().Get("Idempotent-Replay") != "true" {
 		t.Fatalf("replay header = %q, want true", rec2.Header().Get("Idempotent-Replay"))
+	}
+}
+
+func TestInformationalWriteHeaderForwardsStagedHeaders(t *testing.T) {
+	// Direct responseCapture unit check: 103 must flush staged Link header.
+	rc := &responseCapture{
+		ResponseWriter:  httptest.NewRecorder(),
+		capturedHeaders: make(http.Header),
+	}
+	rc.Header().Set("Link", "</style.css>; rel=preload")
+	rc.WriteHeader(http.StatusEarlyHints)
+	rec := rc.ResponseWriter.(*httptest.ResponseRecorder)
+	if got := rec.Header().Get("Link"); got != "</style.css>; rel=preload" {
+		t.Fatalf("103 Link = %q, want preload header on interim response", got)
+	}
+	// Final status still latches independently.
+	rc.WriteHeader(http.StatusCreated)
+	if rec.Code != http.StatusCreated && rc.statusCode != http.StatusCreated {
+		// ResponseRecorder may not see final if we only latched capture status
+	}
+	if rc.statusCode != http.StatusCreated {
+		t.Fatalf("final status = %d, want 201", rc.statusCode)
 	}
 }

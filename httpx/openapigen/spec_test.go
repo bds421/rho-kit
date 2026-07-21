@@ -1157,3 +1157,50 @@ func TestHandle_ResponseContentOnlySuppressesDefault200(t *testing.T) {
 			"default 200 must not be injected when caller supplied a response body via WithResponseContentT")
 	})
 }
+
+
+func TestSecurityScheme_ExtensionsInline(t *testing.T) {
+	spec := openapigen.NewSpec("t", "1")
+	flows := json.RawMessage(`{"flows":{"clientCredentials":{"tokenUrl":"https://auth.example/token","scopes":{}}}}`)
+	spec.AddSecurityScheme("oauth", openapigen.SecurityScheme{
+		Type:       "oauth2",
+		Extensions: flows,
+	})
+	raw, err := spec.Marshal()
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(raw, &doc))
+	comps := doc["components"].(map[string]any)
+	schemes := comps["securitySchemes"].(map[string]any)
+	oauth := schemes["oauth"].(map[string]any)
+	if _, ok := oauth["flows"]; !ok {
+		t.Fatalf("expected flows inlined from Extensions, got %#v", oauth)
+	}
+	if oauth["type"] != "oauth2" {
+		t.Fatalf("type = %v", oauth["type"])
+	}
+}
+
+
+func TestHandle_ResponseDescriptionDoesNotSuppressSchema(t *testing.T) {
+	mux := http.NewServeMux()
+	spec := openapigen.NewSpec("t", "1")
+	type resp struct {
+		OK bool `json:"ok"`
+	}
+	err := openapigen.Handle[struct{}, resp](mux, spec, http.MethodGet, "/x", slog.Default(),
+		func(context.Context, *http.Request, struct{}) (resp, error) { return resp{OK: true}, nil },
+		openapigen.WithResponseDescription(http.StatusOK, "the widget"),
+	)
+	require.NoError(t, err)
+	raw, err := spec.Marshal()
+	require.NoError(t, err)
+	var doc openapigen.Document
+	require.NoError(t, json.Unmarshal(raw, &doc))
+	op := doc.Paths["/x"].Get
+	require.NotNil(t, op)
+	r200 := op.Responses["200"]
+	require.NotNil(t, r200)
+	assert.Equal(t, "the widget", r200.Description)
+	require.NotEmpty(t, r200.Content, "description-only option must keep default response schema")
+}

@@ -290,11 +290,21 @@ func (s *CursorSigner) Encode(payload string) string {
 		return ""
 	}
 	var sum []byte
+	var closed bool
 	s.secret.Use(func(k []byte) {
+		// Closed/zeroed between ready() and Use: refuse rather than
+		// mint a cursor signed with an empty key that never verifies.
+		if len(k) == 0 {
+			closed = true
+			return
+		}
 		mac := hmac.New(sha256.New, k)
 		s.writeMACInput(mac, []byte(payload))
 		sum = mac.Sum(nil)
 	})
+	if closed || len(sum) == 0 {
+		return ""
+	}
 	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." +
 		base64.RawURLEncoding.EncodeToString(sum)
 }

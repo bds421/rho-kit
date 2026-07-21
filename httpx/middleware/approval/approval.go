@@ -190,17 +190,14 @@ func WithIDFuncE(fn func() (string, error)) Option {
 	return func(c *config) { c.idFunc = fn }
 }
 
-// WithLogger sets the slog.Logger for store-error reporting. A nil
-// logger is normalized back to [slog.Default] so test wiring stays
-// ergonomic; the middleware never holds a nil logger.
+// WithLogger sets the slog.Logger for store-error reporting.
+// Panics if l is nil — omit the option to keep slog.Default(), matching
+// the kit's dominant middleware WithLogger contract.
 func WithLogger(l *slog.Logger) Option {
-	return func(c *config) {
-		if l == nil {
-			c.logger = slog.Default()
-			return
-		}
-		c.logger = l
+	if l == nil {
+		panic("middleware/approval: WithLogger requires a non-nil logger (omit the option to use slog.Default)")
 	}
+	return func(c *config) { c.logger = l }
 }
 
 func defaultConfig() config {

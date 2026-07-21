@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"encoding/json"
 	"errors"
 	"io"
@@ -918,6 +919,7 @@ func TestServer_ActionLog_AsyncMode_RespondsBeforeAppend(t *testing.T) {
 		mcp.WithActionLogger(blocking),
 		withTestActor("agent-async"),
 		mcp.WithAsyncAuditDispatch(),
+		mcp.WithBestEffortAuditOnMissingTenant(),
 	)
 	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
 
@@ -946,6 +948,7 @@ func TestServer_ActionLog_AsyncMode_PreservesContextValuesAfterCancellation(t *t
 		mcp.WithActionLogger(logger),
 		withTestActor("agent-async-context"),
 		mcp.WithAsyncAuditDispatch(),
+		mcp.WithBestEffortAuditOnMissingTenant(),
 		mcp.WithAsyncAuditWorkers(1),
 		mcp.WithAsyncAuditQueue(1),
 	)
@@ -1271,6 +1274,7 @@ func TestServer_AsyncAudit_QueueSaturation_DropsRatherThanLeaks(t *testing.T) {
 		mcp.WithActionLogger(blocking),
 		withTestActor("agent-sat"),
 		mcp.WithAsyncAuditDispatch(),
+		mcp.WithBestEffortAuditOnMissingTenant(),
 		mcp.WithAsyncAuditWorkers(1),
 		mcp.WithAsyncAuditQueue(1),
 		mcp.WithAsyncAuditTimeout(2*time.Second),
@@ -1301,6 +1305,7 @@ func TestServer_AsyncAudit_StopDrainsWorkers(t *testing.T) {
 		mcp.WithActionLogger(logger),
 		withTestActor("agent-drain"),
 		mcp.WithAsyncAuditDispatch(),
+		mcp.WithBestEffortAuditOnMissingTenant(),
 		mcp.WithAsyncAuditWorkers(2),
 		mcp.WithAsyncAuditQueue(8),
 	)
@@ -1337,6 +1342,7 @@ func TestServer_AsyncAudit_StopAfterTimeout_StillDrains(t *testing.T) {
 		mcp.WithActionLogger(blocking),
 		withTestActor("agent-stop-drain"),
 		mcp.WithAsyncAuditDispatch(),
+		mcp.WithBestEffortAuditOnMissingTenant(),
 		mcp.WithAsyncAuditWorkers(1),
 		mcp.WithAsyncAuditQueue(1),
 	)
@@ -1379,6 +1385,7 @@ func TestServer_StopRejectsNilContext(t *testing.T) {
 		mcp.WithActionLogger(logger),
 		withTestActor("agent-stop"),
 		mcp.WithAsyncAuditDispatch(),
+		mcp.WithBestEffortAuditOnMissingTenant(),
 		mcp.WithAsyncAuditWorkers(1),
 		mcp.WithAsyncAuditQueue(1),
 	)
@@ -1398,6 +1405,7 @@ func TestServer_AsyncAudit_StopRace_NoLostJobs(t *testing.T) {
 		mcp.WithActionLogger(logger),
 		withTestActor("agent-race"),
 		mcp.WithAsyncAuditDispatch(),
+		mcp.WithBestEffortAuditOnMissingTenant(),
 		mcp.WithAsyncAuditWorkers(2),
 		mcp.WithAsyncAuditQueue(N),
 	)
@@ -1543,3 +1551,18 @@ func TestRegister_AnonymousPointerEmbedDoesNotPanic(t *testing.T) {
 // ensure io is used for compile (used elsewhere via tests of failing
 // readers, kept for symmetry should hostile-input tests be re-added).
 var _ = io.EOF
+
+
+func TestNewServer_AsyncStrictPanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic combining async audit with default strict mode")
+		}
+		msg := fmt.Sprint(r)
+		if !strings.Contains(msg, "WithAsyncAuditDispatch") {
+			t.Fatalf("panic = %v, want mention of WithAsyncAuditDispatch", r)
+		}
+	}()
+	_ = mcp.NewServer(mcp.WithAsyncAuditDispatch())
+}

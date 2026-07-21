@@ -36,6 +36,12 @@ type shard struct {
 }
 
 // defaultMaxPerShard limits each shard's LRU size to prevent OOM from IP-spray attacks.
+// When the LRU is full, admitting a new key silently evicts the least-recently-used
+// counter (including the attacker's own), which resets that key's rate limit —
+// fail-open under memory pressure. Operators should alert on
+// http_ratelimit_lru_evictions_total and use a Redis-backed limiter for adversarial
+// surfaces (login, OTP). The cap itself is intentional: OOM is worse than a
+// temporary limit bypass.
 const defaultMaxPerShard = 10_000
 
 // Limiter is a sharded fixed-window rate limiter keyed by IP address.
@@ -237,9 +243,18 @@ func (rl *Limiter) allow(ip string) (bool, time.Duration) {
 		return false, remaining
 	}
 
-	s.visitors.Add(ip, &visitor{count: 1, windowAt: now})
+	if s.visitors.Add(ip, &visitor{count: 1, windowAt: now}) {
+		rl.observeLRUEviction()
+	}
 	rl.observeDecision(rateLimitOutcomeAllowed)
 	return true, 0
+}
+
+func (rl *Limiter) observeLRUEviction() {
+	if rl == nil || rl.metrics == nil {
+		return
+	}
+	rl.metrics.observeLRUEviction(rl.name, "ip")
 }
 
 // maxCleanupPerShard limits the number of keys scanned per shard per cleanup

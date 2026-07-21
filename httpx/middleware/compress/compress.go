@@ -222,7 +222,11 @@ func selectEncoder(acceptEncoding string, encoders []Encoder) Encoder {
 		if token == "" {
 			continue
 		}
-		if q == 0 {
+		// RFC 9110 §12.5.3: q=0 means "not acceptable". Negative q is
+		// non-conformant; treat it as refused rather than as a high
+		// preference (ParseFloat would otherwise keep q=-0.5 above zero
+		// tokens when sorting descending).
+		if q <= 0 {
 			refused[strings.ToLower(token)] = true
 			continue
 		}

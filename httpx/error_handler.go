@@ -116,8 +116,12 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 }
 
 // WriteValidationError writes a structured validation error response with
-// field-level details when available.
+// field-level details when available. logger receives write-failure
+// diagnostics (nil falls back to [slog.Default]).
 func WriteValidationError(w http.ResponseWriter, logger *slog.Logger, err error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	ve, ok := apperror.AsValidation(err)
 	if !ok || len(ve.Fields) == 0 {
 		msg := "validation failed"
@@ -137,7 +141,9 @@ func WriteValidationError(w http.ResponseWriter, logger *slog.Logger, err error)
 		Code:   string(apperror.CodeValidation),
 		Fields: ve.Fields,
 	}
-	_ = WriteJSON(w, nil, http.StatusBadRequest, resp)
+	if writeErr := WriteJSON(w, nil, http.StatusBadRequest, resp); writeErr != nil {
+		logger.Warn("httpx: write validation error response failed", logattr.Error(writeErr))
+	}
 }
 
 // WriteServiceProblem is the RFC 7807 sibling of [WriteServiceError].
