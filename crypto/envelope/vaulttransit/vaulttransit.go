@@ -16,6 +16,11 @@
 // decrypting with the old KEK and writing new envelopes under a new KEK.
 //
 // asvs: V6.2.1, V6.4.1
+//
+// Observability: request-error Prometheus metrics and NewKEK opts ...Option
+// currently ship in awskms and gcpkms. vaulttransit intentionally defers the same
+// Option/Metrics surface until a shared envelope-level metrics hook lands;
+// error classification already mirrors awskms via classify* helpers.
 package vaulttransit
 
 import (

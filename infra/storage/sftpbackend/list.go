@@ -249,6 +249,12 @@ func (b *Backend) walkDir(
 		if name == "." || name == ".." || name == "" {
 			continue
 		}
+		// Skip internal atomic-write temp files. Put stages to
+		// remotePath+".tmp-"+16hex then renames; local-style ".tmp-*"
+		// basenames are also reserved by storage.ValidateKey.
+		if isAtomicPutTempName(name) {
+			continue
+		}
 		if strings.ContainsAny(name, `/\`) {
 			// Refuse path separators in entry names — containment relies on
 			// single-component joins under RootPath.
@@ -353,4 +359,30 @@ func relPath(base, target string) (string, error) {
 	}
 
 	return strings.TrimPrefix(target, basePrefix), nil
+}
+
+// isAtomicPutTempName reports whether name is an atomic Put staging file.
+// Matches:
+//   - basenames starting with ".tmp-" (ValidateKey-reserved; localbackend style)
+//   - basenames ending with ".tmp-" + 16 lowercase hex chars (sftpbackend Put)
+func isAtomicPutTempName(name string) bool {
+	if strings.HasPrefix(name, ".tmp-") {
+		return true
+	}
+	const hexSuffixLen = 16 // hex.EncodeToString of 8 random bytes
+	const marker = ".tmp-"
+	i := strings.LastIndex(name, marker)
+	if i < 0 {
+		return false
+	}
+	suffix := name[i+len(marker):]
+	if len(suffix) != hexSuffixLen {
+		return false
+	}
+	for _, c := range suffix {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }

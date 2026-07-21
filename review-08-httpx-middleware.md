@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 2 |
-| **Total (deduplicated)** | **2** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -51,18 +51,4 @@
 
 ## Findings
 
-
-### [LOW] idempotency.go is an 1127-line god file mixing five distinct concerns
-
-- **Where**: `httpx/middleware/idempotency/idempotency.go:1`
-- **Dimension**: smell
-- **Detail**: The single file contains the Prometheus Metrics constructor, ~15 functional options, the middleware orchestration, body fingerprinting/semantic-header hashing, cache-key derivation, and a full response-capture ResponseWriter implementation (responseCapture/captureSink/writerOnly). The sibling signedrequest package splits the exact same shape into signedrequest.go/body.go/metrics.go/noncestore.go, and the repo's own conventions favor many small cohesive files. At 1127 lines this is the largest file in the middleware tree and the response-capture writer alone (~130 lines) is an independently testable unit.
-- **Suggestion**: Split into metrics.go, options.go, fingerprint.go, and capture.go, mirroring the signedrequest package layout.
-
-### [LOW] Limiter and KeyedLimiter are ~400-line near-verbatim duplicates
-
-- **Where**: `httpx/middleware/ratelimit/keyed.go:42`
-- **Dimension**: smell
-- **Detail**: KeyedLimiter duplicates Limiter (ratelimit.go:48-392) almost line-for-line: identical shard array + FNV-1a getShard, identical Start/Stop lifecycle state machine (startMu/started/stopped/cancel/doneCh, the same stop-before-start latching, the same panic-recovering ticker loop), and a structurally identical two-phase cleanup. Even the fixed-window bookkeeping differs only cosmetically (windowAt+elapsed vs windowEnd) — a divergence the comments then have to explain away (keyed.go:192-195). Any future fix to the lifecycle or cleanup logic (e.g. the Stop race handling) must be applied twice and can silently drift. The IP limiter is conceptually just a KeyedLimiter whose key is the client IP plus a clientip resolver.
-- **Suggestion**: Extract the shared shard/lifecycle/cleanup machinery into an unexported core (or implement Limiter as a thin wrapper over KeyedLimiter with an IP key extractor), keeping both exported types as facades.
 

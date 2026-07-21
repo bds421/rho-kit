@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 2 |
-| **Total (deduplicated)** | **2** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -50,18 +50,4 @@
 > This scope is high-quality, security-focused code with extensive defense-in-depth: constant-time comparisons, symmetric-key/alg-confusion filtering in JWKS parsing, mandatory issuer/audience pinning enforced by constructor panics, robust SSRF IP/CIDR filtering with DNS-rebinding-safe pinned transports, TLS 1.2/1.3 floors, fail-closed revocation and stale-key handling, and careful redaction of secrets/paths from logs and errors. The issues found are minor: an unsafe default on the lower-level KeySet.Verify API and two timing/ordering oracles on credential paths that the kit elsewhere explicitly avoids. No critical injection, fail-open, or crypto-misuse defects were identified.
 
 ## Findings
-
-### [LOW] jwtutil.go is a 1292-line god file spanning several unrelated concerns
-
-- **Where**: `security/jwtutil/jwtutil.go:1`
-- **Dimension**: smell
-- **Detail**: One file contains UUID/subject normalization (IsUUID, NormalizeSubjectID), Claims parsing and claim-shape validation, KeySet/JWKS filtering, JOSE typ enforcement, hardened HTTP client construction (transport cloning, TLS floor, redirect blocking, content-type parsing with a hand-rolled eqIgnoreCase), Provider lifecycle/refresh loop, staleness policy, and the error taxonomy. At 1292 lines it exceeds the repo's own ~800-line ceiling and makes the verification hot path hard to review in isolation; the sibling signing_provider.go shows the package already knows how to split by concern.
-- **Suggestion**: Split into subject.go (IsUUID/NormalizeSubjectID — subject_test.go already exists), claims.go, keyset.go, httpclient.go, and provider.go without changing the exported API.
-
-### [LOW] KeySet's exported mutable policy fields rely on a doc-comment invariant instead of construction
-
-- **Where**: `security/jwtutil/jwtutil.go:110`
-- **Dimension**: api-design
-- **Detail**: KeySet.ExpectedIssuer/ExpectedAudience are exported, mutable fields read by Verify without synchronisation; the type doc carries a long warning ("Set them once, before the KeySet is shared ... assigning a field ... is an unsynchronised data race that silently changes verification policy"). The safe path (Provider carrying policy) exists, but nothing prevents the documented misuse — a caller can still toggle fields on a shared *KeySet per request and get racy, policy-bleeding verification. Invariants this security-critical should be unrepresentable rather than documented.
-- **Suggestion**: In a future API revision make the fields unexported with a WithExpectedIssuer/Audience-style constructor or a KeySet.WithPolicy(iss, aud) copy method (KeySet() already returns snapshots, so a copy-on-write setter is cheap).
 

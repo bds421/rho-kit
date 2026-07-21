@@ -592,6 +592,43 @@ func TestVerify_ExpectedIssuer_Mismatch(t *testing.T) {
 	}
 }
 
+func TestVerify_FreezesPolicyAfterFirstCall(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	ks.ExpectedIssuer = "https://oathkeeper"
+	now := time.Now()
+
+	good := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"iss": "https://oathkeeper",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	if _, err := ks.Verify(good, now); err != nil {
+		t.Fatalf("first verify: %v", err)
+	}
+
+	// Post-freeze mutation must be ignored — original issuer still required.
+	ks.ExpectedIssuer = "https://other"
+	other := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"iss": "https://other",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	if _, err := ks.Verify(other, now); err == nil {
+		t.Fatal("expected freeze to reject issuer changed after first Verify")
+	}
+	if _, err := ks.Verify(good, now); err != nil {
+		t.Fatalf("frozen original issuer should still verify: %v", err)
+	}
+
+	// WithExpectedIssuer returns a fresh copy with independent freeze state.
+	ks2 := ks.WithExpectedIssuer("https://other")
+	if _, err := ks2.Verify(other, now); err != nil {
+		t.Fatalf("WithExpectedIssuer copy should verify new issuer: %v", err)
+	}
+}
+
+
 func TestToStringSlice_StringSlice(t *testing.T) {
 	in := []string{"a", "b", "c"}
 	out, err := toStringSlice(in)

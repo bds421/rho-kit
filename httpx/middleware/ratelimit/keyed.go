@@ -50,11 +50,7 @@ type KeyedLimiter struct {
 	name        string
 	maxPerShard int
 
-	startMu sync.Mutex
-	started bool
-	stopped bool
-	cancel  context.CancelFunc
-	doneCh  chan struct{}
+	life lifecycleState
 }
 
 // KeyedOption configures a KeyedLimiter.
@@ -116,7 +112,6 @@ func WithKeyedMaxPerShard(n int) KeyedOption {
 	return func(l *KeyedLimiter) { l.maxPerShard = n }
 }
 
-
 // NewKeyedLimiter creates a rate limiter allowing limit requests per window per key.
 // Panics if limit or window are not positive — these indicate misconfiguration.
 func NewKeyedLimiter(limit int, window time.Duration, opts ...KeyedOption) *KeyedLimiter {
@@ -141,10 +136,10 @@ func NewKeyedLimiter(limit int, window time.Duration, opts ...KeyedOption) *Keye
 	}
 	for i := range rl.shards {
 		cap := rl.maxPerShard
-	if cap <= 0 {
-		cap = defaultMaxKeyedPerShard
-	}
-	cache, _ := lru.New[string, *keyedRateLimitEntry](cap)
+		if cap <= 0 {
+			cap = defaultMaxKeyedPerShard
+		}
+		cache, _ := lru.New[string, *keyedRateLimitEntry](cap)
 		rl.shards[i].entries = cache
 	}
 	// Publish to the active-keys collector only after shards and name are
@@ -262,51 +257,12 @@ func (rl *KeyedLimiter) Start(ctx context.Context) error {
 	if err := rl.ready(); err != nil {
 		return err
 	}
-	if ctx == nil {
-		return errors.New("ratelimit: KeyedLimiter.Start requires a non-nil context")
+	runCtx, err := rl.life.beginStart(ctx, "KeyedLimiter")
+	if err != nil {
+		return err
 	}
-	rl.startMu.Lock()
-	if rl.started {
-		rl.startMu.Unlock()
-		return errors.New("ratelimit: KeyedLimiter.Start already started")
-	}
-	if rl.stopped {
-		// Stop ran before Start and latched stopped=true. Launching the
-		// cleanup loop now would orphan a goroutine the prior Stop already
-		// promised to wait on. Reject, mirroring lifecycle.FuncComponent.
-		rl.startMu.Unlock()
-		return errors.New("ratelimit: KeyedLimiter.Start already stopped")
-	}
-	rl.started = true
-	runCtx, cancel := context.WithCancel(ctx)
-	rl.cancel = cancel
-	done := make(chan struct{})
-	rl.doneCh = done
-	rl.startMu.Unlock()
-
-	defer close(done)
-	defer cancel()
-
-	ticker := time.NewTicker(cleanupInterval(rl.window))
-	defer ticker.Stop()
-	for {
-		select {
-		case <-runCtx.Done():
-			return nil
-		case <-ticker.C:
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						slog.Error("panic in keyed rate limiter cleanup",
-							slog.String("limiter", rl.Name()),
-							redact.Panic(r),
-						)
-					}
-				}()
-				rl.cleanup()
-			}()
-		}
-	}
+	rl.life.runCleanupLoop(runCtx, rl.window, rl.Name(), "panic in keyed rate limiter cleanup", rl.cleanup)
+	return nil
 }
 
 // Stop cancels the cleanup goroutine launched by [KeyedLimiter.Start]
@@ -316,32 +272,7 @@ func (rl *KeyedLimiter) Stop(ctx context.Context) error {
 	if rl == nil {
 		return nil
 	}
-	rl.startMu.Lock()
-	if !rl.started || rl.stopped {
-		rl.stopped = true
-		rl.startMu.Unlock()
-		return nil
-	}
-	rl.stopped = true
-	cancel := rl.cancel
-	done := rl.doneCh
-	rl.startMu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	if done == nil {
-		return nil
-	}
-	if ctx == nil {
-		<-done
-		return nil
-	}
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return rl.life.stop(ctx)
 }
 
 // cleanup evicts expired entries from all shards. Scans at most

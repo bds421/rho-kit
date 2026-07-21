@@ -5,13 +5,8 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"log/slog"
-	"runtime/debug"
-	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // PublicKeySource returns the current set of trusted Ed25519 public
@@ -41,17 +36,9 @@ type Provider struct {
 
 	current               atomic.Pointer[V4PublicVerifier]
 	lastSuccessfulRefresh atomic.Value // time.Time; preserves monotonic reading
-	closed                atomic.Bool
-	stop                  chan struct{}
-	done                  chan struct{}
-	stopOnce              sync.Once
 
-	// rootCtx is cancelled by Close so an in-flight refresh exits
-	// promptly instead of running to completion at p.interval (audit
-	// FR-046). fetchTimeout caps each refresh independently of the
-	// poll interval.
-	rootCtx      context.Context
-	rootCancel   context.CancelFunc
+	// loop owns stop/done/rootCtx/closed (FR-046 cancel-on-Close).
+	loop         refreshLoopState
 	fetchTimeout time.Duration
 	maxStale     time.Duration
 	clock        func() time.Time
@@ -153,21 +140,15 @@ func OpenProvider(ctx context.Context, src PublicKeySource, interval time.Durati
 	if interval <= 0 {
 		return nil, errors.New("paseto: refresh interval must be > 0")
 	}
-	rootCtx, rootCancel := context.WithCancel(context.Background())
 	p := &Provider{
 		src:          src,
 		interval:     interval,
-		stop:         make(chan struct{}),
-		done:         make(chan struct{}),
-		rootCtx:      rootCtx,
-		rootCancel:   rootCancel,
 		fetchTimeout: defaultFetchTimeout,
 		maxStale:     defaultMaxStale,
 		clock:        time.Now,
 	}
 	for _, o := range opts {
 		if o == nil {
-			rootCancel()
 			panic("paseto: OpenProvider provider option must not be nil")
 		}
 		o(p)
@@ -182,9 +163,9 @@ func OpenProvider(ctx context.Context, src PublicKeySource, interval time.Durati
 	// outage window (every Verify/Sign fails from t=maxStale until the
 	// next tick) with healthy keys and a healthy source.
 	if p.maxStale > 0 && p.interval > p.maxStale {
-		rootCancel()
 		return nil, fmt.Errorf("paseto: refresh interval (%s) must be <= maxStale (%s) to avoid periodic fail-closed gaps", p.interval, p.maxStale)
 	}
+	p.loop = newRefreshLoopState(p.interval, p.fetchTimeout)
 
 	// Cap the initial load with fetchTimeout (same bound as the refresh
 	// loop) so a hung key source cannot stall process startup forever.
@@ -192,11 +173,11 @@ func OpenProvider(ctx context.Context, src PublicKeySource, interval time.Durati
 	err := p.refresh(loadCtx)
 	loadCancel()
 	if err != nil {
-		rootCancel()
+		p.loop.rootCancel()
 		return nil, fmt.Errorf("paseto: initial key load: %w", err)
 	}
 
-	go p.loop()
+	go p.loop.loop(p.refresh, p.callOnRefreshError)
 	return p, nil
 }
 
@@ -209,7 +190,7 @@ func (p *Provider) Verify(token string, now time.Time) (*Claims, error) {
 	if p == nil {
 		return nil, ErrKeySetUnavailable
 	}
-	if p.closed.Load() {
+	if p.loop.closed.Load() {
 		return nil, ErrProviderClosed
 	}
 	v := p.current.Load()
@@ -237,63 +218,15 @@ func (p *Provider) Verify(token string, now time.Time) (*Claims, error) {
 // wired into resource-cleanup helpers, but the shutdown path itself
 // cannot fail.
 func (p *Provider) Close() error {
-	if p == nil || p.stop == nil || p.done == nil {
+	if p == nil {
 		return nil
 	}
-	p.stopOnce.Do(func() {
-		p.closed.Store(true)
-		close(p.stop)
-		if p.rootCancel != nil {
-			p.rootCancel()
-		}
-	})
-	<-p.done
+	p.loop.close()
 	return nil
 }
 
-func (p *Provider) loop() {
-	defer close(p.done)
-	t := time.NewTicker(p.interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-p.stop:
-			return
-		case <-t.C:
-			// FR-046 [MED]: derive each refresh from rootCtx (cancelled
-			// by Close) so a Close in flight aborts the network call
-			// instead of waiting for the per-refresh timeout. The
-			// per-refresh timeout uses fetchTimeout — independent of
-			// p.interval — so a long polling cadence does not also
-			// translate into a long shutdown delay.
-			ctx, cancel := context.WithTimeout(p.rootCtx, p.fetchTimeout)
-			err := p.refresh(ctx)
-			cancel()
-			// Suppress the callback during shutdown: Close cancels
-			// rootCtx, so an in-flight refresh fails with
-			// context.Canceled. Reporting that as a refresh error would
-			// fire a false "rotation stalled" alert on every shutdown
-			// that races a tick.
-			if err != nil && !p.closed.Load() {
-				p.callOnRefreshError(err)
-			}
-		}
-	}
-}
-
 func (p *Provider) callOnRefreshError(err error) {
-	if p.onRefreshErr == nil {
-		return
-	}
-	defer func() {
-		if rec := recover(); rec != nil {
-			slog.Default().Error("paseto: OnRefreshError callback panicked",
-				redact.Panic(rec),
-				"stack", string(debug.Stack()),
-			)
-		}
-	}()
-	p.onRefreshErr(err)
+	callRefreshError(p.onRefreshErr, err, "paseto: OnRefreshError callback panicked")
 }
 
 func (p *Provider) refresh(ctx context.Context) error {

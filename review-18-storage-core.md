@@ -50,20 +50,19 @@
 
 - **Where**: `infra/storage/hooks.go:66`
 - **Dimension**: api-design
-- **Detail**: To preserve the {Lister,Copier,PresignedStore,PublicURLer} capabilities of the wrapped backend, WithHooks selects among 2^4 concrete wrapper structs (lines 66-99) each redefining the same List/Copy/PresignGetURL/PresignPutURL/URL forwarders (lines 351-539). This is acknowledged in-code, but it is a genuine cohesion/duplication hazard: adding a new hookable optional capability (e.g. a Tagger or Versioner hook) doubles the matrix to 32 variants, and any change to a forwarder must be replicated across up to 8 structs. The file is 539 lines almost entirely of mechanical forwarding.
-- **Suggestion**: Since capability discovery already goes through AsLister/AsCopier/... which walk Unwrap, consider whether the combination structs are needed at all, or generate them, or reduce to per-capability hook shims that don't require the full cross-product.
+- **Detail**: To preserve the {Lister,Copier,PresignedStore,PublicURLer} capabilities of the wrapped backend, WithHooks selects among 2^4 concrete wrapper structs each redefining the same List/Copy/PresignGetURL/PresignPutURL/URL forwarders. Adding a new hookable optional capability doubles the matrix, and any change to a forwarder must be replicated across up to 8 structs. The file is still largely mechanical forwarding.
+- **Suggestion**: Generate the combinations, or reduce to per-capability hook shims that do not require the full cross-product; extract shared composition with retry/circuitbreaker.
 
 ### [LOW] hooks.go is a 540-line god file with 16 near-identical combinatorial wrapper types
 
 - **Where**: `infra/storage/hooks.go:341`
 - **Dimension**: smell
-- **Detail**: WithHooks enumerates all 2^4 combinations of {Lister,Copier,PresignedStore,PublicURLer} as 16 concrete wrapper structs (lines 351-539), each re-declaring the same forwarding methods that just call the shared *hookedStorage helpers. This is ~200 lines of mechanical duplication and the single largest file in scope; adding a 5th optional capability doubles it to 32. The rationale is documented, but it is a maintenance/cohesion hazard.
-- **Suggestion**: Consider consolidating (e.g. a code-generated table, or exposing capabilities through a single dispatch type) so a new optional interface does not require doubling the wrapper matrix.
+- **Detail**: WithHooks enumerates all 2^4 combinations of {Lister,Copier,PresignedStore,PublicURLer} as 16 concrete wrapper structs, each re-declaring the same forwarding methods. ~200 lines of mechanical duplication; a 5th optional capability doubles it to 32.
+- **Suggestion**: Consolidate via code generation or a single dispatch type so a new optional interface does not require doubling the wrapper matrix.
 
 ### [LOW] The 15-type capability-combination boilerplate is triplicated across hooks, retry, and circuitbreaker
 
 - **Where**: `infra/storage/hooks.go:346`
 - **Dimension**: smell
-- **Detail**: hooks.go (lines 341-539), retry/combinators.go, and circuitbreaker/combinators.go each hand-enumerate the same 15 {Lister, Copier, PresignedStore, PublicURLer} wrapper structs plus an identical 16-way switch — roughly 700 lines of structurally identical code in three packages. Each file acknowledges the pattern, but the cost is concrete: adding one new forwarded capability (e.g. the Statter suggested for ServeFile, or BatchDeleter forwarding) requires editing 3 × 16 cases and doubling each package's wrapper count, and a missed case in one package silently diverges capability behavior between decorators.
-- **Suggestion**: Extract a single internal composition helper (e.g. an internal/compose package with the 16 wrapper types parameterized over a small interface of listImpl/copyImpl/presign*/urlImpl funcs) that all three decorators reuse, so the combination matrix lives in exactly one place.
-
+- **Detail**: hooks.go, retry/combinators.go, and circuitbreaker/combinators.go each hand-enumerate the same capability wrapper matrix — roughly 700 lines of structurally identical code. Adding one forwarded capability requires editing 3×16 cases; a missed case silently diverges decorator behavior.
+- **Suggestion**: Extract a single internal composition helper parameterized over list/copy/presign/url impls that all three decorators reuse.

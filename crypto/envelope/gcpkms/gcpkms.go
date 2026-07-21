@@ -70,9 +70,28 @@ var ErrChecksumMismatch = errors.New("gcpkms: CRC32C verification failed; retry 
 
 // KEK is the GCP KMS-backed [envelope.KEK].
 type KEK struct {
-	c   kmsAPI
-	key string // full resource path: projects/.../locations/.../keyRings/.../cryptoKeys/...
-	aad []byte
+	c       kmsAPI
+	key     string // full resource path: projects/.../locations/.../keyRings/.../cryptoKeys/...
+	aad     []byte
+	metrics *Metrics
+}
+
+// Option configures [NewKEK].
+type Option func(*KEK)
+
+// WithMetrics installs a custom [Metrics] for this KEK. When unset,
+// the package's lazily-initialised DefaultRegisterer-backed Metrics is
+// used. Pass [WithMetrics] explicitly with a [NewMetrics]-constructed
+// instance so gcpkms collectors land on a non-default registerer.
+//
+// Panics if m is nil — a nil Metrics would defeat the purpose of an
+// "observability enabled" toggle. Omit the option entirely to fall
+// back to the package default.
+func WithMetrics(m *Metrics) Option {
+	if m == nil {
+		panic("gcpkms: WithMetrics requires non-nil metrics (omit the option for the package default)")
+	}
+	return func(k *KEK) { k.metrics = m }
 }
 
 // Config bundles the kit's GCP KMS knobs.
@@ -106,7 +125,11 @@ func (c Config) LogValue() slog.Value {
 // "/cryptoKeyVersions/N"). GCP KMS Encrypt accepts a version-qualified
 // name, but symmetric Decrypt rejects it — configuring a version would
 // let Wrap succeed for weeks while every Unwrap fails permanently.
-func NewKEK(c *kms.KeyManagementClient, cfg Config) (*KEK, error) {
+//
+// opts accepts [WithMetrics] (and future options). Constructor shape
+// matches [github.com/bds421/rho-kit/crypto/envelope/awskms/v2.NewKEK]
+// so multi-cloud wiring can abstract over adapters uniformly.
+func NewKEK(c *kms.KeyManagementClient, cfg Config, opts ...Option) (*KEK, error) {
 	if c == nil {
 		return nil, errors.New("gcpkms: client must not be nil")
 	}
@@ -116,7 +139,17 @@ func NewKEK(c *kms.KeyManagementClient, cfg Config) (*KEK, error) {
 	if strings.Contains(cfg.KeyResource, "/cryptoKeyVersions/") {
 		return nil, errors.New("gcpkms: Config.KeyResource must be the parent CryptoKey path, not a version-qualified resource")
 	}
-	return &KEK{c: c, key: cfg.KeyResource, aad: append([]byte(nil), cfg.AdditionalAuthenticatedData...)}, nil
+	k := &KEK{c: c, key: cfg.KeyResource, aad: append([]byte(nil), cfg.AdditionalAuthenticatedData...)}
+	for _, opt := range opts {
+		if opt == nil {
+			return nil, errors.New("gcpkms: NewKEK option must not be nil")
+		}
+		opt(k)
+	}
+	if k.metrics == nil {
+		k.metrics = packageDefaultMetrics()
+	}
+	return k, nil
 }
 
 // KeyID implements [envelope.KEK]. Returns the parent key resource
@@ -147,7 +180,7 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 	}
 	resp, err := k.c.Encrypt(ctx, req)
 	if err != nil {
-		return "", nil, fmt.Errorf("gcpkms: encrypt: %w", classifyGCPError("encrypt", err))
+		return "", nil, fmt.Errorf("gcpkms: encrypt: %w", k.classifyGCPError("wrap", err))
 	}
 	if resp.GetName() == "" {
 		return "", nil, errors.New("gcpkms: encrypt response missing Name")
@@ -190,7 +223,7 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 	req := k.decryptRequest(keyID, wrapped)
 	resp, err := k.c.Decrypt(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gcpkms: decrypt: %w", classifyGCPError("decrypt", err))
+		return nil, fmt.Errorf("gcpkms: decrypt: %w", k.classifyGCPError("unwrap", err))
 	}
 	// Note: DecryptResponse (unlike EncryptResponse) does not surface
 	// VerifiedCiphertextCrc32C / VerifiedAdditionalAuthenticatedDataCrc32C

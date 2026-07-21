@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"path"
 	"strconv"
+	"sync"
 )
 
 // importAliasesFor returns the set of identifiers that resolve to the
@@ -169,14 +170,23 @@ func visitChain(call *ast.CallExpr, visit func(string) bool) {
 }
 
 // parents back the chain-walking helpers above; SetCurrentFile rebuilds
-// the map for each scanned file.
-var parents map[ast.Node]ast.Node
+// the map for each scanned file. Guarded so a future parallel scan cannot
+// race concurrent map access (review-24).
+var (
+	parentsMu sync.RWMutex
+	parents   map[ast.Node]ast.Node
+)
 
 func SetCurrentFile(f *ast.File) {
-	parents = buildParents(f)
+	m := buildParents(f)
+	parentsMu.Lock()
+	parents = m
+	parentsMu.Unlock()
 }
 
 func parentOf(n ast.Node) (ast.Node, bool) {
+	parentsMu.RLock()
+	defer parentsMu.RUnlock()
 	if parents == nil {
 		return nil, false
 	}

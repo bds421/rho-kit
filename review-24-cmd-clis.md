@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 1 |
-| **Total (deduplicated)** | **1** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -32,11 +32,4 @@
 > The CLI family is generally high-quality: kit-new, kit-migrate, and the kit-doctor engine show careful, defense-in-depth path/symlink handling and thoughtful TOCTOU-resistant file creation, and the rule set is remarkably consistent (uniform alias resolution, test-file skipping, variadic-spread bail-outs, and suppression handling). The weakest spots are kit-catalog, which uses fragile regex scraping where its sibling uses go/parser (producing genuinely wrong manifests), a fixable-finding wiring gap in kit-doctor's interactive mode that orphans the only AST-rule Fix, and some hidden global state in the exported rules package. None of the issues are exploitable, and most are LOW-severity polish or robustness gaps.
 
 ## Findings
-
-### [LOW] Package-global mutable scan state (`parents`, `packageCache`) is unsynchronized
-
-- **Where**: `cmd/kit-doctor/rules/helpers.go:173`
-- **Dimension**: concurrency
-- **Detail**: The `parents` map is a package-level variable rebuilt by SetCurrentFile before each file's rules run, and exemptions.go's packageCache is a package-level map mutated during scanning. Both are read/written with no synchronization. This is safe today only because scan() (engine.go) processes files strictly sequentially in one goroutine. It is a latent hazard: any future change that parallelizes rule execution or file walking (a natural optimization for large trees) would introduce a data race and cross-file corruption of the parent map, since a rule for file A could observe parents built for file B. Flagging per the review lens on shared mutable map access; no bug fires under the current single-threaded caller.
-- **Suggestion**: Thread the parent map and package cache through the Rule.Run call (e.g. via a per-scan context struct) instead of package globals, so the state is naturally per-scan and parallelization-safe.
 

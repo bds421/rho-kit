@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 1 |
-| LOW | 2 |
-| **Total (deduplicated)** | **3** |
+| LOW | 0 |
+| **Total (deduplicated)** | **1** |
 
 **Reviewer impressions:**
 
@@ -45,18 +45,4 @@
 - **Dimension**: concurrency
 - **Detail**: connect() replaces the client and spawns a cleanup goroutine that closes the old sftp.Client/ssh.Conn after at most 5 seconds — or immediately when another reconnect bumps cleanupGen (the `for b.cleanupGen.Load() == gen` loop exits straight to closeOld). An operation that obtained the old client via getClient and is streaming a large Put/Get for longer than the grace period has its connection closed mid-transfer, failing with a generic remote error; under server flapping the grace shrinks to ~0, so even short in-flight operations race with the close. The code comments acknowledge the 5s heuristic but the generation-bump early-close makes the window effectively unbounded downward.
 - **Suggestion**: Reference-count client leases (getClient returns a release func; cleanup closes when the count drains) instead of a fixed grace period.
-
-### [LOW] Listing capability inconsistent across sibling storage backends
-
-- **Where**: `infra/storage/gcsbackend/gcs.go:26`
-- **Dimension**: api-design
-- **Detail**: s3backend and sftpbackend implement storage.Lister (they have list.go with a compile-time _ storage.Lister assertion), but gcsbackend and azurebackend do not implement List at all — the gcs Backend only asserts storage.Storage (line 26). Azure even carries NewListBlobsFlatPager in its BlobClient interface but wires it solely into Healthy. A caller writing backend-agnostic code that type-asserts storage.Lister will silently get no listing on GCS/Azure, an easy-to-hold-it-wrong asymmetry between providers that are otherwise presented as interchangeable.
-- **Suggestion**: Either implement Lister for gcsbackend and azurebackend for parity, or document explicitly in each package's doc.go that listing is unsupported so the capability gap is discoverable.
-
-### [LOW] Put temp files are visible to List and orphaned on crash
-
-- **Where**: `infra/storage/sftpbackend/sftp.go:570`
-- **Dimension**: bug
-- **Detail**: Put writes to remotePath + ".tmp-" + suffix in the destination directory. List/walkDir has no filter for these names, so a concurrent List during an upload yields phantom keys like 'dir/file.tmp-a1b2c3d4e5f6a7b8' (Get on them later races the rename and returns not-found). If the process dies between Create and Rename, the temp file is orphaned permanently — no sweep exists, and the orphan then appears in every subsequent listing.
-- **Suggestion**: Filter the temp-name pattern out of walkDir results (and reject it in ValidateKey-adjacent logic), and document the orphan behavior or add a best-effort startup sweep for stale '.tmp-*' files older than a threshold.
 

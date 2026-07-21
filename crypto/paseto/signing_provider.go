@@ -5,13 +5,9 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"log/slog"
-	"runtime/debug"
-	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
@@ -54,13 +50,8 @@ type SigningProvider struct {
 
 	current               atomic.Pointer[V4PublicSigner]
 	lastSuccessfulRefresh atomic.Value // time.Time; preserves monotonic reading
-	closed                atomic.Bool
-	stop                  chan struct{}
-	done                  chan struct{}
-	stopOnce              sync.Once
 
-	rootCtx      context.Context
-	rootCancel   context.CancelFunc
+	loop         refreshLoopState
 	fetchTimeout time.Duration
 	maxStale     time.Duration
 	clock        func() time.Time
@@ -162,21 +153,15 @@ func OpenSigningProvider(ctx context.Context, src PrivateKeySource, interval tim
 	if interval <= 0 {
 		return nil, errors.New("paseto: refresh interval must be > 0")
 	}
-	rootCtx, rootCancel := context.WithCancel(context.Background())
 	p := &SigningProvider{
 		src:          src,
 		interval:     interval,
-		stop:         make(chan struct{}),
-		done:         make(chan struct{}),
-		rootCtx:      rootCtx,
-		rootCancel:   rootCancel,
 		fetchTimeout: defaultFetchTimeout,
 		maxStale:     defaultMaxStale,
 		clock:        time.Now,
 	}
 	for _, o := range opts {
 		if o == nil {
-			rootCancel()
 			panic("paseto: OpenSigningProvider signing provider option must not be nil")
 		}
 		o(p)
@@ -189,19 +174,19 @@ func OpenSigningProvider(ctx context.Context, src PrivateKeySource, interval tim
 	// recurring self-inflicted outage of Sign between maxStale and the next
 	// refresh tick.
 	if p.maxStale > 0 && p.interval > p.maxStale {
-		rootCancel()
 		return nil, fmt.Errorf("paseto: refresh interval (%s) must be <= maxStale (%s) to avoid periodic fail-closed gaps", p.interval, p.maxStale)
 	}
+	p.loop = newRefreshLoopState(p.interval, p.fetchTimeout)
 
 	loadCtx, loadCancel := context.WithTimeout(ctx, p.fetchTimeout)
 	err := p.refresh(loadCtx)
 	loadCancel()
 	if err != nil {
-		rootCancel()
+		p.loop.rootCancel()
 		return nil, fmt.Errorf("paseto: initial signing key load: %w", err)
 	}
 
-	go p.loop()
+	go p.loop.loop(p.refresh, p.callOnRefreshError)
 	return p, nil
 }
 
@@ -214,7 +199,7 @@ func (p *SigningProvider) Sign(claims Claims) (string, error) {
 	if p == nil {
 		return "", ErrKeySetUnavailable
 	}
-	if p.closed.Load() {
+	if p.loop.closed.Load() {
 		return "", ErrProviderClosed
 	}
 	s := p.current.Load()
@@ -243,66 +228,18 @@ func (p *SigningProvider) Sign(claims Claims) (string, error) {
 // provider can be wired into resource-cleanup helpers, but the
 // shutdown path itself cannot fail.
 func (p *SigningProvider) Close() error {
-	if p == nil || p.stop == nil || p.done == nil {
+	if p == nil {
 		return nil
 	}
-	p.stopOnce.Do(func() {
-		p.closed.Store(true)
-		close(p.stop)
-		if p.rootCancel != nil {
-			p.rootCancel()
-		}
-	})
-	<-p.done
+	p.loop.close()
 	if s := p.current.Swap(nil); s != nil {
 		_ = s.Close()
 	}
 	return nil
 }
 
-func (p *SigningProvider) loop() {
-	defer close(p.done)
-	t := time.NewTicker(p.interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-p.stop:
-			return
-		case <-t.C:
-			// Derive each refresh from rootCtx (cancelled by Close)
-			// so an in-flight Close aborts the network call instead
-			// of waiting for the per-refresh timeout. The per-refresh
-			// timeout uses fetchTimeout — independent of p.interval —
-			// so a long polling cadence does not translate into a
-			// long shutdown delay.
-			ctx, cancel := context.WithTimeout(p.rootCtx, p.fetchTimeout)
-			err := p.refresh(ctx)
-			cancel()
-			// Suppress the callback during shutdown: Close cancels
-			// rootCtx, so an in-flight refresh fails with
-			// context.Canceled. Reporting that as a refresh error would
-			// fire a false "rotation stalled" alert on every shutdown
-			// that races a tick.
-			if err != nil && !p.closed.Load() {
-				p.callOnRefreshError(err)
-			}
-		}
-	}
-}
-
 func (p *SigningProvider) callOnRefreshError(err error) {
-	if p.onRefreshErr == nil {
-		return
-	}
-	defer func() {
-		if rec := recover(); rec != nil {
-			slog.Default().Error("paseto: OnSigningRefreshError callback panicked",
-				redact.Panic(rec),
-				"stack", string(debug.Stack()),
-			)
-		}
-	}()
-	p.onRefreshErr(err)
+	callRefreshError(p.onRefreshErr, err, "paseto: OnSigningRefreshError callback panicked")
 }
 
 func (p *SigningProvider) refresh(ctx context.Context) error {

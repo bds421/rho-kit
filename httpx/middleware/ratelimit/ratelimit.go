@@ -3,10 +3,8 @@ package ratelimit
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"hash/fnv"
-	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -16,7 +14,6 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/bds421/rho-kit/core/v2/clock"
-	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/clientip"
 )
@@ -63,11 +60,7 @@ type Limiter struct {
 	metrics        *Metrics
 	name           string
 
-	startMu sync.Mutex
-	started bool
-	stopped bool
-	cancel  context.CancelFunc
-	doneCh  chan struct{}
+	life lifecycleState
 }
 
 // LimiterOption configures optional Limiter behaviour.
@@ -145,7 +138,6 @@ func WithMaxPerShard(n int) LimiterOption {
 	}
 	return func(l *Limiter) { l.maxPerShard = n }
 }
-
 
 // NewLimiter creates a rate limiter that allows limit requests per window per IP.
 // Panics if limit or window are not positive — these indicate misconfiguration.
@@ -331,51 +323,12 @@ func (rl *Limiter) Start(ctx context.Context) error {
 	if err := rl.ready(); err != nil {
 		return err
 	}
-	if ctx == nil {
-		return errors.New("ratelimit: Limiter.Start requires a non-nil context")
+	runCtx, err := rl.life.beginStart(ctx, "Limiter")
+	if err != nil {
+		return err
 	}
-	rl.startMu.Lock()
-	if rl.started {
-		rl.startMu.Unlock()
-		return errors.New("ratelimit: Limiter.Start already started")
-	}
-	if rl.stopped {
-		// Stop ran before Start and latched stopped=true. Launching the
-		// cleanup loop now would orphan a goroutine the prior Stop already
-		// promised to wait on. Reject, mirroring lifecycle.FuncComponent.
-		rl.startMu.Unlock()
-		return errors.New("ratelimit: Limiter.Start already stopped")
-	}
-	rl.started = true
-	runCtx, cancel := context.WithCancel(ctx)
-	rl.cancel = cancel
-	done := make(chan struct{})
-	rl.doneCh = done
-	rl.startMu.Unlock()
-
-	defer close(done)
-	defer cancel()
-
-	ticker := time.NewTicker(cleanupInterval(rl.window))
-	defer ticker.Stop()
-	for {
-		select {
-		case <-runCtx.Done():
-			return nil
-		case <-ticker.C:
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						slog.Error("panic in rate limiter cleanup",
-							slog.String("limiter", rl.Name()),
-							redact.Panic(r),
-						)
-					}
-				}()
-				rl.cleanup()
-			}()
-		}
-	}
+	rl.life.runCleanupLoop(runCtx, rl.window, rl.Name(), "panic in rate limiter cleanup", rl.cleanup)
+	return nil
 }
 
 // Stop cancels the cleanup goroutine launched by [Limiter.Start] and
@@ -385,32 +338,7 @@ func (rl *Limiter) Stop(ctx context.Context) error {
 	if rl == nil {
 		return nil
 	}
-	rl.startMu.Lock()
-	if !rl.started || rl.stopped {
-		rl.stopped = true
-		rl.startMu.Unlock()
-		return nil
-	}
-	rl.stopped = true
-	cancel := rl.cancel
-	done := rl.doneCh
-	rl.startMu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	if done == nil {
-		return nil
-	}
-	if ctx == nil {
-		<-done
-		return nil
-	}
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return rl.life.stop(ctx)
 }
 
 func cleanupInterval(window time.Duration) time.Duration {

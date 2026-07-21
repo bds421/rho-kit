@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // kitFactoryExemptions lists import paths that are the canonical kit
@@ -71,16 +72,25 @@ func isKitFactoryExempt(ruleName, filename string) bool {
 }
 
 // packageCache memoises package import-path lookups per directory.
-var packageCache = map[string]string{}
+// Guarded by packageCacheMu so a future parallel scan cannot race
+// concurrent map access (review-24).
+var (
+	packageCacheMu sync.RWMutex
+	packageCache   = map[string]string{}
+)
 
 // packageAtPath walks upward from filename until it finds a go.mod,
 // returning the import path for filename's package. Returns "" if no
 // go.mod is found before the filesystem root.
 func packageAtPath(filename string) string {
 	dir := filepath.Dir(filename)
+	packageCacheMu.RLock()
 	if cached, ok := packageCache[dir]; ok {
+		packageCacheMu.RUnlock()
 		return cached
 	}
+	packageCacheMu.RUnlock()
+
 	cur := dir
 	for {
 		modPath := filepath.Join(cur, "go.mod")
@@ -89,12 +99,16 @@ func packageAtPath(filename string) string {
 			if rel, err := filepath.Rel(cur, dir); err == nil && rel != "." {
 				pkg += "/" + filepath.ToSlash(rel)
 			}
+			packageCacheMu.Lock()
 			packageCache[dir] = pkg
+			packageCacheMu.Unlock()
 			return pkg
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
+			packageCacheMu.Lock()
 			packageCache[dir] = ""
+			packageCacheMu.Unlock()
 			return ""
 		}
 		cur = parent

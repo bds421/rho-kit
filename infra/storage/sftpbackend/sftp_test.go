@@ -1212,6 +1212,32 @@ func (r *renameGateClient) Rename(oldpath, newpath string) error {
 	return r.mockSFTPClient.Rename(oldpath, newpath)
 }
 
+// TestSFTPBackend_List_SkipsTempFiles pins review-19: Put stages as
+// remotePath+".tmp-"+16hex then renames; in-flight and crash-orphaned
+// temps must not appear as storage keys in List.
+func TestSFTPBackend_List_SkipsTempFiles(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mock := newMockSFTPClient("/data")
+	mock.store["/data/real.txt"] = []byte("r")
+	mock.store["/data/a/real.txt"] = []byte("r")
+	// Crash-orphaned Put temps (Put pattern: key + ".tmp-" + 16 hex).
+	mock.store["/data/final.tmp-a1b2c3d4e5f6a7b8"] = []byte("inflight")
+	mock.store["/data/a/nested.tmp-0011223344556677"] = []byte("orphan")
+	// localbackend-style reserved basenames.
+	mock.store["/data/.tmp-123456"] = []byte("orphan")
+	// Legitimate key that happens to contain ".tmp-" but not the Put shape.
+	mock.store["/data/report.tmp-backup"] = []byte("keep")
+	b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
+
+	var keys []string
+	for info, err := range b.List(ctx, "", storage.ListOptions{}) {
+		require.NoError(t, err)
+		keys = append(keys, info.Key)
+	}
+	assert.ElementsMatch(t, []string{"real.txt", "a/real.txt", "report.tmp-backup"}, keys)
+}
+
 // TestSFTPBackend_List_RejectsPathAscentEntries pins review-19: a hostile
 // server returning ".." must not walk above RootPath or emit absolute keys.
 func TestSFTPBackend_List_RejectsPathAscentEntries(t *testing.T) {

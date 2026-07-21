@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 1 |
-| **Total (deduplicated)** | **1** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -50,11 +50,4 @@
 > This is exceptionally high-quality, defensively-written code: RoundTripper body-close contracts, context detachment for accounting, constant-time HMAC comparison, integer-overflow guards in pagination, and fail-closed audit invariants are all handled carefully and thoroughly documented. I traced every concurrency-sensitive path (circuit-breaker error unwrapping, deadline-budget cancel-on-close, MCP async audit stop/enqueue race, cursor-signer Close vs Use) and verified them against the vendored MCP SDK's internal locking and the mutex-guarded secret.String — I found no correctness, race, deadlock, resource-leak, or error-handling defects at MEDIUM or above. The only issues are cosmetic/robustness nits.
 
 ## Findings
-
-### [LOW] mcp.go is a 1150-line god file mixing six concerns
-
-- **Where**: `httpx/mcp/mcp.go:1`
-- **Dimension**: smell
-- **Detail**: mcp.go carries the option surface (~25 ServerOption/ToolOption constructors), server lifecycle + async audit worker pool, generic tool registration and schema resolution, SDK dispatch wrapping (wrapToolHandler), reason sanitisation, and error-mapping — six distinguishable concerns in one file at 1150 lines, well past the repo's own many-small-files guidance (200-400 typical, 800 max). Audit plumbing was already split into actionlog.go, showing the intended decomposition; the rest never followed. This makes the trickiest code in the package (wrapToolHandler's audit-ordering invariants at lines 948-1065) harder to review in isolation.
-- **Suggestion**: Split along the existing seams: options.go (Server/Tool options), register.go (Register + schema resolution/validation), dispatch.go (wrapToolHandler, callHandlerSafely, mapErrorForCaller, errorResult), audit worker pool into actionlog.go.
 

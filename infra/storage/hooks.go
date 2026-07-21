@@ -342,6 +342,13 @@ func errorSeq(err error) iter.Seq2[ObjectInfo, error] {
 //
 // Go does not support dynamic interface composition, so we enumerate all
 // 2^4 = 16 combinations of {Lister, Copier, PresignedStore, PublicURLer}.
+//
+// Intentional deferral (review-18): retry/ and circuitbreaker/ triplicates this
+// combinator table. A shared generated-style forwarder would remove ~700 lines
+// but must not silently drop capability assertions across decorators — park
+// until a code-gen or single internal combinator package can be introduced
+// with compile-time tests that every optional interface is forwarded.
+
 // This is verbose but type-safe: callers can assert on e.g. Lister and
 // get the correct answer without runtime reflection.
 //

@@ -7,4 +7,9 @@
 //
 // All operations are instrumented with Prometheus metrics and OpenTelemetry
 // traces.
+//
+// Listing is intentionally unsupported: this package does not implement
+// [storage.Lister]. Type-asserting Lister against a gcsbackend.Backend
+// returns false. Use s3backend, sftpbackend, localbackend, or membackend
+// when object listing is required (see docs/ai/storage.md capability matrix).
 package gcsbackend

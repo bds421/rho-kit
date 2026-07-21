@@ -347,9 +347,9 @@ func waitForLimiterRunStarted(t *testing.T, rl *Limiter) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		rl.startMu.Lock()
-		started := rl.started
-		rl.startMu.Unlock()
+		rl.life.mu.Lock()
+		started := rl.life.started
+		rl.life.mu.Unlock()
 		if started {
 			return
 		}

@@ -26,7 +26,9 @@ func parseSrc(t *testing.T, name, src string) (*token.FileSet, *ast.File) {
 // temp-dir go.mod files are resolved freshly rather than from a sibling
 // test's lookup.
 func resetExemptionCache() {
+	packageCacheMu.Lock()
 	packageCache = map[string]string{}
+	packageCacheMu.Unlock()
 }
 
 func ruleNames(findings []Finding) map[string]int {

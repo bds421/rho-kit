@@ -21,6 +21,31 @@ Use the `infra/storage` package whenever a service needs to store, retrieve, or 
 | Local development only | `localbackend` |
 | Unit tests | `membackend` |
 
+### Optional capability matrix
+
+Not every backend implements every optional `storage.*` interface. Type-assert
+before use; missing capabilities return `ok == false` rather than an error.
+
+| Capability | s3 | gcs | azure | sftp | local | mem |
+|---|---|---|---|---|---|---|
+| `storage.Storage` (Put/Get/Delete/Exists) | yes | yes | yes | yes | yes | yes |
+| `storage.Lister` | yes | **no** | **no** | yes | yes | yes |
+| `storage.Copier` | yes | yes | yes | no* | yes | yes |
+| `storage.PresignedStore` | yes | no | no | no | no | no |
+| `storage.PublicURLer` | yes | yes | yes | no | no | no |
+| Multipart upload (`AsMultipartUploader`) | yes | no | no | no | no | no |
+
+* SFTP may implement server-side copy when the remote supports it; check the
+package docs. GCS and Azure deliberately omit `Lister` today — there is no
+silent fallback. If you need listing across providers, gate behind a compile-
+time/backend check or wrap only backends that implement `storage.Lister`.
+
+Atomic Put note: `localbackend` stages writes as `.tmp-<suffix>` basenames;
+`sftpbackend` stages as `<key>.tmp-<16hex>`. `ValidateKey` rejects caller keys
+whose path segment starts with `.tmp-`. Both backends filter their staging-name
+patterns out of `List` so in-flight or crash-orphaned temps never surface as
+objects.
+
 S3, GCS, Azure Blob Storage, and SFTP backends expose matching Prometheus
 operation-duration and operation-error metrics with `storage_instance` and
 `operation` labels. (`storage_instance` avoids colliding with Prometheus's

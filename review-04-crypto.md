@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 2 |
-| **Total (deduplicated)** | **2** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -44,18 +44,4 @@
 > This is unusually careful, security-conscious code: envelope format versioning, AAD domain separation, TOCTOU-safe Wrap/KeyID contracts, constant-time comparisons, fail-closed decryption, and thorough keyID validation across all four KMS adapters. The provider rotation goroutines (paseto) handle context cancellation, shutdown races, and stale-key windows well. The one real concurrency defect is V4Local, which was not given the keyMu guard its sibling V4PublicSigner has; the remaining findings are hardening/hygiene gaps rather than exploitable flaws.
 
 ## Findings
-
-### [LOW] KEK adapter constructors and observability diverge: only awskms has Options and Prometheus metrics
-
-- **Where**: `crypto/envelope/gcpkms/gcpkms.go:94`
-- **Dimension**: api-design
-- **Detail**: awskms.NewKEK takes `opts ...Option` and ships a Metrics type recording every KMS error to a request_errors_total counter (awskms/metrics.go), while gcpkms.NewKEK (line 94), azurekeyvault.NewKEK, and vaulttransit.NewKEK take no options and record no metrics at all, despite their errors.go files claiming behavioral parity with awskms. Failure scenario: an operator who standardizes dashboards/alerts on awskms_request_errors_total migrates a service to GCP KMS or Key Vault and silently loses all KMS-error observability; separately, the constructor signature difference means adding options to the other adapters later is a breaking-ish churn for wrapper code that abstracts over the four adapters.
-- **Suggestion**: Add the same variadic Option + Metrics pattern (or a shared envelope-level metrics hook) to gcpkms, azurekeyvault, and vaulttransit so the four adapters have uniform constructor shapes and error observability.
-
-### [LOW] Provider and SigningProvider duplicate ~200 lines of refresh/lifecycle machinery
-
-- **Where**: `crypto/paseto/signing_provider.go:49`
-- **Dimension**: smell
-- **Detail**: SigningProvider (signing_provider.go) is a near-verbatim copy of Provider (provider.go): identical field sets (stop/done/stopOnce/rootCtx/rootCancel/fetchTimeout/maxStale/clock), identical loop() including the FR-046 comment, identical callOnRefreshError with panic-recover, parallel option sets (WithFetchTimeout/WithSigningFetchTimeout, WithMaxStale/WithSigningMaxStale, etc.), and structurally identical Verify/Sign staleness gates. A future fix to the refresh/shutdown machinery (e.g. the closed-race suppression logic in loop) must be applied twice and can silently drift — the two files already differ only in the payload type and the extra signer Close in SigningProvider.Close.
-- **Suggestion**: Extract a shared unexported refresher[T any] (generic over the atomic.Pointer payload) owning loop/Close/staleness bookkeeping, with Provider and SigningProvider as thin wrappers.
 
