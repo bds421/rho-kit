@@ -31,9 +31,9 @@ type grpcScopes string
 
 // grpcTrustedS2SMarker is the value type for the trusted-service marker. Its
 // presence on the context means the request was authenticated via the mTLS
-// S2S branch of MTLSAuthUnary/MTLSAuthStream and is permitted to bypass
-// RBAC and scope checks. Absence means the request must satisfy normal
-// authorization rules. Mirrors the semantics of httpx/middleware/auth.
+// S2S branch of MTLSAuthUnary/MTLSAuthStream. It does NOT by itself bypass
+// RequirePermission/RequireScope (opt in with WithTrustedS2SBypass). Mirrors
+// the semantics of httpx/middleware/auth.
 type grpcTrustedS2SMarker struct{}
 
 var (
@@ -251,9 +251,9 @@ func UserScopes(ctx context.Context) string {
 // ([RequirePermissionUnary] / [RequireScopeUnary]) do NOT treat the
 // marker as a blanket bypass unless constructed with
 // [WithTrustedS2SBypass] — safer default against permission laundering
-// when impersonation stamps empty perms/scopes. Mirrors the marker
-// semantics of httpx/middleware/auth.IsTrustedS2S (HTTP still bypasses
-// by default; gRPC is stricter).
+// when impersonation stamps empty perms/scopes. Mirrors
+// httpx/middleware/auth.IsTrustedS2S (HTTP Require* also fail closed
+// unless WithTrustedS2SBypass).
 func IsTrustedS2S(ctx context.Context) bool {
 	_, ok := trustedS2SKey.Get(ctx)
 	return ok
@@ -279,9 +279,10 @@ type requireAuthzConfig struct {
 //
 // Without this option, [IsTrustedS2S] alone does not satisfy the check —
 // the request must carry matching permissions or scopes on context. That
-// is the safer default: mTLS impersonation currently stamps empty
-// perms/scopes, so a low-privileged user's hop through service A must not
-// automatically pass RequirePermission("admin") on service B.
+// is the safer default: mTLS impersonation alone must not launder a
+// low-privileged user into RequirePermission("admin") on service B.
+// Prefer propagating user entitlements via [AppendOutgoingIdentity] /
+// inbound metadata adoption rather than a blanket bypass.
 func WithTrustedS2SBypass() RequireAuthzOption {
 	return func(c *requireAuthzConfig) { c.bypassTrustedS2S = true }
 }
@@ -682,7 +683,12 @@ func authenticateMTLSOrJWT(
 		redact.String("client_identity", identity),
 	)
 
-	return stampIdentity(ctx, userID, identity, ActorService, nil, "", true), nil
+	// Stamp trust + subject, then adopt optional entitlement metadata
+	// forwarded by an upstream hop (x-permissions / x-scopes). Without
+	// this, RequirePermission would fail-closed on empty perms even for
+	// legitimate user-delegated S2S calls that propagated claims.
+	ctx = stampIdentity(ctx, userID, identity, ActorService, nil, "", true)
+	return AdoptIncomingIdentity(ctx), nil
 }
 
 var errImpersonationGuardPanicked = errors.New("impersonation guard panicked")

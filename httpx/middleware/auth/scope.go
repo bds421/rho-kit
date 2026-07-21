@@ -8,13 +8,13 @@ import (
 
 // RequireScope returns middleware that enforces API key scope authorization.
 // It checks scopes from the request context (set by JWT verification in
-// JWT/RequireS2SAuth).
+// JWT/RequireS2SAuth, or adopted from X-Scopes on trusted-S2S hops).
 //
 // Fail-closed semantics:
-//   - A request authenticated via the trusted-S2S mTLS branch bypasses the
-//     check (verified internal caller).
-//   - Otherwise the scopes string on context must contain the required
-//     scope. An absent or empty scopes string is rejected.
+//   - The scopes string on context must contain the required scope. An
+//     absent or empty scopes string is rejected.
+//   - [IsTrustedS2S] does NOT bypass the check unless [WithTrustedS2SBypass]
+//     is passed. Aligns with grpcx RequireScopeUnary.
 //
 // The previous "no scopes ⇒ pass through" rule was unsafe: it let any
 // caller without a scopes claim — including a misconfigured route with no
@@ -22,13 +22,14 @@ import (
 // want to coexist with cookie-session callers must be split (one handler
 // for scope-bearing API keys, one for sessions) instead of relying on this
 // middleware to silently fall through.
-func RequireScope(requiredScope string) func(http.Handler) http.Handler {
+func RequireScope(requiredScope string, opts ...RequireAuthzOption) func(http.Handler) http.Handler {
 	if requiredScope == "" {
 		panic("auth: RequireScope requires a non-empty scope name")
 	}
+	cfg := collectRequireAuthzOptions(opts)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if IsTrustedS2S(r.Context()) {
+			if cfg.bypassTrustedS2S && IsTrustedS2S(r.Context()) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -44,9 +45,9 @@ func RequireScope(requiredScope string) func(http.Handler) http.Handler {
 
 // RequireScopeStrict returns middleware that enforces scope authorization with
 // fail-closed semantics identical to [RequireScope] for absent/empty scopes
-// (both reject). The difference is that RequireScopeStrict does NOT bypass the
-// check for trusted-S2S mTLS callers — use it for machine-to-machine endpoints
-// that must only be accessible via explicit scopes, even from internal peers.
+// (both reject). The difference is that RequireScopeStrict never accepts
+// [WithTrustedS2SBypass] — use it for machine-to-machine endpoints that must
+// only be accessible via explicit scopes, even from internal peers.
 //
 // The 403 message distinguishes "scope header required" (absent/empty scopes)
 // from "insufficient scope" (scopes present but missing the required token).

@@ -8,7 +8,8 @@
 //     verified mTLS client cert with an allow-listed CN paired with an
 //     X-User-Id header approved by WithS2SImpersonationGuard. The mTLS branch
 //     is the only path that stamps the trusted-S2S marker (see "Authorization"
-//     below).
+//     below). Optional X-Permissions / X-Scopes headers are adopted so
+//     user entitlements survive trusted hops (see [AppendOutgoingIdentity]).
 //     The X-User-Id value must be a singleton identity token: no duplicate
 //     header lines, comma-combined values, whitespace, or control characters.
 //   - ChainMiddleware: tries multiple [Authenticator]s in order. When
@@ -20,23 +21,26 @@
 // RequirePermission, PermissionByMethod, and RequireScope all share a
 // fail-closed contract:
 //
-//  1. If the request carries the trusted-S2S marker (set by the mTLS
-//     branch of RequireS2SAuth), the check is bypassed.
-//  2. Otherwise the relevant claim (permissions / scopes) on context must
-//     satisfy the requirement.
-//  3. Anything else (no claim, no marker, no auth middleware in front)
-//     returns 403.
+//  1. The relevant claim (permissions / scopes) on context must satisfy
+//     the requirement. Claims come from JWT verification or from trusted
+//     S2S entitlement headers adopted on the mTLS path.
+//  2. [IsTrustedS2S] alone does NOT bypass the check unless the middleware
+//     is constructed with [WithTrustedS2SBypass] (service-level trust).
+//  3. Anything else (no claim, no matching entitlement, no auth middleware
+//     in front) returns 403.
 //
 // The historic "no permissions claim ⇒ trusted ⇒ pass through" rule was a
 // fail-open footgun: any misconfiguration that left the permissions claim
 // absent (broken JWT issuer, missing auth middleware, route mounted on
 // the wrong router) silently granted the caller full access. The marker
-// makes trust explicit: it can only be set by the verified-mTLS path, and
-// is the only thing that bypasses RBAC.
+// makes trust explicit for handlers and for opt-in bypass, but default
+// Require* still enforces user entitlements across S2S hops — matching
+// grpcx/interceptor.
 //
-// RequireScopeStrict is even stricter — the marker does NOT bypass it,
-// because the use case (force every caller to present a scope) is the
-// reason a service operator picks Strict over the regular variant.
+// RequireScopeStrict is even stricter — it never honours
+// WithTrustedS2SBypass, because the use case (force every caller to present
+// a scope) is the reason a service operator picks Strict over the regular
+// variant.
 //
 // # Test helpers
 //

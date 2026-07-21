@@ -81,15 +81,16 @@ auth.RequireS2SAuth(jwt.Provider(infra), []string{"payment-service", "order-serv
     auth.WithS2SJWTIdentity(auth.WithJWTServiceActorFromClaim("client_id")),
 )
 
-// RBAC after auth:
+// RBAC after auth (fail-closed; trusted S2S needs matching claims unless bypass):
 auth.RequirePermission("orders:write")
+auth.RequirePermission("admin:manage", auth.WithTrustedS2SBypass()) // service-level trust
 
 // Method-aware RBAC (GET=read, POST/PUT/DELETE=write):
 auth.PermissionByMethod("orders:read", "orders:write")
 
 // API key scopes:
-auth.RequireScope("api:write")       // soft — session auth passes through
-auth.RequireScopeStrict("api:write") // strict — rejects if no scopes present
+auth.RequireScope("api:write")
+auth.RequireScopeStrict("api:write") // never honours WithTrustedS2SBypass
 
 // Access identity in handler:
 subject := auth.Subject(r.Context())   // visibility / RLS UUID
@@ -119,11 +120,18 @@ to `AuthUnary` for service JWT mapping. `ActorKind` and audit formatting live in
 are normalized by `jwtutil.NormalizeSubjectID`.
 
 Outbound gRPC clients wired via `grpcx/client.NewClient` automatically propagate
-verified identity from context through `x-subject-id`, `x-actor-id`, and
-`x-actor-kind` metadata (plus legacy `x-user-id` for subject). Values are stamped
-only from auth middleware context — never forwarded from unverified inbound
-metadata. Call `interceptor.AppendOutgoingIdentity(ctx)` manually when building
-custom client chains.
+verified identity from context through `x-subject-id`, `x-actor-id`,
+`x-actor-kind`, `x-permissions`, and `x-scopes` metadata (plus legacy `x-user-id`
+for subject). Values are stamped only from auth middleware context — never
+forwarded from unverified inbound metadata. Call
+`interceptor.AppendOutgoingIdentity(ctx)` manually when building custom client
+chains. mTLS S2S admission adopts entitlement metadata so downstream
+`RequirePermission` / `RequireScope` still enforce user claims without
+`WithTrustedS2SBypass`.
+
+For HTTP S2S hops, call `auth.AppendOutgoingIdentity(ctx, req)` before dialing a
+trusted peer so `X-User-Id`, `X-Permissions`, and `X-Scopes` are forwarded;
+`RequireS2SAuth` adopts the entitlement headers on the mTLS branch.
 
 Identity-bearing headers such as `X-User-Id`, tenant headers, MCP `X-Actor-Id`,
 and approval actor headers are treated as singleton tokens: duplicate lines,

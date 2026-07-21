@@ -36,8 +36,10 @@ type permissionSet map[string]struct{}
 
 // trustedS2SMarker is the value type for the trusted-service marker. Its
 // presence on the context means the request was authenticated via the mTLS
-// S2S branch of RequireS2SAuth and is permitted to bypass RBAC and scope
-// checks. Absence means the request must satisfy normal authorization rules.
+// S2S branch of RequireS2SAuth. It does NOT by itself bypass
+// RequirePermission / RequireScope / PermissionByMethod — pass
+// [WithTrustedS2SBypass] for service-level trust. Absence means the request
+// must satisfy normal authorization rules.
 type trustedS2SMarker struct{}
 
 var (
@@ -392,12 +394,12 @@ func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provide
 // mTLS-authenticated S2S requests. Logs the impersonation for audit trail.
 //
 // The trusted-S2S marker is stamped onto the context here — and ONLY here —
-// so that downstream RBAC/scope middleware (RequirePermission,
-// PermissionByMethod, RequireScope) can distinguish a verified internal
-// caller from a request that simply happens to lack a permissions claim
-// (e.g., a JWT minted without the claim, or a route that was misconfigured
-// to not run JWT verification at all). Without the marker those middlewares
-// fail closed.
+// so that handlers and opt-in [WithTrustedS2SBypass] can distinguish a
+// verified internal caller from a request that simply lacks a permissions
+// claim. RequirePermission / RequireScope still enforce user entitlements
+// by default; optional X-Permissions / X-Scopes headers (forwarded by an
+// upstream hop via [AppendOutgoingIdentity]) are adopted into context so
+// cross-hop RBAC continues to work without a blanket bypass.
 func requireHeaderUser(w http.ResponseWriter, r *http.Request, identity string, guard func(*http.Request, string, string) error, next http.Handler) {
 	rawUserID, ok := singleHeaderValue(r.Header, "X-User-Id")
 	if !ok {
@@ -429,11 +431,14 @@ func requireHeaderUser(w http.ResponseWriter, r *http.Request, identity string, 
 		redact.String("path", httpx.RequestPath(r)),
 	)
 
+	perms, scopes := entitlementsFromHeaders(r.Header)
 	ctx := stampIdentity(r.Context(), Identity{
-		Subject:   userID,
-		Actor:     identity,
-		ActorKind: ActorService,
-		Trusted:   true,
+		Subject:     userID,
+		Actor:       identity,
+		ActorKind:   ActorService,
+		Permissions: perms,
+		Scopes:      scopes,
+		Trusted:     true,
 	})
 	next.ServeHTTP(w, r.WithContext(ctx))
 }
@@ -566,7 +571,8 @@ func Role(ctx context.Context) string {
 }
 
 // Permissions extracts the permissions list from the request context.
-// Returns nil if no permissions are available (S2S mTLS auth).
+// Returns nil if no permissions were stamped (JWT without claim, or
+// trusted-S2S without X-Permissions).
 func Permissions(ctx context.Context) []string {
 	v, _ := permissionsKey.Get(ctx)
 	return slices.Clone(v)
@@ -578,24 +584,61 @@ func Scopes(ctx context.Context) string {
 	return string(v)
 }
 
+// RequireAuthzOption configures [RequirePermission], [PermissionByMethod],
+// and [RequireScope].
+type RequireAuthzOption func(*requireAuthzConfig)
+
+type requireAuthzConfig struct {
+	// bypassTrustedS2S restores the historical short-circuit that lets a
+	// verified mTLS S2S caller pass without permissions/scopes on context.
+	// Default is false (fail closed): trusted S2S still needs matching
+	// claims, preventing permission laundering across service hops when
+	// RequireS2SAuth stamps trusted=true with empty perms/scopes.
+	bypassTrustedS2S bool
+}
+
+// WithTrustedS2SBypass opts into the historical trusted-S2S short-circuit
+// for RequirePermission / PermissionByMethod / RequireScope. Use only for
+// routes that intentionally treat an allow-listed mTLS client as full
+// authority (service-level trust), not for user-delegated entitlement checks.
+//
+// Without this option, [IsTrustedS2S] alone does not satisfy the check —
+// the request must carry matching permissions or scopes on context. Prefer
+// propagating user entitlements via [AppendOutgoingIdentity] rather than a
+// blanket bypass. Aligns with grpcx/interceptor.WithTrustedS2SBypass.
+func WithTrustedS2SBypass() RequireAuthzOption {
+	return func(c *requireAuthzConfig) { c.bypassTrustedS2S = true }
+}
+
+func collectRequireAuthzOptions(opts []RequireAuthzOption) requireAuthzConfig {
+	var cfg requireAuthzConfig
+	for _, opt := range opts {
+		if opt == nil {
+			panic("auth: Require* option must not be nil")
+		}
+		opt(&cfg)
+	}
+	return cfg
+}
+
 // RequirePermission returns middleware that checks the JWT-embedded
 // permissions for the required permission string (e.g. "general:view",
 // "users:manage").
 //
 // Fail-closed semantics:
-//   - If the trusted-S2S marker is set (request authenticated via the mTLS
-//     branch of RequireS2SAuth), the check is bypassed — internal services
-//     are trusted explicitly, by virtue of the verified client cert + CN
-//     allowlist, not by virtue of "happened to have no permissions claim".
-//   - Otherwise the request must carry a permissions set on context
-//     (typically from JWT verification) AND the set must contain the
-//     required permission. Anything else returns 403.
+//   - The request must carry a permissions set on context (typically from
+//     JWT verification or trusted-S2S entitlement headers) AND the set must
+//     contain the required permission. Anything else returns 403.
+//   - [IsTrustedS2S] does NOT bypass the check unless [WithTrustedS2SBypass]
+//     is passed. Prefer that opt-in only for service-level routes;
+//     user-delegated S2S should propagate entitlements rather than a
+//     blanket bypass.
 //
-// In particular, a request with no permissions claim and no trusted-S2S
-// marker is rejected — this prevents misconfigured routes (auth middleware
-// missing in front, JWT issued without the claim) from silently granting
-// access.
-func RequirePermission(permission string) func(http.Handler) http.Handler {
+// In particular, a request with no permissions claim is rejected — this
+// prevents misconfigured routes (auth middleware missing in front, JWT
+// issued without the claim) and permission-laundering S2S hops from
+// silently granting access.
+func RequirePermission(permission string, opts ...RequireAuthzOption) func(http.Handler) http.Handler {
 	if permission == "" {
 		// An empty permission silently allows every caller through (the
 		// permissions set never contains "" so the check fails-closed,
@@ -604,9 +647,10 @@ func RequirePermission(permission string) func(http.Handler) http.Handler {
 		// kit's "refuse to misconfigure" stance.
 		panic("auth: RequirePermission requires a non-empty permission name")
 	}
+	cfg := collectRequireAuthzOptions(opts)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if IsTrustedS2S(r.Context()) {
+			if cfg.bypassTrustedS2S && IsTrustedS2S(r.Context()) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -622,17 +666,18 @@ func RequirePermission(permission string) func(http.Handler) http.Handler {
 // PermissionByMethod returns middleware that selects the required permission
 // based on the HTTP method: readPerm for GET/HEAD/OPTIONS, writePerm
 // otherwise. Fail-closed semantics match RequirePermission — a request
-// without a permissions claim and without the trusted-S2S marker is denied.
-func PermissionByMethod(readPerm, writePerm string) func(http.Handler) http.Handler {
+// without matching permissions is denied unless [WithTrustedS2SBypass].
+func PermissionByMethod(readPerm, writePerm string, opts ...RequireAuthzOption) func(http.Handler) http.Handler {
 	if readPerm == "" {
 		panic("auth: PermissionByMethod requires a non-empty readPerm")
 	}
 	if writePerm == "" {
 		panic("auth: PermissionByMethod requires a non-empty writePerm")
 	}
+	cfg := collectRequireAuthzOptions(opts)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if IsTrustedS2S(r.Context()) {
+			if cfg.bypassTrustedS2S && IsTrustedS2S(r.Context()) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -652,9 +697,10 @@ func PermissionByMethod(readPerm, writePerm string) func(http.Handler) http.Hand
 
 // IsTrustedS2S reports whether ctx carries the trusted service-to-service
 // marker. The marker is set only by RequireS2SAuth's mTLS branch after a
-// fully verified client certificate with an allow-listed CN. Handlers and
-// middleware can use this to grant trust to verified internal callers
-// without conflating it with the absence of a permissions claim.
+// fully verified client certificate with an allow-listed CN. Handlers can
+// use this to detect verified internal callers. Authorization middleware
+// does NOT treat the marker as a blanket bypass unless constructed with
+// [WithTrustedS2SBypass].
 func IsTrustedS2S(ctx context.Context) bool {
 	_, ok := trustedS2SKey.Get(ctx)
 	return ok

@@ -57,10 +57,10 @@ type Identity struct {
 	// [Identity.Normalize].
 	ScopeList []string
 	Scopes    string
-	// Trusted, when true, stamps the trusted-S2S marker that lets
-	// downstream RBAC / scope middleware accept the request
-	// without an explicit permissions claim. Mirror of the existing
-	// RequireS2SAuth marker — use sparingly.
+	// Trusted, when true, stamps the trusted-S2S marker (verified mTLS
+	// S2S). Default RequirePermission / RequireScope still require matching
+	// claims; pass WithTrustedS2SBypass for service-level trust. Mirror of
+	// the RequireS2SAuth marker — use sparingly.
 	Trusted bool
 }
 
@@ -516,5 +516,3 @@ func looksLikeSessionToken(token string) bool {
 	parts := strings.Split(token, ".")
 	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
 }
-
-
