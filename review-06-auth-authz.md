@@ -1,0 +1,95 @@
+# Code review: OAuth2 & AuthZ (stage 1 — unverified findings)
+
+## Scope
+
+- **Directories**: auth/, authz/
+- **Git ref**: main @ 9c370ea2 (v2.3.1 prep)
+- **Review lens results**: 15 (lenses inferred: correctness, design, security; expected lens count: 3)
+- Status: raw reviewer findings; adversarial verification (stage 2) pending.
+
+## Summary
+
+| Severity | Count |
+|---|---|
+| CRITICAL | 0 |
+| HIGH | 0 |
+| MEDIUM | 0 |
+| LOW | 6 |
+| **Total (deduplicated)** | **6** |
+
+**Reviewer impressions:**
+
+> This scope is well above average quality: small focused files, defensive validation everywhere (fail-closed PKCE and authz validation, panic recovery around deciders, redaction discipline), internally synchronized secret handling, and comments that record past hostile-review fixes. The correctness issues that remain are edge-case rather than systemic — non-atomic single-use state, swallowed Delete errors on security-relevant paths, aliasing between the in-memory session store and handed-out Sessions, and one constructor that panics where it should return an error. No data races or deadlocks were found; mutex usage in the memory stores and the scope registry is correct.
+
+> This scope is unusually security-conscious: extensive redaction of tokens/PII in logs and errors, fail-closed input validation in authz (ValidateRequest rejects empty/overlong/non-UTF8/control input and wraps ErrDenied), robust open-redirect defenses in safeRelativeRedirect, crypto/rand tokens, PKCE-on-by-default with a fail-closed public-client guard, and hardened outbound OpenFGA TLS/redirect handling. The one material gap is that the OAuth2 login flow's CSRF state is stored only server-side and is never bound to the initiating browser, so its documented login-CSRF/session-fixation protection does not actually hold; the remaining items are low-severity consistency gaps.
+
+> This scope is well above average: defensive validation everywhere (fail-closed authz triples, open-redirect screening, TLS floors, redaction discipline), thorough godoc with rationale comments, and strong test coverage including adversarial cases. The real weaknesses are contract/documentation drift rather than logic bugs — doc.go promises refresh and client-credentials flows that were never built, exported types and struct fields are dead, and a few error paths (claims-decode reflection, state-store outage handling, TLS panic in New) break the otherwise consistent conventions the packages set for themselves. The oauth2 package also lacks the read-side API (session-from-request) that would make it a complete, misuse-resistant unit.
+
+> This scope is well above average quality: small focused files, defensive nil/validation checks everywhere, fail-closed defaults (PKCE mandatory for public clients, deny on nil OpenFGA response, TLS floors), correct mutex usage in every store, and unusually candid documentation of past review findings. The issues found are edge-case rather than systemic: the main correctness gaps are the non-atomic single-use state consumption in the OAuth2 callback, aliased secret zeroization in the in-memory session store, and a few swallowed errors (logout/session persistence) plus contract drift between docs and behavior (RefreshToken nilness, advertised-but-absent refresh flow, silently skipped OpenFGA transport hardening). No CRITICAL or HIGH defects were identified.
+
+> This is unusually careful, security-literate code: PKCE-by-default with a fail-closed public-client check, single-use state deleted before exchange, redacted logging across trust boundaries, TLS floors and redirect-blocking on the OpenFGA client, and thorough table-driven tests for the tricky paths (open-redirect variants, error-reflection, TLS clone semantics). The weaknesses are lifecycle and contract gaps rather than sloppiness: the oauth2 package polishes the login half but ships no API to consume the session it creates, its package doc promises refresh and client-credentials flows that do not exist, and a few documented contracts (RefreshToken nil-ness, "any prefix" mounting, New-returns-error) diverge from the implementation. The authz core and audit decorator are small, cohesive, and idiomatic with only cosmetic issues.
+
+> This scope is unusually security-conscious and well-documented: fail-closed authz validation, redacted logging, TLS floor + redirect blocking + InsecureSkipVerify rejection in the OpenFGA adapter, careful open-redirect handling, and PKCE-required-for-public-clients enforcement all reflect prior hostile-review hardening. The one material gap is that the OAuth2 login flow's state/nonce CSRF guard is not bound to the initiating browser (no state cookie), which undermines its stated login-CSRF protection. The remaining items are minor consistency/hygiene gaps.
+
+> This scope is clearly security-conscious, well above average: PKCE on by default with fail-closed validation for public clients, careful open-redirect screening (including encoded and backslash scheme-relative forms), redacted logging with opaque client-facing sentinels, zeroized secrets in the memory stores, and an OpenFGA adapter with TLS floors, redirect blocking, and header validation. The authz core is small, fail-closed, and consistently audited. The one significant gap is architectural: the OAuth2 state token lives only in a shared server-side store with no per-browser binding, so the login-CSRF protection the package documents does not actually hold; the remaining findings are edge-case hardening inconsistencies rather than systemic problems.
+
+> This is defensively written, unusually well-documented code: options validate eagerly, security-sensitive paths (redirect validation, state/nonce handling, TLS floors, redaction) are handled with visible care, and test files exist for every source file. The main weaknesses are drift between documentation and implementation — the oauth2 package doc advertises refresh and client-credentials flows that do not exist, Handlers() hardcodes a mount prefix it claims is flexible, and the SessionStore zeroize contract conflicts with its own pointer-sharing Session type — plus a few inconsistent failure strategies (panic vs error in openfga.New, one un-redacted error path in the callback). Nothing rises to a production-breaking bug in the common path; most findings are API-contract and misuse-resistance polish.
+
+> This scope is unusually defensive and well-documented for its size: fail-closed validation everywhere, PKCE-by-default with a guard against secret-less WithoutPKCE, redaction discipline at trust boundaries, panic containment in the authz Allow helper, and mutex use in the memory stores is correct with no data races found. The real issues are second-order lifecycle and atomicity gaps — the retained go-oidc context that breaks JWKS refresh after cancellation, the non-atomic single-use-state consume, and zeroization of secret pointers still shared with callers — plus a few spots where documented guarantees (RefreshToken nil-ness, transport hardening, refresh support) drift from what the code actually does. The authz core and OpenFGA adapter are clean under the correctness/concurrency lens.
+
+> This is a small, mature, security-conscious scope: the OpenFGA adapter hardens outbound TLS, caps response headers, blocks redirects, validates header injection, and redacts credentials in logs; authz fails closed on nil deciders, panics, and malformed input; the oauth2 client uses crypto/rand tokens, PKCE by default, single-use state, nonce checks, and a solid origin-relative open-redirect guard with redaction throughout. The one material issue is that the OAuth `state` is stored only server-side and never bound to the initiating browser, leaving the documented CSRF protection incomplete (login CSRF / session fixation); everything else is polish-level.
+
+> This scope is high quality and unusually defensively coded: the authz package fails closed on malformed/oversized/non-UTF8 triples, wraps decider panics, and validates consistently; the OpenFGA adapter carefully clones and hardens caller-supplied HTTP clients (TLS floor, redirect blocking, header validation) without mutating them; and the OAuth2 handlers redact provider-influenced content and screen redirect_to against open-redirect at both login and callback. The main correctness/concurrency weakness is the in-memory SessionStore's zeroize-on-eviction interacting with returned shared secret pointers; the remaining findings are low-impact edge cases (non-atomic state single-use, one inconsistent error reflection).
+
+> This is unusually careful, security-conscious code: the OAuth2 client leans on audited libraries for the crypto-critical steps, fails closed on public-client-without-PKCE, redacts attacker-influenced values, and re-validates redirect targets defensively; the authz layer has a clean vendor-neutral Decider seam with thorough input validation, panic recovery, and a well-designed audit envelope. Most exported items carry rich, accurate godoc. The main weaknesses are ergonomic/design rather than correctness: a shared-pointer aliasing footgun in the in-memory session store's zeroize-on-delete, a hardcoded mount prefix coupled to the free-form RedirectURL, and a few minor taxonomy/doc inconsistencies.
+
+> This scope is unusually well-hardened for a security review: input validation fails closed, secrets are wrapped/zeroized, errors are redacted at trust boundaries, TLS/redirect/SSRF postures on the OpenFGA client are strong, and open-redirect handling for redirect_to is thorough. The one material concern is that the OAuth2 login flow stores CSRF `state` only server-side without binding it to the initiating browser, which leaves the documented login-CSRF/session-swap protection unmet; the remaining items are minor consistency/defense-in-depth gaps.
+
+> This scope is generally high quality: the code is small, well-factored into focused files, carries unusually thorough security-rationale godoc, and shows evidence of prior adversarial review (redacted logging, fail-closed validation, TLS/redirect hardening in the OpenFGA adapter, secret zeroization). The most significant issue is that the OAuth2 client's documented CSRF protection is not actually enforced — `state` is stored server-side but never bound to the requesting browser, leaving the classic login-CSRF/session-fixation gap open. The remaining findings are minor consistency, dead-code, and ergonomics polish.
+
+> This scope is unusually well-hardened for correctness and concurrency: the memory stores are correctly mutex-guarded, error wrapping/errors.Is ordering in authz is careful, panic recovery in Allow is sound, and the openfga adapter defensively clones/hardens HTTP clients. The redirect-safety and secret-redaction plumbing is thorough. The one material gap is that the OAuth2 login flow's CSRF state is never bound to the initiating browser, so the documented login-CSRF protection is not actually enforced; the remaining items are lower-severity aliasing/lifetime issues around shared secret pointers in the in-memory session store.
+
+## Findings
+
+### [LOW] Memory stores do a full O(n) map sweep under a Mutex on every Put, and Get takes a full write Lock
+
+- **Where**: `auth/oauth2/memory_stores.go:34`
+- **Dimension**: performance
+- **Detail**: Put (line 34) iterates the entire sessions map on every call while holding a plain sync.Mutex, so each login is O(n) in the number of live sessions and serializes with all other operations. Get (lines 52-53) also acquires the exclusive Lock (not an RLock) because it may delete an expired entry, so concurrent reads cannot proceed in parallel. For the documented 'single-process service' this is acceptable, but under a burst of concurrent logins/reads it becomes avoidable lock contention and O(n) work per Put.
+- **Suggestion**: Track expirations with a heap/time-ordered structure or a periodic background sweep, and use RWMutex with an RLock fast path in Get that upgrades only when an expired entry must be removed.
+
+### [LOW] Unauthenticated GET /login writes unbounded live entries into the StateStore
+
+- **Where**: `auth/oauth2/memory_stores.go:110`
+- **Dimension**: performance
+- **Detail**: handleLogin (client.go:310) persists a StateEntry on every unauthenticated GET /oauth/login, and MemoryStateStore.Put only sweeps entries whose TTL has already elapsed — there is no cap on live entries. With the default 10-minute stateTTL, a client (or a crawler prefetching login links) issuing requests at even 1k/s accumulates ~600k live map entries (~100+ MB with keys and StateEntry strings) before the sweep can reclaim anything, growing single-process deployments' memory unboundedly during the window. The godoc says the store is for "tests and single-process services", but single-process services are exactly the stated production use.
+- **Suggestion**: Add a configurable max-entries bound to MemoryStateStore (rejecting or evicting-oldest beyond it), or document that /login must sit behind rate limiting when the memory store is used.
+
+### [LOW] A panicking AuditSink (or slog handler) crashes every authorization decision despite Logged's panic-containment posture
+
+- **Where**: `authz/audit.go:173`
+- **Dimension**: error-handling
+- **Detail**: loggedDecider.Allow deliberately routes the inner decider through the recovering authz.Allow helper (Wave 72 comment, line 142-148) so decider panics become ErrDeciderPanic — but the subsequent `d.cfg.emit` call invokes the caller-supplied sink (line 173) and logger with no recovery. Failure scenario: an AuditSinkFunc adapting an audit pipeline panics on a malformed event or a nil dependency; every Allow call — including ones the engine allowed — panics out of the authorization layer, converting an observability bug into request-serving crashes, which is exactly the class Wave 72 set out to contain.
+- **Suggestion**: Wrap emit (or at least the sink call) in a recover that logs the sink panic, keeping the decision result intact.
+
+### [LOW] Caller HTTP clients with a non-*http.Transport RoundTripper silently skip the advertised TLS floor
+
+- **Where**: `authz/openfga/openfga.go:207`
+- **Dimension**: security
+- **Detail**: openFGAHTTPClient hardens TLS (minimum TLS 1.2, InsecureSkipVerify rejection) only for the default transport (line 201-206) or when the caller's Transport type-asserts to *http.Transport (line 207-214). If a caller supplies an *http.Client whose Transport is a custom RoundTripper (a common pattern for tracing/mTLS wrappers), neither branch runs, so the kit's advertised TLS floor and response-header cap are silently not applied — only CheckRedirect is set. The Config docstring (FR-037) tells operators custom clients are 'shallow-copied and hardened', which does not hold for wrapped transports.
+- **Suggestion**: Document that TLS hardening only applies to *http.Transport-based clients, or detect a non-*http.Transport RoundTripper and either refuse it or wrap/validate it so the guarantee holds.
+
+### [LOW] Scope doc overclaims compile-time enforcement; registry is a global singleton
+
+- **Where**: `authz/scope.go:27`
+- **Dimension**: api-design
+- **Detail**: The Scope godoc says 'the compiler enforces that you used a real registered scope and not a typo of one' — but Scope is a plain string type, so authz.Scope("users.raed") or an unregistered constant converts freely and passes any Scope-typed parameter; only a runtime IsRegistered check (which middleware is not shown to perform) could catch a typo. Additionally, registration state lives in the process-global globalScopes with only an unexported resetScopesForTest, so external test packages and multi-tenant binaries cannot isolate or reset catalogues. Failure scenario: a developer relies on the documented compiler guarantee, passes a typo'd Scope literal to middleware, and the OpenAPI spec silently omits the scope while requests are gated on a nonexistent one.
+- **Suggestion**: Soften the doc to describe the convention accurately (constants created via MustRegister), and consider an instance-based Registry with the global as a default.
+
+### [LOW] Scope registry is a process-global singleton with no exported reset or instance form
+
+- **Where**: `authz/scope.go:40`
+- **Dimension**: api-design
+- **Detail**: globalScopes is package-global mutable state: two independent libraries in one binary that MustRegister the same scope name with different descriptions panic at init with no recourse, and RegisteredScopes() mixes every module's scopes into one OpenAPI catalogue with no way to partition per service. resetScopesForTest is unexported, so external packages' tests that exercise Register cannot isolate state between test cases the way this package's own tests can.
+- **Suggestion**: Offer an instantiable Registry type (with the package-level functions delegating to a default instance) so multi-service binaries and external tests can scope the catalogue.
+

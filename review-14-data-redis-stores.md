@@ -1,0 +1,54 @@
+# Code review: Redis data stores (stage 1 — unverified findings)
+
+## Scope
+
+- **Directories**: data/budget/redis, data/cache/rediscache, data/idempotency/redisstore, data/lock/redislock, data/ratelimit/redis
+- **Git ref**: main @ 9c370ea2 (v2.3.1 prep)
+- **Review lens results**: 12 (lenses inferred: correctness, design, security; expected lens count: 3)
+- Status: raw reviewer findings; adversarial verification (stage 2) pending.
+
+## Summary
+
+| Severity | Count |
+|---|---|
+| CRITICAL | 0 |
+| HIGH | 0 |
+| MEDIUM | 0 |
+| LOW | 1 |
+| **Total (deduplicated)** | **1** |
+
+**Reviewer impressions:**
+
+> This is unusually defensive, audit-hardened code: every backend validates keys/prefixes against a shared contract, all Redis mutations that need atomicity are single Lua scripts with explicit overflow and TOCTOU reasoning, tokens come from crypto/rand, errors and log fields are systematically redacted, and read paths guard against hostile co-tenant values (STRLEN pre-checks, size caps, script-result shape validation). Lock safety follows the standard redsync token-fenced release/extend model and TTL semantics were verified correct for both GCRA and fixed-window budgets. The surviving findings are design-edge issues — a fail-open degraded SetNX, non-injective prefix concatenation, and inconsistent namespacing between backends — rather than exploitable flaws in the core paths.
+
+> This is unusually careful code for the space: every Redis mutation that needs atomicity goes through a Lua script with correct compare-then-act semantics, TTL math is overflow- and rounding-aware, key prefixes are validated against injection/inflation, and read paths defend against hostile co-tenant values (STRLEN pre-checks, size caps, result-shape validation). The findings are mostly edge-case correctness gaps — cross-window refund misattribution in the budget backend, degraded-mode SetNX fabricating success, and an unsynchronized lock-handle release flag — rather than systemic flaws. Documentation of tradeoffs (TOCTOU windows, non-atomic pipelines, maxWait absorption) is exemplary, though a couple of those documented behaviors are still traps for interface-level callers who never see the comments.
+
+> This is unusually careful, well-documented Redis adapter code: Lua scripts are genuinely atomic with thoughtful overflow/precision handling (the GCRA %.0f TAT formatting and the budget headroom pre-check are both correct and well-commented), key prefixes are validated defensively, TTLs are rounded conservatively, and read paths are hardened against hostile co-tenant writes. The real weaknesses are structural rather than algorithmic: the redlock subpackage is a near-verbatim ~200-line copy of redislock inside the same module (and already shares a latent release defect with it), the degraded/fallback wrappers can fabricate success for CAS-style operations, and the STRLEN-then-GET hardening pattern trades one round trip and a TOCTOU branch for what a single Lua script would do atomically.
+
+> This is unusually careful, production-grade code: Lua scripts are genuinely atomic with documented overflow guards (Lua 2^53 caps, %.0f TAT serialisation), TTLs are ceil-rounded and construction-checked against period, releases are token-fenced via redsync with a well-thought-out lost-lock error taxonomy, and key/prefix validation plus STRLEN-before-GET allocation caps show real hostile-input thinking; test coverage of the tricky paths (refund clamping, oversize TOCTOU, maxWait, double release) is strong. The main weaknesses are structural rather than correctness: near-total duplication between redislock and redlock that is already drifting, a degraded-mode SetNX that fabricates exclusivity, a default cache configuration that doubles read round trips, and several small cross-package API inconsistencies (error sentinels, key hygiene, constructor style).
+
+> This is unusually careful Redis-adapter code: all mutation paths are single atomic Lua scripts with overflow-aware arithmetic, releases and set-if-locked are properly fenced by owner token/value, TTLs are rounded conservatively with mid-window-eviction guards, and error classification (contention vs lock-lost vs unavailability) is thoughtfully separated with extensive rationale comments. The defects found are concentrated at the edges rather than in the core algorithms: the lock handles' terminal-on-any-failure release semantics turn transient network errors into unretryable, misreported ErrLockLost, and the degraded-cache SetNX fabricates exclusivity during outages. Nothing indicates data corruption or a broken atomicity invariant.
+
+> This is unusually defensive, well-audited code: every Redis mutation that needs atomicity is a Lua script with inputs passed via KEYS/ARGV (no injection surface), lock tokens come from crypto/rand with owner-fenced release/extend, value reads are size-capped with STRLEN pre-checks plus TOCTOU re-checks, keys and prefixes are validated, and logs/errors go through a redaction layer. The findings that remain are configuration-edge issues — a fail-open SetNX in the degraded cache wrapper, a TTL floor that does not cover the rounded GCRA debt horizon, and delimiter/validation inconsistencies — rather than core protocol flaws. Documentation quality (contracts, trade-offs, audit references) is exceptional for this scope.
+
+> This Redis data-store family is unusually well-hardened: every Lua CAS is a single atomic script, keys/prefixes are validated for control bytes and length, value sizes are capped with STRLEN-before-GET plus post-GET TOCTOU rechecks, Redis errors are consistently redacted before wrapping/logging, and lock release/extend correctly key on the owner token with failures biased toward the safe (lock-held) direction. Tenant isolation is delegated to caller-supplied keys, which is a reasonable contract for these generic primitives. The only security-relevant gaps I found are the fail-open SetNX under the default degradation policy and non-constant-time owner-token comparison; neither is a slam-dunk exploit, and I found no injection, atomicity, or TTL-correctness defects.
+
+> This family is unusually well-engineered: the Lua scripts are genuinely atomic and deliberately overflow-safe, key/prefix and TTL validation is thorough, token-fenced lock release is correctly delegated to redsync's Lua, and the read-side size caps (STRLEN-before-GET with TOCTOU re-checks) show real attention to hostile/multi-tenant Redis. I found no correctness or data-loss defects in the atomicity, tenant-namespacing, TTL, or release-by-owner logic. The remaining issues are consistency and ergonomics: cross-package code duplication between redislock and redlock, an over-optimistic Redlock safety doc that contradicts its honest single-instance sibling, and a few minor API-consistency and documentation nits.
+
+> This family is unusually high-quality and defensively engineered: Lua scripts implement genuinely atomic test-and-set/compare-and-swap idioms, key namespacing and prefix validation are careful, TTL rounding is correct, lock release/extend are token-fenced through redsync, and context cancellation vs dependency-unavailability is classified thoughtfully. The main real defects are a pair of missed Lua-number serialization workarounds in the budget script (INCRBY amount and refund SET) that the ratelimit script already documents and handles, which break or corrupt large-denomination budgets (>= 10^14). Remaining findings are a Get/TryLock inconsistency on unparseable foreign values and a cosmetic double-wrapped error.
+
+> This is high-quality, unusually well-documented code: the Lua scripts are genuinely atomic, key prefixes and lock keys are validated against control bytes and length caps, TTL rounding is careful, and the fingerprint absent-vs-empty encoding and TOCTOU size guards show real rigor. The main weaknesses are API-ergonomics/misuse-resistance edges (degraded SetNX silently breaking compute-once, Refund targeting the wrong period after a window boundary) and maintainability (substantial verbatim duplication between the single-instance and quorum lockers). No exploitable security flaw or data-corruption bug was found in the core paths.
+
+> This is a mature, security-conscious scope: every Lua script is a constant string with all dynamic data passed via KEYS/ARGV (no Redis/Lua injection), cap/overflow and TTL-floor edge cases are handled explicitly, owner tokens come from crypto/rand, keys/prefixes are length- and charset-validated, and errors are redacted before logging or tracing (keys deliberately excluded from spans). The main residual weaknesses are fail-open behavior in the degraded-cache passthrough path (fabricated SetNX/Exists results) and default key prefixes that invite namespace collisions if callers rely on defaults; both are documented but rely on opt-in safety.
+
+> This Redis-data-store family is high-quality, defense-in-depth code: Consume/GCRA/idempotency mutations are genuinely atomic single Lua scripts, keys and prefixes are strictly validated, TTLs are ceil-rounded so sub-second windows survive EX/PX, oversize values are STRLEN-gated with post-GET TOCTOU rechecks, and lock release/extend correctly delegate token-fenced ownership to redsync. Correctness bugs are scarce and mostly live at the seams — degradation fallbacks and window-boundary edge cases — rather than in the core atomic paths. The main residual risks are the fail-open SetNX during degradation and the current-period assumption in budget Refund.
+
+## Findings
+
+### [LOW] Set and Unlock each cost three round trips (STRLEN, GET, EVALSHA) that one Lua script could do
+
+- **Where**: `data/idempotency/redisstore/store.go:425`
+- **Dimension**: performance
+- **Detail**: doSet reads the lock value back (guarded by a separate STRLEN call) purely to recover the fingerprint, then runs setIfLockedScript — 3 RTTs per cached-response write. doUnlock (lines 500–528) has the same STRLEN+GET+EVAL shape, and doGet pays STRLEN+GET (2 RTTs) on every idempotency check, i.e. on every idempotent request in steady state. The lock-value format ("lock:token:fp") is trivially parseable in Lua with string.sub/string.find, so a single script could verify token ownership, extract the fingerprint, enforce the size cap, and swap in the envelope in one atomic round trip — also removing the read-then-script window the current code has to re-verify inside the script.
+- **Suggestion**: Fold the size guard and lock-value decoding into the Lua scripts so Get is 1 RTT and Set/Unlock are 1 RTT each.
+
