@@ -3,6 +3,7 @@ package grpcx
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -69,4 +70,13 @@ func TestWithStreamInterceptorsClonesInput(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, []string{"original"}, calls)
+}
+
+func TestDefaultEnforcementMinTimeBelowClientKeepalive(t *testing.T) {
+	// Pin the server MinTime default strictly below the paired client
+	// keepalive Time (30s). Equal clocks + jitter risk GOAWAY too_many_pings
+	// when MinTime == client Time.
+	ep := defaultEnforcementPolicy()
+	require.Equal(t, 20*time.Second, ep.MinTime,
+		"server default MinTime must stay at 20s (client default Time is 30s)")
 }

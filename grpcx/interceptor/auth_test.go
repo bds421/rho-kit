@@ -1119,10 +1119,11 @@ func TestMTLSAuthStream_MTLSPath_Success(t *testing.T) {
 // TestMTLSAuthUnary_MTLSPath_TrustedS2SBypassesPermissionCheck composes the
 // real mTLS branch with RequirePermissionUnary to verify, in the DEFAULT
 // build (no authtest tag), that an mTLS-admitted caller with no permissions
-// claim is granted by the trusted-S2S bypass. This exercises the production
+// claim is DENIED by default (no permission laundering) and only granted
+// when WithTrustedS2SBypass is opted in. This exercises the production
 // path that stamps the marker rather than the authtest-only WithTrustedS2S
 // shortcut.
-func TestMTLSAuthUnary_MTLSPath_TrustedS2SBypassesPermissionCheck(t *testing.T) {
+func TestMTLSAuthUnary_MTLSPath_TrustedS2SDoesNotBypassByDefault(t *testing.T) {
 	provider, _ := testKeyAndProvider(t)
 
 	auth := interceptor.MTLSAuthUnary(provider,
@@ -1141,6 +1142,37 @@ func TestMTLSAuthUnary_MTLSPath_TrustedS2SBypassesPermissionCheck(t *testing.T) 
 		return "ok", nil
 	}
 	// auth (outer) -> requirePerm (inner) mirrors the kit chain ordering.
+	_, err := auth(
+		mtlsIncomingContext(cert),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			return requirePerm(ctx, req, noopUnaryInfo, handler)
+		},
+	)
+	require.Error(t, err)
+	assert.False(t, called,
+		"default RequirePermission must not pass on trusted-S2S alone (permission laundering)")
+}
+
+func TestMTLSAuthUnary_MTLSPath_TrustedS2SBypassOptIn(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+
+	auth := interceptor.MTLSAuthUnary(provider,
+		interceptor.WithAllowedCNs("svc-a"),
+		allowS2SImpersonationForTest(),
+	)
+	requirePerm := interceptor.RequirePermissionUnary("admin", interceptor.WithTrustedS2SBypass())
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "svc-a"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	called := false
+	handler := func(context.Context, any) (any, error) {
+		called = true
+		return "ok", nil
+	}
 	resp, err := auth(
 		mtlsIncomingContext(cert),
 		nil,
@@ -1151,8 +1183,7 @@ func TestMTLSAuthUnary_MTLSPath_TrustedS2SBypassesPermissionCheck(t *testing.T) 
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "ok", resp)
-	assert.True(t, called,
-		"trusted-S2S marker from the mTLS branch must satisfy RequirePermission without a perms claim")
+	assert.True(t, called)
 }
 
 func TestUserPermissions_ReturnsClone(t *testing.T) {

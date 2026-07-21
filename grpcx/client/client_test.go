@@ -3,7 +3,9 @@ package client_test
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -370,4 +372,18 @@ func TestNewClient_MetricsRegistererIsolation(t *testing.T) {
 	if !found {
 		t.Fatalf("grpc_client_handled_total not registered on custom registry")
 	}
+}
+
+func TestWithRetry_InvalidPolicyPanicsAtConstruction(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected WithRetry(zero Policy) to panic at construction")
+		}
+		msg := fmt.Sprint(r)
+		if !strings.Contains(msg, "WithRetry") {
+			t.Fatalf("panic should mention WithRetry: %v", r)
+		}
+	}()
+	_ = client.WithRetry(retry.Policy{}) // zero BaseDelay fails Validate
 }

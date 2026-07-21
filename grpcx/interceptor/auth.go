@@ -177,7 +177,7 @@ const (
 	bearerTokenPresent
 )
 
-const maxBearerTokenLen = 8 * 1024
+const maxBearerTokenLen = 16 * 1024 // match security/jwtutil maxJWTLen
 
 // parseBearerToken reads a singleton "authorization" metadata value and
 // strips the "Bearer " prefix. Multiple metadata values are rejected because
@@ -223,8 +223,9 @@ func validBearerToken(token string) bool {
 	return true
 }
 
-// UserID extracts the subject UUID from the gRPC request context. Deprecated:
-// use [Subject]; reads the legacy user_id key or subject key.
+// UserID extracts the subject UUID from the gRPC request context.
+//
+// Deprecated: use [Subject]; reads the legacy user_id key or subject key.
 func UserID(ctx context.Context) string {
 	v, _ := userIDKey.Get(ctx)
 	return string(v)
@@ -245,42 +246,84 @@ func UserScopes(ctx context.Context) string {
 // IsTrustedS2S reports whether ctx carries the trusted service-to-service
 // marker. The marker is set only by MTLSAuthUnary/MTLSAuthStream's mTLS
 // branch after a fully verified client certificate with an allow-listed
-// SAN URI/DNS or (legacy) CN identity. Handlers and authorization
-// interceptors can use this to grant trust to verified internal callers
-// without conflating it with the absence of a permissions claim. Mirrors
-// the semantics of httpx/middleware/auth.IsTrustedS2S.
+// SAN URI/DNS or (legacy) CN identity. Handlers can use this to detect
+// verified internal callers. Authorization interceptors
+// ([RequirePermissionUnary] / [RequireScopeUnary]) do NOT treat the
+// marker as a blanket bypass unless constructed with
+// [WithTrustedS2SBypass] — safer default against permission laundering
+// when impersonation stamps empty perms/scopes. Mirrors the marker
+// semantics of httpx/middleware/auth.IsTrustedS2S (HTTP still bypasses
+// by default; gRPC is stricter).
 func IsTrustedS2S(ctx context.Context) bool {
 	_, ok := trustedS2SKey.Get(ctx)
 	return ok
 }
 
+// RequireAuthzOption configures [RequirePermissionUnary],
+// [RequirePermissionStream], [RequireScopeUnary], and [RequireScopeStream].
+type RequireAuthzOption func(*requireAuthzConfig)
+
+type requireAuthzConfig struct {
+	// bypassTrustedS2S restores the historical short-circuit that lets a
+	// verified mTLS S2S caller pass without permissions/scopes on context.
+	// Default is false (fail closed): trusted S2S still needs matching
+	// claims, preventing permission laundering across service hops when
+	// MTLSAuth stamps trusted=true with empty perms/scopes.
+	bypassTrustedS2S bool
+}
+
+// WithTrustedS2SBypass opts into the historical trusted-S2S short-circuit
+// for RequirePermission / RequireScope interceptors. Use only for RPCs
+// that intentionally treat an allow-listed mTLS client as full authority
+// (service-level trust), not for user-delegated entitlement checks.
+//
+// Without this option, [IsTrustedS2S] alone does not satisfy the check —
+// the request must carry matching permissions or scopes on context. That
+// is the safer default: mTLS impersonation currently stamps empty
+// perms/scopes, so a low-privileged user's hop through service A must not
+// automatically pass RequirePermission("admin") on service B.
+func WithTrustedS2SBypass() RequireAuthzOption {
+	return func(c *requireAuthzConfig) { c.bypassTrustedS2S = true }
+}
+
+func collectRequireAuthzOptions(opts []RequireAuthzOption) requireAuthzConfig {
+	var cfg requireAuthzConfig
+	for _, opt := range opts {
+		if opt == nil {
+			panic("grpcx/interceptor: Require* option must not be nil")
+		}
+		opt(&cfg)
+	}
+	return cfg
+}
+
 // RequirePermissionUnary returns a unary server interceptor that enforces a
 // permission check using the permissions slot populated by AuthUnary (or
-// MTLSAuthUnary). Fail-closed semantics mirror
-// httpx/middleware/auth.RequirePermission:
+// MTLSAuthUnary). Fail-closed by default:
 //
-//   - If [IsTrustedS2S] returns true, the check is bypassed — internal
-//     services authenticated via verified mTLS + SAN/CN allowlist are
-//     trusted explicitly, not by virtue of "happened to have no permissions
-//     claim".
-//   - Otherwise the request must carry permissions on context AND that set
-//     must contain perm. Anything else returns codes.PermissionDenied.
+//   - The request must carry permissions on context AND that set must
+//     contain perm. Anything else returns codes.PermissionDenied.
+//   - [IsTrustedS2S] does NOT bypass the check unless
+//     [WithTrustedS2SBypass] is passed. Prefer that opt-in only for
+//     service-level RPCs; user-delegated S2S should propagate entitlements
+//     (or use a separate guard) rather than a blanket bypass.
 //
 // Panics if perm is empty to fail fast on misconfiguration — an empty
 // required permission is almost always a coding error and would either
 // pass-by-accident if the JWT carried an empty-string permission or
 // fail-by-default for everyone, both of which mask the bug.
-func RequirePermissionUnary(perm string) grpc.UnaryServerInterceptor {
+func RequirePermissionUnary(perm string, opts ...RequireAuthzOption) grpc.UnaryServerInterceptor {
 	if perm == "" {
 		panic("grpcx/interceptor: RequirePermissionUnary requires a non-empty permission")
 	}
+	cfg := collectRequireAuthzOptions(opts)
 	return func(
 		ctx context.Context,
 		req any,
 		_ *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
-		if !checkPermission(ctx, perm) {
+		if !checkPermission(ctx, perm, cfg.bypassTrustedS2S) {
 			return nil, status.Error(codes.PermissionDenied, "insufficient permissions")
 		}
 		return handler(ctx, req)
@@ -289,17 +332,18 @@ func RequirePermissionUnary(perm string) grpc.UnaryServerInterceptor {
 
 // RequirePermissionStream returns a stream server interceptor that enforces
 // a permission check. See [RequirePermissionUnary] for semantics.
-func RequirePermissionStream(perm string) grpc.StreamServerInterceptor {
+func RequirePermissionStream(perm string, opts ...RequireAuthzOption) grpc.StreamServerInterceptor {
 	if perm == "" {
 		panic("grpcx/interceptor: RequirePermissionStream requires a non-empty permission")
 	}
+	cfg := collectRequireAuthzOptions(opts)
 	return func(
 		srv any,
 		ss grpc.ServerStream,
 		_ *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
-		if !checkPermission(ss.Context(), perm) {
+		if !checkPermission(ss.Context(), perm, cfg.bypassTrustedS2S) {
 			return status.Error(codes.PermissionDenied, "insufficient permissions")
 		}
 		return handler(srv, ss)
@@ -308,21 +352,23 @@ func RequirePermissionStream(perm string) grpc.StreamServerInterceptor {
 
 // RequireScopeUnary returns a unary server interceptor that checks the
 // space-separated scopes string populated by AuthUnary for the required
-// scope. Fail-closed: a request without scopes on context AND without the
-// trusted-S2S marker is rejected with codes.PermissionDenied.
+// scope. Fail-closed by default: a request without matching scopes on
+// context is rejected with codes.PermissionDenied. Pass
+// [WithTrustedS2SBypass] to restore the historical trusted-S2S short-circuit.
 //
 // Panics if scope is empty.
-func RequireScopeUnary(scope string) grpc.UnaryServerInterceptor {
+func RequireScopeUnary(scope string, opts ...RequireAuthzOption) grpc.UnaryServerInterceptor {
 	if scope == "" {
 		panic("grpcx/interceptor: RequireScopeUnary requires a non-empty scope")
 	}
+	cfg := collectRequireAuthzOptions(opts)
 	return func(
 		ctx context.Context,
 		req any,
 		_ *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
-		if !checkScope(ctx, scope) {
+		if !checkScope(ctx, scope, cfg.bypassTrustedS2S) {
 			return nil, status.Error(codes.PermissionDenied, "insufficient scope")
 		}
 		return handler(ctx, req)
@@ -331,17 +377,18 @@ func RequireScopeUnary(scope string) grpc.UnaryServerInterceptor {
 
 // RequireScopeStream returns a stream server interceptor that enforces a
 // scope check. See [RequireScopeUnary] for semantics.
-func RequireScopeStream(scope string) grpc.StreamServerInterceptor {
+func RequireScopeStream(scope string, opts ...RequireAuthzOption) grpc.StreamServerInterceptor {
 	if scope == "" {
 		panic("grpcx/interceptor: RequireScopeStream requires a non-empty scope")
 	}
+	cfg := collectRequireAuthzOptions(opts)
 	return func(
 		srv any,
 		ss grpc.ServerStream,
 		_ *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
-		if !checkScope(ss.Context(), scope) {
+		if !checkScope(ss.Context(), scope, cfg.bypassTrustedS2S) {
 			return status.Error(codes.PermissionDenied, "insufficient scope")
 		}
 		return handler(srv, ss)
@@ -611,19 +658,23 @@ func authenticateMTLSOrJWT(
 		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
 	}
 
-	if cfg.impersonationGuard != nil {
-		if err := callImpersonationGuard(ctx, cfg.impersonationGuard, identity, userID); err != nil {
-			// user_id / client_identity are tenant- or topology-carrying
-			// identifiers; the HTTP path redacts them
-			// (httpx/middleware/auth.go) and the gRPC path must match so
-			// dashboards and log archives have one privacy contract.
-			slog.WarnContext(ctx, "grpc s2s impersonation rejected by guard",
-				redact.String("user_id", userID),
-				redact.String("client_identity", identity),
-				redact.Error(err),
-			)
-			return ctx, status.Error(codes.PermissionDenied, "impersonation not permitted")
-		}
+	// Fail closed if the guard is missing: constructors require it, but a
+	// future refactor that builds mtlsIdentityConfig directly must not grant
+	// unlimited trusted-S2S impersonation.
+	if cfg.impersonationGuard == nil {
+		return ctx, status.Error(codes.PermissionDenied, "impersonation guard not configured")
+	}
+	if err := callImpersonationGuard(ctx, cfg.impersonationGuard, identity, userID); err != nil {
+		// user_id / client_identity are tenant- or topology-carrying
+		// identifiers; the HTTP path redacts them
+		// (httpx/middleware/auth.go) and the gRPC path must match so
+		// dashboards and log archives have one privacy contract.
+		slog.WarnContext(ctx, "grpc s2s impersonation rejected by guard",
+			redact.String("user_id", userID),
+			redact.String("client_identity", identity),
+			redact.Error(err),
+		)
+		return ctx, status.Error(codes.PermissionDenied, "impersonation not permitted")
 	}
 
 	slog.InfoContext(ctx, "grpc s2s user impersonation",
@@ -682,7 +733,9 @@ func verifyClientCertGRPC(ctx context.Context, cfg mtlsIdentityConfig) (bool, st
 	}
 	hasClientAuth := false
 	for _, eku := range cert.ExtKeyUsage {
-		if eku == x509.ExtKeyUsageClientAuth || eku == x509.ExtKeyUsageAny {
+		// Require client-auth specifically; ExtKeyUsageAny is too broad for
+		// an S2S client-auth gate (server/generic certs often carry "any").
+		if eku == x509.ExtKeyUsageClientAuth {
 			hasClientAuth = true
 			break
 		}
@@ -706,7 +759,9 @@ func verifyClientCertGRPC(ctx context.Context, cfg mtlsIdentityConfig) (bool, st
 		}
 	}
 	if cn := cert.Subject.CommonName; cn != "" {
-		if _, ok := cfg.allowedCNs[cn]; ok {
+		// Case-fold CN like DNS SANs so re-issued certs with different casing
+		// still match the allowlist (NormalizeCN lowercases stored entries).
+		if _, ok := cfg.allowedCNs[strings.ToLower(cn)]; ok {
 			return true, "cn:" + cn
 		}
 	}
@@ -743,10 +798,12 @@ func singletonMetadataIdentity(md metadata.MD, key string) (string, bool) {
 	return value, true
 }
 
-// checkPermission applies the fail-closed RBAC predicate: trusted-S2S
-// bypass, otherwise the permission set must contain perm.
-func checkPermission(ctx context.Context, perm string) bool {
-	if IsTrustedS2S(ctx) {
+// checkPermission applies the fail-closed RBAC predicate. When
+// bypassTrusted is true and [IsTrustedS2S] is set, the check passes
+// without inspecting permissions (opt-in service-level trust via
+// [WithTrustedS2SBypass]). Otherwise the permission set must contain perm.
+func checkPermission(ctx context.Context, perm string, bypassTrusted bool) bool {
+	if bypassTrusted && IsTrustedS2S(ctx) {
 		return true
 	}
 	perms, ok := permissionsKey.Get(ctx)
@@ -756,11 +813,10 @@ func checkPermission(ctx context.Context, perm string) bool {
 	return slices.Contains([]string(perms), perm)
 }
 
-// checkScope applies the fail-closed scope predicate: trusted-S2S
-// bypass, otherwise the space-separated scopes claim must contain scope
-// as a whole token.
-func checkScope(ctx context.Context, scope string) bool {
-	if IsTrustedS2S(ctx) {
+// checkScope applies the fail-closed scope predicate. See
+// [checkPermission] for the trusted-S2S bypass rules.
+func checkScope(ctx context.Context, scope string, bypassTrusted bool) bool {
+	if bypassTrusted && IsTrustedS2S(ctx) {
 		return true
 	}
 	scopes, ok := scopesKey.Get(ctx)

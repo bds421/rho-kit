@@ -55,6 +55,7 @@ type clientConfig struct {
 	streamInts        []grpc.StreamClientInterceptor
 	dialOpts          []grpc.DialOption
 	defaultDeadline   time.Duration
+	streamDeadline    *time.Duration // nil = same as unary; 0 = no stream deadline
 	disableDefaultDL  bool
 	disableRecovery   bool
 	recoveryLogger    *slog.Logger
@@ -66,6 +67,7 @@ type clientConfig struct {
 	retryPolicy       retry.Policy
 	retryCodes        []codes.Code
 	keepaliveParams   *keepalive.ClientParameters
+	disableIdentity   bool
 }
 
 // WithTLSConfig pins the *tls.Config used for transport credentials.
@@ -132,8 +134,9 @@ func WithDialOptions(opts ...grpc.DialOption) Option {
 	}
 }
 
-// WithDefaultTimeout overrides [DefaultClientDeadline]. Panics on
-// non-positive d.
+// WithDefaultTimeout overrides [DefaultClientDeadline] for unary RPCs
+// (and for streams unless [WithDefaultStreamTimeout] is also set).
+// Panics on non-positive d.
 func WithDefaultTimeout(d time.Duration) Option {
 	if d <= 0 {
 		panic("grpcx/client: WithDefaultTimeout requires positive duration")
@@ -141,12 +144,37 @@ func WithDefaultTimeout(d time.Duration) Option {
 	return func(c *clientConfig) { c.defaultDeadline = d }
 }
 
-// WithoutDefaultDeadline opts out of the per-RPC default deadline.
-// Strongly discouraged in production: a client that forgets
-// context.WithTimeout can hang indefinitely on a slow server. Reserved
-// for callers that ALWAYS pass their own deadline at the call site.
+// WithDefaultStreamTimeout sets the absolute deadline applied to streaming
+// RPCs independently of the unary [WithDefaultTimeout] / [DefaultClientDeadline].
+// Pass 0 to disable the stream deadline while keeping the unary default.
+// Long-lived watch/bidi streams typically want 0 or a large value.
+//
+// Panics on negative d.
+func WithDefaultStreamTimeout(d time.Duration) Option {
+	if d < 0 {
+		panic("grpcx/client: WithDefaultStreamTimeout requires a non-negative duration")
+	}
+	return func(c *clientConfig) { c.streamDeadline = &d }
+}
+
+// WithoutDefaultDeadline opts out of the per-RPC default deadline for both
+// unary and stream RPCs. Strongly discouraged in production: a client that
+// forgets context.WithTimeout can hang indefinitely on a slow server.
+// Reserved for callers that ALWAYS pass their own deadline at the call site.
+// Prefer [WithDefaultStreamTimeout](0) when only streams need unbounded life.
 func WithoutDefaultDeadline() Option {
 	return func(c *clientConfig) { c.disableDefaultDL = true }
+}
+
+// WithoutIdentityPropagation disables stamping authenticated subject/actor
+// identity (x-user-id / x-subject-id / x-actor-*) onto outgoing metadata.
+// Correlation and request IDs still propagate.
+//
+// Use this for clients that dial untrusted or third-party targets so
+// internal user UUIDs are not leaked across a trust boundary. Identity
+// propagation remains on by default for internal S2S hops.
+func WithoutIdentityPropagation() Option {
+	return func(c *clientConfig) { c.disableIdentity = true }
 }
 
 // WithoutRecovery disables the panic-recovery interceptors that
@@ -193,6 +221,11 @@ func WithoutMetrics() Option {
 // retry on. Override via [WithRetryableCodes]. Stream RPCs are not
 // auto-retried by this option.
 //
+// IDEMPOTENCY: interceptor-level retry cannot know whether the server
+// already applied a mutation when the connection drops mid-response
+// (codes.Unavailable). Enable only for idempotent methods, or scope
+// via [WithRetryableCodes] / a separate non-retrying client for writes.
+//
 // Retry wraps the deadline interceptor (see the chain order on
 // [NewClient]), so [DefaultClientDeadline] (or [WithDefaultTimeout]) is a
 // PER-ATTEMPT budget, not a total budget: each attempt gets a fresh now+d
@@ -201,6 +234,9 @@ func WithoutMetrics() Option {
 // inter-attempt backoff. To bound total wall-clock time across all
 // attempts, pass your own context.WithTimeout at the call site.
 func WithRetry(policy retry.Policy) Option {
+	if err := policy.Validate(); err != nil {
+		panic("grpcx/client: WithRetry: " + err.Error())
+	}
 	return func(c *clientConfig) {
 		c.enableRetry = true
 		c.retryPolicy = policy
@@ -224,7 +260,10 @@ func WithRetryableCodes(cs ...codes.Code) Option {
 	}
 }
 
-// WithKeepaliveParams overrides the default keepalive parameters.
+// WithKeepaliveParams replaces the entire default keepalive parameter set.
+// Zero fields are passed through to grpc-go (where 0 often means "disabled" /
+// infinity). Merge intentionally: set every field you care about, not just the
+// one being tuned, or the kit's MaxConnectionIdle/Age-style hardening is lost.
 func WithKeepaliveParams(p keepalive.ClientParameters) Option {
 	return func(c *clientConfig) { c.keepaliveParams = &p }
 }
@@ -235,17 +274,29 @@ func WithKeepaliveParams(p keepalive.ClientParameters) Option {
 // metrics interceptors, optional retry on UNAVAILABLE /
 // RESOURCE_EXHAUSTED / ABORTED, plus the caller's interceptor chain.
 //
-// ID propagation is always on (independent of [WithoutLogging]) so
-// disabling logging never severs end-to-end correlation/request-ID
-// joins across services.
+// Correlation/request-ID propagation is always on (independent of
+// [WithoutLogging]). Authenticated identity metadata is also forwarded
+// by default; disable with [WithoutIdentityPropagation] for untrusted
+// dial targets.
+//
+// Streaming RPCs share the unary default deadline unless
+// [WithDefaultStreamTimeout] is set (use 0 for long-lived streams).
 //
 // Final interceptor chain (outermost first):
 //
 //	recovery -> propagation -> logging -> metrics -> retry (optional) -> deadline -> caller -> RPC
 //
-// Panics on misconfiguration (no credentials, insecure-on-non-loopback,
-// invalid target). Returns the connection without blocking; the first
-// RPC discovers connectivity failures.
+// Misconfiguration contract: NewClient panics on programmer errors that
+// are always wrong at construction (empty target, missing TLS, insecure
+// dial to a non-loopback host). It returns an error only for values that
+// fail deeper validation of an otherwise-present TLS config
+// (tlsclone.ConfigWithFloor) or for dial failures. Callers that write
+// `conn, err := NewClient(...)` must still treat panics as the fail-fast
+// path for missing credentials — do not assume every config mistake is
+// an error return.
+//
+// Returns the connection without blocking; the first RPC discovers
+// connectivity failures.
 func NewClient(target string, opts ...Option) (*grpc.ClientConn, error) {
 	if strings.TrimSpace(target) == "" {
 		panic("grpcx/client: NewClient requires a non-empty target")
@@ -275,7 +326,15 @@ func NewClient(target string, opts ...Option) (*grpc.ClientConn, error) {
 	// the outermost guard.
 	if !cfg.disableDefaultDL && cfg.defaultDeadline > 0 {
 		unary = append([]grpc.UnaryClientInterceptor{cliint.DeadlineUnary(cfg.defaultDeadline)}, unary...)
-		stream = append([]grpc.StreamClientInterceptor{cliint.DeadlineStream(cfg.defaultDeadline)}, stream...)
+	}
+	if !cfg.disableDefaultDL {
+		streamDL := cfg.defaultDeadline
+		if cfg.streamDeadline != nil {
+			streamDL = *cfg.streamDeadline
+		}
+		if streamDL > 0 {
+			stream = append([]grpc.StreamClientInterceptor{cliint.DeadlineStream(streamDL)}, stream...)
+		}
 	}
 	if cfg.enableRetry {
 		retryOpts := []cliint.RetryOption{cliint.WithRetryPolicy(cfg.retryPolicy)}
@@ -303,8 +362,13 @@ func NewClient(target string, opts ...Option) (*grpc.ClientConn, error) {
 	}
 	// Correlation/request-ID propagation is always on and runs ahead of
 	// logging so disabling logging never severs end-to-end trace joins.
-	unary = append([]grpc.UnaryClientInterceptor{cliint.PropagationUnaryClientInterceptor()}, unary...)
-	stream = append([]grpc.StreamClientInterceptor{cliint.PropagationStreamClientInterceptor()}, stream...)
+	// Identity metadata is on by default; opt out with WithoutIdentityPropagation.
+	var propOpts []cliint.PropagationOption
+	if cfg.disableIdentity {
+		propOpts = append(propOpts, cliint.WithoutIdentity())
+	}
+	unary = append([]grpc.UnaryClientInterceptor{cliint.PropagationUnaryClientInterceptor(propOpts...)}, unary...)
+	stream = append([]grpc.StreamClientInterceptor{cliint.PropagationStreamClientInterceptor(propOpts...)}, stream...)
 	if !cfg.disableRecovery {
 		l := cfg.recoveryLogger
 		if l == nil {
@@ -314,20 +378,16 @@ func NewClient(target string, opts ...Option) (*grpc.ClientConn, error) {
 		stream = append([]grpc.StreamClientInterceptor{cliint.RecoveryStream(l)}, stream...)
 	}
 
-	dialOpts := []grpc.DialOption{
-		grpc.WithTransportCredentials(creds),
-		grpc.WithKeepaliveParams(kp),
-	}
+	// Interceptors and caller DialOptions first; kit transport credentials
+	// and keepalive are appended last so raw dial opts cannot silently undo
+	// hardening (later options win for non-additive setters).
+	var dialOpts []grpc.DialOption
 	if len(unary) > 0 {
 		dialOpts = append(dialOpts, grpc.WithChainUnaryInterceptor(unary...))
 	}
 	if len(stream) > 0 {
 		dialOpts = append(dialOpts, grpc.WithChainStreamInterceptor(stream...))
 	}
-
-	// Caller-supplied DialOptions go AFTER kit hardening so callers can
-	// add (e.g. service config) but cannot silently undo keepalive or
-	// credentials.
 	dialOpts = append(dialOpts, cfg.dialOpts...)
 	dialOpts = append(dialOpts,
 		grpc.WithTransportCredentials(creds),
@@ -341,6 +401,9 @@ func NewClient(target string, opts ...Option) (*grpc.ClientConn, error) {
 	return conn, nil
 }
 
+// resolveCredentials panics on missing TLS / non-loopback insecure
+// (programmer errors) and returns an error only when an explicit TLS
+// config fails flooring/validation.
 func resolveCredentials(target string, cfg *clientConfig) (credentials.TransportCredentials, error) {
 	if cfg.insecureLoopback {
 		if !isLoopback(target) {
@@ -359,10 +422,21 @@ func resolveCredentials(target string, cfg *clientConfig) (credentials.Transport
 }
 
 func isLoopback(target string) bool {
-	host, _, err := net.SplitHostPort(target)
-	if err != nil {
-		host = target
+	host := target
+	// Strip gRPC resolver URI schemes (dns:///localhost:50051, passthrough:///127.0.0.1:9000,
+	// unix:///tmp/test.sock). Unix sockets are inherently local.
+	if i := strings.Index(host, "://"); i >= 0 {
+		scheme := strings.ToLower(host[:i])
+		host = host[i+3:]
+		host = strings.TrimPrefix(host, "/") // dns:///host form
+		if scheme == "unix" || scheme == "unix-abstract" {
+			return true
+		}
 	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}

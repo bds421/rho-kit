@@ -6,6 +6,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/bds421/rho-kit/observability/v2/promutil"
@@ -93,10 +94,16 @@ func (m *GRPCMetrics) UnaryInterceptor() grpc.UnaryServerInterceptor {
 		req any,
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
-	) (any, error) {
+	) (resp any, err error) {
 		start := time.Now()
-		resp, err := handler(ctx, req)
-		m.record(info.FullMethod, err, time.Since(start))
+		defer func() {
+			if rec := recover(); rec != nil {
+				m.record(info.FullMethod, status.Error(codes.Internal, "panic"), time.Since(start))
+				panic(rec)
+			}
+			m.record(info.FullMethod, err, time.Since(start))
+		}()
+		resp, err = handler(ctx, req)
 		return resp, err
 	}
 }
@@ -108,10 +115,16 @@ func (m *GRPCMetrics) StreamInterceptor() grpc.StreamServerInterceptor {
 		ss grpc.ServerStream,
 		info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
-	) error {
+	) (err error) {
 		start := time.Now()
-		err := handler(srv, ss)
-		m.record(info.FullMethod, err, time.Since(start))
+		defer func() {
+			if rec := recover(); rec != nil {
+				m.record(info.FullMethod, status.Error(codes.Internal, "panic"), time.Since(start))
+				panic(rec)
+			}
+			m.record(info.FullMethod, err, time.Since(start))
+		}()
+		err = handler(srv, ss)
 		return err
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -33,11 +34,17 @@ func LoggingUnary(logger *slog.Logger) grpc.UnaryServerInterceptor {
 		req any,
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
-	) (any, error) {
+	) (resp any, err error) {
 		ctx = extractIDs(ctx)
 		start := time.Now()
-		resp, err := handler(ctx, req)
-		logCall(ctx, logger, info.FullMethod, err, time.Since(start))
+		defer func() {
+			if rec := recover(); rec != nil {
+				logCall(ctx, logger, info.FullMethod, status.Error(codes.Internal, "panic"), time.Since(start))
+				panic(rec)
+			}
+			logCall(ctx, logger, info.FullMethod, err, time.Since(start))
+		}()
+		resp, err = handler(ctx, req)
 		return resp, err
 	}
 }
@@ -52,12 +59,18 @@ func LoggingStream(logger *slog.Logger) grpc.StreamServerInterceptor {
 		ss grpc.ServerStream,
 		info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
-	) error {
+	) (err error) {
 		ctx := extractIDs(ss.Context())
 		wrapped := &contextStream{ServerStream: ss, ctx: ctx}
 		start := time.Now()
-		err := handler(srv, wrapped)
-		logCall(ctx, logger, info.FullMethod, err, time.Since(start))
+		defer func() {
+			if rec := recover(); rec != nil {
+				logCall(ctx, logger, info.FullMethod, status.Error(codes.Internal, "panic"), time.Since(start))
+				panic(rec)
+			}
+			logCall(ctx, logger, info.FullMethod, err, time.Since(start))
+		}()
+		err = handler(srv, wrapped)
 		return err
 	}
 }
@@ -105,6 +118,9 @@ func isValidID(id string) bool {
 }
 
 // logCall logs a completed RPC call with structured attributes.
+// Client-driven outcomes (Canceled, DeadlineExceeded) stay at Info —
+// matching the sibling client interceptor — so browser aborts and
+// legitimate timeouts do not flood Warn. Server-side failure codes use Warn.
 func logCall(ctx context.Context, logger *slog.Logger, method string, err error, duration time.Duration) {
 	code := "OK"
 	level := slog.LevelInfo
@@ -112,10 +128,19 @@ func logCall(ctx context.Context, logger *slog.Logger, method string, err error,
 		st, ok := status.FromError(err)
 		if ok {
 			code = st.Code().String()
+			switch st.Code() {
+			case codes.Canceled, codes.DeadlineExceeded,
+				codes.InvalidArgument, codes.NotFound,
+				codes.AlreadyExists, codes.FailedPrecondition,
+				codes.PermissionDenied, codes.Unauthenticated:
+				level = slog.LevelInfo
+			default:
+				level = slog.LevelWarn
+			}
 		} else {
 			code = "Unknown"
+			level = slog.LevelWarn
 		}
-		level = slog.LevelWarn
 	}
 
 	attrs := []slog.Attr{

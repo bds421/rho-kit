@@ -52,6 +52,7 @@ github.com/santhosh-tekuri/jsonschema/v6
 golang.org/x/net
 golang.org/x/sync
 golang.org/x/time
+google.golang.org/genproto/googleapis/rpc
 google.golang.org/grpc
 google.golang.org/protobuf
 

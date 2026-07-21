@@ -29,6 +29,20 @@ func TestAppendOutgoingIdentity(t *testing.T) {
 	assert.Equal(t, []string{"keep"}, md.Get("x-custom"))
 }
 
+// TestAppendOutgoingIdentity_PreservesCallerUserID pins the contract that
+// a pre-existing x-user-id is never overwritten when subject is also set.
+func TestAppendOutgoingIdentity_PreservesCallerUserID(t *testing.T) {
+	subject := "11111111-1111-1111-1111-111111111111"
+	ctx := stampTestIdentity(t, context.Background(), subject, "payments-svc", interceptor.ActorService)
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs(interceptor.MetadataLegacyUserKey, "caller-set-user"))
+
+	out := interceptor.AppendOutgoingIdentity(ctx)
+	md, ok := metadata.FromOutgoingContext(out)
+	require.True(t, ok)
+	assert.Equal(t, []string{"caller-set-user"}, md.Get(interceptor.MetadataLegacyUserKey))
+	assert.Equal(t, []string{subject}, md.Get(interceptor.MetadataSubjectKey))
+}
+
 func TestClientPropagation_InjectsIdentityMetadata(t *testing.T) {
 	subject := "11111111-1111-1111-1111-111111111111"
 	ctx := stampTestIdentity(t, context.Background(), subject, "payments-svc", interceptor.ActorService)

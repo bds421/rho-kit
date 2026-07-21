@@ -36,7 +36,7 @@ type HealthServer struct {
 // Panics if checker is nil to fail fast on misconfiguration.
 func NewHealthServer(checker *health.Checker) *HealthServer {
 	if err := health.ValidateChecker(checker); err != nil {
-		panic("grpcx: NewHealthServer requires a valid health.Checker")
+		panic("grpcx: NewHealthServer requires a valid health.Checker: " + err.Error())
 	}
 	return &HealthServer{checker: checker}
 }
@@ -51,8 +51,12 @@ func (h *HealthServer) Check(ctx context.Context, req *healthpb.HealthCheckReque
 	}
 
 	resp := h.checker.Evaluate(ctx)
-	servingStatus := healthpb.HealthCheckResponse_SERVING
+	// Fail closed: only known healthy/degraded statuses map to SERVING.
+	// Unknown or zero Status values must not look healthy to probes.
+	servingStatus := healthpb.HealthCheckResponse_NOT_SERVING
 	switch resp.Status {
+	case health.StatusHealthy, health.StatusDegraded:
+		servingStatus = healthpb.HealthCheckResponse_SERVING
 	case health.StatusUnhealthy, health.StatusConnecting:
 		servingStatus = healthpb.HealthCheckResponse_NOT_SERVING
 	}

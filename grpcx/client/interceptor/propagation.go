@@ -17,48 +17,80 @@ const (
 	requestIDKey     = "x-request-id"
 )
 
+// PropagationOption configures identity/correlation injection.
+type PropagationOption func(*propagationConfig)
+
+type propagationConfig struct {
+	disableIdentity bool
+}
+
+// WithoutIdentity disables stamping authenticated subject/actor identity
+// onto outgoing metadata. Correlation and request IDs still propagate.
+func WithoutIdentity() PropagationOption {
+	return func(c *propagationConfig) { c.disableIdentity = true }
+}
+
 // PropagationUnaryClientInterceptor returns a unary client interceptor
 // that copies the kit correlation_id + request_id from the caller's ctx
 // into the outgoing gRPC metadata so the server-side interceptors see
 // them. This runs unconditionally in [client.NewClient] — independent of
 // logging — so disabling logging never severs end-to-end trace joins.
 //
+// By default verified identity (x-user-id / x-subject-id / x-actor-*) is
+// also forwarded. Pass [WithoutIdentity] (or client.WithoutIdentityPropagation)
+// when dialing untrusted targets.
+//
 // If an ID is not present on ctx, nothing is added: the server's
 // adoptOrGenerate allocates one. Existing metadata values are preserved
 // and never overwritten.
-func PropagationUnaryClientInterceptor() grpc.UnaryClientInterceptor {
+func PropagationUnaryClientInterceptor(opts ...PropagationOption) grpc.UnaryClientInterceptor {
+	cfg := propagationConfig{}
+	for _, o := range opts {
+		if o == nil {
+			panic("client/interceptor: PropagationUnary option must not be nil")
+		}
+		o(&cfg)
+	}
 	return func(
 		ctx context.Context,
 		method string,
 		req, reply any,
 		cc *grpc.ClientConn,
 		invoker grpc.UnaryInvoker,
-		opts ...grpc.CallOption,
+		callOpts ...grpc.CallOption,
 	) error {
-		ctx = injectPropagation(ctx)
-		return invoker(ctx, method, req, reply, cc, opts...)
+		ctx = injectPropagation(ctx, cfg.disableIdentity)
+		return invoker(ctx, method, req, reply, cc, callOpts...)
 	}
 }
 
 // PropagationStreamClientInterceptor mirrors
 // [PropagationUnaryClientInterceptor] for streaming RPCs.
-func PropagationStreamClientInterceptor() grpc.StreamClientInterceptor {
+func PropagationStreamClientInterceptor(opts ...PropagationOption) grpc.StreamClientInterceptor {
+	cfg := propagationConfig{}
+	for _, o := range opts {
+		if o == nil {
+			panic("client/interceptor: PropagationStream option must not be nil")
+		}
+		o(&cfg)
+	}
 	return func(
 		ctx context.Context,
 		desc *grpc.StreamDesc,
 		cc *grpc.ClientConn,
 		method string,
 		streamer grpc.Streamer,
-		opts ...grpc.CallOption,
+		callOpts ...grpc.CallOption,
 	) (grpc.ClientStream, error) {
-		ctx = injectPropagation(ctx)
-		return streamer(ctx, desc, cc, method, opts...)
+		ctx = injectPropagation(ctx, cfg.disableIdentity)
+		return streamer(ctx, desc, cc, method, callOpts...)
 	}
 }
 
-// injectPropagation copies kit correlation/request IDs and verified identity
-// from ctx into outgoing metadata. Existing values are left untouched.
-func injectPropagation(ctx context.Context) context.Context {
+// injectPropagation copies kit correlation/request IDs and optionally
+// verified identity from ctx into outgoing metadata. Existing values are
+// left untouched.
+func injectPropagation(ctx context.Context, disableIdentity bool) context.Context {
 	md, _ := metadata.FromOutgoingContext(ctx)
 	if md == nil {
 		md = metadata.MD{}
@@ -72,5 +104,8 @@ func injectPropagation(ctx context.Context) context.Context {
 		md.Set(requestIDKey, rid)
 	}
 	ctx = metadata.NewOutgoingContext(ctx, md)
+	if disableIdentity {
+		return ctx
+	}
 	return srvinterceptor.AppendOutgoingIdentity(ctx)
 }

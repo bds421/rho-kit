@@ -4,9 +4,15 @@ import (
 	"errors"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// kitErrorInfoDomain is stamped on every [GRPCStatus] conversion so
+// clients (e.g. the retry interceptor) can classify permanent application
+// errors without parsing free-form messages.
+const kitErrorInfoDomain = "rho-kit"
 
 // defaultGRPCCode maps application error codes to gRPC status codes.
 var defaultGRPCCode = map[apperror.Code]codes.Code{
@@ -32,6 +38,8 @@ var defaultGRPCCode = map[apperror.Code]codes.Code{
 	// gRPC code exists). Same code as CodeStorageFull but the cause
 	// message distinguishes "your payload is too big" from "the
 	// backend is full". Matches HTTP 413 on the other transport.
+	// Clients must NOT retry: [GRPCStatus] attaches ErrorInfo with
+	// Reason=PAYLOAD_TOO_LARGE for machine-readable permanence.
 	apperror.CodePayloadTooLarge: codes.ResourceExhausted,
 }
 
@@ -56,10 +64,23 @@ func GRPCCode(err error) codes.Code {
 // status code. The error message is preserved for client consumption.
 // Non-apperror errors return codes.Internal with a generic message to avoid
 // leaking internal details.
+//
+// App errors receive an [errdetails.ErrorInfo] detail with Domain "rho-kit"
+// and Reason set to the [apperror.Code] string so clients can classify
+// permanent ResourceExhausted (e.g. PAYLOAD_TOO_LARGE) without parsing
+// free-form messages.
 func GRPCStatus(err error) *status.Status {
 	var appErr apperror.AppError
 	if !errors.As(err, &appErr) {
 		return status.New(codes.Internal, "internal error")
 	}
-	return status.New(GRPCCode(err), appErr.Error())
+	st := status.New(GRPCCode(err), appErr.Error())
+	detail := &errdetails.ErrorInfo{
+		Reason: string(appErr.ErrorCode()),
+		Domain: kitErrorInfoDomain,
+	}
+	if with, derr := st.WithDetails(detail); derr == nil {
+		return with
+	}
+	return st
 }

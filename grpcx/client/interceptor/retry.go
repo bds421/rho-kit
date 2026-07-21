@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -68,6 +69,13 @@ func WithRetryableCodes(cs ...codes.Code) RetryOption {
 // cancelled. Streaming is NOT supported by this interceptor (stream
 // retry semantics require restarting before any message has been
 // sent/received and are intentionally caller-controlled).
+//
+// IDEMPOTENCY WARNING: interceptor-level retry cannot distinguish a
+// connection drop that occurred before the server saw the request from
+// one that occurred after the server fully applied a mutation. Enabling
+// this interceptor for non-idempotent methods (create/charge/transfer)
+// can duplicate side effects when codes.Unavailable is returned mid-
+// flight. Restrict use to known-idempotent RPCs.
 func RetryUnary(opts ...RetryOption) grpc.UnaryClientInterceptor {
 	cfg := retryConfig{policy: retry.DefaultPolicy()}
 	for _, opt := range opts {
@@ -76,13 +84,19 @@ func RetryUnary(opts ...RetryOption) grpc.UnaryClientInterceptor {
 		}
 		opt(&cfg)
 	}
+	// Fail at construction, not on every RPC: an invalid Policy
+	// panics inside retry.DoWith and would otherwise be masked as a
+	// per-call failure.
+	if err := cfg.policy.Validate(); err != nil {
+		panic("client/interceptor: RetryUnary: " + err.Error())
+	}
 	if cfg.retryOnCodes == nil {
 		cfg.retryOnCodes = map[codes.Code]struct{}{}
 		for _, c := range DefaultRetryableCodes() {
 			cfg.retryOnCodes[c] = struct{}{}
 		}
 	}
-	shouldRetry := func(err error) bool {
+	codeAllowlist := func(err error) bool {
 		if err == nil {
 			return false
 		}
@@ -96,6 +110,18 @@ func RetryUnary(opts ...RetryOption) grpc.UnaryClientInterceptor {
 		// burns the budget, so skip it even though the code is in the
 		// retryable set.
 		if c == codes.ResourceExhausted && isPermanentResourceExhausted(err) {
+			return false
+		}
+		return true
+	}
+	// Compose gRPC code allowlist with any caller-supplied Policy.RetryIf so
+	// WithRetry(policy) predicates are not silently discarded.
+	callerRetryIf := cfg.policy.RetryIf
+	shouldRetry := func(err error) bool {
+		if !codeAllowlist(err) {
+			return false
+		}
+		if callerRetryIf != nil && !callerRetryIf(err) {
 			return false
 		}
 		return true
@@ -114,16 +140,41 @@ func RetryUnary(opts ...RetryOption) grpc.UnaryClientInterceptor {
 	}
 }
 
+// kitErrorInfoDomain is the errdetails.ErrorInfo.Domain stamped by
+// [grpcx.GRPCStatus] so clients can classify permanent application
+// errors without parsing free-form messages.
+const kitErrorInfoDomain = "rho-kit"
+
+// kitPermanentResourceExhaustedReasons are ErrorInfo.Reason values that
+// map to codes.ResourceExhausted but must never be retried (the same
+// payload will fail again).
+var kitPermanentResourceExhaustedReasons = map[string]struct{}{
+	"PAYLOAD_TOO_LARGE": {},
+}
+
 // isPermanentResourceExhausted reports whether a ResourceExhausted error
-// was produced by gRPC's own message-size enforcement. grpc-go phrases
-// these as "grpc: ... larger than max ..." or "grpc: message too large
-// ..." (see google.golang.org/grpc/rpc_util.go). Such errors are
-// permanent for a given client + payload, unlike a server-side
-// rate-limit which the same code also represents.
+// is permanent for this client/payload. Two sources are recognised:
+//
+//  1. Kit servers attach errdetails.ErrorInfo{Domain:"rho-kit",
+//     Reason:"PAYLOAD_TOO_LARGE"} via [grpcx.GRPCStatus] for application
+//     payload limits (non-retryable).
+//  2. grpc-go's own message-size enforcement phrases errors as
+//     "grpc: ... larger than max ..." / "grpc: message too large ...".
+//
+// Rate-limit ResourceExhausted (no such marker) remains retryable.
 func isPermanentResourceExhausted(err error) bool {
 	st, ok := status.FromError(err)
 	if !ok {
 		return false
+	}
+	for _, d := range st.Details() {
+		if info, ok := d.(*errdetails.ErrorInfo); ok {
+			if info.GetDomain() == kitErrorInfoDomain {
+				if _, hit := kitPermanentResourceExhaustedReasons[info.GetReason()]; hit {
+					return true
+				}
+			}
+		}
 	}
 	msg := st.Message()
 	if !strings.HasPrefix(msg, "grpc: ") {

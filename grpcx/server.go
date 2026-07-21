@@ -1,14 +1,17 @@
 package grpcx
 
 import (
+	"crypto/tls"
 	"log/slog"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 	"github.com/bds421/rho-kit/grpcx/v2/interceptor"
 )
 
@@ -22,17 +25,23 @@ type serverConfig struct {
 	maxRecvMsgSize       int
 	maxSendMsgSize       int
 	maxConcurrentStreams uint32
+	maxHeaderListSize    uint32
 	keepaliveParams      *keepalive.ServerParameters
 	keepalivePolicy      *keepalive.EnforcementPolicy
 	disableRecovery      bool
 	recoveryLogger       *slog.Logger
 	defaultDeadline      time.Duration
+	streamDeadline       *time.Duration // nil = same as unary; 0 = no stream deadline
 	disableDefaultDL     bool
 	disableLogging       bool
 	loggingLogger        *slog.Logger
 	disableMetrics       bool
 	metricsRegisterer    prometheus.Registerer
 	enableReflection     bool
+	tlsConfig            *tls.Config
+	maxServerStreams     int
+	streamIdleTimeout    time.Duration
+	hasTransportCreds    bool
 }
 
 // DefaultRPCDeadline is the per-RPC deadline applied automatically by
@@ -80,8 +89,11 @@ func defaultKeepalive() keepalive.ServerParameters {
 // defaultEnforcementPolicy returns a keepalive enforcement policy that prevents
 // misbehaving clients from sending pings too frequently.
 func defaultEnforcementPolicy() keepalive.EnforcementPolicy {
+	// MinTime is strictly below the paired client default keepalive
+	// Time (30s) so client pings are never treated as too frequent
+	// under equal clocks (grpc-go GOAWAY risk when MinTime == client Time).
 	return keepalive.EnforcementPolicy{
-		MinTime:             30 * time.Second,
+		MinTime:             20 * time.Second,
 		PermitWithoutStream: true,
 	}
 }
@@ -149,7 +161,10 @@ func WithMaxConcurrentStreams(n uint32) ServerOption {
 	return func(c *serverConfig) { c.maxConcurrentStreams = n }
 }
 
-// WithKeepaliveParams overrides the default keepalive parameters.
+// WithKeepaliveParams replaces the entire default keepalive parameter set.
+// Zero fields are passed through to grpc-go (where 0 often means "disabled" /
+// infinity). Merge intentionally: set every field you care about, not just the
+// one being tuned, or MaxConnectionIdle/Age hardening from the defaults is lost.
 func WithKeepaliveParams(params keepalive.ServerParameters) ServerOption {
 	return func(c *serverConfig) { c.keepaliveParams = &params }
 }
@@ -170,6 +185,46 @@ func WithGRPCServerOptions(opts ...grpc.ServerOption) ServerOption {
 	copied := append([]grpc.ServerOption(nil), opts...)
 	return func(c *serverConfig) {
 		c.grpcOpts = append(c.grpcOpts, copied...)
+		// Prefer [WithTLSConfig]; flag so plaintext-startup warning is suppressed
+		// when callers smuggle credentials via raw options.
+		c.hasTransportCreds = true
+	}
+}
+
+// WithTLSConfig installs transport credentials floored to TLS 1.2+,
+// matching client.NewClient's WithTLSConfig. Prefer this over raw
+// WithGRPCServerOptions(grpc.Creds(...)) so the kit TLS floor is applied.
+// Panics on a nil config.
+func WithTLSConfig(cfg *tls.Config) ServerOption {
+	if cfg == nil {
+		panic("grpcx: WithTLSConfig requires a non-nil *tls.Config")
+	}
+	return func(c *serverConfig) {
+		c.tlsConfig = cfg
+		c.hasTransportCreds = true
+	}
+}
+
+// WithMaxServerStreams installs a server-wide concurrent streaming-RPC
+// cap via interceptor.MaxConcurrentStreamsServer. Independent of gRPC's
+// per-connection MaxConcurrentStreams. Panics on max <= 0.
+func WithMaxServerStreams(max int) ServerOption {
+	if max <= 0 {
+		panic("grpcx: WithMaxServerStreams requires a positive max")
+	}
+	return func(c *serverConfig) {
+		c.maxServerStreams = max
+	}
+}
+
+// WithStreamIdleTimeout installs interceptor.StreamIdleTimeout so streams
+// with no send/recv for d are cancelled. Panics on d <= 0.
+func WithStreamIdleTimeout(d time.Duration) ServerOption {
+	if d <= 0 {
+		panic("grpcx: WithStreamIdleTimeout requires a positive duration")
+	}
+	return func(c *serverConfig) {
+		c.streamIdleTimeout = d
 	}
 }
 
@@ -190,8 +245,12 @@ func WithoutRecovery() ServerOption {
 // Production deployments that need reflection (e.g. internal admin
 // tooling) should pair this with an inbound auth interceptor that
 // blocks unauthenticated callers from reaching the reflection methods.
-// The reflection service is registered AFTER the caller's services so
-// it inherits whatever interceptor chain the server is configured with.
+//
+// Registration order: NewServer enables reflection on the *grpc.Server
+// at construction time (before RegisterServices). gRPC interceptors are
+// still applied to reflection RPCs because they wrap the server as a
+// whole; the previous claim that reflection is registered "after the
+// caller's services" was incorrect.
 func WithReflection() ServerOption {
 	return func(c *serverConfig) { c.enableReflection = true }
 }
@@ -203,16 +262,15 @@ func WithRecoveryLogger(l *slog.Logger) ServerOption {
 }
 
 // WithDefaultTimeout overrides the [DefaultRPCDeadline] applied by
-// [NewServer] for the per-RPC default-deadline interceptor (both unary and
-// streaming). The interceptor sets the handler ctx deadline to `now + d`
-// when the inbound RPC has no deadline OR has a deadline further out than
-// `now + d`. Closer deadlines from the caller are preserved.
+// [NewServer] for the per-RPC default-deadline interceptor on unary RPCs
+// (and streams unless [WithDefaultStreamTimeout] is also set). The
+// interceptor sets the handler ctx deadline to `now + d` when the inbound
+// RPC has no deadline OR has a deadline further out than `now + d`.
+// Closer deadlines from the caller are preserved.
 //
-// Without a server-side cap, a streaming RPC (or a unary RPC from a
-// crashed client) can hold a handler open indefinitely. Goroutines
-// piling up against a slow downstream cascade to liveness failure
-// — exactly the streaming-RPC exhaustion gap GAP-03 in
-// docs/audit/THREAT_MODEL.md.
+// Without a server-side cap, a unary RPC from a crashed client can hold a
+// handler open indefinitely. Streaming RPCs that need longer life should
+// use [WithDefaultStreamTimeout] rather than disabling unary protection.
 //
 // The interceptor is prepended after recovery so panics still convert to
 // codes.Internal but every request lands with a bounded ctx.
@@ -225,13 +283,40 @@ func WithDefaultTimeout(d time.Duration) ServerOption {
 	return func(c *serverConfig) { c.defaultDeadline = d }
 }
 
+// WithDefaultStreamTimeout sets the absolute deadline applied to streaming
+// handlers independently of the unary [WithDefaultTimeout] /
+// [DefaultRPCDeadline]. Pass 0 to leave streaming RPCs without an automatic
+// absolute deadline (still subject to any caller-supplied deadline and
+// optional idle-timeout interceptors). Long-lived watch/bidi streams
+// typically want 0 or a large value.
+//
+// Panics on negative d.
+func WithDefaultStreamTimeout(d time.Duration) ServerOption {
+	if d < 0 {
+		panic("grpcx: WithDefaultStreamTimeout requires a non-negative duration")
+	}
+	return func(c *serverConfig) { c.streamDeadline = &d }
+}
+
 // WithoutDefaultDeadline opts the server out of the [DefaultRPCDeadline]
-// auto-applied by [NewServer]. Strongly discouraged for production —
-// without a server-side cap a slow client can pin a handler goroutine
-// forever. Reserved for tests asserting raw cancellation behaviour or
-// long-lived bidirectional streams that manage their own lifetimes.
+// auto-applied by [NewServer] for both unary and stream RPCs. Strongly
+// discouraged for production — without a server-side cap a slow client can
+// pin a handler goroutine forever. Prefer [WithDefaultStreamTimeout](0)
+// when only streams need unbounded life.
 func WithoutDefaultDeadline() ServerOption {
 	return func(c *serverConfig) { c.disableDefaultDL = true }
+}
+
+// WithMaxHeaderListSize overrides the hardened HTTP/2 max header list size
+// (default 1 MiB). Raw [WithGRPCServerOptions](grpc.MaxHeaderListSize(...))
+// values are re-overridden by the kit; use this typed option instead.
+//
+// Panics if n is 0.
+func WithMaxHeaderListSize(n uint32) ServerOption {
+	if n == 0 {
+		panic("grpcx: WithMaxHeaderListSize requires a positive limit")
+	}
+	return func(c *serverConfig) { c.maxHeaderListSize = n }
 }
 
 // WithLogger overrides the logger passed to the auto-applied logging
@@ -288,6 +373,7 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 		maxSendMsgSize:       defaultMaxSendMsgSize,
 		maxConcurrentStreams: defaultMaxConcurrentStreams,
 		defaultDeadline:      DefaultRPCDeadline,
+		maxHeaderListSize:    defaultMaxHeaderListSize,
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -296,6 +382,9 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 		opt(&cfg)
 	}
 
+	if cfg.maxHeaderListSize == 0 {
+		cfg.maxHeaderListSize = defaultMaxHeaderListSize
+	}
 	kp := defaultKeepalive()
 	if cfg.keepaliveParams != nil {
 		kp = *cfg.keepaliveParams
@@ -306,14 +395,10 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 		ep = *cfg.keepalivePolicy
 	}
 
-	grpcOpts := []grpc.ServerOption{
-		grpc.MaxRecvMsgSize(cfg.maxRecvMsgSize),
-		grpc.MaxSendMsgSize(cfg.maxSendMsgSize),
-		grpc.MaxConcurrentStreams(cfg.maxConcurrentStreams),
-		grpc.MaxHeaderListSize(defaultMaxHeaderListSize),
-		grpc.KeepaliveParams(kp),
-		grpc.KeepaliveEnforcementPolicy(ep),
-	}
+	// Hardened transport options are applied once AFTER cfg.grpcOpts below
+	// so raw ServerOptions cannot silently undo kit limits (later options
+	// win for non-additive setters). Interceptors are collected first.
+	var grpcOpts []grpc.ServerOption
 
 	unary := cfg.unaryInterceptors
 	stream := cfg.streamInterceptors
@@ -324,7 +409,15 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 	// logging wraps metrics; recovery is the outermost guard.
 	if !cfg.disableDefaultDL && cfg.defaultDeadline > 0 {
 		unary = append([]grpc.UnaryServerInterceptor{interceptor.DeadlineUnary(cfg.defaultDeadline)}, unary...)
-		stream = append([]grpc.StreamServerInterceptor{interceptor.DeadlineStream(cfg.defaultDeadline)}, stream...)
+	}
+	if !cfg.disableDefaultDL {
+		streamDL := cfg.defaultDeadline
+		if cfg.streamDeadline != nil {
+			streamDL = *cfg.streamDeadline
+		}
+		if streamDL > 0 {
+			stream = append([]grpc.StreamServerInterceptor{interceptor.DeadlineStream(streamDL)}, stream...)
+		}
 	}
 	if !cfg.disableMetrics {
 		var metricsOpts []interceptor.MetricsOption
@@ -352,6 +445,27 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 		stream = append([]grpc.StreamServerInterceptor{interceptor.RecoveryStream(recLogger)}, stream...)
 	}
 
+	if cfg.maxServerStreams > 0 || cfg.streamIdleTimeout > 0 {
+		var limMetrics *interceptor.StreamLimitMetrics
+		if !cfg.disableMetrics {
+			var mopts []interceptor.MetricsOption
+			if cfg.metricsRegisterer != nil {
+				mopts = append(mopts, interceptor.WithRegisterer(cfg.metricsRegisterer))
+			}
+			limMetrics = interceptor.NewStreamLimitMetrics(mopts...)
+		}
+		if cfg.maxServerStreams > 0 {
+			stream = append([]grpc.StreamServerInterceptor{
+				interceptor.MaxConcurrentStreamsServer(cfg.maxServerStreams, limMetrics),
+			}, stream...)
+		}
+		if cfg.streamIdleTimeout > 0 {
+			stream = append([]grpc.StreamServerInterceptor{
+				interceptor.StreamIdleTimeout(cfg.streamIdleTimeout, limMetrics),
+			}, stream...)
+		}
+	}
+
 	if len(unary) > 0 {
 		grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(unary...))
 	}
@@ -369,11 +483,20 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 	// are baked into the same hardened set below and therefore win
 	// over any raw override (L083).
 	grpcOpts = append(grpcOpts, cfg.grpcOpts...)
+	if cfg.tlsConfig != nil {
+		floored, err := tlsclone.ConfigWithFloor(cfg.tlsConfig, tls.VersionTLS12)
+		if err != nil {
+			panic("grpcx: WithTLSConfig: " + err.Error())
+		}
+		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(floored)))
+	} else if !cfg.hasTransportCreds {
+		slog.Default().Warn("grpcx: NewServer built without transport credentials; serving plaintext unless a mesh terminates TLS. Use WithTLSConfig for encrypted transport")
+	}
 	grpcOpts = append(grpcOpts,
 		grpc.MaxRecvMsgSize(cfg.maxRecvMsgSize),
 		grpc.MaxSendMsgSize(cfg.maxSendMsgSize),
 		grpc.MaxConcurrentStreams(cfg.maxConcurrentStreams),
-		grpc.MaxHeaderListSize(defaultMaxHeaderListSize),
+		grpc.MaxHeaderListSize(cfg.maxHeaderListSize),
 		grpc.KeepaliveParams(kp),
 		grpc.KeepaliveEnforcementPolicy(ep),
 	)

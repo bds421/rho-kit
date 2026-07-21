@@ -54,6 +54,11 @@ func subjectActorFromJWTClaims(claims *jwtutil.Claims, cfg jwtIdentityConfig) (s
 }
 
 // AsAuthOption adapts a [JWTOption] for [AuthUnary] and [AuthStream].
+// A nil opt panics at construction (fail-fast), matching other option
+// helpers in this package.
 func AsAuthOption(opt JWTOption) AuthOption {
+	if opt == nil {
+		panic("interceptor: AsAuthOption requires a non-nil JWTOption")
+	}
 	return func(c *authConfig) { opt(&c.jwt) }
 }

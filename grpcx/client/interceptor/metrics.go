@@ -132,7 +132,7 @@ func tryRegister(reg prometheus.Registerer, c prometheus.Collector) prometheus.C
 		if errors.As(err, &are) {
 			return are.ExistingCollector
 		}
-		panic("grpcx/client/interceptor: metric registration failed")
+		panic("grpcx/client/interceptor: metric registration failed: " + err.Error())
 	}
 	return c
 }

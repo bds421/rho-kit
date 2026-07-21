@@ -2,9 +2,12 @@ package interceptor_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -101,5 +104,48 @@ func TestRetryUnary_RetriesRateLimitResourceExhausted(t *testing.T) {
 	}
 	if attempts != 3 { // 1 initial + 2 retries
 		t.Fatalf("rate-limit error not retried: attempts = %d, want 3", attempts)
+	}
+}
+
+func TestRetryUnary_InvalidPolicyPanicsAtConstruction(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected RetryUnary with invalid policy to panic")
+		}
+		msg := fmt.Sprint(r)
+		if !strings.Contains(msg, "RetryUnary") {
+			t.Fatalf("panic should mention RetryUnary: %v", r)
+		}
+	}()
+	_ = interceptor.RetryUnary(interceptor.WithRetryPolicy(retry.Policy{}))
+}
+
+
+func TestRetryUnary_DoesNotRetryKitPayloadTooLarge(t *testing.T) {
+	// Kit servers attach errdetails.ErrorInfo{Domain:rho-kit, Reason:PAYLOAD_TOO_LARGE}.
+	st := status.New(codes.ResourceExhausted, "payload too large")
+	st, err := st.WithDetails(&errdetails.ErrorInfo{
+		Domain: "rho-kit",
+		Reason: "PAYLOAD_TOO_LARGE",
+	})
+	if err != nil {
+		t.Fatalf("WithDetails: %v", err)
+	}
+	permanent := st.Err()
+
+	icpt := interceptor.RetryUnary(interceptor.WithRetryPolicy(fastPolicy(3)))
+	var attempts int
+	err = icpt(context.Background(), "/svc/Upload", nil, nil, nil,
+		func(_ context.Context, _ string, _, _ any, _ *grpc.ClientConn, _ ...grpc.CallOption) error {
+			attempts++
+			return permanent
+		},
+	)
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("final code = %v, want ResourceExhausted", status.Code(err))
+	}
+	if attempts != 1 {
+		t.Fatalf("kit PayloadTooLarge was retried: attempts = %d, want 1", attempts)
 	}
 }

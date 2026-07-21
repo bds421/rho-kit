@@ -69,7 +69,11 @@ func DeadlineStream(d time.Duration) grpc.StreamClientInterceptor {
 			cancel()
 			return nil, err
 		}
-		return &boundedClientStream{ClientStream: cs, cancel: cancel}, nil
+		return &boundedClientStream{
+			ClientStream:  cs,
+			cancel:        cancel,
+			serverStreams: desc != nil && desc.ServerStreams,
+		}, nil
 	}
 }
 
@@ -85,9 +89,14 @@ func boundedCtx(parent context.Context, d time.Duration) (context.Context, conte
 // boundedClientStream wraps a grpc.ClientStream so the cancel fires
 // once the stream is done (either RecvMsg returns io.EOF / error, or
 // the caller calls CloseSend then Recv to drain).
+//
+// For client-streaming / unary-response RPCs (ServerStreams=false) the
+// first successful RecvMsg is terminal (CloseAndRecv), so cancel fires
+// immediately rather than waiting for the timeout timer.
 type boundedClientStream struct {
 	grpc.ClientStream
-	cancel context.CancelFunc
+	cancel        context.CancelFunc
+	serverStreams bool
 }
 
 // CloseSend calls the underlying CloseSend and leaves cancel for the
@@ -104,6 +113,13 @@ func (s *boundedClientStream) RecvMsg(m any) error {
 	err := s.ClientStream.RecvMsg(m)
 	if err != nil {
 		s.cancel()
+		return err
 	}
-	return err
+	// Client-streaming / unary response: one successful RecvMsg completes
+	// the RPC (generated CloseAndRecv). Cancel promptly so the timeout
+	// timer does not linger until d elapses.
+	if !s.serverStreams {
+		s.cancel()
+	}
+	return nil
 }

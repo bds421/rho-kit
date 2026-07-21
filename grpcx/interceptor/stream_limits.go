@@ -166,7 +166,7 @@ func StreamIdleTimeout(d time.Duration, metrics *StreamLimitMetrics) grpc.Stream
 			ctx:          ctx,
 			lastActive:   atomic.Int64{},
 		}
-		wrapped.lastActive.Store(time.Now().UnixNano())
+		wrapped.lastActive.Store(monoNow())
 
 		// Watchdog: poll at 1/4 the idle timeout so the worst-case
 		// detection latency is +25%. Exits as soon as the handler
@@ -192,8 +192,18 @@ func StreamIdleTimeout(d time.Duration, metrics *StreamLimitMetrics) grpc.Stream
 				case <-ctx.Done():
 					return
 				case <-t.C:
+					// Re-check done first so a handler that just returned does
+					// not spuriously increment streams_idle_closed_total.
+					select {
+					case <-done:
+						return
+					default:
+					}
 					last := wrapped.lastActive.Load()
-					if time.Since(time.Unix(0, last)) >= d {
+					// lastActive stores mono-ish nanos from a process-start
+					// origin (see idleStream.touch) so NTP wall steps cannot
+					// mass-cancel streams.
+					if monoNow()-last >= d.Nanoseconds() {
 						if metrics != nil {
 							metrics.idleClose.Inc()
 						}
@@ -213,7 +223,7 @@ func StreamIdleTimeout(d time.Duration, metrics *StreamLimitMetrics) grpc.Stream
 		// a business error must keep its own result; overwriting it would
 		// report a delivered response as failed and invite duplicate
 		// client retries.
-		if err != nil && errors.Is(err, context.Canceled) &&
+		if err != nil && idleTimeoutRemap(err) &&
 			ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
 			// Distinguish "we cancelled" from "caller cancelled". The
 			// wrapper's ctx is derived from ss.Context(); if the
@@ -239,13 +249,13 @@ type idleStream struct {
 func (s *idleStream) Context() context.Context { return s.ctx }
 
 func (s *idleStream) SendMsg(m any) error {
-	s.lastActive.Store(time.Now().UnixNano())
+	s.lastActive.Store(monoNow())
 	return s.ServerStream.SendMsg(m)
 }
 
 func (s *idleStream) RecvMsg(m any) error {
 	err := s.ServerStream.RecvMsg(m)
-	s.lastActive.Store(time.Now().UnixNano())
+	s.lastActive.Store(monoNow())
 	return err
 }
 
@@ -274,3 +284,23 @@ func (l *streamLimiter) tryAcquire() bool {
 }
 
 func (l *streamLimiter) release() { l.current.Add(-1) }
+
+// processStart anchors monotonic-ish idle timing so wall-clock NTP steps
+// cannot mass-cancel active streams. time.Since(processStart) uses the
+// monotonic reading of processStart when available.
+var processStart = time.Now()
+
+func monoNow() int64 { return time.Since(processStart).Nanoseconds() }
+
+// idleTimeoutRemap reports whether err should be remapped to DeadlineExceeded
+// when the idle watchdog cancelled the stream. Matches raw context.Canceled
+// and status-wrapped codes.Canceled (idiomatic FromContextError conversions).
+func idleTimeoutRemap(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	if st, ok := status.FromError(err); ok && st.Code() == codes.Canceled {
+		return true
+	}
+	return false
+}
