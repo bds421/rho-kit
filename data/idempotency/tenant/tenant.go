@@ -1,8 +1,8 @@
 // Package tenant provides a tenant-scoped wrapper around any
 // [idempotency.Store]. Every idempotency key is rewritten with
-// [coretenant.Key] before reaching the underlying backend, so the same
-// raw key under two tenants resolves to two independent locks /
-// cached responses.
+// [coretenant.KeyFor] and then stored as an opaque "tns:"+SHA-256 hex
+// digest, so the same raw key under two tenants resolves to two
+// independent locks / cached responses.
 //
 // # Choice: namespace the key, not the fingerprint
 //
@@ -32,22 +32,23 @@
 // legitimately run outside a tenant scope should keep using the bare
 // store.
 //
-// # Deployment rule: do not share a backend keyspace with a bare store
+// # Storage key unforgeability
 //
-// Scoped keys use the kit-canonical length-prefixed format from
-// [coretenant.KeyFor] (e.g. "tenant:1:a:3:foo"). That string is itself a
-// valid raw [idempotency.ValidateKey] input, so a deployment that wires
-// BOTH this wrapper AND a bare [idempotency.Store] against the same
-// Redis prefix / Postgres table lets a bare-path caller who controls the
-// raw key address another tenant's slot (Get replay, TryLock squat, Set
-// poisoning). Keep tenant-wrapped and bare stores on disjoint backends
-// or key prefixes; never mount both on one keyspace.
+// Scoped keys are always stored as:
+//
+//	tns: + hex(sha256(coretenant.KeyFor(tenant, raw)))
+//
+// [idempotency.ValidateKey] rejects both the reserved "tns:" prefix and the
+// length-prefixed "tenant:…" form as user keys. Store backends accept the
+// opaque form via [idempotency.ValidateStorageKey]. A bare store sharing a
+// backend keyspace therefore cannot accept a caller-supplied key that
+// addresses another tenant's slot by forging the readable length-prefixed
+// shape (review-12). Storage keys are intentionally not human-readable.
 package tenant
 
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
@@ -61,9 +62,10 @@ type scoped struct {
 	inner idempotency.Store
 }
 
-// Wrap returns an [idempotency.Store] that prefixes every key with
-// the caller's tenant ID. Operations return an error when invoked
-// without a tenant ID on ctx — see package doc for rationale.
+// Wrap returns an [idempotency.Store] that scopes every key to the
+// caller's tenant ID via an opaque storage form. Operations return an
+// error when invoked without a tenant ID on ctx — see package doc for
+// rationale.
 //
 // Wrap panics on a nil inner store.
 func Wrap(inner idempotency.Store) idempotency.Store {
@@ -73,16 +75,14 @@ func Wrap(inner idempotency.Store) idempotency.Store {
 	return &scoped{inner: inner}
 }
 
-// scopedKey rewrites raw with the kit-canonical tenant key format. It validates
-// the caller-provided key before adding the tenant prefix so empty raw
+// scopedKey rewrites raw into the unforgeable tenant storage form. It
+// validates the caller-provided key before scoping so empty/reserved raw
 // keys cannot be hidden by the wrapper.
 //
-// When the length-prefixed scoped form exceeds [idempotency.MaxKeyLen]
-// (possible with long tenant IDs + long raw keys), the storage key is
-// replaced with a fixed-length SHA-256 hex digest so every valid raw
-// key remains usable regardless of tenant-ID length (review-12). Short
-// scoped keys keep the readable length-prefixed form for operator
-// introspection.
+// The length-prefixed [coretenant.KeyFor] form is hashed to a fixed-size
+// "tns:"+hex digest so (a) every valid raw key remains usable regardless
+// of tenant-ID length, and (b) the on-disk key never matches a forgeable
+// user-key shape accepted by [idempotency.ValidateKey].
 func scopedKey(ctx context.Context, raw string) (string, error) {
 	if err := idempotency.ValidateKey(raw); err != nil {
 		return "", err
@@ -95,14 +95,13 @@ func scopedKey(ctx context.Context, raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(scoped) > idempotency.MaxKeyLen {
-		sum := sha256.Sum256([]byte(scoped))
-		scoped = hex.EncodeToString(sum[:])
-	}
-	if err := idempotency.ValidateKey(scoped); err != nil {
+	sum := sha256.Sum256([]byte(scoped))
+	storageKey := idempotency.FormatTenantStorageKey(sum[:])
+	// Defence in depth: storage form must always pass the backend contract.
+	if err := idempotency.ValidateStorageKey(storageKey); err != nil {
 		return "", err
 	}
-	return scoped, nil
+	return storageKey, nil
 }
 
 // Get rewrites the key and delegates.

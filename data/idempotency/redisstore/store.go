@@ -200,7 +200,7 @@ func (s *Store) k(key string) string { return s.prefix + key }
 // validateKey preserves the local helper name used throughout this backend
 // while delegating to the Store-wide key contract.
 func validateKey(key string) error {
-	return idempotency.ValidateKey(key)
+	return idempotency.ValidateStorageKey(key)
 }
 
 // ttlMillisRoundUp converts a duration to milliseconds, rounding sub-ms

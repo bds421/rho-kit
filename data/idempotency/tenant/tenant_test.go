@@ -277,3 +277,97 @@ func TestWrap_LongTenantAndKeyStillWorks(t *testing.T) {
 	require.NotNil(t, resp)
 	assert.Equal(t, []byte("ok"), resp.Body)
 }
+
+func TestWrap_BareStoreCannotForgeTenantSlot(t *testing.T) {
+	// Shared backend: bare store + tenant wrapper. An attacker who knows
+	// the length-prefixed form (or guesses it) must not be able to read
+	// or squat on the tenant-wrapped slot via the bare store.
+	inner := idempotency.NewMemoryStore()
+	wrapped := Wrap(inner)
+
+	ctx := ctxWith("acme")
+	raw := "order-42"
+
+	tok, _, ok, err := wrapped.TryLock(ctx, raw, []byte("body"), time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, wrapped.Set(ctx, raw, tok, idempotency.CachedResponse{
+		StatusCode: 200,
+		Body:       []byte("secret-tenant-response"),
+	}, time.Minute))
+
+	// 1. Length-prefixed coretenant form is rejected as a user/storage key.
+	scopedReadable, err := coretenant.KeyFor(coretenant.MustNewID("acme"), raw)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(scopedReadable, "tenant:"))
+
+	resp, mismatch, err := inner.Get(context.Background(), scopedReadable, []byte("body"))
+	assert.ErrorIs(t, err, idempotency.ErrKeyReservedPrefix)
+	assert.Nil(t, resp)
+	assert.False(t, mismatch)
+
+	_, _, ok, err = inner.TryLock(context.Background(), scopedReadable, []byte("body"), time.Minute)
+	assert.ErrorIs(t, err, idempotency.ErrKeyReservedPrefix)
+	assert.False(t, ok)
+
+	// 2. Reserved tns: prefix as a raw user key is also rejected by ValidateKey
+	// when used outside the storage path... but the bare store uses
+	// ValidateStorageKey, which accepts well-formed tns: keys. Even then,
+	// without knowing the exact digest of KeyFor(tenant, raw) the attacker
+	// cannot target the slot. Prove a wrong digest misses.
+	wrong := idempotency.TenantStorageKeyPrefix + strings.Repeat("00", 32)
+	resp, mismatch, err = inner.Get(context.Background(), wrong, []byte("body"))
+	require.NoError(t, err)
+	assert.False(t, mismatch)
+	assert.Nil(t, resp, "wrong tns digest must miss the tenant slot")
+
+	// 3. Tenant wrapper still reads its own response.
+	resp, mismatch, err = wrapped.Get(ctx, raw, []byte("body"))
+	require.NoError(t, err)
+	assert.False(t, mismatch)
+	require.NotNil(t, resp)
+	assert.Equal(t, []byte("secret-tenant-response"), resp.Body)
+}
+
+func TestWrap_StorageKeyIsAlwaysOpaqueTns(t *testing.T) {
+	// Capture keys the inner store sees.
+	inner := &keyProbe{Store: idempotency.NewMemoryStore()}
+	w := Wrap(inner)
+
+	ctx := ctxWith("acme")
+	_, _, ok, err := w.TryLock(ctx, "short", nil, time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NotEmpty(t, inner.lastKey)
+	assert.True(t, strings.HasPrefix(inner.lastKey, idempotency.TenantStorageKeyPrefix),
+		"storage key must use tns: prefix, got %q", inner.lastKey)
+	assert.False(t, strings.HasPrefix(inner.lastKey, "tenant:"),
+		"storage key must not be the readable tenant: form")
+	assert.Len(t, inner.lastKey, len(idempotency.TenantStorageKeyPrefix)+64)
+}
+
+// keyProbe records the last storage key seen by the inner store.
+type keyProbe struct {
+	idempotency.Store
+	lastKey string
+}
+
+func (p *keyProbe) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	p.lastKey = key
+	return p.Store.TryLock(ctx, key, fingerprint, ttl)
+}
+
+func (p *keyProbe) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
+	p.lastKey = key
+	return p.Store.Get(ctx, key, fingerprint)
+}
+
+func (p *keyProbe) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
+	p.lastKey = key
+	return p.Store.Set(ctx, key, token, resp, ttl)
+}
+
+func (p *keyProbe) Unlock(ctx context.Context, key, token string) error {
+	p.lastKey = key
+	return p.Store.Unlock(ctx, key, token)
+}

@@ -102,7 +102,7 @@ func (m *MemoryStore) Get(ctx context.Context, key string, fingerprint []byte) (
 	if err := m.ready(); err != nil {
 		return nil, false, err
 	}
-	if err := ValidateKey(key); err != nil {
+	if err := ValidateStorageKey(key); err != nil {
 		return nil, false, err
 	}
 	m.mu.RLock()
@@ -180,7 +180,7 @@ func (m *MemoryStore) Set(ctx context.Context, key, token string, resp CachedRes
 	if err := m.ready(); err != nil {
 		return err
 	}
-	if err := ValidateKey(key); err != nil {
+	if err := ValidateStorageKey(key); err != nil {
 		return err
 	}
 	if ttl <= 0 {
@@ -245,7 +245,7 @@ func (m *MemoryStore) TryLock(ctx context.Context, key string, fingerprint []byt
 	if err := m.ready(); err != nil {
 		return "", false, false, err
 	}
-	if err := ValidateKey(key); err != nil {
+	if err := ValidateStorageKey(key); err != nil {
 		return "", false, false, err
 	}
 	if ttl <= 0 {
@@ -312,7 +312,7 @@ func (m *MemoryStore) Unlock(ctx context.Context, key, token string) error {
 	if err := m.ready(); err != nil {
 		return err
 	}
-	if err := ValidateKey(key); err != nil {
+	if err := ValidateStorageKey(key); err != nil {
 		return err
 	}
 	m.mu.Lock()

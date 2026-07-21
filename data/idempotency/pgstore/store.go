@@ -144,7 +144,7 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 	if err := s.ready(); err != nil {
 		return nil, false, err
 	}
-	if err := idempotency.ValidateKey(key); err != nil {
+	if err := idempotency.ValidateStorageKey(key); err != nil {
 		return nil, false, err
 	}
 	// Size-gate body and headers in the same SELECT that fetches the row
@@ -237,7 +237,7 @@ func (s *Store) doSet(ctx context.Context, key, token string, resp idempotency.C
 	if err := s.ready(); err != nil {
 		return err
 	}
-	if err := idempotency.ValidateKey(key); err != nil {
+	if err := idempotency.ValidateStorageKey(key); err != nil {
 		return err
 	}
 	if ttl <= 0 {
@@ -293,7 +293,7 @@ func (s *Store) doTryLock(ctx context.Context, key string, fingerprint []byte, t
 	if err := s.ready(); err != nil {
 		return "", false, false, err
 	}
-	if err := idempotency.ValidateKey(key); err != nil {
+	if err := idempotency.ValidateStorageKey(key); err != nil {
 		return "", false, false, err
 	}
 	if ttl <= 0 {
@@ -366,7 +366,7 @@ func (s *Store) doUnlock(ctx context.Context, key, token string) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
-	if err := idempotency.ValidateKey(key); err != nil {
+	if err := idempotency.ValidateStorageKey(key); err != nil {
 		return err
 	}
 	query := fmt.Sprintf(

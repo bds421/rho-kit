@@ -1,9 +1,9 @@
 package idempotency
 
 import (
-	"fmt"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -390,5 +390,63 @@ func TestValidateCachedResponse_TotalHeaderBytesCap(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "total header size") {
 		t.Fatalf("error %v should mention total header size", err)
+	}
+}
+
+func TestValidateKey_RejectsReservedPrefixes(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "tenant length-prefixed", key: "tenant:4:acme:1:k"},
+		{name: "tenant bare prefix", key: "tenant:evil"},
+		{name: "tns storage prefix", key: "tns:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		{name: "tns short", key: "tns:ab"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateKey(tt.key)
+			if !errors.Is(err, ErrKeyReservedPrefix) {
+				t.Fatalf("ValidateKey(%q) = %v, want ErrKeyReservedPrefix", tt.key, err)
+			}
+		})
+	}
+}
+
+func TestValidateStorageKey(t *testing.T) {
+	// Ordinary user keys still work.
+	if err := ValidateStorageKey("order-123"); err != nil {
+		t.Fatalf("user key rejected: %v", err)
+	}
+	// Well-formed opaque tenant storage key is accepted.
+	good := TenantStorageKeyPrefix + strings.Repeat("ab", 32) // 64 hex chars
+	if err := ValidateStorageKey(good); err != nil {
+		t.Fatalf("tenant storage key rejected: %v", err)
+	}
+	// Forgeable length-prefixed form is always rejected.
+	if err := ValidateStorageKey("tenant:4:acme:1:k"); !errors.Is(err, ErrKeyReservedPrefix) {
+		t.Fatalf("length-prefixed tenant form accepted: %v", err)
+	}
+	// Malformed tns: keys fall through to ValidateKey and are rejected.
+	if err := ValidateStorageKey("tns:not-hex"); !errors.Is(err, ErrKeyReservedPrefix) {
+		t.Fatalf("malformed tns key = %v, want ErrKeyReservedPrefix", err)
+	}
+	if err := ValidateStorageKey(TenantStorageKeyPrefix + strings.Repeat("g", 64)); !errors.Is(err, ErrKeyReservedPrefix) {
+		t.Fatalf("non-hex tns key = %v, want ErrKeyReservedPrefix", err)
+	}
+}
+
+func TestFormatTenantStorageKey(t *testing.T) {
+	// 32 zero bytes → 64 hex zeros.
+	got := FormatTenantStorageKey(make([]byte, 32))
+	want := TenantStorageKeyPrefix + strings.Repeat("00", 32)
+	if got != want {
+		t.Fatalf("FormatTenantStorageKey = %q, want %q", got, want)
+	}
+	if err := ValidateStorageKey(got); err != nil {
+		t.Fatalf("formatted key failed ValidateStorageKey: %v", err)
+	}
+	if err := ValidateKey(got); !errors.Is(err, ErrKeyReservedPrefix) {
+		t.Fatalf("formatted key must fail ValidateKey: %v", err)
 	}
 }
