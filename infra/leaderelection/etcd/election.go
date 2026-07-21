@@ -264,8 +264,11 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		return errors.New("leader-election: Run requires a non-nil context")
 	}
 	if !e.started.CompareAndSwap(false, true) {
-		return errors.New("leader-election: Run already invoked on this Elector — a second Run would race the leader flag and call OnAcquired / OnLost out of order")
+		return errors.New("leader-election: Run already invoked concurrently on this Elector — a second concurrent Run would race the leader flag and call OnAcquired / OnLost out of order")
 	}
+	// Allow re-Run after return so orchestrators can wrap Run in a
+	// retry loop (mirrors k8slease / Elector interface contract).
+	defer e.started.Store(false)
 
 	var lastDrainTimeoutErr error
 	for ctx.Err() == nil {
@@ -396,16 +399,23 @@ func (e *Elector) runOnce(ctx context.Context, cb leaderelection.Callbacks) (err
 	select {
 	case drainResult = <-cbDone:
 		// Callback returned during a healthy term — no drain window.
+		// Clear the flag before OnLost so IsLeader observes false.
+		e.leader.Store(false)
 	case <-leaderCtx.Done():
+		// Lease lost / parent cancelled: drop IsLeader *before* the
+		// (possibly unbounded) callback drain so another replica that
+		// has already campaigned successfully is not masked by a
+		// still-true local flag. Mirrors pgadvisory / k8slease /
+		// redislock.
+		e.leader.Store(false)
 		drainResult = e.awaitCallbackDrain(cbDone)
 	}
 	leaderCancel() // ensure leader ctx is cancelled before resign
 
-	// Mark leader=false BEFORE runOnLost. The kit's contract is that
-	// OnLost runs after leadership has ended; an IsLeader() check
-	// inside OnLost (e.g. by a cleanup hook that races shutdown work)
-	// must observe false.
-	e.leader.Store(false)
+	// leader flag already cleared above (before drain on the loss path,
+	// and before OnLost on the happy path). Keep a defensive Store so
+	// any future reorder still satisfies the kit contract that
+	// IsLeader is false for OnLost.
 
 	// Resign cleanly so peers do not wait out the lease TTL on a
 	// planned shutdown. Use a detached release context so the resign

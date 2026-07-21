@@ -220,8 +220,11 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		return errors.New("leader-election: Run requires a non-nil context")
 	}
 	if !e.started.CompareAndSwap(false, true) {
-		return errors.New("leader-election: Run already invoked on this Elector — a second Run would race the leader flag and call OnLeader / OnRelinquish out of order")
+		return errors.New("leader-election: Run already invoked concurrently on this Elector — a second concurrent Run would race the leader flag and call OnAcquired / OnLost out of order")
 	}
+	// Allow re-Run after return so orchestrators can wrap Run in a
+	// retry loop (mirrors k8slease / Elector interface contract).
+	defer e.started.Store(false)
 
 	for {
 		if ctx.Err() != nil {
@@ -266,8 +269,14 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		if ctx.Err() != nil {
 			return errors.Join(ctx.Err(), holdErr, lostErr)
 		}
+		// OnLost errors/panics are non-fatal: log and continue so a flaky
+		// cleanup hook cannot permanently disable leadership (aligned
+		// with etcd/k8slease and the Elector interface contract).
 		if lostErr != nil {
-			return errors.Join(holdErr, lostErr)
+			e.logger.Error("leader-election: OnLost failed; continuing",
+				redact.String("key", e.key),
+				redact.Error(lostErr),
+			)
 		}
 		// A drain-timeout means an OnAcquired goroutine from the
 		// previous term is still running inside this process. We have

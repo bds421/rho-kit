@@ -81,3 +81,21 @@ func TestNew_PanicsOnNilAPI(t *testing.T) {
 	}()
 	_ = gcpsm.New(nil)
 }
+
+func TestGet_EmptyPayloadWrapsUnavailable(t *testing.T) {
+	api := &fakeAPI{resp: &secretmanagerpb.AccessSecretVersionResponse{
+		Name:    "projects/p/secrets/s/versions/1",
+		Payload: &secretmanagerpb.SecretPayload{Data: nil},
+	}}
+	l := gcpsm.New(api, gcpsm.WithProject("p"))
+	_, err := l.Get(context.Background(), "s")
+	require.Error(t, err)
+	require.ErrorIs(t, err, secrets.ErrLoaderUnavailable)
+}
+
+func TestResolveName_StrictProjectRejectsFQPath(t *testing.T) {
+	l := gcpsm.New(&fakeAPI{}, gcpsm.WithProject("tenant-a"), gcpsm.WithStrictProject())
+	_, err := l.Get(context.Background(), "projects/tenant-b/secrets/db/versions/latest")
+	require.Error(t, err)
+	require.ErrorIs(t, err, secrets.ErrLoaderUnavailable)
+}

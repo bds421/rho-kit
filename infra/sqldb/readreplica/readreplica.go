@@ -99,8 +99,11 @@ func WithMetricsRegisterer(reg prometheus.Registerer) Option {
 // WithoutHealthCheck disables the background health-probe loop.
 // Replicas are tried on demand and a failed Acquire on a replica trips
 // the consecutive-fail counter (so callers still get failover) but the
-// kit will not background-probe them. Use only for tests that don't
-// want a goroutine they have to clean up.
+// kit will not background-probe them. Unhealthy replicas are retried on
+// a subsequent Acquire second pass so temporary faults can recover
+// without a probe loop. Prefer the default (probe loop enabled) in
+// production. Use this option for tests that don't want a goroutine
+// they have to clean up.
 func WithoutHealthCheck() Option {
 	return func(c *routingConfig) { c.disableHealthCheck = true }
 }
@@ -192,8 +195,11 @@ func New(cfg Config, opts ...Option) (*RoutingPool, error) {
 
 // Acquire returns a connection. Default routes to primary; pass
 // [WithReadOnly] to route to a healthy replica. When no replicas are
-// healthy a read-only Acquire falls back to the primary and increments
-// the fallback metric so dashboards surface the degradation.
+// configured the pool is a documented pass-through: read-only acquires
+// use the primary without logging a warning or incrementing the
+// degradation (fallback) metric. When replicas ARE configured but none
+// are healthy, a read-only Acquire falls back to the primary and
+// increments the fallback metric so dashboards surface the degradation.
 func (p *RoutingPool) Acquire(ctx context.Context, opts ...AcquireOption) (*pgxpool.Conn, error) {
 	cfg := acquireConfig{}
 	for _, opt := range opts {
@@ -203,6 +209,13 @@ func (p *RoutingPool) Acquire(ctx context.Context, opts ...AcquireOption) (*pgxp
 		opt(&cfg)
 	}
 	if !cfg.readOnly {
+		p.metrics.primaryAcquires.Inc()
+		return p.primary.Acquire(ctx)
+	}
+	// Zero-replica pass-through: not degradation — do not warn or bump
+	// replica_fallback_total (reserved for "replicas configured but all
+	// unhealthy").
+	if len(p.replicas) == 0 {
 		p.metrics.primaryAcquires.Inc()
 		return p.primary.Acquire(ctx)
 	}
@@ -234,22 +247,51 @@ func (p *RoutingPool) acquireReplica(ctx context.Context) (*pgxpool.Conn, bool) 
 	if n == 0 {
 		return nil, false
 	}
-	// Try each replica at most once per call to avoid pathological loops.
-	start := int(p.rrIdx.Add(1)) % n
-	for i := 0; i < n; i++ {
-		idx := (start + i) % n
-		st := p.replicas[idx]
-		if !st.healthy.Load() {
-			continue
+	// Compute the index in unsigned space so a wrapped uint64 never
+	// becomes a negative int after conversion (panic on 32-bit after
+	// 2^31 acquires; theoretical on 64-bit).
+	start := int(p.rrIdx.Add(1) % uint64(n))
+	try := func(requireHealthy bool) (*pgxpool.Conn, bool) {
+		for i := 0; i < n; i++ {
+			idx := (start + i) % n
+			st := p.replicas[idx]
+			if requireHealthy && !st.healthy.Load() {
+				continue
+			}
+			if !requireHealthy && st.healthy.Load() {
+				// Already covered by the healthy pass.
+				continue
+			}
+			conn, err := st.pool.Acquire(ctx)
+			if err == nil {
+				st.consecutiveFails.Store(0)
+				if st.healthy.CompareAndSwap(false, true) {
+					p.cfg.logger.Info("readreplica: replica re-added to rotation",
+						slog.Int("replica_index", idx),
+						slog.String("reason", "on_demand_acquire"),
+					)
+					p.metrics.healthyReplicas.Inc()
+				}
+				return conn, true
+			}
+			// Caller-side cancellation/deadline is not a replica fault —
+			// counting it toward eviction would mark every healthy replica
+			// down after a few short-deadline requests.
+			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+				return nil, false
+			}
+			if requireHealthy {
+				p.recordReplicaFailure(idx, err)
+			}
 		}
-		conn, err := st.pool.Acquire(ctx)
-		if err == nil {
-			st.consecutiveFails.Store(0)
-			return conn, true
-		}
-		p.recordReplicaFailure(idx, err)
+		return nil, false
 	}
-	return nil, false
+	if conn, ok := try(true); ok {
+		return conn, true
+	}
+	// Second pass: attempt previously-unhealthy replicas so
+	// WithoutHealthCheck deployments can recover without a probe loop.
+	return try(false)
 }
 
 func (p *RoutingPool) recordReplicaFailure(idx int, err error) {
@@ -259,7 +301,7 @@ func (p *RoutingPool) recordReplicaFailure(idx int, err error) {
 		p.cfg.logger.Warn("readreplica: replica removed from rotation",
 			slog.Int("replica_index", idx),
 			slog.Int("consecutive_failures", int(fails)),
-			slog.String("error", err.Error()),
+			redact.Error(err),
 		)
 		p.metrics.healthyReplicas.Dec()
 	}
@@ -314,12 +356,18 @@ func (p *RoutingPool) Close() {
 		for _, r := range p.replicas {
 			r.pool.Close()
 		}
+		// Drop per-instance gauge series so rebuild/rotation of
+		// RoutingPools does not leak unbounded Prometheus label
+		// cardinality.
+		p.metrics.deleteSeries()
 	})
 }
 
-// PrimaryHealthy returns true if the primary's Ping succeeded most
-// recently (cheap snapshot for health endpoints; does not probe).
-// Returns true on a fresh pool until proven otherwise.
+// PrimaryHealthy issues a live Ping against the primary using ctx and
+// returns whether it succeeded. This is a real network round-trip — not
+// a cached snapshot — so callers should bound ctx (e.g. readiness probe
+// timeout) and avoid high-frequency scrapes. Prefer [ReplicaHealth] for
+// a cheap in-process snapshot of replica flags.
 func (p *RoutingPool) PrimaryHealthy(ctx context.Context) bool {
 	return p.primary.Ping(ctx) == nil
 }

@@ -223,15 +223,28 @@ func safeCommandName(name string) string {
 }
 
 // metricsHook implements redis.Hook to record command latency and errors.
+// When onReadOnly is set, READONLY replies also flip the Connection's
+// sticky read-only flag so degradation policies can branch via
+// [ReadOnlyAware].
 type metricsHook struct {
-	instance string
-	metrics  *Metrics
+	instance   string
+	metrics    *Metrics
+	onReadOnly func()
 }
 
 var _ redis.Hook = (*metricsHook)(nil)
 
 func (h *metricsHook) DialHook(next redis.DialHook) redis.DialHook {
 	return next
+}
+
+func (h *metricsHook) noteReadOnly(err error) {
+	if err == nil || h.onReadOnly == nil {
+		return
+	}
+	if IsReadOnlyError(err) {
+		h.onReadOnly()
+	}
 }
 
 func (h *metricsHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
@@ -244,6 +257,7 @@ func (h *metricsHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 		h.metrics.commandDuration.WithLabelValues(h.instance, name).Observe(duration)
 		if err != nil && !errors.Is(err, redis.Nil) {
 			h.metrics.commandErrors.WithLabelValues(h.instance, name).Inc()
+			h.noteReadOnly(err)
 		}
 		return err
 	}
@@ -262,8 +276,11 @@ func (h *metricsHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.
 		for _, cmd := range cmds {
 			if cmd.Err() != nil && !errors.Is(cmd.Err(), redis.Nil) {
 				h.metrics.commandErrors.WithLabelValues(h.instance, safeCommandName(cmd.Name())).Inc()
+				h.noteReadOnly(cmd.Err())
 			}
 		}
+		// Pipeline-level error may also be READONLY without per-cmd errs.
+		h.noteReadOnly(err)
 		return err
 	}
 }

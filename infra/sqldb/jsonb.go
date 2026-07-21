@@ -43,8 +43,12 @@ func (j *JSONB[T]) Scan(src any) error {
 	default:
 		return fmt.Errorf("sqldb.JSONB: unsupported scan source type %T", src)
 	}
+	if err := json.Unmarshal(data, &j.Data); err != nil {
+		j.Valid = false
+		return err
+	}
 	j.Valid = true
-	return json.Unmarshal(data, &j.Data)
+	return nil
 }
 
 // Value implements driver.Valuer for writing to the database.
@@ -55,8 +59,9 @@ func (j JSONB[T]) Value() (driver.Value, error) {
 	return json.Marshal(j.Data)
 }
 
-// GormDataType returns "jsonb" for legacy consumers that still use this
-// generic type with GORM in split adapter modules.
+// GormDataType returns "jsonb" so callers that still use this type with
+// GORM (outside the kit's own modules) get the correct column type.
+// The kit itself does not import GORM.
 func (j JSONB[T]) GormDataType() string {
 	return "jsonb"
 }

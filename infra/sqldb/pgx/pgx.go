@@ -120,7 +120,6 @@ func (c Config) LogValue() slog.Value {
 // pgxpool for advanced operations the kit doesn't expose directly.
 type Pool struct {
 	pool *pgxpool.Pool
-	dsn  string
 }
 
 const (
@@ -183,14 +182,14 @@ func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 			return nil, err
 		}
 	}
-	applyPoolDefaults(pcfg, cfg)
+	applyPoolDefaults(pcfg, cfg, cfg.DSN)
 	applyPasswordProvider(pcfg, cfg.PasswordProvider)
 
 	pool, err := pgxpool.NewWithConfig(ctx, pcfg)
 	if err != nil {
 		return nil, redact.WrapError("pgx: connect", err)
 	}
-	return &Pool{pool: pool, dsn: cfg.DSN}, nil
+	return &Pool{pool: pool}, nil
 }
 
 // Pool returns the underlying pgxpool. Use sparingly — anything the
@@ -368,7 +367,11 @@ func (p *Pool) Listen(ctx context.Context, channels ...string) (<-chan Notificat
 
 	for _, ch := range channels {
 		if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{ch}.Sanitize()); err != nil {
-			conn.Release()
+			// Scrub any channels already subscribed on this connection
+			// before Release — pgxpool does not DISCARD/UNLISTEN on
+			// return-to-pool, so a half-setup failure would otherwise
+			// leak subscriptions onto the next acquirer.
+			releaseListenConn(ctx, conn)
 			return nil, nil, redact.WrapError("pgx: LISTEN failed", err)
 		}
 	}
@@ -378,18 +381,7 @@ func (p *Pool) Listen(ctx context.Context, channels ...string) (<-chan Notificat
 	go func() {
 		defer close(out)
 		defer close(errCh)
-		defer func() {
-			// UNLISTEN before releasing the connection back to the
-			// pool. Without this, the next pool acquirer reuses a
-			// connection that is still subscribed to our channels and
-			// receives stray notifications. The cleanup context
-			// survives parent cancellation while retaining context
-			// values for pgx hooks and observability wrappers.
-			cleanupCtx, cancel := listenCleanupContext(ctx, 2*time.Second)
-			_, _ = conn.Exec(cleanupCtx, "UNLISTEN *")
-			cancel()
-			conn.Release()
-		}()
+		defer releaseListenConn(ctx, conn)
 		for {
 			n, waitErr := conn.Conn().WaitForNotification(ctx)
 			if waitErr != nil {
@@ -414,6 +406,20 @@ func listenCleanupContext(ctx context.Context, timeout time.Duration) (context.C
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
+// releaseListenConn runs UNLISTEN * then Release so the connection
+// returns to the pool without leftover NOTIFY subscriptions. Used on
+// both the happy-path goroutine exit and the mid-setup LISTEN error
+// path (where the goroutine was never started).
+func releaseListenConn(ctx context.Context, conn *pgxpool.Conn) {
+	if conn == nil {
+		return
+	}
+	cleanupCtx, cancel := listenCleanupContext(ctx, 2*time.Second)
+	_, _ = conn.Exec(cleanupCtx, "UNLISTEN *")
+	cancel()
+	conn.Release()
+}
+
 // Notify sends a NOTIFY on channel with the given payload. Acquires
 // one connection from the pool for the round trip.
 func (p *Pool) Notify(ctx context.Context, channel, payload string) error {
@@ -428,31 +434,91 @@ func (p *Pool) Notify(ctx context.Context, channel, payload string) error {
 	return err
 }
 
-func applyPoolDefaults(pcfg *pgxpool.Config, cfg Config) {
-	if cfg.MaxConns <= 0 {
-		pcfg.MaxConns = 25
-	} else {
+// applyPoolDefaults overlays kit Config pool knobs onto a ParseConfig
+// result. Non-zero Config fields always win. Zero Config fields leave
+// whatever ParseConfig produced — including DSN pool_* parameters —
+// intact so a caller who writes "?pool_max_conns=100" is not silently
+// stomped back to the kit default. Kit defaults are installed only when
+// both the Config field is zero and the DSN did not set the matching
+// pool_* key (detected via a key-boundary scan of the raw DSN).
+func applyPoolDefaults(pcfg *pgxpool.Config, cfg Config, dsn string) {
+	if cfg.MaxConns > 0 {
 		pcfg.MaxConns = cfg.MaxConns
+	} else if !dsnHasPoolKey(dsn, "pool_max_conns") {
+		pcfg.MaxConns = 25
 	}
-	if cfg.MinConns <= 0 {
-		pcfg.MinConns = 2
-	} else {
+	if cfg.MinConns > 0 {
 		pcfg.MinConns = cfg.MinConns
+	} else if !dsnHasPoolKey(dsn, "pool_min_conns") {
+		pcfg.MinConns = 2
 	}
-	if cfg.MaxConnLifetime <= 0 {
-		pcfg.MaxConnLifetime = 30 * time.Minute
-	} else {
+	if cfg.MaxConnLifetime > 0 {
 		pcfg.MaxConnLifetime = cfg.MaxConnLifetime
+	} else if !dsnHasPoolKey(dsn, "pool_max_conn_lifetime") {
+		pcfg.MaxConnLifetime = 30 * time.Minute
 	}
-	if cfg.MaxConnIdleTime <= 0 {
-		pcfg.MaxConnIdleTime = 10 * time.Minute
-	} else {
+	if cfg.MaxConnIdleTime > 0 {
 		pcfg.MaxConnIdleTime = cfg.MaxConnIdleTime
+	} else if !dsnHasPoolKey(dsn, "pool_max_conn_idle_time") {
+		pcfg.MaxConnIdleTime = 10 * time.Minute
 	}
-	if cfg.HealthCheckPeriod <= 0 {
-		pcfg.HealthCheckPeriod = time.Minute
-	} else {
+	if cfg.HealthCheckPeriod > 0 {
 		pcfg.HealthCheckPeriod = cfg.HealthCheckPeriod
+	} else if !dsnHasPoolKey(dsn, "pool_health_check_period") {
+		pcfg.HealthCheckPeriod = time.Minute
+	}
+}
+
+// dsnHasPoolKey reports whether dsn carries a real pool_* key (URL or
+// keyword form). Used so applyPoolDefaults does not overwrite values
+// ParseConfig already took from the DSN.
+func dsnHasPoolKey(dsn, key string) bool {
+	rest := dsn
+	needle := key + "="
+	for {
+		i := strings.Index(rest, needle)
+		if i < 0 {
+			// Also accept "key = value" (whitespace around '=') in keyword form.
+			i = indexPoolKeyLoose(rest, key)
+			if i < 0 {
+				return false
+			}
+			return isPoolKeyBoundary(dsn, len(dsn)-len(rest)+i)
+		}
+		abs := len(dsn) - len(rest) + i
+		if isPoolKeyBoundary(dsn, abs) {
+			return true
+		}
+		rest = rest[i+len(needle):]
+	}
+}
+
+func indexPoolKeyLoose(s, key string) int {
+	// Match "key" followed by optional whitespace then '='.
+	for i := 0; i+len(key) < len(s); i++ {
+		if !strings.HasPrefix(s[i:], key) {
+			continue
+		}
+		j := i + len(key)
+		for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+			j++
+		}
+		if j < len(s) && s[j] == '=' {
+			return i
+		}
+	}
+	return -1
+}
+
+func isPoolKeyBoundary(dsn string, at int) bool {
+	if at == 0 {
+		return true
+	}
+	switch dsn[at-1] {
+	case '?', '&', ' ', '\t', '\n', '\r':
+		return true
+	default:
+		return false
 	}
 }
 
@@ -515,24 +581,26 @@ func requireLoopbackHost(host string) error {
 // (since 2.0) admits unverified TLS unless the caller explicitly
 // opted in via Config.AllowSSLModeRequire.
 //
-// Detection rules — combine pgxpool's parsed config (for plaintext
-// admission) with a DSN-string scan (for distinguishing require vs
-// verify-ca, which pgx maps to identical TLSConfig fields):
+// Detection rules — derived from the *parsed* TLSConfig pgx will dial
+// with (not a raw DSN substring scan), so percent-encoded URL values,
+// keyword-form whitespace around '=', PGSSLMODE env, and service-file
+// sources all flow through the same oracle:
 //
 //   - sslmode=disable: pgx sets ConnConfig.TLSConfig to nil. Reject.
-//   - sslmode=verify-ca / sslmode=verify-full: accept.
-//   - sslmode=require: reject unless allowRequire is true (FR-079).
 //   - sslmode=prefer / sslmode=allow: pgx populates Fallbacks with a
 //     plaintext (TLSConfig=nil) entry. Reject.
+//   - sslmode=verify-full: InsecureSkipVerify=false. Accept.
+//   - sslmode=verify-ca: InsecureSkipVerify=true with a non-nil
+//     VerifyPeerCertificate callback that checks the chain. Accept.
+//   - sslmode=require: InsecureSkipVerify=true and no peer-certificate
+//     callback (unless sslrootcert is set, in which case pgx upgrades
+//     require→verify-ca). Reject unless allowRequire is true (FR-079).
 //
-// Why parse the raw DSN here too: pgx maps both `require` and
-// `verify-ca` to TLSConfig{InsecureSkipVerify:true, VerifyConnection:nil}
-// — there is no field on the parsed config that distinguishes them.
-// Without re-parsing the DSN, the kit cannot enforce a require-vs-
-// verify-ca policy. The plaintext-fallback rejection still uses
-// pcfg.ConnConfig to track what pgx will actually do at dial time
-// (last-wins parsing is honoured by pgxpool itself).
+// The dsn argument is retained for call-site compatibility and for the
+// lastSSLMode helper used by focused unit tests; the require/verify
+// decision no longer depends on scanning it.
 func requireTLSOnParsedConfig(pcfg *pgxpool.Config, dsn string, allowRequire bool) error {
+	_ = dsn // reserved for diagnostics / lastSSLMode tests
 	cc := pcfg.ConnConfig
 	if cc.TLSConfig == nil {
 		return errors.New("pgx: DSN does not enable TLS (sslmode=disable or unset); set sslmode=verify-ca/verify-full (require opts in via Config.AllowSSLModeRequire)")
@@ -542,8 +610,13 @@ func requireTLSOnParsedConfig(pcfg *pgxpool.Config, dsn string, allowRequire boo
 			return errors.New("pgx: DSN admits a plaintext fallback (sslmode=prefer/allow); use verify-ca/verify-full to enforce TLS unconditionally")
 		}
 	}
-	mode := lastSSLMode(dsn)
-	if mode == "require" && !allowRequire {
+	// require (no identity verification) is the only remaining MITM
+	// posture once plaintext modes are ruled out: skip-verify with no
+	// peer-certificate callback. verify-ca always installs
+	// VerifyPeerCertificate; verify-full clears InsecureSkipVerify.
+	tc := cc.TLSConfig
+	isRequire := tc.InsecureSkipVerify && tc.VerifyPeerCertificate == nil
+	if isRequire && !allowRequire {
 		return errors.New("pgx: sslmode=require admits MITM (no server identity verification); use sslmode=verify-ca or verify-full, or opt in with Config.AllowSSLModeRequire on a closed network")
 	}
 	return nil

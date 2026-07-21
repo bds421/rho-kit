@@ -34,6 +34,23 @@ type ReadOnlyAware interface {
 	OnReadOnly(ctx context.Context) error
 }
 
+// ApplyDegradation chooses the policy branch for an unhealthy connection.
+// When conn.ReadOnly() is true and policy implements [ReadOnlyAware], it
+// calls OnReadOnly; otherwise it calls OnUnavailable. Callers that hold a
+// [Connection] should use this instead of branching on Healthy() alone so
+// read-only failover is not treated identically to a dead backend.
+func ApplyDegradation(ctx context.Context, conn *Connection, policy DegradationPolicy) error {
+	if policy == nil {
+		return ErrUnavailable
+	}
+	if conn != nil && conn.ReadOnly() {
+		if ro, ok := policy.(ReadOnlyAware); ok {
+			return ro.OnReadOnly(ctx)
+		}
+	}
+	return policy.OnUnavailable(ctx)
+}
+
 // PassthroughPolicy returns nil on unavailability, allowing the caller to
 // fall back to its own default behavior (e.g. cache miss, in-memory fallback).
 // This is appropriate for features where missing data is acceptable.

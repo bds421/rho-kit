@@ -147,16 +147,13 @@ func drainHistogramCount(t *testing.T, m *Metrics, key, state string) uint64 {
 	return 0
 }
 
-// TestHoldLeadership_HappyPathRecordsDrainedMetric pins the contract
-// documented on awaitCallbackDrain ("terminal duration is always
-// recorded"): when OnAcquired returns on its own — before any
-// cancellation — holdLeadership exits via the direct cbDone branch, which
-// does NOT route through awaitCallbackDrain. Before the fix that branch
-// recorded no terminal observation, leaving the drained-state histogram
-// empty for the most common (graceful) completion and skewing SLO
-// dashboards. This test fails if the happy-path drained observation is
-// dropped.
-func TestHoldLeadership_HappyPathRecordsDrainedMetric(t *testing.T) {
+// TestHoldLeadership_HappyPathDoesNotRecordDrainMetric pins that a
+// voluntary OnAcquired return (still leader) must NOT write whole-term
+// duration into callback_drain_seconds{state=drained}. The drain
+// histogram measures time waiting after leadership ended; on the happy
+// path there is no drain wait. Recording time.Since(cbStart) inflated
+// the SLO with term length (review-21).
+func TestHoldLeadership_HappyPathDoesNotRecordDrainMetric(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	metrics := NewMetrics(WithRegisterer(reg))
 
@@ -178,8 +175,8 @@ func TestHoldLeadership_HappyPathRecordsDrainedMetric(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int32(0), handle.extendCt.Load(),
 		"renew must not have ticked — this test must exercise the cbDone happy path")
-	require.Equal(t, uint64(1), drainHistogramCount(t, metrics, "tenant-sweeper", drainStateDrained),
-		"happy-path completion must record exactly one drained terminal observation")
+	require.Equal(t, uint64(0), drainHistogramCount(t, metrics, "tenant-sweeper", drainStateDrained),
+		"voluntary return must not inflate drain histogram with term length")
 }
 
 func TestHoldLeadership_RenewalFailureExits(t *testing.T) {

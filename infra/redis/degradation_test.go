@@ -229,3 +229,23 @@ func TestDegradationPolicy_Interface(t *testing.T) {
 	var _ DegradationPolicy = FailFastPolicy{}
 	var _ DegradationPolicy = CustomPolicy{}
 }
+
+func TestApplyDegradation_ReadOnlyAware(t *testing.T) {
+	c := &Connection{}
+	c.MarkReadOnly()
+	err := ApplyDegradation(context.Background(), c, FailFastPolicy{})
+	assert.ErrorIs(t, err, ErrPrimaryReadOnly)
+
+	// Without ReadOnly flag, same policy returns ErrUnavailable.
+	c2 := &Connection{}
+	err = ApplyDegradation(context.Background(), c2, FailFastPolicy{})
+	assert.ErrorIs(t, err, ErrUnavailable)
+}
+
+func TestApplyDegradation_PassthroughOnReadOnly(t *testing.T) {
+	// Passthrough does not implement ReadOnlyAware; falls through to OnUnavailable (nil).
+	c := &Connection{}
+	c.MarkReadOnly()
+	err := ApplyDegradation(context.Background(), c, PassthroughPolicy{})
+	assert.NoError(t, err)
+}

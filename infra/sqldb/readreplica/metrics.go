@@ -19,6 +19,26 @@ type routingMetrics struct {
 	replicaFallback prometheus.Counter
 	healthyReplicas prometheus.Gauge
 	replicaCount    prometheus.Gauge
+
+	// Retained so Close can DeleteLabelValues and prevent unbounded
+	// gauge series growth when RoutingPools are rebuilt.
+	healthyVec *prometheus.GaugeVec
+	countVec   *prometheus.GaugeVec
+	instanceID string
+}
+
+// deleteSeries removes this pool's per-instance gauge children from the
+// shared vectors. Idempotent; safe when metrics were never registered.
+func (m *routingMetrics) deleteSeries() {
+	if m == nil {
+		return
+	}
+	if m.healthyVec != nil && m.instanceID != "" {
+		_ = m.healthyVec.DeleteLabelValues(m.instanceID)
+	}
+	if m.countVec != nil && m.instanceID != "" {
+		_ = m.countVec.DeleteLabelValues(m.instanceID)
+	}
 }
 
 // newRoutingMetrics builds the routing metrics, registering (or adopting,
@@ -91,6 +111,9 @@ func newRoutingMetrics(reg prometheus.Registerer, instanceID string) (*routingMe
 		replicaFallback: replicaFallback,
 		healthyReplicas: healthyGauge,
 		replicaCount:    countGauge,
+		healthyVec:      healthyReplicas,
+		countVec:        replicaCount,
+		instanceID:      instanceID,
 	}, nil
 }
 
@@ -104,7 +127,7 @@ func registerCounter(reg prometheus.Registerer, c prometheus.Counter) (prometheu
 			if existing, ok := are.ExistingCollector.(prometheus.Counter); ok {
 				return existing, nil
 			}
-			return c, nil
+			return nil, errors.New("readreplica: metric name already registered with a different type")
 		}
 		return nil, err
 	}
@@ -121,7 +144,7 @@ func registerGaugeVec(reg prometheus.Registerer, v *prometheus.GaugeVec) (*prome
 			if existing, ok := are.ExistingCollector.(*prometheus.GaugeVec); ok {
 				return existing, nil
 			}
-			return v, nil
+			return nil, errors.New("readreplica: metric name already registered with a different type")
 		}
 		return nil, err
 	}

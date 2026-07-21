@@ -58,15 +58,34 @@ func IsNotNullError(err error) bool {
 // IsSerializationError returns true if the error represents a
 // transaction serialization failure that should be retried
 // (Postgres SQLSTATE 40001).
+//
+// Matches common libpq/pgx message shapes without importing the driver:
+// "serialization failure", "could not serialize access", and the
+// SQLSTATE token "40001". For precise code matching prefer the pgx
+// [ErrorClassifier].
 func IsSerializationError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "serialization failure")
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "serialization failure") ||
+		strings.Contains(msg, "could not serialize access") ||
+		strings.Contains(msg, "40001")
 }
 
-// IsNotFound returns true if the error is sql.ErrNoRows.
-// Use this for unified "row not found" detection across repositories.
+// IsNotFound returns true if the error is a "no rows" sentinel.
+// Matches [sql.ErrNoRows] and the common pgx message shape so callers
+// on the canonical pgx path do not need a separate branch. Prefer
+// errors.Is against the concrete sentinel when available.
 func IsNotFound(err error) bool {
-	return errors.Is(err, sql.ErrNoRows)
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return true
+	}
+	// pgx.ErrNoRows has the same Error() string as database/sql when
+	// the adapter does not wrap with errors.Is-compatible sql.ErrNoRows.
+	msg := err.Error()
+	return msg == "no rows in result set" || strings.Contains(strings.ToLower(msg), "no rows in result set")
 }

@@ -12,7 +12,7 @@ removes failing replicas from rotation and re-adds them on recovery.
 - `New(cfg Config, opts ...Option) (*RoutingPool, error)`
 - `RoutingPool.Acquire(ctx, opts ...AcquireOption) (*pgxpool.Conn, error)`
 - `RoutingPool.Close()`
-- `RoutingPool.PrimaryHealthy(ctx) bool`
+- `RoutingPool.PrimaryHealthy(ctx) bool` — live Ping (bound ctx); not a cached snapshot
 - `RoutingPool.ReplicaHealth() []bool`
 - Options: `WithHealthInterval`, `WithMaxConsecutiveFailures`,
   `WithProbeTimeout`, `WithLogger`, `WithMetricsRegisterer`,

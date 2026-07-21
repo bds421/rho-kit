@@ -39,9 +39,12 @@
 // # Quick start
 //
 //	loader := awssm.New(awsClient)
-//	cached := secrets.NewCachedLoader(loader,
+//	cached, err := secrets.NewCachedLoader(loader,
 //	    secrets.WithCacheTTL(10*time.Minute),
 //	)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //
 //	// For pgx: WithPasswordProvider(secrets.NewRotatingProvider(cached, "prod/postgres/api"))
 //	// For Redis: WithCredentialsProvider similarly

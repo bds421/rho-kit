@@ -428,3 +428,75 @@ func TestRequireLoopbackHost_RejectsParsedNonLoopback(t *testing.T) {
 	err = requireLoopbackHost(pcfg.ConnConfig.Host)
 	assert.Error(t, err, "libpq-form last-wins host=remote must be rejected at loopback gate")
 }
+
+// TestRequireTLS_RejectsPercentEncodedRequire pins FR-079 against a
+// URL-encoded sslmode value. pgconn decodes requir%65 → require and
+// dials unverified TLS; a raw-substring scanner that compared against
+// "requir%65" used to skip the require rejection.
+func TestRequireTLS_RejectsPercentEncodedRequire(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://u:p@h/db?sslmode=requir%65",
+		"postgres://u:p@h/db?sslmode=%72equire",
+	} {
+		t.Run(dsn, func(t *testing.T) {
+			err := checkTLS(t, dsn, false)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "sslmode=require admits MITM")
+		})
+	}
+}
+
+// TestRequireTLS_RejectsKeywordWhitespaceAroundEquals covers libpq
+// keyword form `sslmode = require` (spaces around '=').
+func TestRequireTLS_RejectsKeywordWhitespaceAroundEquals(t *testing.T) {
+	err := checkTLS(t, "host=h user=u password=p dbname=db sslmode = require", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sslmode=require admits MITM")
+}
+
+// TestRequireTLS_RejectsPGSSLMODEEnvRequire covers the case where the
+// DSN itself has no sslmode token and the effective mode comes from
+// the PGSSLMODE environment variable (common in containers).
+func TestRequireTLS_RejectsPGSSLMODEEnvRequire(t *testing.T) {
+	t.Setenv("PGSSLMODE", "require")
+	err := checkTLS(t, "postgres://u:p@h/db", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sslmode=require admits MITM")
+}
+
+func TestApplyPoolDefaults_PreservesDSNPoolMaxConns(t *testing.T) {
+	dsn := "postgres://u:p@h/db?sslmode=verify-full&pool_max_conns=100&pool_min_conns=7"
+	pcfg := parseForTest(t, dsn)
+	require.EqualValues(t, 100, pcfg.MaxConns, "precondition: ParseConfig honours pool_max_conns")
+	require.EqualValues(t, 7, pcfg.MinConns)
+
+	applyPoolDefaults(pcfg, Config{}, dsn)
+
+	assert.EqualValues(t, 100, pcfg.MaxConns, "zero Config.MaxConns must not stomp DSN pool_max_conns")
+	assert.EqualValues(t, 7, pcfg.MinConns, "zero Config.MinConns must not stomp DSN pool_min_conns")
+}
+
+func TestApplyPoolDefaults_ConfigOverridesDSN(t *testing.T) {
+	dsn := "postgres://u:p@h/db?sslmode=verify-full&pool_max_conns=100"
+	pcfg := parseForTest(t, dsn)
+	applyPoolDefaults(pcfg, Config{MaxConns: 40, MinConns: 3}, dsn)
+	assert.EqualValues(t, 40, pcfg.MaxConns)
+	assert.EqualValues(t, 3, pcfg.MinConns)
+}
+
+func TestApplyPoolDefaults_KitDefaultsWhenNeitherSet(t *testing.T) {
+	dsn := "postgres://u:p@h/db?sslmode=verify-full"
+	pcfg := parseForTest(t, dsn)
+	applyPoolDefaults(pcfg, Config{}, dsn)
+	assert.EqualValues(t, 25, pcfg.MaxConns)
+	assert.EqualValues(t, 2, pcfg.MinConns)
+	assert.Equal(t, 30*time.Minute, pcfg.MaxConnLifetime)
+	assert.Equal(t, 10*time.Minute, pcfg.MaxConnIdleTime)
+	assert.Equal(t, time.Minute, pcfg.HealthCheckPeriod)
+}
+
+func TestReleaseListenConn_NilSafe(t *testing.T) {
+	// Must not panic on a nil conn (defensive; setup-error path always
+	// has a real conn, but the helper is shared).
+	releaseListenConn(context.Background(), nil)
+}

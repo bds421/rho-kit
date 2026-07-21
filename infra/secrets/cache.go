@@ -153,15 +153,26 @@ func (c *CachedLoader) Get(ctx context.Context, key string) (Secret, error) {
 	now := c.cfg.now()
 	c.mu.Lock()
 	entry, ok := c.entries[key]
-	c.mu.Unlock()
-
 	if ok && now.Before(entry.expiresAt) {
+		// Copy while holding mu so a concurrent fetchAndStore/Invalidate
+		// cannot zero the cache-owned secret.String between unlock and
+		// Reveal. Without this, callers can observe an empty secret with
+		// a nil error after rotation/invalidate races.
+		out := copyForCaller(entry.value)
+		refreshDue := now.After(entry.refreshAt)
+		c.mu.Unlock()
 		c.metrics.hits.Inc()
-		if now.After(entry.refreshAt) {
+		if refreshDue {
 			c.spawnRefresh(key)
 		}
-		return copyForCaller(entry.value), nil
+		return out, nil
 	}
+	// Snapshot expiry for the stale-fallback path after unlock.
+	var expiredAt time.Time
+	if ok {
+		expiredAt = entry.expiresAt
+	}
+	c.mu.Unlock()
 
 	// Miss or expired — coalesce concurrent fetches per key.
 	//
@@ -173,13 +184,17 @@ func (c *CachedLoader) Get(ctx context.Context, key string) (Secret, error) {
 	// request) fail the fetch for every waiter — including ones with
 	// generous deadlines — on a secrets hot path. A bounded detached
 	// context keeps a single slow/cancelled caller from poisoning the rest.
-	val, err := c.sf.do(key, func() (Secret, error) {
+	val, err := c.sf.do(ctx, key, func() (Secret, error) {
 		c.metrics.misses.Inc()
 		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
 		defer cancel()
-		return c.fetchAndStore(fetchCtx, key, now)
+		// Use wall-clock at fetch completion so staleAge is not biased
+		// by a long single-flight wait that used a pre-fetch now.
+		return c.fetchAndStore(fetchCtx, key, c.cfg.now())
 	})
 	if err == nil {
+		// fetchAndStore returns a value we own for the caller path; copy
+		// so the cache entry and the caller never share a secret.String.
 		return copyForCaller(val), nil
 	}
 	// On loader-unavailable, fall back to a stale cached value if
@@ -187,18 +202,32 @@ func (c *CachedLoader) Get(ctx context.Context, key string) (Secret, error) {
 	if !errors.Is(err, ErrLoaderUnavailable) || !ok {
 		return Secret{}, err
 	}
-	staleAge := now.Sub(entry.expiresAt)
+	// Re-read now after the (possibly long) fetch so staleAge reflects
+	// true age at decision time, not the pre-flight timestamp.
+	staleAge := c.cfg.now().Sub(expiredAt)
 	if staleAge > c.cfg.maxStale {
 		c.metrics.staleExceeded.Inc()
 		return Secret{}, err
 	}
+	// Re-read under lock and copy; the entry may have been invalidated
+	// while we waited on singleflight.
+	c.mu.Lock()
+	entry, stillOK := c.entries[key]
+	var staleOut Secret
+	if stillOK {
+		staleOut = copyForCaller(entry.value)
+	}
+	c.mu.Unlock()
+	if !stillOK {
+		return Secret{}, err
+	}
 	c.metrics.staleFallbacks.Inc()
 	c.cfg.logger.Warn("secrets: returning stale cached value (loader unavailable)",
-		slog.String("key", key),
+		slog.String("key", redact.StringValue(key)),
 		slog.Duration("stale_age", staleAge),
 		redact.Error(err),
 	)
-	return copyForCaller(entry.value), nil
+	return staleOut, nil
 }
 
 // Invalidate drops the cached entry for key (and zeroes its secret
@@ -265,7 +294,7 @@ func (c *CachedLoader) spawnRefresh(key string) {
 			if r := recover(); r != nil {
 				c.metrics.refreshErrors.Inc()
 				c.cfg.logger.Warn("secrets: background refresh panicked",
-					slog.String("key", key),
+					slog.String("key", redact.StringValue(key)),
 					redact.Panic(r),
 				)
 			}
@@ -274,14 +303,14 @@ func (c *CachedLoader) spawnRefresh(key string) {
 		// doesn't abort the refresh.
 		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer cancel()
-		_, err := c.sf.do(key, func() (Secret, error) {
+		_, err := c.sf.do(ctx, key, func() (Secret, error) {
 			c.metrics.refreshes.Inc()
 			return c.fetchAndStore(ctx, key, c.cfg.now())
 		})
 		if err != nil {
 			c.metrics.refreshErrors.Inc()
 			c.cfg.logger.Warn("secrets: background refresh failed",
-				slog.String("key", key),
+				slog.String("key", redact.StringValue(key)),
 				redact.Error(err),
 			)
 		}

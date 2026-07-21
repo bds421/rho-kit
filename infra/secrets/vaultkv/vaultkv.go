@@ -69,18 +69,18 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 			return secrets.Secret{}, secrets.ErrSecretNotFound
 		}
 		return secrets.Secret{}, redact.WrapSentinel(secrets.ErrLoaderUnavailable,
-			redact.WrapError("vaultkv: Get "+key, err))
+			redact.WrapError("vaultkv: Get "+redact.StringValue(key), err))
 	}
 	if resp == nil || resp.Data == nil {
 		return secrets.Secret{}, secrets.ErrSecretNotFound
 	}
 	raw, ok := resp.Data[l.field]
 	if !ok {
-		return secrets.Secret{}, fmt.Errorf("vaultkv: %s has no %q field", key, l.field)
+		return secrets.Secret{}, fmt.Errorf("vaultkv: secret has no %q field: %w", l.field, secrets.ErrLoaderUnavailable)
 	}
 	strVal, ok := raw.(string)
 	if !ok {
-		return secrets.Secret{}, fmt.Errorf("vaultkv: %s field %q is %T, not string", key, l.field, raw)
+		return secrets.Secret{}, fmt.Errorf("vaultkv: field %q is %T, not string: %w", l.field, raw, secrets.ErrLoaderUnavailable)
 	}
 	version := ""
 	if resp.VersionMetadata != nil {
@@ -89,8 +89,12 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 	return secrets.MakeSecret([]byte(strVal), version), nil
 }
 
-// isNotFound recognises the various shapes Vault returns when a path
-// doesn't exist or has been deleted (HTTP 404, "metadata not found").
+// isNotFound recognises Vault shapes when a path doesn't exist or has
+// been deleted. Prefer the structured *api.ResponseError status code;
+// the string fallback is limited to Vault-specific wording so a
+// transport/proxy error containing a generic "Code: 404" is not
+// misclassified as not-found (which would skip CachedLoader stale
+// fallback).
 func isNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -101,5 +105,5 @@ func isNotFound(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "secret not found") ||
-		strings.Contains(msg, "Code: 404")
+		strings.Contains(msg, "metadata not found")
 }

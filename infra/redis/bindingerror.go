@@ -2,8 +2,12 @@ package redis
 
 import "fmt"
 
-// BindingError is returned by Start* functions when a binding at the given
-// index fails validation (e.g. empty name, nil handler).
+// BindingError describes a validation failure for one entry in a bindings
+// slice (empty name, nil handler, etc.). Historically returned by
+// StartProcessors/StartConsumers-style helpers; retained for callers that
+// still type-assert or construct it when validating binding lists.
+// Prefer returning a plain fmt.Errorf from new APIs unless index-aware
+// diagnostics are required.
 type BindingError struct {
 	Index  int
 	Reason string

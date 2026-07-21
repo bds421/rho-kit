@@ -250,7 +250,11 @@ func connectInternal(client redis.UniversalClient, connOpts ...ConnOption) (*Con
 		o(c)
 	}
 
-	client.AddHook(&metricsHook{instance: c.instance, metrics: c.metrics})
+	client.AddHook(&metricsHook{
+		instance:   c.instance,
+		metrics:    c.metrics,
+		onReadOnly: c.MarkReadOnly,
+	})
 	c.client = client
 
 	if c.lazyConnect {
@@ -469,8 +473,29 @@ func (c *Connection) checkHealth() {
 	// writes. The dedicated readOnly bit lets callers branch on it.
 	if err != nil && IsReadOnlyError(err) {
 		c.MarkReadOnly()
-		// Fall through: still report this probe as failed so health
-		// metrics and consecutiveFailures advance.
+		// Reachable-but-read-only is a failover state, not a dead
+		// connection. Do not advance consecutiveFailures toward the
+		// permanent Dead() threshold — the node is still answering.
+		c.mu.Lock()
+		if !c.isClosed() {
+			wasHealthy := c.healthy
+			// MarkReadOnly already set healthy=false / readOnly=true.
+			c.consecutiveFailures = 0
+			c.mu.Unlock()
+			c.metrics.connectionHealthy.WithLabelValues(c.instance).Set(0)
+			if wasHealthy {
+				c.logger.Error("redis connection lost", redact.Error(err))
+			} else {
+				c.logger.Warn("redis still unhealthy",
+					redact.Error(err),
+					"consecutive_failures", 0,
+					"read_only", true,
+				)
+			}
+		} else {
+			c.mu.Unlock()
+		}
+		return
 	}
 
 	c.mu.Lock()
@@ -577,10 +602,18 @@ func (c *Connection) fireOnReconnect() {
 			select {
 			case <-c.closed:
 				cancel()
+				// Clear reconnecting even if the user callback ignores ctx,
+				// so future reconnects are not permanently skipped.
+				c.mu.Lock()
+				c.reconnecting = false
+				c.mu.Unlock()
 			case <-timer.C:
 				c.logger.Error("redis onReconnect callback timed out",
 					"timeout", c.onReconnectTimeout)
 				cancel()
+				c.mu.Lock()
+				c.reconnecting = false
+				c.mu.Unlock()
 			case <-done:
 			}
 		}()

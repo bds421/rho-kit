@@ -360,6 +360,12 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 				// OnLost synchronously. awaitCallbackDrain handles warn
 				// ticks, optional drain-timeout, and terminal metrics.
 				drainResult := e.awaitCallbackDrain(tm.cbDone)
+				// Re-assert leader=false AFTER the OnAcquired goroutine
+				// has drained. onStartedLeading may still race past
+				// claim() and Store(true) after stop() if it was
+				// preempted between claim and the true-store; without
+				// this post-drain clear, IsLeader() sticks true forever.
+				e.leader.Store(false)
 				lostErr := e.runOnLost(cb)
 				if perr := joinStoppedLeadingErrors(lostErr, drainResult); perr != nil {
 					lostErrSlot.Store(&perr)

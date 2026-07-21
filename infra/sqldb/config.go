@@ -90,7 +90,7 @@ func (c Config) LogValue() slog.Value {
 // Format: postgres://user:password@host:port/dbname?sslmode=verify-full
 //
 // The password is automatically percent-decoded. Port defaults to 5432
-// if omitted. The sslmode query parameter is extracted into Options.
+// if omitted. All non-empty query parameters are copied into Options (repeated keys are rejected).
 // LogLevel is not part of the DSN and must be set separately.
 func ParseDSN(rawURL string) (Config, error) {
 	u, err := url.Parse(rawURL)
@@ -126,15 +126,18 @@ func ParseDSN(rawURL string) (Config, error) {
 		password, _ = u.User.Password()
 	}
 
-	var opts map[string]string
+	opts := make(map[string]string)
 	query := u.Query()
-	sslModes := query["sslmode"]
-	if len(sslModes) > 1 {
-		return Config{}, fmt.Errorf("sqldb: DATABASE_URL sslmode query parameter must not be repeated")
+	for key, values := range query {
+		if len(values) > 1 {
+			return Config{}, fmt.Errorf("sqldb: DATABASE_URL query parameter %q must not be repeated", key)
+		}
+		if len(values) == 1 && values[0] != "" {
+			opts[key] = values[0]
+		}
 	}
-	if len(sslModes) == 1 && sslModes[0] != "" {
-		sslMode := sslModes[0]
-		opts = map[string]string{"sslmode": sslMode}
+	if len(opts) == 0 {
+		opts = nil
 	}
 
 	return Config{

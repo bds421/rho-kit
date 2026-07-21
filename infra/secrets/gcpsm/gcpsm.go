@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	gax "github.com/googleapis/gax-go/v2"
@@ -22,9 +23,10 @@ type API interface {
 
 // Loader implements [secrets.Loader] backed by GCP Secret Manager.
 type Loader struct {
-	api     API
-	project string
-	version string // "latest" or numeric/alias
+	api           API
+	project       string
+	version       string // "latest" or numeric/alias
+	strictProject bool   // reject fully-qualified projects/ keys
 }
 
 // Option configures a [Loader].
@@ -33,11 +35,25 @@ type Option func(*Loader)
 // WithProject pins the GCP project ID. Required if the secret key
 // passed to Get is bare ("my-secret" rather than a full
 // "projects/PROJECT/secrets/NAME/versions/V" path).
+//
+// Keys that already start with "projects/" are accepted verbatim by
+// default and BYPASS this pin — treat keys as trusted operator input.
+// Use [WithStrictProject] when keys may be tenant-supplied and must
+// stay confined to the pinned project.
 func WithProject(id string) Option {
 	if id == "" {
 		panic("gcpsm: WithProject requires non-empty project id")
 	}
 	return func(l *Loader) { l.project = id }
+}
+
+// WithStrictProject rejects fully-qualified "projects/..." keys so
+// every fetch is confined to the project set by [WithProject]. Use
+// this when Get keys are not fully trusted (e.g. derived from request
+// input). Without it, a key of the form
+// "projects/other/secrets/x/versions/latest" escapes the pin.
+func WithStrictProject() Option {
+	return func(l *Loader) { l.strictProject = true }
 }
 
 // WithVersion overrides the default version "latest".
@@ -80,10 +96,12 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 			return secrets.Secret{}, secrets.ErrSecretNotFound
 		}
 		return secrets.Secret{}, redact.WrapSentinel(secrets.ErrLoaderUnavailable,
-			redact.WrapError("gcpsm: AccessSecretVersion "+key, err))
+			redact.WrapError("gcpsm: AccessSecretVersion "+redact.StringValue(key), err))
 	}
 	if resp.Payload == nil || len(resp.Payload.Data) == 0 {
-		return secrets.Secret{}, errors.New("gcpsm: empty payload")
+		// Malformed / mid-rotation empty payload: wrap ErrLoaderUnavailable
+		// so CachedLoader can serve a stale value within MaxStale.
+		return secrets.Secret{}, fmt.Errorf("gcpsm: empty payload: %w", secrets.ErrLoaderUnavailable)
 	}
 	version := ""
 	if resp.Name != "" {
@@ -98,9 +116,15 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 }
 
 func (l *Loader) resolveName(key string) (string, error) {
-	// If the caller passes a fully-qualified path, use it verbatim so
-	// they can target a different project / secret-version per call.
-	if hasPrefix(key, "projects/") {
+	// Fully-qualified paths bypass WithProject so operators can target
+	// a different project/version per call. Keys MUST be trusted unless
+	// [WithStrictProject] is set — an untrusted "projects/other/..."
+	// key would escape multi-tenant project isolation.
+	if strings.HasPrefix(key, "projects/") {
+		if l.strictProject {
+			return "", redact.WrapSentinel(secrets.ErrLoaderUnavailable,
+				errors.New("gcpsm: fully-qualified secret path rejected by WithStrictProject"))
+		}
 		return key, nil
 	}
 	if l.project == "" {
@@ -110,12 +134,8 @@ func (l *Loader) resolveName(key string) (string, error) {
 		// an error on the request path instead of crashing the caller's
 		// goroutine — matching awssm and vaultkv.
 		return "", redact.WrapSentinel(secrets.ErrLoaderUnavailable,
-			redact.WrapError("gcpsm: AccessSecretVersion "+key,
+			redact.WrapError("gcpsm: AccessSecretVersion "+redact.StringValue(key),
 				errors.New("bare secret name requires WithProject")))
 	}
 	return fmt.Sprintf("projects/%s/secrets/%s/versions/%s", l.project, key, l.version), nil
-}
-
-func hasPrefix(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }

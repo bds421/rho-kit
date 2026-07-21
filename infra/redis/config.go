@@ -19,15 +19,24 @@ const minimumTLSVersion = tls.VersionTLS12
 
 // Config holds Redis connection settings.
 //
-// Configure via URL directly, or via individual fields (Host, Port, Password, DB)
-// which are assembled into a Redis URL. When URL is non-empty it takes
-// precedence over individual fields.
+// Configure via URL directly, or via individual fields (Host, Port,
+// Password, DB, TLS) which are assembled into a Redis URL. When URL is
+// non-empty it takes precedence over individual fields.
+//
+// Production operators using the individual-fields path MUST set
+// [Config.TLS] (REDIS_TLS=true) so RedisURL() emits rediss://. Without
+// TLS the fields path is plaintext-only and requires
+// REDIS_ALLOW_PLAINTEXT=true, which also disables the passwordless
+// guard — suitable only for trusted local-dev fixtures.
 type Config struct {
 	URL      string
 	Host     string
 	Port     int
 	Password string
 	DB       int
+	// TLS, when true, makes RedisURL() assemble a rediss:// URL from the
+	// individual fields. Ignored when URL is set. Env: REDIS_TLS.
+	TLS bool `env:"REDIS_TLS"`
 	// AllowPlaintext opts a deployment out of the FR-077 production-
 	// safety check. Without it, ValidateRedis rejects `redis://` URLs
 	// and credential-less connections. Set REDIS_ALLOW_PLAINTEXT=true
@@ -49,8 +58,12 @@ func (c Config) RedisURL() string {
 	if port == 0 {
 		port = 6379
 	}
+	scheme := "redis"
+	if c.TLS {
+		scheme = "rediss"
+	}
 	u := &url.URL{
-		Scheme: "redis",
+		Scheme: scheme,
 		Host:   net.JoinHostPort(c.Host, strconv.Itoa(port)),
 		Path:   strconv.Itoa(c.DB),
 	}
@@ -141,6 +154,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Int("port", c.Port),
 		slog.Bool("password_configured", c.Password != "" || urlUserinfoConfigured),
 		slog.Int("db", c.DB),
+		slog.Bool("tls", c.TLS),
 		slog.Bool("allow_plaintext", c.AllowPlaintext),
 	)
 }
@@ -170,8 +184,16 @@ type Fields struct {
 //   - REDIS_PORT (default: 6379)
 //   - REDIS_PASSWORD (secret, default: empty)
 //   - REDIS_DB (default: 0)
+//   - REDIS_TLS (default: false; set true for rediss:// from fields)
+//
+// The fields path without REDIS_TLS=true is plaintext-only. Production
+// deployments should set REDIS_TLS=true (or use REDIS_URL=rediss://...).
 func LoadFields() (Fields, error) {
 	allowPlaintext, err := config.GetBool("REDIS_ALLOW_PLAINTEXT", false)
+	if err != nil {
+		return Fields{}, err
+	}
+	tlsEnabled, err := config.GetBool("REDIS_TLS", false)
 	if err != nil {
 		return Fields{}, err
 	}
@@ -197,6 +219,7 @@ func LoadFields() (Fields, error) {
 			Port:           port,
 			Password:       config.MustGetSecret("REDIS_PASSWORD", ""),
 			DB:             db,
+			TLS:            tlsEnabled,
 			AllowPlaintext: allowPlaintext,
 		},
 	}, nil
@@ -239,9 +262,10 @@ func redisURLHasCredentials(u *url.URL) bool {
 	if u == nil || u.User == nil {
 		return false
 	}
-	if u.User.Username() != "" {
-		return true
-	}
+	// FR-077 guards against anonymous Redis. A username alone (no
+	// password) is not a secret — Redis ACL nopass users would pass a
+	// username-only check while remaining effectively unauthenticated.
+	// Require a non-empty password component.
 	pw, hasPassword := u.User.Password()
 	return hasPassword && pw != ""
 }

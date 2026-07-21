@@ -213,8 +213,11 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		return errors.New("leader-election: Run requires a non-nil context")
 	}
 	if !e.started.CompareAndSwap(false, true) {
-		return errors.New("leader-election: Run already invoked on this Elector — a second Run would race the leader flag and call OnLeader / OnRelinquish out of order")
+		return errors.New("leader-election: Run already invoked concurrently on this Elector — a second concurrent Run would race the leader flag and call OnAcquired / OnLost out of order")
 	}
+	// Allow re-Run after return so orchestrators can wrap Run in a
+	// retry loop (mirrors k8slease / Elector interface contract).
+	defer e.started.Store(false)
 
 	for {
 		if ctx.Err() != nil {
@@ -259,8 +262,14 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		if ctx.Err() != nil {
 			return errors.Join(ctx.Err(), holdErr, lostErr)
 		}
+		// OnLost errors/panics are non-fatal: log and continue so a flaky
+		// cleanup hook cannot permanently disable leadership (aligned
+		// with etcd/k8slease and the Elector interface contract).
 		if lostErr != nil {
-			return errors.Join(holdErr, lostErr)
+			e.logger.Error("leader-election: OnLost failed; continuing",
+				redact.String("key", e.key),
+				redact.Error(lostErr),
+			)
 		}
 		// A drain-timeout means an OnAcquired goroutine from the
 		// previous term is still running inside this process. We have
@@ -347,7 +356,6 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	cbStart := time.Now()
 	cbDone := make(chan callbackResult, 1)
 	go func() {
 		var result callbackResult
@@ -393,18 +401,20 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 	for {
 		select {
 		case <-parent.Done():
+			// Leadership is ending: drop the leader flag before the
+			// (possibly long) callback drain so IsLeader stops
+			// reporting true while another replica may already lead.
+			// Mirrors pgadvisory.holdLeadership / k8slease.
+			e.leader.Store(false)
 			cancel()
 			return joinDrainResult(parent.Err(), awaitCallback())
 		case result := <-cbDone:
-			// Happy path: the callback returned on its own before
-			// leadership ended. awaitCallbackDrain is not invoked here, so
-			// record the terminal drained observation directly to honour
-			// the "terminal duration is always recorded" contract — the
-			// drained-state histogram must be non-empty for SLO dashboards
-			// even when the callback never had to be cancelled.
-			if e.metrics != nil {
-				e.metrics.observeDrainDuration(time.Since(cbStart), e.key, drainStateDrained)
-			}
+			// Happy path: the callback returned on its own while still
+			// leader. Drain wait is ~0 (no cancellation was needed), so
+			// do NOT record time-since-callback-start into
+			// callback_drain_seconds{state=drained} — that would inflate
+			// the drain SLO with whole-term length. Aligns with
+			// pgadvisory/etcd, which record nothing on voluntary return.
 			if result.panicValue != nil {
 				return onAcquiredPanicError(result.panicValue)
 			}
@@ -412,10 +422,14 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 		case <-renewTicker.C:
 			ok, err := e.extendOnce(ctx, handle)
 			if err != nil {
+				// Loss detected: drop the leader flag immediately so
+				// IsLeader reflects reality during the callback drain.
+				e.leader.Store(false)
 				cancel()
 				return joinDrainResult(redact.WrapError("extend", err), awaitCallback())
 			}
 			if !ok {
+				e.leader.Store(false)
 				cancel()
 				return joinDrainResult(errors.New("leader-election: handle reports lost"), awaitCallback())
 			}

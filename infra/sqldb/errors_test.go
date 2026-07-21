@@ -1,6 +1,7 @@
 package sqldb
 
 import (
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -61,6 +62,16 @@ func TestIsNotFound(t *testing.T) {
 	}
 	if IsNotFound(errors.New("other")) {
 		t.Fatal("other error should not be not-found")
+	}
+	// Positive paths for the fixed matching (sql.ErrNoRows + pgx message).
+	if !IsNotFound(sql.ErrNoRows) {
+		t.Fatal("sql.ErrNoRows must be not-found")
+	}
+	if !IsNotFound(errors.New("no rows in result set")) {
+		t.Fatal("pgx-style 'no rows in result set' message must match")
+	}
+	if !IsNotFound(errors.New("ERROR: no rows in result set (SQLSTATE 02000)")) {
+		t.Fatal("message containing 'no rows in result set' must match")
 	}
 }
 

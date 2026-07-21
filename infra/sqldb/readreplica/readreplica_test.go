@@ -62,6 +62,12 @@ func (f *fakeAcquirer) acquireCount() int {
 	return f.acquires
 }
 
+func (f *fakeAcquirer) pingCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pings
+}
+
 func TestNew_RequiresPrimary(t *testing.T) {
 	_, err := readreplica.New(readreplica.Config{})
 	require.Error(t, err)
@@ -301,3 +307,105 @@ func gaugeValues(t *testing.T, reg *prometheus.Registry, name string) []float64 
 }
 
 var _ = dto.MetricFamily{} // keep dto import linked for diagnostics
+
+func TestAcquire_ZeroReplicaPassThroughDoesNotCountFallback(t *testing.T) {
+	primary := &fakeAcquirer{name: "p"}
+	reg := prometheus.NewRegistry()
+	rp, err := readreplica.New(readreplica.Config{Primary: primary},
+		readreplica.WithoutHealthCheck(),
+		readreplica.WithMetricsRegisterer(reg),
+	)
+	require.NoError(t, err)
+	defer rp.Close()
+
+	for i := 0; i < 5; i++ {
+		_, err := rp.Acquire(context.Background(), readreplica.WithReadOnly())
+		require.NoError(t, err)
+	}
+	require.Equal(t, 5, primary.acquireCount())
+	require.Equal(t, 0.0, counterValue(t, reg, "sqldb_readreplica_replica_fallback_total"),
+		"zero-replica pass-through must not inflate the degradation metric")
+	require.Equal(t, 5.0, counterValue(t, reg, "sqldb_readreplica_primary_acquires_total"))
+}
+
+func TestAcquire_CallerCancelDoesNotEvictReplicas(t *testing.T) {
+	primary := &fakeAcquirer{name: "p"}
+	// Acquire respects the caller's context: return ctx.Err() so the
+	// pool sees a cancellation-shaped failure rather than a replica fault.
+	r1 := &ctxAwareAcquirer{fakeAcquirer: fakeAcquirer{name: "r1"}}
+	r2 := &ctxAwareAcquirer{fakeAcquirer: fakeAcquirer{name: "r2"}}
+	rp, err := readreplica.New(readreplica.Config{
+		Primary:  primary,
+		Replicas: []readreplica.Acquirer{r1, r2},
+	},
+		readreplica.WithoutHealthCheck(),
+		readreplica.WithMaxConsecutiveFailures(1),
+		readreplica.WithMetricsRegisterer(prometheus.NewRegistry()),
+	)
+	require.NoError(t, err)
+	defer rp.Close()
+
+	for i := 0; i < 5; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // already canceled
+		_, _ = rp.Acquire(ctx, readreplica.WithReadOnly())
+	}
+
+	// Replicas must still be healthy — cancellation is the caller's fault.
+	require.Equal(t, []bool{true, true}, rp.ReplicaHealth(),
+		"caller cancellation must not evict replicas")
+}
+
+// ctxAwareAcquirer fails Acquire with ctx.Err() when the context is done.
+type ctxAwareAcquirer struct {
+	fakeAcquirer
+}
+
+func (f *ctxAwareAcquirer) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
+	f.mu.Lock()
+	f.acquires++
+	f.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, nil //nolint:nilnil // test stub
+}
+
+func TestClose_DeletesGaugeSeries(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	rp, err := readreplica.New(readreplica.Config{
+		Primary:  &fakeAcquirer{name: "p"},
+		Replicas: []readreplica.Acquirer{&fakeAcquirer{}, &fakeAcquirer{}},
+	},
+		readreplica.WithoutHealthCheck(),
+		readreplica.WithMetricsRegisterer(reg),
+	)
+	require.NoError(t, err)
+
+	require.ElementsMatch(t, []float64{2}, gaugeValues(t, reg, "sqldb_readreplica_replicas_total"))
+	require.ElementsMatch(t, []float64{2}, gaugeValues(t, reg, "sqldb_readreplica_replicas_healthy"))
+
+	rp.Close()
+
+	require.Empty(t, gaugeValues(t, reg, "sqldb_readreplica_replicas_total"),
+		"Close must DeleteLabelValues for replicas_total")
+	require.Empty(t, gaugeValues(t, reg, "sqldb_readreplica_replicas_healthy"),
+		"Close must DeleteLabelValues for replicas_healthy")
+}
+
+func TestPrimaryHealthy_LivePing(t *testing.T) {
+	primary := &fakeAcquirer{name: "p"}
+	rp, err := readreplica.New(readreplica.Config{Primary: primary},
+		readreplica.WithoutHealthCheck(),
+		readreplica.WithMetricsRegisterer(prometheus.NewRegistry()),
+	)
+	require.NoError(t, err)
+	defer rp.Close()
+
+	require.True(t, rp.PrimaryHealthy(context.Background()))
+	require.Equal(t, 1, primary.pingCount(), "PrimaryHealthy must issue a live Ping")
+
+	primary.setFailPing(errors.New("down"))
+	require.False(t, rp.PrimaryHealthy(context.Background()))
+	require.Equal(t, 2, primary.pingCount())
+}

@@ -68,7 +68,7 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 			return secrets.Secret{}, secrets.ErrSecretNotFound
 		}
 		return secrets.Secret{}, redact.WrapSentinel(secrets.ErrLoaderUnavailable,
-			redact.WrapError("awssm: GetSecretValue "+key, err))
+			redact.WrapError("awssm: GetSecretValue "+redact.StringValue(key), err))
 	}
 	var raw []byte
 	switch {
@@ -81,7 +81,7 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 		// field). The Loader contract requires any non-NotFound error
 		// to wrap ErrLoaderUnavailable so CachedLoader can serve a
 		// stale value within MaxStale instead of failing hard.
-		return secrets.Secret{}, fmt.Errorf("awssm: %s has no SecretString or SecretBinary: %w", key, secrets.ErrLoaderUnavailable)
+		return secrets.Secret{}, fmt.Errorf("awssm: secret has no SecretString or SecretBinary: %w", secrets.ErrLoaderUnavailable)
 	}
 	version := ""
 	if out.VersionId != nil {

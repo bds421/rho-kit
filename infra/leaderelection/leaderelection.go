@@ -47,11 +47,29 @@ type Callbacks struct {
 type Elector interface {
 	// Run blocks while attempting to acquire leadership. Returns when
 	// ctx cancels (caller-initiated shutdown) or the elector decides
-	// to give up (unrecoverable backend error).
+	// to give up (unrecoverable backend error such as a callback drain
+	// timeout that leaves an orphan OnAcquired goroutine).
+	//
+	// Reusability: after Run returns, a subsequent Run on the same
+	// Elector is allowed (single-goroutine ownership still applies —
+	// concurrent Run calls are rejected). lifecycle.Runner and similar
+	// orchestrators may wrap Run in a retry loop.
 	//
 	// While the caller holds leadership, callbacks.OnAcquired runs for
 	// the term. callbacks.OnLost is invoked exactly once for each
 	// acquired term after callbacks.OnAcquired has returned.
+	//
+	// OnAcquired early return (callback returns while still leader):
+	// redislock, pgadvisory, and etcd relinquish the term, run OnLost,
+	// and re-enter the acquire loop. k8slease keeps renewing the Lease
+	// via client-go until the lease is truly lost — OnLost is NOT
+	// called on a voluntary OnAcquired return. Callers that need the
+	// same semantics on every backend should keep OnAcquired blocked
+	// for the whole term (select on ctx.Done()).
+	//
+	// OnLost errors/panics are logged and do not permanently kill the
+	// elector loop; the implementation continues (or returns only for
+	// ctx cancellation / unrecoverable drain timeout).
 	Run(ctx context.Context, callbacks Callbacks) error
 
 	// IsLeader is a non-blocking, eventually-consistent leadership

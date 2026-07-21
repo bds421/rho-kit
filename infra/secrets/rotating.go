@@ -36,16 +36,20 @@ func NewRotatingProvider(loader Loader, key string, timeout time.Duration) func(
 		s, err := loader.Get(ctx, key)
 		if err != nil {
 			if errors.Is(err, ErrSecretNotFound) {
-				// Annotating a kit sentinel with key context is the
-				// canonical use of fmt.Errorf %w — the wrapped value
-				// is the sentinel itself, nothing to redact.
-				return "", fmt.Errorf("secrets: %s: %w", key, err) // kit:ok-fmt-errorf-wrap
+				// Annotating a kit sentinel is the canonical use of
+				// fmt.Errorf %w — do not embed the raw key (topology).
+				return "", fmt.Errorf("secrets: secret not found: %w", err) // kit:ok-fmt-errorf-wrap
 			}
 			return "", err
 		}
 		if s.Value == nil {
 			return "", errors.New("secrets: nil value returned by loader")
 		}
-		return s.Value.RevealString(), nil
+		// RevealString allocates an unzeroable Go string for the SDK;
+		// still Zero the secret.String copy the cache handed us so we
+		// honour the package's memory-hygiene contract.
+		out := s.Value.RevealString()
+		s.Value.Zero()
+		return out, nil
 	}
 }

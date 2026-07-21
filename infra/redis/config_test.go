@@ -322,3 +322,29 @@ func TestRedisFields_ValidateRedis_RejectsCredentiallessURLWithPasswordField(t *
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no credentials")
 }
+
+func TestRedisConfig_RedisURL_FieldsTLS(t *testing.T) {
+	cfg := Config{Host: "myredis", Port: 6380, Password: "secret", DB: 2, TLS: true}
+	u := cfg.RedisURL()
+	parsed, err := url.Parse(u)
+	require.NoError(t, err)
+	assert.Equal(t, "rediss", parsed.Scheme)
+	assert.Equal(t, "myredis", parsed.Hostname())
+}
+
+func TestRedisConfig_Options_FieldsTLSDoesNotNeedAllowPlaintext(t *testing.T) {
+	cfg := Config{Host: "myredis", Port: 6379, Password: "secret", TLS: true}
+	opts, err := cfg.Options()
+	require.NoError(t, err)
+	require.NotNil(t, opts.TLSConfig)
+}
+
+func TestRedisURLHasCredentials_RequiresPassword(t *testing.T) {
+	u, err := url.Parse("rediss://someuser@host:6379/0")
+	require.NoError(t, err)
+	assert.False(t, redisURLHasCredentials(u), "username-only must not satisfy FR-077")
+
+	u2, err := url.Parse("rediss://someuser:secret@host:6379/0")
+	require.NoError(t, err)
+	assert.True(t, redisURLHasCredentials(u2))
+}
