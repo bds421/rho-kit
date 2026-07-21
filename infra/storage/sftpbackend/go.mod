@@ -3,7 +3,7 @@ module github.com/bds421/rho-kit/infra/storage/sftpbackend/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/infra/v2 v2.4.0
+	github.com/bds421/rho-kit/infra/v2 v2.5.0
 	github.com/pkg/sftp v1.13.11
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
@@ -14,9 +14,9 @@ require (
 require github.com/kylelemons/godebug v1.1.0 // indirect
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.4.0
-	github.com/bds421/rho-kit/io/v2 v2.4.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.4.0
+	github.com/bds421/rho-kit/core/v2 v2.5.0
+	github.com/bds421/rho-kit/io/v2 v2.5.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.5.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
