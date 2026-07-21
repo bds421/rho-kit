@@ -5,6 +5,7 @@ package amqpbackend_test
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
-func setupPublisher(t *testing.T) (*amqpbackend.Publisher, *amqpbackend.Connection) {
+func setupPublisher(t *testing.T) (*amqpbackend.Publisher, *amqpbackend.Connection, string, string, string) {
 	t.Helper()
 
 	url := kittestamqp.Start(t)
@@ -26,48 +27,53 @@ func setupPublisher(t *testing.T) (*amqpbackend.Publisher, *amqpbackend.Connecti
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
+	// Per-test topology names so the shared RabbitMQ container cannot
+	// leak exchanges/queues across tests (parallel package runs, retries).
+	suffix := strings.ReplaceAll(t.Name(), "/", ".")
+	exchange := "test.publish." + suffix
+	queue := "test.publish.queue." + suffix
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
-		Exchange:     "test.publish",
-		ExchangeType: messaging.ExchangeDirect,
-		ConsumerGroup:        "test.publish.queue",
-		RoutingKey:   "test.key",
+		Exchange:      exchange,
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: queue,
+		RoutingKey:    "test.key",
 	})
 	require.NoError(t, err)
 
-	return amqpbackend.NewPublisher(conn, logger), conn
+	return amqpbackend.NewPublisher(conn, logger), conn, exchange, "test.key", queue
 }
 
 func TestPublish_Confirmed(t *testing.T) {
-	pub, _ := setupPublisher(t)
+	pub, _, exchange, key, _ := setupPublisher(t)
 
 	msg, err := messaging.NewMessage("test.event", map[string]string{"hello": "world"})
 	require.NoError(t, err)
 
-	err = pub.Publish(context.Background(), "test.publish", "test.key", msg)
+	err = pub.Publish(context.Background(), exchange, key, msg)
 	assert.NoError(t, err)
 }
 
 func TestPublish_PersistentDelivery(t *testing.T) {
-	pub, conn := setupPublisher(t)
+	pub, conn, exchange, key, queue := setupPublisher(t)
 
 	msg, err := messaging.NewMessage("test.event", "payload")
 	require.NoError(t, err)
 
-	err = pub.Publish(context.Background(), "test.publish", "test.key", msg)
+	err = pub.Publish(context.Background(), exchange, key, msg)
 	require.NoError(t, err)
 
 	ch, err := conn.Channel()
 	require.NoError(t, err)
 	defer ch.Close()
 
-	delivery, ok, err := ch.Get("test.publish.queue", true)
+	delivery, ok, err := ch.Get(queue, true)
 	require.NoError(t, err)
 	require.True(t, ok, "expected a message in the queue")
 	assert.Equal(t, uint8(2), delivery.DeliveryMode, "expected persistent delivery mode")
 }
 
 func TestPublish_ContextCancellation(t *testing.T) {
-	pub, _ := setupPublisher(t)
+	pub, _, exchange, key, _ := setupPublisher(t)
 
 	msg, err := messaging.NewMessage("test.event", "payload")
 	require.NoError(t, err)
@@ -76,6 +82,6 @@ func TestPublish_ContextCancellation(t *testing.T) {
 	defer cancel()
 	time.Sleep(2 * time.Millisecond) // ensure context expires
 
-	err = pub.Publish(ctx, "test.publish", "test.key", msg)
+	err = pub.Publish(ctx, exchange, key, msg)
 	assert.Error(t, err)
 }

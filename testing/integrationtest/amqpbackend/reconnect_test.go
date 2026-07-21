@@ -102,6 +102,7 @@ func TestConnection_MaxReconnectAttempts_FiresDead(t *testing.T) {
 	// Dedicated container — will be terminated mid-test to force reconnect failure.
 	container, err := tcrabbit.Run(ctx, "rabbitmq:4.2.3-management")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
 
 	url, err := container.AmqpURL(ctx)
 	require.NoError(t, err)

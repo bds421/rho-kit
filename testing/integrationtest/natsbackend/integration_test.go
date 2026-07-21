@@ -65,8 +65,23 @@ func TestPublishConsume_RoundTrip(t *testing.T) {
 		})
 	}()
 
-	// Allow consumer to attach.
-	time.Sleep(200 * time.Millisecond)
+	// Wait until the consumer is attached by probing with a warm-up
+	// publish rather than a fixed sleep (brittle under load).
+	require.Eventually(t, func() bool {
+		msg, err := messaging.NewMessage("user.created", map[string]string{"name": "warmup"})
+		if err != nil {
+			return false
+		}
+		if err := pub.Publish(ctx, "events", "user.created", msg); err != nil {
+			return false
+		}
+		select {
+		case <-got:
+			return true
+		case <-time.After(50 * time.Millisecond):
+			return false
+		}
+	}, 5*time.Second, 50*time.Millisecond, "consumer never attached")
 
 	for _, name := range []string{"alice", "bob", "carol"} {
 		msg, err := messaging.NewMessage("user.created", map[string]string{"name": name})
@@ -133,7 +148,37 @@ func TestConsumer_NackRedelivers(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for consumer attach via readiness probe (not fixed sleep).
+	require.Eventually(t, func() bool {
+		probe, err := messaging.NewMessage("retry.flaky", map[string]string{"k": "probe"})
+		if err != nil {
+			return false
+		}
+		if err := pub.Publish(ctx, "retry", "flaky", probe); err != nil {
+			return false
+		}
+		select {
+		case <-deliveries:
+			return true
+		case <-time.After(50 * time.Millisecond):
+			return false
+		}
+	}, 5*time.Second, 50*time.Millisecond, "consumer never attached")
+
+	// Reset attempt counter and drain leftover probe signals so the
+	// redelivery assertions below start clean.
+	mu.Lock()
+	attempts = 0
+	mu.Unlock()
+drain:
+	for {
+		select {
+		case <-deliveries:
+			continue
+		default:
+			break drain
+		}
+	}
 
 	msg, err := messaging.NewMessage("retry.flaky", map[string]string{"k": "v"})
 	require.NoError(t, err)

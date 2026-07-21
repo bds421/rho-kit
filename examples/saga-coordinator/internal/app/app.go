@@ -49,6 +49,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -219,9 +220,18 @@ func (c *coordinator) runSaga(ctx context.Context, idemKey string, req OrderRequ
 	release := c.keyMu.Lock(idemKey)
 	defer release()
 
+	fingerprint, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
 	// Idempotency cache hit → return the cached state without
 	// re-running any step.
-	if cached, ok := c.lookupCache(ctx, idemKey); ok {
+	cached, hit, err := c.lookupCache(ctx, idemKey, fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	if hit {
 		return cached, nil
 	}
 
@@ -233,43 +243,59 @@ func (c *coordinator) runSaga(ctx context.Context, idemKey string, req OrderRequ
 		// have a fix in place).
 		return state, err
 	}
-	c.storeCache(ctx, idemKey, state)
+	if err := c.storeCache(ctx, idemKey, fingerprint, state); err != nil {
+		// Surface cache-write failures so the template teaches
+		// operators not to swallow idempotency errors silently.
+		return state, err
+	}
 	c.completed.Store(req.OrderID, state)
 	return state, nil
 }
 
-func (c *coordinator) lookupCache(ctx context.Context, idemKey string) (*OrderState, bool) {
+func (c *coordinator) lookupCache(ctx context.Context, idemKey string, fingerprint []byte) (*OrderState, bool, error) {
 	// MemoryStore stores raw bytes; we encode the OrderState as JSON
 	// so the cache contract matches the production redisstore/pgstore.
 	//
-	// Get's `ok` return signals "fingerprint mismatch" (the key exists
-	// but the request body doesn't match the cached entry's fingerprint).
-	// A cache HIT is `(resp != nil, false, nil)`; a cache MISS is
-	// `(nil, false, nil)`. This example does not use the fingerprint
-	// channel, so we ignore `ok` entirely and branch on `resp != nil`.
-	resp, _, err := c.store.Get(ctx, idemKey, nil)
-	if err != nil || resp == nil {
-		return nil, false
+	// Get's second return is true on fingerprint mismatch — treat that
+	// as a client error (key reuse with a different body). A corrupt
+	// cache entry is also an error: silently re-running the saga would
+	// defeat the idempotency teaching purpose of this example.
+	resp, mismatch, err := c.store.Get(ctx, idemKey, fingerprint)
+	if err != nil {
+		return nil, false, err
+	}
+	if mismatch {
+		return nil, false, fmt.Errorf("idempotency key reused with a different request body")
+	}
+	if resp == nil {
+		return nil, false, nil
 	}
 	var state OrderState
 	if err := json.Unmarshal(resp.Body, &state); err != nil {
-		return nil, false
+		return nil, false, fmt.Errorf("idempotency cache entry corrupt: %w", err)
 	}
-	return &state, true
+	return &state, true, nil
 }
 
-func (c *coordinator) storeCache(ctx context.Context, idemKey string, state *OrderState) {
+func (c *coordinator) storeCache(ctx context.Context, idemKey string, fingerprint []byte, state *OrderState) error {
 	body, err := json.Marshal(state)
 	if err != nil {
-		return
+		return err
 	}
 	// TryLock returns (token, fingerprintMismatch, acquired, err).
-	// Cache the response only when we successfully acquired the lock.
-	token, _, acquired, err := c.store.TryLock(ctx, idemKey, nil, idempotencyTTL)
-	if err != nil || !acquired {
-		return
+	token, mismatch, acquired, err := c.store.TryLock(ctx, idemKey, fingerprint, idempotencyTTL)
+	if err != nil {
+		return err
 	}
-	_ = c.store.Set(ctx, idemKey, token, idem.CachedResponse{
+	if mismatch {
+		return fmt.Errorf("idempotency key reused with a different request body")
+	}
+	if !acquired {
+		// Another in-flight writer holds the lock; treat as miss and
+		// let the next request re-read the cache.
+		return nil
+	}
+	return c.store.Set(ctx, idemKey, token, idem.CachedResponse{
 		StatusCode: http.StatusOK,
 		Body:       body,
 	}, idempotencyTTL)

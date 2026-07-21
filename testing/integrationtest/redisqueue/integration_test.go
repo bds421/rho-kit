@@ -232,14 +232,19 @@ func TestQueue_DoubleProcessGuard(t *testing.T) {
 	}, 5*time.Second, 25*time.Millisecond, "first Process never booted its asynq server")
 
 	// A second Process on the same queue MUST panic now that the
-	// first has registered itself in activeQueues. assert.Panics
-	// against a synthetic *testing.T isolates the panic from the
-	// parent test record.
-	require.True(t,
-		assert.Panics(new(testing.T), func() {
-			q.Process(context.Background(), queueName, func(context.Context, redisqueue.Message) error { return nil })
-		}),
-		"second Process on the same queue must panic")
+	// first has registered itself in activeQueues. Use recover
+	// directly — assert.Panics(new(testing.T), ...) can itself panic
+	// on a zero-value *testing.T and mask the real assertion.
+	panicked := false
+	func() {
+		defer func() {
+			if recover() != nil {
+				panicked = true
+			}
+		}()
+		q.Process(context.Background(), queueName, func(context.Context, redisqueue.Message) error { return nil })
+	}()
+	require.True(t, panicked, "second Process on the same queue must panic")
 
 	cancel()
 	wg.Wait()

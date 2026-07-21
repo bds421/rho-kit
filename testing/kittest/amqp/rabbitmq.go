@@ -48,6 +48,9 @@ func Start(t *testing.T) string {
 
 		url, err := container.AmqpURL(ctx)
 		if err != nil {
+			// Terminate in-process so a failed URL lookup does not leave
+			// an orphan container until Ryuk reaps the process.
+			_ = container.Terminate(ctx)
 			initErr = fmt.Errorf("get rabbitmq amqp url: %w", err)
 			return
 		}

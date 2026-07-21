@@ -14,7 +14,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	idem "github.com/bds421/rho-kit/data/v2/idempotency"
 	"github.com/bds421/rho-kit/runtime/v2/saga"
+	"time"
 )
 
 // TestRunSaga_HappyPath drives the canonical end-to-end: three
@@ -322,4 +324,70 @@ type failOnce struct {
 func (f *failOnce) fail(_ context.Context, _ *OrderState) error {
 	f.calls.Add(1)
 	return errors.New("synthetic step failure")
+}
+
+// TestLookupCache_CorruptEntryFailsClosed pins the review finding:
+// an unreadable cached body must surface as an error, not fall through
+// to re-running the saga (which would double-apply side effects).
+func TestLookupCache_CorruptEntryFailsClosed(t *testing.T) {
+	c := newCoordinator(realInventoryReserve, realCardCharge, realShipmentDispatch)
+	ctx := context.Background()
+	key := "corrupt-key"
+	fp := []byte(`{"order_id":"x"}`)
+
+	token, mismatch, acquired, err := c.store.TryLock(ctx, key, fp, time.Hour)
+	require.NoError(t, err)
+	require.False(t, mismatch)
+	require.True(t, acquired)
+	require.NoError(t, c.store.Set(ctx, key, token, idem.CachedResponse{
+		StatusCode: http.StatusOK,
+		Body:       []byte("not-valid-json{{{"),
+	}, time.Hour))
+
+	state, hit, err := c.lookupCache(ctx, key, fp)
+	require.Error(t, err)
+	assert.False(t, hit)
+	assert.Nil(t, state)
+	assert.Contains(t, err.Error(), "corrupt")
+}
+
+// TestRunSaga_CorruptCacheDoesNotReExecute pins the end-to-end path:
+// a corrupt cache entry must not re-run Forward steps.
+func TestRunSaga_CorruptCacheDoesNotReExecute(t *testing.T) {
+	var reserveCalls atomic.Int32
+	tracking := func(ctx context.Context, s *OrderState) error {
+		reserveCalls.Add(1)
+		return realInventoryReserve(ctx, s)
+	}
+	c := newCoordinator(tracking, realCardCharge, realShipmentDispatch)
+	ctx := context.Background()
+	req := OrderRequest{OrderID: "ord-corrupt", Amount: 10}
+	fp, err := json.Marshal(req)
+	require.NoError(t, err)
+	key := "corrupt-e2e"
+
+	token, _, acquired, err := c.store.TryLock(ctx, key, fp, time.Hour)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	require.NoError(t, c.store.Set(ctx, key, token, idem.CachedResponse{
+		StatusCode: http.StatusOK,
+		Body:       []byte("{not-json"),
+	}, time.Hour))
+
+	_, err = c.runSaga(ctx, key, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "corrupt")
+	assert.Equal(t, int32(0), reserveCalls.Load(), "corrupt cache must not re-execute saga steps")
+}
+
+// TestStoreCache_CancelledContextSurfacesError pins that storeCache
+// returns errors instead of swallowing them (template teaching path).
+func TestStoreCache_CancelledContextSurfacesError(t *testing.T) {
+	c := newCoordinator(realInventoryReserve, realCardCharge, realShipmentDispatch)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := c.storeCache(ctx, "key-1", []byte(`{}`), &OrderState{
+		Request: OrderRequest{OrderID: "o", Amount: 1},
+	})
+	require.Error(t, err)
 }

@@ -42,8 +42,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bds421/rho-kit/app/v2"
 	apphttp "github.com/bds421/rho-kit/app/http/v2"
+	"github.com/bds421/rho-kit/app/v2"
 	idem "github.com/bds421/rho-kit/data/v2/idempotency"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/idempotency"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
@@ -62,10 +62,10 @@ const (
 // production code.
 func Run(ctx context.Context) error {
 	logger := slog.Default()
-	if _, err := hmacKeyFromEnv(); err != nil {
+	rawKey, err := hmacKeyFromEnv()
+	if err != nil {
 		return err
 	}
-	rawKey, _ := hmacKeyFromEnv()
 	receiver := newReceiver()
 
 	cfg := app.BaseConfig{
@@ -98,7 +98,7 @@ func buildWebhookHandler(hmacKey []byte, r *receiver) http.Handler {
 		}
 		return hmacKey, nil
 	}
-	nonceStore := signedrequest.NewMemoryNonceStore(5 * time.Minute)
+	nonceStore := signedrequest.NewMemoryNonceStore(10 * time.Minute)
 	verify := signedrequest.Middleware(keyResolver, nonceStore,
 		signedrequest.WithBodyMaxSize(1<<20 /* 1 MiB */),
 	)

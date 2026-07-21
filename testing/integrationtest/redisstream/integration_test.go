@@ -123,6 +123,7 @@ func TestConsumer_LiveRedis_ConsumeAndAck(t *testing.T) {
 	var received redisstream.Message
 	var wg sync.WaitGroup
 	wg.Add(1)
+	var once sync.Once
 
 	consumer, err := redisstream.NewConsumer(client, group,
 		redisstream.WithConsumerLogger(slog.Default()),
@@ -134,7 +135,8 @@ func TestConsumer_LiveRedis_ConsumeAndAck(t *testing.T) {
 
 	go consumer.Consume(consumeCtx, stream, func(_ context.Context, m redisstream.Message) error {
 		received = m
-		wg.Done()
+		// Guard against redelivery double-Done panicking the WaitGroup.
+		once.Do(wg.Done)
 		cancel()
 		return nil
 	})
