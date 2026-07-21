@@ -13,9 +13,9 @@
 |---|---|
 | CRITICAL | 0 |
 | HIGH | 0 |
-| MEDIUM | 1 |
+| MEDIUM | 0 |
 | LOW | 0 |
-| **Total (deduplicated)** | **1** |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -51,10 +51,4 @@
 
 ## Findings
 
-### [MEDIUM] Default config has no heartbeat and no write timeout — a peer that stops reading pins a goroutine and fd indefinitely
-
-- **Where**: `httpx/websocket/options.go:64`
-- **Dimension**: security
-- **Detail**: defaultConfig (options.go:64-69) sets only maxMessageSize and logger; pingInterval, pongTimeout, writeTimeout and maxConnections all default to zero/disabled. With writeTimeout unset, Conn.writeCtx (conn.go:138-139) returns the per-connection context with no deadline, so WriteMessage/WriteJSON block forever on a peer that opens a connection and never reads (zero TCP receive window); with no ping interval, half-open connections survive until the kernel TCP keepalive (~2h, as the package's own doc at doc.go:90-93 admits). Failure scenario: an attacker opens N connections to a Handle endpoint configured with WithMaxConnections and simply stops ACKing — each server push parks a handler goroutine permanently, the connLimiter saturates, and all legitimate clients receive 503 until process restart; without WithMaxConnections the same attack exhausts fds/memory instead. All mitigations exist but every one is opt-in.
-- **Suggestion**: Ship safe defaults: a non-zero default write timeout (e.g. 30s) and/or a default ping interval, with explicit opt-out options (WithNoWriteTimeout / WithNoHeartbeat) for callers who genuinely want unbounded blocking.
-
+_All stage-1 findings for this family are fixed or applied as intentional v2 breaks. See V3_BREAKING_PROPOSALS.md (APPLIED) and git history._

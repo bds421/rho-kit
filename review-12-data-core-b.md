@@ -13,9 +13,9 @@
 |---|---|
 | CRITICAL | 0 |
 | HIGH | 0 |
-| MEDIUM | 1 |
-| LOW | 2 |
-| **Total (deduplicated)** | **3** |
+| MEDIUM | 0 |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -51,26 +51,4 @@
 
 ## Findings
 
-### [MEDIUM] Tenant key namespace is forgeable by raw keys on a bare store sharing the same backend
-
-- **Where**: `data/idempotency/tenant/tenant.go:74`
-- **Dimension**: security
-- **Status**: PARTIAL — package doc now forbids sharing a backend keyspace with a bare store; cryptographic unforgeability deferred to v3 (`V3_BREAKING_PROPOSALS.md`).
-- **Detail**: scopedKey builds keys via coretenant.KeyFor, producing e.g. "tenant:1:a:3:foo" for tenant "a" + raw key "foo". That exact string is itself a valid raw idempotency key. A deployment that wires the tenant-wrapped store and a bare store to the same backend keyspace lets any caller who controls a raw key on the bare path address tenant-scoped rows.
-- **Suggestion**: v3 — reject raw keys matching the canonical tenant-key shape in ValidateKey (with an internal pre-scoped path), or HMAC/hash scoped keys.
-
-
-### [LOW] Consumer.Consume returns no error, forcing implementations to swallow fatal backend failures
-
-- **Where**: `data/queue/queue.go:136`
-- **Dimension**: error-handling
-- **Detail**: Both queue.Consumer.Consume (data/queue/queue.go:136) and stream.Consumer.Consume (data/stream/stream.go:30) are declared as blocking methods with no return value: "blocks and processes messages until ctx is cancelled". An implementation whose backend connection dies permanently (auth revoked, stream deleted, network partition beyond retry budget) has no channel to report that terminal failure — it can only log and return, and the caller cannot distinguish a clean ctx-cancel exit from a consumer that silently died, so a service keeps running while consuming nothing. Every other blocking loop in this scope (e.g. idempotency MemoryStore.Run) returns error precisely so lifecycle runners can detect abnormal exits.
-- **Suggestion**: Change the interface to Consume(ctx, queue, handler) error (returning nil on ctx cancellation, non-nil on terminal backend failure), matching the MemoryStore.Run convention and typical lifecycle-runner wiring.
-
-### [LOW] stream.Consumer.Consume also lacks an error return (same defect as queue.Consumer)
-
-- **Where**: `data/stream/stream.go:30`
-- **Dimension**: api-design
-- **Detail**: Same issue as data/queue/queue.go:136: Consume blocks until ctx is cancelled and returns nothing, so a redisstream consumer that permanently loses its connection or whose consumer group is deleted has no channel to report a fatal error; the caller cannot distinguish clean shutdown from silent failure.
-- **Suggestion**: Add an error return in lockstep with the queue.Consumer change.
-
+_All stage-1 findings for this family are fixed or applied as intentional v2 breaks. See V3_BREAKING_PROPOSALS.md (APPLIED) and git history._

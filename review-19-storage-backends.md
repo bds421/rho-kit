@@ -13,9 +13,9 @@
 |---|---|
 | CRITICAL | 0 |
 | HIGH | 0 |
-| MEDIUM | 1 |
+| MEDIUM | 0 |
 | LOW | 0 |
-| **Total (deduplicated)** | **1** |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -39,10 +39,4 @@
 
 ## Findings
 
-### [MEDIUM] Reconnect cleanup closes the old connection under in-flight transfers (immediately under flapping, after 5s otherwise)
-
-- **Where**: `infra/storage/sftpbackend/sftp.go:275`
-- **Dimension**: concurrency
-- **Detail**: connect() replaces the client and spawns a cleanup goroutine that closes the old sftp.Client/ssh.Conn after at most 5 seconds — or immediately when another reconnect bumps cleanupGen (the `for b.cleanupGen.Load() == gen` loop exits straight to closeOld). An operation that obtained the old client via getClient and is streaming a large Put/Get for longer than the grace period has its connection closed mid-transfer, failing with a generic remote error; under server flapping the grace shrinks to ~0, so even short in-flight operations race with the close. The code comments acknowledge the 5s heuristic but the generation-bump early-close makes the window effectively unbounded downward.
-- **Suggestion**: Reference-count client leases (getClient returns a release func; cleanup closes when the count drains) instead of a fixed grace period.
-
+_All stage-1 findings for this family are fixed or applied as intentional v2 breaks. See V3_BREAKING_PROPOSALS.md (APPLIED) and git history._

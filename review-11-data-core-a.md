@@ -13,9 +13,9 @@
 |---|---|
 | CRITICAL | 0 |
 | HIGH | 0 |
-| MEDIUM | 1 |
+| MEDIUM | 0 |
 | LOW | 0 |
-| **Total (deduplicated)** | **1** |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -49,10 +49,4 @@
 
 ## Findings
 
-### [MEDIUM] TenantStore mutations use check-then-act; state transition commits before the tenant check can fail
-
-- **Where**: `data/approval/tenantstore.go` (`decideTenant` / `MarkExecuted` fallback)
-- **Dimension**: correctness
-- **Detail**: Backends implementing `ApproveForTenant` / `RejectForTenant` / `MarkExecutedForTenant` are atomic (preferred path). Generic/in-memory backends still fall back to Get-then-mutate: the state transition can commit before a concurrent reassignment is observed, with only a post-hoc tenant mismatch check. Residual risk remains for non-atomic stores; closing it without a shared atomic API is a larger contract change (v3 / required ForTenant on Store).
-- **Suggestion**: Require tenant-scoped mutators on Store, or document that TenantStore is only race-safe against backends that implement the ForTenant methods.
-
+_All stage-1 findings for this family are fixed or applied as intentional v2 breaks. See V3_BREAKING_PROPOSALS.md (APPLIED) and git history._

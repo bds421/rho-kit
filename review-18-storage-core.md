@@ -13,9 +13,9 @@
 |---|---|
 | CRITICAL | 0 |
 | HIGH | 0 |
-| MEDIUM | 1 |
-| LOW | 3 |
-| **Total (deduplicated)** | **4** |
+| MEDIUM | 0 |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -39,30 +39,4 @@
 
 ## Findings
 
-### [MEDIUM] Tagger/Versioner/MultipartUploader/BatchDeleter are dead API surface with no implementations, and opaque decorators would silently strip them
-
-- **Where**: `infra/storage/multipart.go:18`
-- **Dimension**: api-design
-- **Detail**: MultipartUploader (multipart.go), Tagger (tagging.go), Versioner (version.go) and BatchDeleter (batch.go) plus their As* helpers are exported, but no backend in the workspace implements any of them (grep finds only hookedStorage.DeleteMany, a forwarder; s3backend has no multipart/tagging/versioning/batch-delete files despite the docs citing "e.g. S3 multipart upload", "e.g. S3 DeleteObjects"). Worse, the retry, circuitbreaker and encryption decorators are OpaqueDecorators that compose only {Lister, Copier, PresignedStore, PublicURLer} (retry/combinators.go composeRetry), so the moment a backend gains one of these four capabilities it will be invisible through any resilience wrapper: AsBatchDeleter/AsTagger/AsVersioner/AsMultipartUploader stop at the opaque marker and return false, silently degrading (DeleteMany falls back to sequential) or removing the feature.
-- **Suggestion**: Either remove/park the unimplemented interfaces until a backend needs them, or implement them in s3backend and extend the decorator composition (and hooks) to forward them; add a compile-time/test guard that every optional interface is forwarded by each decorator.
-
-### [LOW] WithHooks hand-enumerates 16 near-identical combination wrapper types (~450 lines of forwarding)
-
-- **Where**: `infra/storage/hooks.go:66`
-- **Dimension**: api-design
-- **Detail**: To preserve the {Lister,Copier,PresignedStore,PublicURLer} capabilities of the wrapped backend, WithHooks selects among 2^4 concrete wrapper structs each redefining the same List/Copy/PresignGetURL/PresignPutURL/URL forwarders. Adding a new hookable optional capability doubles the matrix, and any change to a forwarder must be replicated across up to 8 structs. The file is still largely mechanical forwarding.
-- **Suggestion**: Generate the combinations, or reduce to per-capability hook shims that do not require the full cross-product; extract shared composition with retry/circuitbreaker.
-
-### [LOW] hooks.go is a 540-line god file with 16 near-identical combinatorial wrapper types
-
-- **Where**: `infra/storage/hooks.go:341`
-- **Dimension**: smell
-- **Detail**: WithHooks enumerates all 2^4 combinations of {Lister,Copier,PresignedStore,PublicURLer} as 16 concrete wrapper structs, each re-declaring the same forwarding methods. ~200 lines of mechanical duplication; a 5th optional capability doubles it to 32.
-- **Suggestion**: Consolidate via code generation or a single dispatch type so a new optional interface does not require doubling the wrapper matrix.
-
-### [LOW] The 15-type capability-combination boilerplate is triplicated across hooks, retry, and circuitbreaker
-
-- **Where**: `infra/storage/hooks.go:346`
-- **Dimension**: smell
-- **Detail**: hooks.go, retry/combinators.go, and circuitbreaker/combinators.go each hand-enumerate the same capability wrapper matrix — roughly 700 lines of structurally identical code. Adding one forwarded capability requires editing 3×16 cases; a missed case silently diverges decorator behavior.
-- **Suggestion**: Extract a single internal composition helper parameterized over list/copy/presign/url impls that all three decorators reuse.
+_All stage-1 findings for this family are fixed or applied as intentional v2 breaks. See V3_BREAKING_PROPOSALS.md (APPLIED) and git history._

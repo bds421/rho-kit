@@ -24,3 +24,4 @@
 
 ## Findings
 
+_All stage-1 findings for this family are fixed or applied as intentional v2 breaks. See V3_BREAKING_PROPOSALS.md (APPLIED) and git history._

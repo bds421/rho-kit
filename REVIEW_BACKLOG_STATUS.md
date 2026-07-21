@@ -2,29 +2,25 @@
 
 ## Policy
 **fix-first.** Docs/typos/naming/consistency/perf/tradeoffs are fixed, not refuted.
-Breaking (v3) API changes need explicit user go-ahead (`V3_BREAKING_PROPOSALS.md`).
+Breaking API changes are OK for this library (sole consumer) when the security or
+lifecycle argument is clear — documented in `V3_BREAKING_PROPOSALS.md` as **APPLIED**.
 
 ## Remaining totals
 | Severity | Count |
 |---|---:|
 | CRITICAL | 0 |
 | HIGH | 0 |
-| MEDIUM | 5 |
-| LOW | 5 |
-| **Total** | **10** |
+| MEDIUM | 0 |
+| LOW | 0 |
+| **Total** | **0** |
 
-## Per-file (non-zero only)
-| File | C | H | M | L | Total |
-|---|---:|---:|---:|---:|---:|
-| `review-18-storage-core.md` | 0 | 0 | 1 | 3 | 4 |
-| `review-12-data-core-b.md` | 0 | 0 | 1 | 2 | 3 |
-| `review-19-storage-backends.md` | 0 | 0 | 1 | 0 | 1 |
-| `review-11-data-core-a.md` | 0 | 0 | 1 | 0 | 1 |
-| `review-09-websocket-realtime.md` | 0 | 0 | 1 | 0 | 1 |
+## Intentional v2 breaks applied (end of remediation)
+1. **WebSocket** — default 30s write timeout + 30s ping / 10s pong; opt out with `WithNoWriteTimeout` / `WithNoHeartbeat`.
+2. **queue/stream `Consume`** — returns `error` (`ctx.Err()` on clean cancel).
+3. **approval `TenantStore`** — requires `TenantScopedMutator` (atomic ForTenant); no check-then-act fallback.
+4. **idempotency tenant keys** — user keys cannot use `tenant:`/`tns:`; wrapper stores opaque `tns:`+sha256 digests.
+5. **storage** — removed dead Tagger/Versioner/BatchDeleter; multiparts kept; hooks/retry/CB use compact embed forwarders.
+6. **sftp** — refcounted client leases so reconnect does not close under in-flight I/O.
 
-## Remaining work classes
-- **MEDIUM (5)**: deferred v3 design items — websocket defaults, TenantStore atomic Store contract, tenant key unforgeability, storage optional APIs, SFTP reconnect leases.
-- **LOW**: `Consumer.Consume` error returns (v3), storage hooks combinatorial boilerplate.
-
-## Commits
-Stage-1 remediation landed on `main` in thematic commits; continue LOWs; tackle MEDIUM/v3 last.
+## History
+Stage-1 started ~907 findings; fixed via TDD with living review trackers.
