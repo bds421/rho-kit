@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTenantStore_InvalidReceiverReturnsError(t *testing.T) {
@@ -35,6 +36,21 @@ func TestTenantStore_InvalidReceiverReturnsError(t *testing.T) {
 			assert.ErrorIs(t, err, ErrInvalidStore)
 		})
 	}
+}
+
+func TestNewTenantStore_PanicsWithoutTenantScopedMutator(t *testing.T) {
+	// bareStore implements Store only — no ForTenant methods.
+	assert.PanicsWithValue(t,
+		"approval: NewTenantStore requires a Store implementing TenantScopedMutator (ApproveForTenant/RejectForTenant/MarkExecutedForTenant)",
+		func() {
+			NewTenantStore(&bareStore{}, "tenant-a")
+		},
+	)
+}
+
+func TestNewTenantStore_PanicsOnNilInnerOrEmptyTenant(t *testing.T) {
+	assert.Panics(t, func() { NewTenantStore(nil, "tenant-a") })
+	assert.Panics(t, func() { NewTenantStore(newTenantStoreTestStore(), "") })
 }
 
 func TestTenantStore_ScopesOperations(t *testing.T) {
@@ -108,49 +124,81 @@ func TestTenantStore_ListRescopesQuery(t *testing.T) {
 	assert.False(t, inner.lastQuery.AllTenants)
 }
 
-// TestTenantStore_PostWriteMismatchTripwire asserts the best-effort TOCTOU
-// tripwire (L057): if the row's TenantID is reassigned between the ownership
-// read and the inner write, the wrapper detects the mismatch on the write
-// result and returns ErrTenantMismatch.
-func TestTenantStore_PostWriteMismatchTripwire(t *testing.T) {
+// TestTenantStore_UsesAtomicForTenantMethods pins that mutations always go
+// through ApproveForTenant / RejectForTenant / MarkExecutedForTenant (no
+// check-then-act fallback; review-11).
+func TestTenantStore_UsesAtomicForTenantMethods(t *testing.T) {
 	ctx := context.Background()
-
-	mutations := map[string]func(*TenantStore) (Request, error){
-		"Approve":      func(s *TenantStore) (Request, error) { return s.Approve(ctx, "tenant-a-request", "approver", "ok") },
-		"Reject":       func(s *TenantStore) (Request, error) { return s.Reject(ctx, "tenant-a-request", "approver", "no") },
-		"MarkExecuted": func(s *TenantStore) (Request, error) { return s.MarkExecuted(ctx, "tenant-a-request") },
+	inner := newTenantStoreTestStore()
+	inner.requests["r1"] = Request{
+		ID:        "r1",
+		TenantID:  "tenant-a",
+		Actor:     "agent",
+		Action:    "user.delete",
+		State:     StatePending,
+		ExpiresAt: time.Now().Add(time.Hour),
 	}
+	store := NewTenantStore(inner, "tenant-a")
 
-	for name, mutate := range mutations {
-		t.Run(name, func(t *testing.T) {
-			inner := newTenantStoreTestStore()
-			inner.requests["tenant-a-request"] = Request{
-				ID:        "tenant-a-request",
-				TenantID:  "tenant-a",
-				Actor:     "agent",
-				Action:    "user.delete",
-				State:     StatePending,
-				ExpiresAt: time.Now().Add(time.Hour),
-			}
-			// Reassign the row to another tenant after the ownership read
-			// (which the wrapper performs via Get) but before/at the write.
-			inner.reassignOnWrite = "tenant-b"
-			store := NewTenantStore(inner, "tenant-a")
+	_, err := store.Approve(ctx, "r1", "approver", "ok")
+	require.NoError(t, err)
+	assert.True(t, inner.approveForTenantCalled, "must use ApproveForTenant")
+	assert.False(t, inner.approveCalled, "must not fall back to id-only Approve")
 
-			_, err := mutate(store)
-			assert.ErrorIs(t, err, ErrTenantMismatch)
-		})
+	// Cross-tenant via atomic path returns not found without committing.
+	inner.requests["other"] = Request{
+		ID:       "other",
+		TenantID: "tenant-b",
+		State:    StatePending,
 	}
+	_, err = store.Approve(ctx, "other", "approver", "ok")
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.Equal(t, StatePending, inner.requests["other"].State)
+
+	// Reject + MarkExecuted also use ForTenant methods.
+	inner.requests["r2"] = Request{
+		ID: "r2", TenantID: "tenant-a", State: StatePending, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	_, err = store.Reject(ctx, "r2", "approver", "no")
+	require.NoError(t, err)
+	assert.True(t, inner.rejectForTenantCalled)
+
+	inner.requests["r3"] = Request{
+		ID: "r3", TenantID: "tenant-a", State: StateApproved, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	_, err = store.MarkExecuted(ctx, "r3")
+	require.NoError(t, err)
+	assert.True(t, inner.markExecutedForTenantCalled)
 }
 
+// bareStore implements Store without TenantScopedMutator.
+type bareStore struct{}
+
+func (bareStore) Create(context.Context, Request) (Request, error) { return Request{}, nil }
+func (bareStore) Get(context.Context, string) (Request, error)     { return Request{}, ErrNotFound }
+func (bareStore) List(context.Context, Query) ([]Request, string, error) {
+	return nil, "", nil
+}
+func (bareStore) Approve(context.Context, string, string, string) (Request, error) {
+	return Request{}, ErrNotFound
+}
+func (bareStore) Reject(context.Context, string, string, string) (Request, error) {
+	return Request{}, ErrNotFound
+}
+func (bareStore) MarkExecuted(context.Context, string) (Request, error) {
+	return Request{}, ErrNotFound
+}
+
+// tenantStoreTestStore is a TenantScopedMutator used by TenantStore tests.
 type tenantStoreTestStore struct {
 	requests map[string]Request
 	// lastQuery records the Query the wrapper forwarded to List.
 	lastQuery Query
-	// reassignOnWrite, when non-empty, rewrites the TenantID of the row
-	// being mutated to simulate a concurrent in-place tenant reassignment
-	// happening between the wrapper's ownership read and its write.
-	reassignOnWrite string
+
+	approveCalled               bool
+	approveForTenantCalled      bool
+	rejectForTenantCalled       bool
+	markExecutedForTenantCalled bool
 }
 
 func newTenantStoreTestStore() *tenantStoreTestStore {
@@ -194,6 +242,7 @@ func (s *tenantStoreTestStore) List(_ context.Context, q Query) ([]Request, stri
 }
 
 func (s *tenantStoreTestStore) Approve(_ context.Context, id, decidedBy, reason string) (Request, error) {
+	s.approveCalled = true
 	return s.decide(id, decidedBy, reason, StateApproved)
 }
 
@@ -205,9 +254,6 @@ func (s *tenantStoreTestStore) decide(id, decidedBy, reason string, target State
 	r, ok := s.requests[id]
 	if !ok {
 		return Request{}, ErrNotFound
-	}
-	if s.reassignOnWrite != "" {
-		r.TenantID = s.reassignOnWrite
 	}
 	r.State = target
 	r.DecidedBy = decidedBy
@@ -221,60 +267,12 @@ func (s *tenantStoreTestStore) MarkExecuted(_ context.Context, id string) (Reque
 	if !ok {
 		return Request{}, ErrNotFound
 	}
-	if s.reassignOnWrite != "" {
-		r.TenantID = s.reassignOnWrite
-	}
 	r.State = StateExecuted
 	s.requests[id] = r
 	return r, nil
 }
 
-// TestTenantStore_PrefersAtomicForTenantMethods pins that backends implementing
-// ApproveForTenant / RejectForTenant / MarkExecutedForTenant are used so the
-// tenant predicate and state transition share one call (review-11 / L057).
-func TestTenantStore_PrefersAtomicForTenantMethods(t *testing.T) {
-	ctx := context.Background()
-	inner := &atomicTenantMutator{
-		tenantStoreTestStore: *newTenantStoreTestStore(),
-	}
-	inner.requests["r1"] = Request{
-		ID:        "r1",
-		TenantID:  "tenant-a",
-		Actor:     "agent",
-		Action:    "user.delete",
-		State:     StatePending,
-		ExpiresAt: time.Now().Add(time.Hour),
-	}
-	store := NewTenantStore(inner, "tenant-a")
-
-	_, err := store.Approve(ctx, "r1", "approver", "ok")
-	assert.NoError(t, err)
-	assert.True(t, inner.approveForTenantCalled, "must use ApproveForTenant")
-	assert.False(t, inner.approveCalled, "must not fall back to id-only Approve")
-
-	// Cross-tenant via atomic path returns not found without committing.
-	inner.requests["other"] = Request{
-		ID:       "other",
-		TenantID: "tenant-b",
-		State:    StatePending,
-	}
-	_, err = store.Approve(ctx, "other", "approver", "ok")
-	assert.ErrorIs(t, err, ErrNotFound)
-	assert.Equal(t, StatePending, inner.requests["other"].State)
-}
-
-type atomicTenantMutator struct {
-	tenantStoreTestStore
-	approveForTenantCalled bool
-	approveCalled          bool
-}
-
-func (s *atomicTenantMutator) Approve(ctx context.Context, id, decidedBy, reason string) (Request, error) {
-	s.approveCalled = true
-	return s.tenantStoreTestStore.Approve(ctx, id, decidedBy, reason)
-}
-
-func (s *atomicTenantMutator) ApproveForTenant(_ context.Context, tenantID, id, decidedBy, reason string) (Request, error) {
+func (s *tenantStoreTestStore) ApproveForTenant(_ context.Context, tenantID, id, decidedBy, reason string) (Request, error) {
 	s.approveForTenantCalled = true
 	r, ok := s.requests[id]
 	if !ok || r.TenantID != tenantID {
@@ -287,7 +285,8 @@ func (s *atomicTenantMutator) ApproveForTenant(_ context.Context, tenantID, id, 
 	return r, nil
 }
 
-func (s *atomicTenantMutator) RejectForTenant(_ context.Context, tenantID, id, decidedBy, reason string) (Request, error) {
+func (s *tenantStoreTestStore) RejectForTenant(_ context.Context, tenantID, id, decidedBy, reason string) (Request, error) {
+	s.rejectForTenantCalled = true
 	r, ok := s.requests[id]
 	if !ok || r.TenantID != tenantID {
 		return Request{}, ErrNotFound
@@ -299,7 +298,8 @@ func (s *atomicTenantMutator) RejectForTenant(_ context.Context, tenantID, id, d
 	return r, nil
 }
 
-func (s *atomicTenantMutator) MarkExecutedForTenant(_ context.Context, tenantID, id string) (Request, error) {
+func (s *tenantStoreTestStore) MarkExecutedForTenant(_ context.Context, tenantID, id string) (Request, error) {
+	s.markExecutedForTenantCalled = true
 	r, ok := s.requests[id]
 	if !ok || r.TenantID != tenantID {
 		return Request{}, ErrNotFound

@@ -384,3 +384,6 @@ func match(r approval.Request, q approval.Query) bool {
 	}
 	return true
 }
+
+// Compile-time check: TenantStore requires atomic tenant mutations.
+var _ approval.TenantScopedMutator = (*Store)(nil)

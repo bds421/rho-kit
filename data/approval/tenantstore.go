@@ -3,7 +3,6 @@ package approval
 import (
 	"context"
 	"errors"
-	"fmt"
 )
 
 // ErrTenantMismatch is returned by [TenantStore] mutations when the
@@ -11,13 +10,32 @@ import (
 // wrapper is scoped to. Translates to 404 (not 403) at the HTTP
 // boundary so a caller cannot probe for the existence of an
 // approval that belongs to a sibling tenant.
+//
+// Kit backends that implement [TenantScopedMutator] return
+// [ErrNotFound] for cross-tenant mutations instead of this sentinel
+// (existence must not leak). ErrTenantMismatch remains exported for
+// callers and tests that still match it.
 var ErrTenantMismatch = errors.New("approval: request does not belong to the scoped tenant")
 
-// TenantStore wraps a [Store] and enforces a single TenantID on
-// every Get / Decide / MarkExecuted call (audit FR-054). Pre-fix
-// these mutations took only a request id and the underlying SQL
-// used WHERE id = $1 with no tenant predicate — a textbook IDOR
-// footgun.
+// TenantScopedMutator is implemented by backends that can push the
+// tenant predicate into the same statement that performs the state
+// transition (closing the Get-then-mutate TOCTOU window).
+//
+// [NewTenantStore] requires this capability: check-then-act fallbacks
+// are not supported because a concurrent TenantID reassignment can
+// commit a decision against the wrong tenant before a post-write
+// tripwire observes the mismatch.
+type TenantScopedMutator interface {
+	ApproveForTenant(ctx context.Context, tenantID, id, decidedBy, reason string) (Request, error)
+	RejectForTenant(ctx context.Context, tenantID, id, decidedBy, reason string) (Request, error)
+	MarkExecutedForTenant(ctx context.Context, tenantID, id string) (Request, error)
+}
+
+// TenantStore wraps a [Store] that also implements [TenantScopedMutator]
+// and enforces a single TenantID on every Get / Decide / MarkExecuted
+// call (audit FR-054). Pre-fix these mutations took only a request
+// id and the underlying SQL used WHERE id = $1 with no tenant
+// predicate — a textbook IDOR footgun.
 //
 // Construct one wrapper per tenant ID at the request boundary
 // (typically inside an HTTP handler that has already extracted the
@@ -30,36 +48,22 @@ var ErrTenantMismatch = errors.New("approval: request does not belong to the sco
 // wrapper substitutes its own tenant on List as well so a stray
 // caller cannot widen the query.
 //
-// # TOCTOU window on state transitions (L057)
-//
-// Kit backends ([memory], [postgres]) implement the optional
-// ApproveForTenant / RejectForTenant / MarkExecutedForTenant methods;
-// TenantStore prefers those and pushes the tenant predicate into the
-// same mutation, closing the Get-then-mutate window for production
-// wiring.
-//
-// Against a third-party [Store] that only implements the id-only
-// mutation methods, TenantStore falls back to check-then-modify: it
-// reads the row to confirm ownership, then calls the inner mutation.
-// If a concurrent operator action reassigns the row's TenantID
-// between the read and the write, the underlying state transition can
-// run against the reassigned tenant's record. TenantStore detects this
-// by re-reading TenantID after the write and returns ErrTenantMismatch,
-// but at that point the state transition (and any audit log entry
-// written inside the inner Store) has already happened.
-//
-// Operators MUST treat in-place TenantID reassignment as a privileged
-// administrative action and not a routine API; the post-write check is
-// a best-effort tripwire for non-atomic backends, not a primary defense.
+// Mutations always go through ApproveForTenant / RejectForTenant /
+// MarkExecutedForTenant so the tenant predicate and state transition
+// share one call. Kit backends ([memory], [postgres]) implement those
+// methods; third-party Store implementations must implement
+// [TenantScopedMutator] or [NewTenantStore] panics.
 type TenantStore struct {
 	inner    Store
+	mutator  TenantScopedMutator
 	tenantID string
 }
 
 // NewTenantStore returns a Store that scopes every operation to
-// tenantID. Panics if tenantID is empty — a blank tenant scope
-// would silently disable the protection this type exists to
-// provide.
+// tenantID. Panics if tenantID is empty, inner is nil, or inner does
+// not implement [TenantScopedMutator] — a blank tenant scope or a
+// non-atomic backend would silently disable the protection this type
+// exists to provide.
 func NewTenantStore(inner Store, tenantID string) *TenantStore {
 	if inner == nil {
 		panic("approval: NewTenantStore requires a non-nil inner Store")
@@ -67,7 +71,11 @@ func NewTenantStore(inner Store, tenantID string) *TenantStore {
 	if tenantID == "" {
 		panic("approval: NewTenantStore requires a non-empty tenantID")
 	}
-	return &TenantStore{inner: inner, tenantID: tenantID}
+	mutator, ok := inner.(TenantScopedMutator)
+	if !ok {
+		panic("approval: NewTenantStore requires a Store implementing TenantScopedMutator (ApproveForTenant/RejectForTenant/MarkExecutedForTenant)")
+	}
+	return &TenantStore{inner: inner, mutator: mutator, tenantID: tenantID}
 }
 
 // Create overrides r.TenantID with the wrapper's tenantID so a
@@ -111,80 +119,30 @@ func (t *TenantStore) List(ctx context.Context, q Query) ([]Request, string, err
 	return t.inner.List(ctx, q)
 }
 
-// Approve enforces tenant ownership before delegating to the inner
-// store. Returns [ErrNotFound] when the request belongs to another
-// tenant.
+// Approve enforces tenant ownership via ApproveForTenant.
+// Returns [ErrNotFound] when the request belongs to another tenant.
 func (t *TenantStore) Approve(ctx context.Context, id, decidedBy, reason string) (Request, error) {
-	return t.decideTenant(ctx, id, decidedBy, reason, true)
-}
-
-// Reject enforces tenant ownership before delegating to the inner
-// store. Returns [ErrNotFound] when the request belongs to another
-// tenant.
-func (t *TenantStore) Reject(ctx context.Context, id, decidedBy, reason string) (Request, error) {
-	return t.decideTenant(ctx, id, decidedBy, reason, false)
-}
-
-// tenantScopedMutator is optionally implemented by backends that can push
-// the tenant predicate into the same statement that performs the state
-// transition (closing the Get-then-mutate TOCTOU on TenantStore).
-type tenantScopedMutator interface {
-	ApproveForTenant(ctx context.Context, tenantID, id, decidedBy, reason string) (Request, error)
-	RejectForTenant(ctx context.Context, tenantID, id, decidedBy, reason string) (Request, error)
-	MarkExecutedForTenant(ctx context.Context, tenantID, id string) (Request, error)
-}
-
-func (t *TenantStore) decideTenant(ctx context.Context, id, decidedBy, reason string, approve bool) (Request, error) {
 	if err := t.ready(); err != nil {
 		return Request{}, err
 	}
-	// Prefer atomic tenant-scoped backends when available.
-	if m, ok := t.inner.(tenantScopedMutator); ok {
-		if approve {
-			return m.ApproveForTenant(ctx, t.tenantID, id, decidedBy, reason)
-		}
-		return m.RejectForTenant(ctx, t.tenantID, id, decidedBy, reason)
-	}
-	if _, err := t.Get(ctx, id); err != nil {
-		return Request{}, err
-	}
-	var r Request
-	var err error
-	if approve {
-		r, err = t.inner.Approve(ctx, id, decidedBy, reason)
-	} else {
-		r, err = t.inner.Reject(ctx, id, decidedBy, reason)
-	}
-	if err != nil {
-		return Request{}, err
-	}
-	if r.TenantID != t.tenantID {
-		// Should not happen if Get returned cleanly; treat as a
-		// store-level inconsistency.
-		return Request{}, fmt.Errorf("%w: stored tenant changed mid-operation", ErrTenantMismatch)
-	}
-	return r, nil
+	return t.mutator.ApproveForTenant(ctx, t.tenantID, id, decidedBy, reason)
 }
 
-// MarkExecuted enforces tenant ownership before delegating.
+// Reject enforces tenant ownership via RejectForTenant.
+// Returns [ErrNotFound] when the request belongs to another tenant.
+func (t *TenantStore) Reject(ctx context.Context, id, decidedBy, reason string) (Request, error) {
+	if err := t.ready(); err != nil {
+		return Request{}, err
+	}
+	return t.mutator.RejectForTenant(ctx, t.tenantID, id, decidedBy, reason)
+}
+
+// MarkExecuted enforces tenant ownership via MarkExecutedForTenant.
 func (t *TenantStore) MarkExecuted(ctx context.Context, id string) (Request, error) {
 	if err := t.ready(); err != nil {
 		return Request{}, err
 	}
-	if m, ok := t.inner.(tenantScopedMutator); ok {
-		return m.MarkExecutedForTenant(ctx, t.tenantID, id)
-	}
-	if _, err := t.Get(ctx, id); err != nil {
-		return Request{}, err
-	}
-	r, err := t.inner.MarkExecuted(ctx, id)
-	if err != nil {
-		return Request{}, err
-	}
-	if r.TenantID != t.tenantID {
-		return Request{}, fmt.Errorf("%w: stored tenant changed mid-operation", ErrTenantMismatch)
-	}
-	return r, nil
+	return t.mutator.MarkExecutedForTenant(ctx, t.tenantID, id)
 }
 
 // Compile-time check that TenantStore satisfies the Store interface
@@ -192,7 +150,7 @@ func (t *TenantStore) MarkExecuted(ctx context.Context, id string) (Request, err
 var _ Store = (*TenantStore)(nil)
 
 func (t *TenantStore) ready() error {
-	if t == nil || t.inner == nil || t.tenantID == "" {
+	if t == nil || t.inner == nil || t.mutator == nil || t.tenantID == "" {
 		return ErrInvalidStore
 	}
 	return nil

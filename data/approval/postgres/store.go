@@ -515,3 +515,6 @@ func (s *Store) ready() error {
 func joinAnd(parts []string) string {
 	return strings.Join(parts, " AND ")
 }
+
+// Compile-time check: TenantStore requires atomic tenant mutations.
+var _ approval.TenantScopedMutator = (*Store)(nil)
