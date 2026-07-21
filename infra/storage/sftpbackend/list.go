@@ -54,13 +54,14 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 		defer span.End()
 		span.SetAttributes(attribute.Int("storage.prefix_len", len(prefix)))
 
-		client, err := b.getClient(ctx)
+		client, release, err := b.getClient(ctx)
 		if err != nil {
 			opErr := storage.WrapSafe("sftpbackend: list connection failed", err)
 			span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 			yield(storage.ObjectInfo{}, opErr)
 			return
 		}
+		defer release()
 		if err := b.rejectSymlinkPath(client, b.cfg.RootPath); err != nil {
 			if isNotExist(err) {
 				return

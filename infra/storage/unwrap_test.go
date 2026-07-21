@@ -43,10 +43,6 @@ func (p *presignedStorage) PresignPutURL(_ context.Context, _ string, _ time.Dur
 	return "", nil
 }
 
-type batchDeleterStorage struct{ stubStorage }
-
-func (b *batchDeleterStorage) DeleteMany(context.Context, []string) map[string]error { return nil }
-
 type multipartStorage struct{ stubStorage }
 
 func (m *multipartStorage) InitUpload(context.Context, string, ObjectMeta) (MultipartUpload, error) {
@@ -59,22 +55,6 @@ func (m *multipartStorage) CompleteUpload(context.Context, MultipartUpload, []Pa
 	return nil
 }
 func (m *multipartStorage) AbortUpload(context.Context, MultipartUpload) error { return nil }
-
-type taggerStorage struct{ stubStorage }
-
-func (t *taggerStorage) GetTags(context.Context, string) (Tags, error) { return nil, nil }
-func (t *taggerStorage) SetTags(context.Context, string, Tags) error   { return nil }
-func (t *taggerStorage) DeleteTags(context.Context, string) error      { return nil }
-
-type versionerStorage struct{ stubStorage }
-
-func (v *versionerStorage) ListVersions(context.Context, string) iter.Seq2[ObjectVersion, error] {
-	return func(yield func(ObjectVersion, error) bool) {}
-}
-func (v *versionerStorage) GetVersion(context.Context, string, string) (io.ReadCloser, ObjectMeta, error) {
-	return nil, ObjectMeta{}, nil
-}
-func (v *versionerStorage) DeleteVersion(context.Context, string, string) error { return nil }
 
 // wrapper simulates a storage decorator.
 type wrapper struct {
@@ -144,31 +124,10 @@ func TestAsPresigned_NotFound(t *testing.T) {
 }
 
 func TestAsAdditionalOptionalInterfaces_Wrapped(t *testing.T) {
-	t.Run("batch deleter", func(t *testing.T) {
-		backend := &batchDeleterStorage{}
-		wrapped := &wrapper{inner: backend}
-		got, ok := AsBatchDeleter(wrapped)
-		assert.True(t, ok)
-		assert.NotNil(t, got)
-	})
 	t.Run("multipart uploader", func(t *testing.T) {
 		backend := &multipartStorage{}
 		wrapped := &wrapper{inner: backend}
 		got, ok := AsMultipartUploader(wrapped)
-		assert.True(t, ok)
-		assert.NotNil(t, got)
-	})
-	t.Run("tagger", func(t *testing.T) {
-		backend := &taggerStorage{}
-		wrapped := &wrapper{inner: backend}
-		got, ok := AsTagger(wrapped)
-		assert.True(t, ok)
-		assert.NotNil(t, got)
-	})
-	t.Run("versioner", func(t *testing.T) {
-		backend := &versionerStorage{}
-		wrapped := &wrapper{inner: backend}
-		got, ok := AsVersioner(wrapped)
 		assert.True(t, ok)
 		assert.NotNil(t, got)
 	})
@@ -245,20 +204,8 @@ func TestAsAdditionalOptionalInterfaces_BlockedByOpaqueDecorator(t *testing.T) {
 		st   Storage
 		as   func(Storage) bool
 	}{
-		{"batch deleter", &batchDeleterStorage{}, func(s Storage) bool {
-			_, ok := AsBatchDeleter(s)
-			return ok
-		}},
 		{"multipart uploader", &multipartStorage{}, func(s Storage) bool {
 			_, ok := AsMultipartUploader(s)
-			return ok
-		}},
-		{"tagger", &taggerStorage{}, func(s Storage) bool {
-			_, ok := AsTagger(s)
-			return ok
-		}},
-		{"versioner", &versionerStorage{}, func(s Storage) bool {
-			_, ok := AsVersioner(s)
 			return ok
 		}},
 	}

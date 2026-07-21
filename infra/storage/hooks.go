@@ -42,10 +42,9 @@ type Hooks struct {
 // calling the corresponding hook before/after each operation.
 //
 // The wrapper forwards [Lister], [Copier], [PresignedStore], and
-// [PublicURLer] capabilities if the underlying backend implements them. It
-// also exposes [BatchDeleter] so [DeleteMany] runs BeforeDelete/AfterDelete
-// for batch deletions instead of bypassing the hooks via the backend's native
-// batch delete.
+// [PublicURLer] capabilities if the underlying backend implements them.
+// [DeleteMany] runs through sequential [Storage.Delete], so BeforeDelete/
+// AfterDelete fire for every key in a batch.
 //
 // Panics if backend is nil — a nil backend would only surface as a confusing
 // nil-pointer panic on the first storage operation.
@@ -63,40 +62,7 @@ func WithHooks(backend Storage, hooks Hooks) Storage {
 	_, isPresigned := AsPresigned(backend)
 	_, isURLer := AsPublicURLer(backend)
 
-	switch {
-	case isLister && isCopier && isPresigned && isURLer:
-		return &hookedListerCopierPresignedURLer{h}
-	case isLister && isCopier && isPresigned:
-		return &hookedListerCopierPresigned{h}
-	case isLister && isCopier && isURLer:
-		return &hookedListerCopierURLer{h}
-	case isLister && isPresigned && isURLer:
-		return &hookedListerPresignedURLer{h}
-	case isCopier && isPresigned && isURLer:
-		return &hookedCopierPresignedURLer{h}
-	case isLister && isCopier:
-		return &hookedListerCopier{h}
-	case isLister && isPresigned:
-		return &hookedListerPresigned{h}
-	case isLister && isURLer:
-		return &hookedListerURLer{h}
-	case isCopier && isPresigned:
-		return &hookedCopierPresigned{h}
-	case isCopier && isURLer:
-		return &hookedCopierURLer{h}
-	case isPresigned && isURLer:
-		return &hookedPresignedURLer{h}
-	case isLister:
-		return &hookedLister{h}
-	case isCopier:
-		return &hookedCopier{h}
-	case isPresigned:
-		return &hookedPresigner{h}
-	case isURLer:
-		return &hookedURLer{h}
-	default:
-		return h
-	}
+	return composeHookCaps(h, isLister, isCopier, isPresigned, isURLer)
 }
 
 type hookedStorage struct {
@@ -163,65 +129,6 @@ func (h *hookedStorage) Delete(ctx context.Context, key string) error {
 		h.hooks.AfterDelete(ctx, key)
 	}
 	return nil
-}
-
-// DeleteMany runs BeforeDelete/AfterDelete around a bulk delete so batch
-// deletions honour the same hooks as single Delete calls. Without it,
-// [DeleteMany] would discover the underlying backend's native BatchDeleter
-// through Unwrap and bypass the hooks entirely (only the sequential fallback
-// fired them). BeforeDelete still acts as a per-key abort; aborted keys are
-// reported as failures and never reach the backend. The method is defined on
-// *hookedStorage so every WithHooks wrapper variant exposes BatchDeleter.
-func (h *hookedStorage) DeleteMany(ctx context.Context, keys []string) map[string]error {
-	var failures map[string]error
-	fail := func(key string, err error) {
-		if failures == nil {
-			failures = make(map[string]error)
-		}
-		failures[key] = err
-	}
-
-	toDelete := make([]string, 0, len(keys))
-	for _, key := range keys {
-		if err := ValidateKey(key); err != nil {
-			fail(key, err)
-			continue
-		}
-		if h.hooks.BeforeDelete != nil {
-			if err := h.hooks.BeforeDelete(ctx, key); err != nil {
-				fail(key, err)
-				continue
-			}
-		}
-		toDelete = append(toDelete, key)
-	}
-
-	if bd, ok := AsBatchDeleter(h.backend); ok {
-		for key, err := range bd.DeleteMany(ctx, toDelete) {
-			fail(key, err)
-		}
-		for _, key := range toDelete {
-			if _, failed := failures[key]; failed {
-				continue
-			}
-			if h.hooks.AfterDelete != nil {
-				h.hooks.AfterDelete(ctx, key)
-			}
-		}
-		return failures
-	}
-
-	// Sequential fallback: no native batch delete on the backend.
-	for _, key := range toDelete {
-		if err := h.backend.Delete(ctx, key); err != nil {
-			fail(key, err)
-			continue
-		}
-		if h.hooks.AfterDelete != nil {
-			h.hooks.AfterDelete(ctx, key)
-		}
-	}
-	return failures
 }
 
 // Close delegates [storage.Close] to the wrapped backend so a
@@ -338,209 +245,145 @@ func errorSeq(err error) iter.Seq2[ObjectInfo, error] {
 	}
 }
 
-// --- Combination wrapper types ---
+// --- Capability composition ---
 //
 // Go does not support dynamic interface composition, so we enumerate all
 // 2^4 = 16 combinations of {Lister, Copier, PresignedStore, PublicURLer}.
-//
-// Intentional deferral (review-18): retry/ and circuitbreaker/ triplicates this
-// combinator table. A shared generated-style forwarder would remove ~700 lines
-// but must not silently drop capability assertions across decorators — park
-// until a code-gen or single internal combinator package can be introduced
-// with compile-time tests that every optional interface is forwarded.
+// Method bodies live once on the four forwarder types below; combination
+// structs only embed those forwarders (review-18).
 
-// This is verbose but type-safe: callers can assert on e.g. Lister and
-// get the correct answer without runtime reflection.
-//
-// If Go ever adds intersection types or structural typing, this can be
-// replaced with a single generic wrapper.
+// hookListFwd / hookCopyFwd / hookPresignFwd / hookURLFwd each add a single
+// optional capability by promoting one method set. They deliberately do NOT
+// embed *hookedStorage so multi-capability wrappers can embed several
+// forwarders without ambiguous Storage method promotion.
+type hookListFwd struct{ h *hookedStorage }
 
-type hookedLister struct{ *hookedStorage }
-
-func (w *hookedLister) List(ctx context.Context, prefix string, opts ListOptions) iter.Seq2[ObjectInfo, error] {
-	return w.list(ctx, prefix, opts)
+func (w hookListFwd) List(ctx context.Context, prefix string, opts ListOptions) iter.Seq2[ObjectInfo, error] {
+	return w.h.list(ctx, prefix, opts)
 }
 
-type hookedCopier struct{ *hookedStorage }
+type hookCopyFwd struct{ h *hookedStorage }
 
-func (w *hookedCopier) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copy(ctx, srcKey, dstKey)
+func (w hookCopyFwd) Copy(ctx context.Context, srcKey, dstKey string) error {
+	return w.h.copy(ctx, srcKey, dstKey)
 }
 
-type hookedPresigner struct{ *hookedStorage }
+type hookPresignFwd struct{ h *hookedStorage }
 
-func (w *hookedPresigner) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetURL(ctx, key, ttl)
+func (w hookPresignFwd) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	return w.h.presignGetURL(ctx, key, ttl)
 }
 
-func (w *hookedPresigner) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta ObjectMeta) (string, error) {
-	return w.presignPutURL(ctx, key, ttl, meta)
+func (w hookPresignFwd) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta ObjectMeta) (string, error) {
+	return w.h.presignPutURL(ctx, key, ttl, meta)
 }
 
-type hookedURLer struct{ *hookedStorage }
+type hookURLFwd struct{ h *hookedStorage }
 
-func (w *hookedURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.url(ctx, key)
+func (w hookURLFwd) URL(ctx context.Context, key string) (string, error) {
+	return w.h.url(ctx, key)
 }
 
-type hookedListerCopier struct{ *hookedStorage }
+func composeHookCaps(h *hookedStorage, isLister, isCopier, isPresigned, isURLer bool) Storage {
+	list := hookListFwd{h}
+	copy := hookCopyFwd{h}
+	presign := hookPresignFwd{h}
+	url := hookURLFwd{h}
 
-func (w *hookedListerCopier) List(ctx context.Context, prefix string, opts ListOptions) iter.Seq2[ObjectInfo, error] {
-	return w.list(ctx, prefix, opts)
-}
-
-func (w *hookedListerCopier) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copy(ctx, srcKey, dstKey)
-}
-
-type hookedListerPresigned struct{ *hookedStorage }
-
-func (w *hookedListerPresigned) List(ctx context.Context, prefix string, opts ListOptions) iter.Seq2[ObjectInfo, error] {
-	return w.list(ctx, prefix, opts)
-}
-
-func (w *hookedListerPresigned) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetURL(ctx, key, ttl)
-}
-
-func (w *hookedListerPresigned) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta ObjectMeta) (string, error) {
-	return w.presignPutURL(ctx, key, ttl, meta)
-}
-
-type hookedListerURLer struct{ *hookedStorage }
-
-func (w *hookedListerURLer) List(ctx context.Context, prefix string, opts ListOptions) iter.Seq2[ObjectInfo, error] {
-	return w.list(ctx, prefix, opts)
-}
-
-func (w *hookedListerURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.url(ctx, key)
-}
-
-type hookedCopierPresigned struct{ *hookedStorage }
-
-func (w *hookedCopierPresigned) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copy(ctx, srcKey, dstKey)
-}
-
-func (w *hookedCopierPresigned) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetURL(ctx, key, ttl)
-}
-
-func (w *hookedCopierPresigned) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta ObjectMeta) (string, error) {
-	return w.presignPutURL(ctx, key, ttl, meta)
-}
-
-type hookedCopierURLer struct{ *hookedStorage }
-
-func (w *hookedCopierURLer) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copy(ctx, srcKey, dstKey)
-}
-
-func (w *hookedCopierURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.url(ctx, key)
-}
-
-type hookedPresignedURLer struct{ *hookedStorage }
-
-func (w *hookedPresignedURLer) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetURL(ctx, key, ttl)
-}
-
-func (w *hookedPresignedURLer) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta ObjectMeta) (string, error) {
-	return w.presignPutURL(ctx, key, ttl, meta)
-}
-
-func (w *hookedPresignedURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.url(ctx, key)
-}
-
-type hookedListerCopierPresigned struct{ *hookedStorage }
-
-func (w *hookedListerCopierPresigned) List(ctx context.Context, prefix string, opts ListOptions) iter.Seq2[ObjectInfo, error] {
-	return w.list(ctx, prefix, opts)
-}
-
-func (w *hookedListerCopierPresigned) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copy(ctx, srcKey, dstKey)
-}
-
-func (w *hookedListerCopierPresigned) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetURL(ctx, key, ttl)
-}
-
-func (w *hookedListerCopierPresigned) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta ObjectMeta) (string, error) {
-	return w.presignPutURL(ctx, key, ttl, meta)
-}
-
-type hookedListerCopierURLer struct{ *hookedStorage }
-
-func (w *hookedListerCopierURLer) List(ctx context.Context, prefix string, opts ListOptions) iter.Seq2[ObjectInfo, error] {
-	return w.list(ctx, prefix, opts)
-}
-
-func (w *hookedListerCopierURLer) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copy(ctx, srcKey, dstKey)
-}
-
-func (w *hookedListerCopierURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.url(ctx, key)
-}
-
-type hookedListerPresignedURLer struct{ *hookedStorage }
-
-func (w *hookedListerPresignedURLer) List(ctx context.Context, prefix string, opts ListOptions) iter.Seq2[ObjectInfo, error] {
-	return w.list(ctx, prefix, opts)
-}
-
-func (w *hookedListerPresignedURLer) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetURL(ctx, key, ttl)
-}
-
-func (w *hookedListerPresignedURLer) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta ObjectMeta) (string, error) {
-	return w.presignPutURL(ctx, key, ttl, meta)
-}
-
-func (w *hookedListerPresignedURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.url(ctx, key)
-}
-
-type hookedCopierPresignedURLer struct{ *hookedStorage }
-
-func (w *hookedCopierPresignedURLer) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copy(ctx, srcKey, dstKey)
-}
-
-func (w *hookedCopierPresignedURLer) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetURL(ctx, key, ttl)
-}
-
-func (w *hookedCopierPresignedURLer) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta ObjectMeta) (string, error) {
-	return w.presignPutURL(ctx, key, ttl, meta)
-}
-
-func (w *hookedCopierPresignedURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.url(ctx, key)
-}
-
-type hookedListerCopierPresignedURLer struct{ *hookedStorage }
-
-func (w *hookedListerCopierPresignedURLer) List(ctx context.Context, prefix string, opts ListOptions) iter.Seq2[ObjectInfo, error] {
-	return w.list(ctx, prefix, opts)
-}
-
-func (w *hookedListerCopierPresignedURLer) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copy(ctx, srcKey, dstKey)
-}
-
-func (w *hookedListerCopierPresignedURLer) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetURL(ctx, key, ttl)
-}
-
-func (w *hookedListerCopierPresignedURLer) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta ObjectMeta) (string, error) {
-	return w.presignPutURL(ctx, key, ttl, meta)
-}
-
-func (w *hookedListerCopierPresignedURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.url(ctx, key)
+	switch {
+	case isLister && isCopier && isPresigned && isURLer:
+		return &struct {
+			*hookedStorage
+			hookListFwd
+			hookCopyFwd
+			hookPresignFwd
+			hookURLFwd
+		}{h, list, copy, presign, url}
+	case isLister && isCopier && isPresigned:
+		return &struct {
+			*hookedStorage
+			hookListFwd
+			hookCopyFwd
+			hookPresignFwd
+		}{h, list, copy, presign}
+	case isLister && isCopier && isURLer:
+		return &struct {
+			*hookedStorage
+			hookListFwd
+			hookCopyFwd
+			hookURLFwd
+		}{h, list, copy, url}
+	case isLister && isPresigned && isURLer:
+		return &struct {
+			*hookedStorage
+			hookListFwd
+			hookPresignFwd
+			hookURLFwd
+		}{h, list, presign, url}
+	case isCopier && isPresigned && isURLer:
+		return &struct {
+			*hookedStorage
+			hookCopyFwd
+			hookPresignFwd
+			hookURLFwd
+		}{h, copy, presign, url}
+	case isLister && isCopier:
+		return &struct {
+			*hookedStorage
+			hookListFwd
+			hookCopyFwd
+		}{h, list, copy}
+	case isLister && isPresigned:
+		return &struct {
+			*hookedStorage
+			hookListFwd
+			hookPresignFwd
+		}{h, list, presign}
+	case isLister && isURLer:
+		return &struct {
+			*hookedStorage
+			hookListFwd
+			hookURLFwd
+		}{h, list, url}
+	case isCopier && isPresigned:
+		return &struct {
+			*hookedStorage
+			hookCopyFwd
+			hookPresignFwd
+		}{h, copy, presign}
+	case isCopier && isURLer:
+		return &struct {
+			*hookedStorage
+			hookCopyFwd
+			hookURLFwd
+		}{h, copy, url}
+	case isPresigned && isURLer:
+		return &struct {
+			*hookedStorage
+			hookPresignFwd
+			hookURLFwd
+		}{h, presign, url}
+	case isLister:
+		return &struct {
+			*hookedStorage
+			hookListFwd
+		}{h, list}
+	case isCopier:
+		return &struct {
+			*hookedStorage
+			hookCopyFwd
+		}{h, copy}
+	case isPresigned:
+		return &struct {
+			*hookedStorage
+			hookPresignFwd
+		}{h, presign}
+	case isURLer:
+		return &struct {
+			*hookedStorage
+			hookURLFwd
+		}{h, url}
+	default:
+		return h
+	}
 }

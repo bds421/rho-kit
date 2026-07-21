@@ -52,7 +52,7 @@ func TestDeleteMany_InvalidKey(t *testing.T) {
 func TestDeleteMany_RejectsTooManyKeys(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	backend := &batchProbe{}
+	backend := &inlineBackend{store: make(map[string][]byte)}
 	keys := make([]string, MaxBatchKeys+1)
 	for i := range keys {
 		keys[i] = fmt.Sprintf("object-%d.txt", i)
@@ -62,7 +62,7 @@ func TestDeleteMany_RejectsTooManyKeys(t *testing.T) {
 
 	assert.ErrorIs(t, err, ErrValidation)
 	assert.ErrorIs(t, err, ErrBatchTooLarge)
-	assert.False(t, backend.called)
+	assert.Empty(t, backend.store)
 }
 
 func TestDeleteMany_NilBackendReturnsError(t *testing.T) {
@@ -72,29 +72,6 @@ func TestDeleteMany_NilBackendReturnsError(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "backend is required")
-}
-
-func TestDeleteMany_UsesBatchDeleterThroughUnwrapChain(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	backend := &batchProbe{}
-	wrapped := &wrapper{inner: backend}
-
-	err := DeleteMany(ctx, wrapped, []string{"a.txt", "b.txt"})
-	require.NoError(t, err)
-	assert.True(t, backend.called)
-	assert.Equal(t, []string{"a.txt", "b.txt"}, backend.keys)
-}
-
-func TestDeleteMany_BatchErrorDoesNotReflectKey(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	backend := &batchFailProbe{}
-
-	err := DeleteMany(ctx, backend, []string{"secret-token.txt"})
-
-	require.Error(t, err)
-	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 func TestCopyMany(t *testing.T) {
@@ -209,24 +186,4 @@ type deleteFailBackend struct {
 
 func (b *deleteFailBackend) Delete(context.Context, string) error {
 	return errors.New("backend down")
-}
-
-type batchProbe struct {
-	stubStorage
-	called bool
-	keys   []string
-}
-
-func (b *batchProbe) DeleteMany(_ context.Context, keys []string) map[string]error {
-	b.called = true
-	b.keys = append([]string(nil), keys...)
-	return nil
-}
-
-type batchFailProbe struct {
-	stubStorage
-}
-
-func (b *batchFailProbe) DeleteMany(context.Context, []string) map[string]error {
-	return map[string]error{"secret-token.txt": errors.New("backend down")}
 }

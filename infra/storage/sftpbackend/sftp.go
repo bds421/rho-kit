@@ -67,6 +67,98 @@ type Client interface {
 // joined on Close via the internal WaitGroup. Once [Backend.Close] has
 // been called the backend is terminally closed; all further operations
 // return [storage.ErrBackendClosed].
+// clientSession is one SSH/SFTP connection pair with a lease reference count.
+// Ops call tryAcquire/release around use of client; reconnect retires the
+// session and closes FDs only after refs drain (review-19).
+type clientSession struct {
+	client  Client
+	sshConn io.Closer
+	refs    atomic.Int64
+	retire  atomic.Bool
+	// closedOnce ensures Close on client/ssh runs at most once.
+	closedOnce sync.Once
+	// drained is closed when the session has been fully closed. Waiters
+	// (reconnect drain / Backend.Close) select on it.
+	drained chan struct{}
+}
+
+func newClientSession(client Client, sshConn io.Closer) *clientSession {
+	return &clientSession{
+		client:  client,
+		sshConn: sshConn,
+		drained: make(chan struct{}),
+	}
+}
+
+// tryAcquire increments the lease count if the session is still live.
+// Returns false when the session has been retired (reconnect replaced it).
+func (s *clientSession) tryAcquire() bool {
+	if s == nil {
+		return false
+	}
+	if s.retire.Load() {
+		return false
+	}
+	s.refs.Add(1)
+	if s.retire.Load() {
+		// Lost the race with markRetired; drop the speculative ref.
+		s.release()
+		return false
+	}
+	return true
+}
+
+func (s *clientSession) release() {
+	if s == nil {
+		return
+	}
+	if s.refs.Add(-1) != 0 {
+		return
+	}
+	if s.retire.Load() {
+		s.closeFDs()
+	}
+}
+
+// markRetired prevents new leases and closes FDs once refs hit zero.
+func (s *clientSession) markRetired() {
+	if s == nil {
+		return
+	}
+	s.retire.Store(true)
+	if s.refs.Load() == 0 {
+		s.closeFDs()
+	}
+}
+
+func (s *clientSession) closeFDs() {
+	if s == nil {
+		return
+	}
+	s.closedOnce.Do(func() {
+		if s.client != nil {
+			_ = s.client.Close()
+		}
+		if s.sshConn != nil {
+			_ = s.sshConn.Close()
+		}
+		close(s.drained)
+	})
+}
+
+// inflight reports active leases (for tests and drain waits).
+func (s *clientSession) inflight() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.refs.Load()
+}
+
+// reconnectDrainGrace is how long replaceSession waits for in-flight leases
+// before returning a drain error. The new session is still installed so new
+// ops proceed; the old session keeps serving leased ops until they release.
+const reconnectDrainGrace = 30 * time.Second
+
 type Backend struct {
 	cfg        Config
 	instance   string
@@ -74,9 +166,9 @@ type Backend struct {
 	logger     *slog.Logger
 	metrics    *Metrics
 
-	mu        sync.RWMutex
-	client    Client
-	sshConn   io.Closer
+	mu sync.RWMutex
+	// session is the current live client; nil when disconnected.
+	session   *clientSession
 	connected bool
 	lazyConn  bool
 
@@ -84,14 +176,7 @@ type Backend struct {
 	// operation closed rather than silently reconnecting.
 	closed atomic.Bool
 
-	// cleanupGen is the latest cleanup generation. Cleanup goroutines hold
-	// the generation they were spawned at; before sleeping for the grace
-	// period they re-check whether a newer cleanup has run, and if so close
-	// the FD pair immediately. Prevents FD accumulation when the SFTP server
-	// flaps every few seconds (each old cleanup holding 2 FDs for 5s).
-	cleanupGen atomic.Uint64
-
-	// cleanupWg tracks pending cleanup goroutines that close replaced connections.
+	// cleanupWg tracks pending drain/close work for retired sessions.
 	// Close() waits for them to finish to prevent file descriptor leaks on shutdown.
 	cleanupWg sync.WaitGroup
 
@@ -222,7 +307,7 @@ func NewWithClient(client Client, cfg Config, opts ...Option) *Backend {
 		cfg:       cfg,
 		instance:  "default",
 		logger:    slog.Default(),
-		client:    client,
+		session:   newClientSession(client, nil),
 		connected: true,
 	}
 	for _, o := range opts {
@@ -247,7 +332,7 @@ func (b *Backend) connect(ctx context.Context) error {
 		b.mu.RUnlock()
 		return fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
 	}
-	if b.connected && b.client != nil {
+	if b.connected && b.session != nil && b.session.client != nil {
 		b.mu.RUnlock()
 		return nil
 	}
@@ -261,7 +346,7 @@ func (b *Backend) connect(ctx context.Context) error {
 	}
 	// Re-check under dialMu after another dialer may have finished.
 	b.mu.RLock()
-	if b.connected && b.client != nil {
+	if b.connected && b.session != nil && b.session.client != nil {
 		b.mu.RUnlock()
 		b.dialMu.Unlock()
 		return nil
@@ -337,54 +422,44 @@ func (b *Backend) dialAndInstall(ctx context.Context) error {
 		_ = conn.Close()
 		return fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
 	}
-	if b.connected && b.client != nil {
+	if b.connected && b.session != nil && b.session.client != nil {
 		// Lost the race to another installer; discard ours.
 		_ = sftpClient.Close()
 		_ = conn.Close()
 		return nil
 	}
 
-	// Close old connections after replacing to prevent file descriptor leaks.
-	// We close asynchronously with a short delay because in-flight operations
-	// may still hold a reference to the old client (obtained via getClient()
-	// before this write lock was acquired). The delay gives those operations
-	// time to complete rather than causing use-after-close panics.
-	//
-	// Full reference-counted lease cleanup is a larger redesign (v3); the
-	// generation-bump + 5s grace remains the v2 heuristic.
-	oldClient := b.client
-	oldConn := b.sshConn
-	if oldClient != nil || oldConn != nil {
-		gen := b.cleanupGen.Add(1)
-		b.cleanupWg.Add(1)
-		go func() {
-			defer b.cleanupWg.Done()
-			ticker := time.NewTicker(200 * time.Millisecond)
-			defer ticker.Stop()
-			deadline := time.NewTimer(5 * time.Second)
-			defer deadline.Stop()
-			for b.cleanupGen.Load() == gen {
-				select {
-				case <-ticker.C:
-				case <-deadline.C:
-					goto closeOld
-				}
-			}
-		closeOld:
-			if oldClient != nil {
-				_ = oldClient.Close()
-			}
-			if oldConn != nil {
-				_ = oldConn.Close()
-			}
-		}()
-	}
-
-	b.client = sftpClient
-	b.sshConn = conn
+	newSess := newClientSession(sftpClient, conn)
+	old := b.session
+	b.session = newSess
 	b.connected = true
 	b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(1)
 	b.logger.Info("SFTP connected", redact.String("host", b.cfg.Host), "port", b.cfg.Port)
+
+	// Retire the previous session: close FDs only after in-flight leases drain
+	// so Put/Get mid-transfer are not corrupted by SSH teardown (review-19).
+	if old != nil {
+		old.markRetired()
+		b.cleanupWg.Add(1)
+		go func(sess *clientSession) {
+			defer b.cleanupWg.Done()
+			timer := time.NewTimer(reconnectDrainGrace)
+			defer timer.Stop()
+			select {
+			case <-sess.drained:
+				return
+			case <-timer.C:
+				// Grace expired with leases still held. Do NOT force-close:
+				// that would corrupt in-flight Put/Get. Wait for natural drain.
+				if b.logger != nil {
+					b.logger.Warn("SFTP reconnect drain grace elapsed; waiting for in-flight leases",
+						redact.String("host", b.cfg.Host),
+						"inflight", sess.inflight())
+				}
+				<-sess.drained
+			}
+		}(old)
+	}
 	return nil
 }
 
@@ -468,34 +543,65 @@ func (b *Backend) passwordProviderTimeout() time.Duration {
 	return b.cfg.PasswordProviderTimeout
 }
 
-// getClient returns the SFTP client, connecting if needed (lazy connect).
-// After Close has been called, getClient returns [storage.ErrBackendClosed]
-// rather than reconnecting — a closed backend is terminally closed.
-func (b *Backend) getClient(ctx context.Context) (Client, error) {
+// getClient returns a leased SFTP client and a release function. Callers must
+// invoke release exactly once when the lease is no longer needed (after the
+// op completes, or after the Get body ReadCloser is closed). After Close has
+// been called, getClient returns [storage.ErrBackendClosed] rather than
+// reconnecting — a closed backend is terminally closed.
+func (b *Backend) getClient(ctx context.Context) (Client, func(), error) {
+	releaseNop := func() {}
 	if b.closed.Load() {
-		return nil, fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
+		return nil, releaseNop, fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
 	}
-	b.mu.RLock()
-	if b.connected && b.client != nil && !b.closed.Load() {
-		client := b.client
-		b.mu.RUnlock()
-		return client, nil
-	}
-	b.mu.RUnlock()
 
-	// connect() acquires the write lock and re-checks b.connected,
-	// so concurrent callers safely converge on a single connection.
+	// Fast path: live session with a successful lease.
+	if client, release, ok := b.tryLease(); ok {
+		return client, release, nil
+	}
+
+	// connect() dials outside b.mu and installs a new session.
 	if err := b.connect(ctx); err != nil {
-		return nil, err
+		return nil, releaseNop, err
 	}
 
+	if client, release, ok := b.tryLease(); ok {
+		return client, release, nil
+	}
+	// Close may have raced between connect success and this re-read.
+	return nil, releaseNop, fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
+}
+
+// tryLease attempts to take a reference on the current session.
+func (b *Backend) tryLease() (Client, func(), bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	if b.closed.Load() || !b.connected || b.client == nil {
-		// Close may have raced between connect success and this re-read.
-		return nil, fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
+	if b.closed.Load() || !b.connected || b.session == nil {
+		return nil, nil, false
 	}
-	return b.client, nil
+	sess := b.session
+	if !sess.tryAcquire() {
+		return nil, nil, false
+	}
+	return sess.client, sess.release, true
+}
+
+// replaceSessionForTest retires the current session and installs client as the
+// live session. Used by unit tests to exercise lease drain without a real dial.
+func (b *Backend) replaceSessionForTest(client Client) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	newSess := newClientSession(client, nil)
+	old := b.session
+	b.session = newSess
+	b.connected = true
+	if old != nil {
+		old.markRetired()
+		b.cleanupWg.Add(1)
+		go func(sess *clientSession) {
+			defer b.cleanupWg.Done()
+			<-sess.drained
+		}(old)
+	}
 }
 
 // remotePath joins the root path with the given key.
@@ -653,12 +759,13 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 		return err
 	}
 
-	client, err := b.getClient(ctx)
+	client, release, err := b.getClient(ctx)
 	if err != nil {
 		opErr := storage.WrapSafe("sftpbackend: put connection failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
 	}
+	defer release()
 
 	remotePath := b.remotePath(key)
 	suffix, err := randomSuffix()
@@ -779,16 +886,18 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 		return nil, storage.ObjectMeta{}, err
 	}
 
-	client, err := b.getClient(ctx)
+	client, release, err := b.getClient(ctx)
 	if err != nil {
 		opErr := storage.WrapSafe("sftpbackend: get connection failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return nil, storage.ObjectMeta{}, opErr
 	}
+	// Lease is held until the returned body is closed (or on error paths below).
 
 	remotePath := b.remotePath(key)
 	start := now()
 	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
+		release()
 		// Record the operation so symlink-rejection events stay visible in
 		// storage_sftp_* and per-operation counts match the happy/remote-error
 		// paths. sftpMetricErr keeps an expected not-found out of
@@ -811,6 +920,7 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 	b.metrics.observeOp(b.instance, "get", start, sftpMetricErr(err))
 
 	if err != nil {
+		release()
 		if isNotExist(err) {
 			opErr := fmt.Errorf("sftpbackend: get: %w", storage.ErrObjectNotFound)
 			span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
@@ -826,7 +936,28 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 		meta.Size = info.Size()
 	}
 
-	return f, meta, nil
+	return &leasedReadCloser{ReadCloser: f, release: release}, meta, nil
+}
+
+// leasedReadCloser holds a client lease until the body is closed so reconnect
+// cannot tear down the SSH session under an in-flight download (review-19).
+type leasedReadCloser struct {
+	io.ReadCloser
+	release func()
+	once    sync.Once
+}
+
+func (l *leasedReadCloser) Close() error {
+	var err error
+	if l.ReadCloser != nil {
+		err = l.ReadCloser.Close()
+	}
+	l.once.Do(func() {
+		if l.release != nil {
+			l.release()
+		}
+	})
+	return err
 }
 
 // Delete removes a file at the remote path. Returns nil if the file does not exist.
@@ -839,12 +970,13 @@ func (b *Backend) Delete(ctx context.Context, key string) error {
 		return err
 	}
 
-	client, err := b.getClient(ctx)
+	client, release, err := b.getClient(ctx)
 	if err != nil {
 		opErr := storage.WrapSafe("sftpbackend: delete connection failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
 	}
+	defer release()
 	remotePath := b.remotePath(key)
 	start := now()
 	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
@@ -885,12 +1017,13 @@ func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
 		return false, err
 	}
 
-	client, err := b.getClient(ctx)
+	client, release, err := b.getClient(ctx)
 	if err != nil {
 		opErr := storage.WrapSafe("sftpbackend: exists connection failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return false, opErr
 	}
+	defer release()
 	remotePath := b.remotePath(key)
 	start := now()
 	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
@@ -943,8 +1076,11 @@ func (b *Backend) Healthy() bool {
 		return false
 	}
 	b.mu.RLock()
-	connected := b.connected && b.client != nil
-	client := b.client
+	connected := b.connected && b.session != nil && b.session.client != nil
+	var client Client
+	if b.session != nil {
+		client = b.session.client
+	}
 	lazy := b.lazyConn
 	b.mu.RUnlock()
 	if !connected {
@@ -960,11 +1096,11 @@ func (b *Backend) Healthy() bool {
 			return false
 		}
 		b.mu.RLock()
-		if !b.connected || b.client == nil {
+		if !b.connected || b.session == nil || b.session.client == nil {
 			b.mu.RUnlock()
 			return false
 		}
-		client = b.client
+		client = b.session.client
 		b.mu.RUnlock()
 	}
 
@@ -988,12 +1124,18 @@ func (b *Backend) Healthy() bool {
 	}
 	if err != nil {
 		// Mark as disconnected so the next getClient call reconnects.
-		// Re-check that b.client is still the same instance we probed — if
+		// Re-check that the session still owns the client we probed — if
 		// connect() ran concurrently and replaced it, we must not overwrite
 		// the fresh connection state.
 		b.mu.Lock()
-		if b.client == client {
+		if b.session != nil && b.session.client == client {
 			b.connected = false
+			// Retire the unhealthy session so its FDs close after leases drain.
+			old := b.session
+			b.session = nil
+			if old != nil {
+				old.markRetired()
+			}
 			if b.metrics != nil {
 				b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(0)
 			}
@@ -1009,10 +1151,14 @@ func (b *Backend) Healthy() bool {
 }
 
 // Close closes the SFTP and SSH connections and waits for any pending
-// cleanup goroutines from previous reconnections to finish. Close is the
+// lease drains from previous reconnections to finish. Close is the
 // terminal state — subsequent operations return [storage.ErrBackendClosed]
 // rather than silently reconnecting. Close is idempotent; calling it on an
 // already-closed backend is a no-op.
+//
+// In-flight leases are retired; their FDs close when the last holder
+// releases. Close waits on cleanupWg for those drains so file descriptors
+// are not leaked on shutdown.
 func (b *Backend) Close() error {
 	if b == nil {
 		return nil
@@ -1023,26 +1169,32 @@ func (b *Backend) Close() error {
 	}
 	b.mu.Lock()
 
-	var errs []error
-	if b.client != nil {
-		errs = append(errs, b.client.Close())
-		b.client = nil
-	}
-	if b.sshConn != nil {
-		errs = append(errs, b.sshConn.Close())
-		b.sshConn = nil
-	}
+	sess := b.session
+	b.session = nil
 	b.connected = false
 	if b.metrics != nil {
 		b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(0)
 	}
 	b.mu.Unlock()
 
-	// Wait for pending cleanup goroutines outside the lock to avoid blocking
-	// concurrent operations during the 5-second grace period.
+	if sess != nil {
+		// Force retirement; if no leases remain this closes FDs immediately.
+		// With outstanding leases, closeFDs runs on the last release.
+		sess.markRetired()
+		// Also force-close on shutdown so a leaked Get body cannot hang Close
+		// forever — markRetired already closed if refs==0; if not, wait briefly
+		// then force.
+		select {
+		case <-sess.drained:
+		case <-time.After(reconnectDrainGrace):
+			sess.closeFDs()
+		}
+	}
+
+	// Wait for pending reconnect drain goroutines outside the lock.
 	b.cleanupWg.Wait()
 
-	return errors.Join(errs...)
+	return nil
 }
 
 // isNotExist checks if an error represents a "file not found" condition.

@@ -126,7 +126,9 @@ validators cannot honestly validate independent parts.
 
 Shared helpers such as `storage.DeleteMany` and `storage.CopyMany` validate
 keys before touching a backend and reject batches above
-`storage.MaxBatchKeys`.
+`storage.MaxBatchKeys`. `DeleteMany` always deletes sequentially via
+`Storage.Delete` (the optional `BatchDeleter` interface was removed) so
+hooks and decorators always observe per-key deletes.
 `storage.Migrate` streams objects one at a time and caps retained per-key
 errors at `storage.MaxMigrationErrors`; the `Failed` counter and progress
 callback still report every failure.

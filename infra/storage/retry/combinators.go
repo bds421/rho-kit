@@ -9,233 +9,137 @@ import (
 )
 
 // composeRetry returns a [storage.Storage] whose dynamic type implements the
-// optional interfaces matching the underlying chain's capabilities. Go does
-// not support dynamic interface composition, so we enumerate all 2^4 = 16
-// combinations of {Lister, Copier, PresignedStore, PublicURLer}. This
-// mirrors the pattern in [storage.WithHooks].
+// optional interfaces matching the underlying chain's capabilities. Method
+// bodies live once on the four forwarder types; combination structs only
+// embed those forwarders (mirrors storage.WithHooks / review-18).
 func composeRetry(r *RetryStorage, hasLister, hasCopier, hasPresigned, hasURLer bool) storage.Storage {
+	list := retryListFwd{r}
+	copy := retryCopyFwd{r}
+	presign := retryPresignFwd{r}
+	url := retryURLFwd{r}
+
 	switch {
 	case hasLister && hasCopier && hasPresigned && hasURLer:
-		return &retryListerCopierPresignedURLer{r}
+		return &struct {
+			*RetryStorage
+			retryListFwd
+			retryCopyFwd
+			retryPresignFwd
+			retryURLFwd
+		}{r, list, copy, presign, url}
 	case hasLister && hasCopier && hasPresigned:
-		return &retryListerCopierPresigned{r}
+		return &struct {
+			*RetryStorage
+			retryListFwd
+			retryCopyFwd
+			retryPresignFwd
+		}{r, list, copy, presign}
 	case hasLister && hasCopier && hasURLer:
-		return &retryListerCopierURLer{r}
+		return &struct {
+			*RetryStorage
+			retryListFwd
+			retryCopyFwd
+			retryURLFwd
+		}{r, list, copy, url}
 	case hasLister && hasPresigned && hasURLer:
-		return &retryListerPresignedURLer{r}
+		return &struct {
+			*RetryStorage
+			retryListFwd
+			retryPresignFwd
+			retryURLFwd
+		}{r, list, presign, url}
 	case hasCopier && hasPresigned && hasURLer:
-		return &retryCopierPresignedURLer{r}
+		return &struct {
+			*RetryStorage
+			retryCopyFwd
+			retryPresignFwd
+			retryURLFwd
+		}{r, copy, presign, url}
 	case hasLister && hasCopier:
-		return &retryListerCopier{r}
+		return &struct {
+			*RetryStorage
+			retryListFwd
+			retryCopyFwd
+		}{r, list, copy}
 	case hasLister && hasPresigned:
-		return &retryListerPresigned{r}
+		return &struct {
+			*RetryStorage
+			retryListFwd
+			retryPresignFwd
+		}{r, list, presign}
 	case hasLister && hasURLer:
-		return &retryListerURLer{r}
+		return &struct {
+			*RetryStorage
+			retryListFwd
+			retryURLFwd
+		}{r, list, url}
 	case hasCopier && hasPresigned:
-		return &retryCopierPresigned{r}
+		return &struct {
+			*RetryStorage
+			retryCopyFwd
+			retryPresignFwd
+		}{r, copy, presign}
 	case hasCopier && hasURLer:
-		return &retryCopierURLer{r}
+		return &struct {
+			*RetryStorage
+			retryCopyFwd
+			retryURLFwd
+		}{r, copy, url}
 	case hasPresigned && hasURLer:
-		return &retryPresignedURLer{r}
+		return &struct {
+			*RetryStorage
+			retryPresignFwd
+			retryURLFwd
+		}{r, presign, url}
 	case hasLister:
-		return &retryLister{r}
+		return &struct {
+			*RetryStorage
+			retryListFwd
+		}{r, list}
 	case hasCopier:
-		return &retryCopier{r}
+		return &struct {
+			*RetryStorage
+			retryCopyFwd
+		}{r, copy}
 	case hasPresigned:
-		return &retryPresigner{r}
+		return &struct {
+			*RetryStorage
+			retryPresignFwd
+		}{r, presign}
 	case hasURLer:
-		return &retryURLer{r}
+		return &struct {
+			*RetryStorage
+			retryURLFwd
+		}{r, url}
 	default:
 		return r
 	}
 }
 
-type retryLister struct{ *RetryStorage }
+type retryListFwd struct{ r *RetryStorage }
 
-func (w *retryLister) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
-	return w.listImpl(ctx, prefix, opts)
+func (w retryListFwd) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	return w.r.listImpl(ctx, prefix, opts)
 }
 
-type retryCopier struct{ *RetryStorage }
+type retryCopyFwd struct{ r *RetryStorage }
 
-func (w *retryCopier) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copyImpl(ctx, srcKey, dstKey)
+func (w retryCopyFwd) Copy(ctx context.Context, srcKey, dstKey string) error {
+	return w.r.copyImpl(ctx, srcKey, dstKey)
 }
 
-type retryPresigner struct{ *RetryStorage }
+type retryPresignFwd struct{ r *RetryStorage }
 
-func (w *retryPresigner) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetImpl(ctx, key, ttl)
+func (w retryPresignFwd) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	return w.r.presignGetImpl(ctx, key, ttl)
 }
 
-func (w *retryPresigner) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
-	return w.presignPutImpl(ctx, key, ttl, meta)
+func (w retryPresignFwd) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
+	return w.r.presignPutImpl(ctx, key, ttl, meta)
 }
 
-type retryURLer struct{ *RetryStorage }
+type retryURLFwd struct{ r *RetryStorage }
 
-func (w *retryURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.urlImpl(ctx, key)
-}
-
-type retryListerCopier struct{ *RetryStorage }
-
-func (w *retryListerCopier) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
-	return w.listImpl(ctx, prefix, opts)
-}
-
-func (w *retryListerCopier) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copyImpl(ctx, srcKey, dstKey)
-}
-
-type retryListerPresigned struct{ *RetryStorage }
-
-func (w *retryListerPresigned) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
-	return w.listImpl(ctx, prefix, opts)
-}
-
-func (w *retryListerPresigned) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetImpl(ctx, key, ttl)
-}
-
-func (w *retryListerPresigned) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
-	return w.presignPutImpl(ctx, key, ttl, meta)
-}
-
-type retryListerURLer struct{ *RetryStorage }
-
-func (w *retryListerURLer) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
-	return w.listImpl(ctx, prefix, opts)
-}
-
-func (w *retryListerURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.urlImpl(ctx, key)
-}
-
-type retryCopierPresigned struct{ *RetryStorage }
-
-func (w *retryCopierPresigned) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copyImpl(ctx, srcKey, dstKey)
-}
-
-func (w *retryCopierPresigned) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetImpl(ctx, key, ttl)
-}
-
-func (w *retryCopierPresigned) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
-	return w.presignPutImpl(ctx, key, ttl, meta)
-}
-
-type retryCopierURLer struct{ *RetryStorage }
-
-func (w *retryCopierURLer) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copyImpl(ctx, srcKey, dstKey)
-}
-
-func (w *retryCopierURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.urlImpl(ctx, key)
-}
-
-type retryPresignedURLer struct{ *RetryStorage }
-
-func (w *retryPresignedURLer) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetImpl(ctx, key, ttl)
-}
-
-func (w *retryPresignedURLer) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
-	return w.presignPutImpl(ctx, key, ttl, meta)
-}
-
-func (w *retryPresignedURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.urlImpl(ctx, key)
-}
-
-type retryListerCopierPresigned struct{ *RetryStorage }
-
-func (w *retryListerCopierPresigned) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
-	return w.listImpl(ctx, prefix, opts)
-}
-
-func (w *retryListerCopierPresigned) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copyImpl(ctx, srcKey, dstKey)
-}
-
-func (w *retryListerCopierPresigned) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetImpl(ctx, key, ttl)
-}
-
-func (w *retryListerCopierPresigned) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
-	return w.presignPutImpl(ctx, key, ttl, meta)
-}
-
-type retryListerCopierURLer struct{ *RetryStorage }
-
-func (w *retryListerCopierURLer) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
-	return w.listImpl(ctx, prefix, opts)
-}
-
-func (w *retryListerCopierURLer) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copyImpl(ctx, srcKey, dstKey)
-}
-
-func (w *retryListerCopierURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.urlImpl(ctx, key)
-}
-
-type retryListerPresignedURLer struct{ *RetryStorage }
-
-func (w *retryListerPresignedURLer) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
-	return w.listImpl(ctx, prefix, opts)
-}
-
-func (w *retryListerPresignedURLer) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetImpl(ctx, key, ttl)
-}
-
-func (w *retryListerPresignedURLer) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
-	return w.presignPutImpl(ctx, key, ttl, meta)
-}
-
-func (w *retryListerPresignedURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.urlImpl(ctx, key)
-}
-
-type retryCopierPresignedURLer struct{ *RetryStorage }
-
-func (w *retryCopierPresignedURLer) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copyImpl(ctx, srcKey, dstKey)
-}
-
-func (w *retryCopierPresignedURLer) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetImpl(ctx, key, ttl)
-}
-
-func (w *retryCopierPresignedURLer) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
-	return w.presignPutImpl(ctx, key, ttl, meta)
-}
-
-func (w *retryCopierPresignedURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.urlImpl(ctx, key)
-}
-
-type retryListerCopierPresignedURLer struct{ *RetryStorage }
-
-func (w *retryListerCopierPresignedURLer) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
-	return w.listImpl(ctx, prefix, opts)
-}
-
-func (w *retryListerCopierPresignedURLer) Copy(ctx context.Context, srcKey, dstKey string) error {
-	return w.copyImpl(ctx, srcKey, dstKey)
-}
-
-func (w *retryListerCopierPresignedURLer) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return w.presignGetImpl(ctx, key, ttl)
-}
-
-func (w *retryListerCopierPresignedURLer) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
-	return w.presignPutImpl(ctx, key, ttl, meta)
-}
-
-func (w *retryListerCopierPresignedURLer) URL(ctx context.Context, key string) (string, error) {
-	return w.urlImpl(ctx, key)
+func (w retryURLFwd) URL(ctx context.Context, key string) (string, error) {
+	return w.r.urlImpl(ctx, key)
 }

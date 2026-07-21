@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1304,7 +1305,95 @@ func TestGetClient_NilAfterCloseRace(t *testing.T) {
 	b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
 	require.NoError(t, b.Close())
 
-	client, err := b.getClient(context.Background())
+	client, release, err := b.getClient(context.Background())
 	require.ErrorIs(t, err, storage.ErrBackendClosed)
 	assert.Nil(t, client)
+	release()
 }
+
+func TestClientLease_HeldAcrossReconnect(t *testing.T) {
+	t.Parallel()
+
+	mock1 := newMockSFTPClient("/data")
+	var closed1 atomicBool
+	mock1.closeFn = func() error {
+		closed1.set(true)
+		return nil
+	}
+
+	b := NewWithClient(mock1, Config{Host: "localhost", RootPath: "/data"})
+
+	// Take a lease on the original session (simulates in-flight Put/Get).
+	client, release, err := b.getClient(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	require.Equal(t, int64(1), b.session.inflight())
+
+	// Replace the session (reconnect) while the lease is held.
+	mock2 := newMockSFTPClient("/data")
+	var closed2 atomicBool
+	mock2.closeFn = func() error {
+		closed2.set(true)
+		return nil
+	}
+	b.replaceSessionForTest(mock2)
+
+	// Old client must NOT be closed while the lease is outstanding.
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, closed1.get(), "old client must stay open while lease held")
+
+	// New ops get the new client.
+	client2, release2, err := b.getClient(context.Background())
+	require.NoError(t, err)
+	assert.Same(t, mock2, client2)
+	release2()
+
+	// Release the original lease — old client should drain-close.
+	release()
+	require.Eventually(t, closed1.get, time.Second, 10*time.Millisecond,
+		"old client should close after last lease release")
+	assert.False(t, closed2.get(), "new client must remain open")
+	require.NoError(t, b.Close())
+}
+
+func TestClientLease_GetHoldsUntilBodyClose(t *testing.T) {
+	t.Parallel()
+
+	// Exists path is easier to unit-test than Get (Get needs real *sftp.File).
+	// Verify lease acquire/release around Exists and that replace waits.
+	mock1 := newMockSFTPClient("/data")
+	var closed1 atomicBool
+	mock1.closeFn = func() error {
+		closed1.set(true)
+		return nil
+	}
+	mock1.store["/data/obj.txt"] = []byte("x")
+
+	b := NewWithClient(mock1, Config{Host: "localhost", RootPath: "/data"})
+
+	// Block release by taking a manual lease, then Exists should nest another.
+	_, release, err := b.getClient(context.Background())
+	require.NoError(t, err)
+
+	ok, err := b.Exists(context.Background(), "obj.txt")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.GreaterOrEqual(t, b.session.inflight(), int64(1))
+
+	mock2 := newMockSFTPClient("/data")
+	b.replaceSessionForTest(mock2)
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, closed1.get(), "must not close under nested/manual lease")
+
+	release()
+	require.Eventually(t, closed1.get, time.Second, 10*time.Millisecond)
+	require.NoError(t, b.Close())
+}
+
+// atomicBool is a tiny helper for close-tracking in lease tests.
+type atomicBool struct {
+	v atomic.Bool
+}
+
+func (a *atomicBool) set(v bool) { a.v.Store(v) }
+func (a *atomicBool) get() bool  { return a.v.Load() }
