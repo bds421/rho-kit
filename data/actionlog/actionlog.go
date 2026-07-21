@@ -711,7 +711,8 @@ func (l *signedLogger) Get(ctx context.Context, id string) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	e = cloneEntry(e)
+	// Store.Get returns a caller-owned Entry (see Store interface); do not
+	// re-clone — that doubled reflection-based metadata copies on the read path.
 	if err := VerifyEntry(ctx, e, l.secrets); err != nil {
 		return Entry{}, err
 	}
@@ -741,7 +742,7 @@ func (l *signedLogger) List(ctx context.Context, q Query) ([]Entry, string, erro
 	secrets := newCachingSecrets(l.secrets)
 	out := make([]Entry, len(entries))
 	for i, e := range entries {
-		e = cloneEntry(e)
+		// Store.List returns caller-owned entries; skip the second deep-clone.
 		if err := VerifyEntry(ctx, e, secrets); err != nil {
 			return nil, "", redact.WrapError("actionlog: entry verification failed", err)
 		}

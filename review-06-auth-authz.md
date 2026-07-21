@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 2 |
-| **Total (deduplicated)** | **2** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -50,18 +50,4 @@
 > This scope is unusually well-hardened for correctness and concurrency: the memory stores are correctly mutex-guarded, error wrapping/errors.Is ordering in authz is careful, panic recovery in Allow is sound, and the openfga adapter defensively clones/hardens HTTP clients. The redirect-safety and secret-redaction plumbing is thorough. The one material gap is that the OAuth2 login flow's CSRF state is never bound to the initiating browser, so the documented login-CSRF protection is not actually enforced; the remaining items are lower-severity aliasing/lifetime issues around shared secret pointers in the in-memory session store.
 
 ## Findings
-
-### [LOW] Memory stores do a full O(n) map sweep under a Mutex on every Put, and Get takes a full write Lock
-
-- **Where**: `auth/oauth2/memory_stores.go:34`
-- **Dimension**: performance
-- **Detail**: Put (line 34) iterates the entire sessions map on every call while holding a plain sync.Mutex, so each login is O(n) in the number of live sessions and serializes with all other operations. Get (lines 52-53) also acquires the exclusive Lock (not an RLock) because it may delete an expired entry, so concurrent reads cannot proceed in parallel. For the documented 'single-process service' this is acceptable, but under a burst of concurrent logins/reads it becomes avoidable lock contention and O(n) work per Put.
-- **Suggestion**: Track expirations with a heap/time-ordered structure or a periodic background sweep, and use RWMutex with an RLock fast path in Get that upgrades only when an expired entry must be removed.
-
-### [LOW] Scope registry is a process-global singleton with no exported reset or instance form
-
-- **Where**: `authz/scope.go:40`
-- **Dimension**: api-design
-- **Detail**: globalScopes is package-global mutable state: two independent libraries in one binary that MustRegister the same scope name with different descriptions panic at init with no recourse, and RegisteredScopes() mixes every module's scopes into one OpenAPI catalogue with no way to partition per service. resetScopesForTest is unexported, so external packages' tests that exercise Register cannot isolate state between test cases the way this package's own tests can.
-- **Suggestion**: Offer an instantiable Registry type (with the package-level functions delegating to a default instance) so multi-service binaries and external tests can scope the catalogue.
 

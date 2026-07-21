@@ -110,3 +110,18 @@ func TestCrypter_CloseZerosAndRejects(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCrypter_CachesAEADPerIdentity(t *testing.T) {
+	c, err := New(testMaster(), "webhooks")
+	require.NoError(t, err)
+	blob, err := c.Encrypt("id-1", []byte("secret"), nil)
+	require.NoError(t, err)
+	// Second op for same identity hits the cache (still round-trips).
+	got, err := c.Decrypt("id-1", blob, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("secret"), got)
+	c.mu.RLock()
+	_, ok := c.aead["id-1"]
+	c.mu.RUnlock()
+	assert.True(t, ok, "identity AEAD should be cached after first use")
+}

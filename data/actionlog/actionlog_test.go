@@ -44,11 +44,14 @@ func (s *memStore) AppendChained(_ context.Context, tenantID string, build func(
 	if err != nil {
 		return Entry{}, err
 	}
-	s.entries[entry.ID] = entry
-	s.order = append(s.order, entry.ID)
-	s.latest[tenantID] = entry
-	s.seq[tenantID] = entry.Seq
-	return entry, nil
+	// Store caller-owned copy so later mutations of the build result cannot
+	// corrupt the catalogue (matches production memory/postgres stores).
+	stored := cloneEntry(entry)
+	s.entries[stored.ID] = stored
+	s.order = append(s.order, stored.ID)
+	s.latest[tenantID] = stored
+	s.seq[tenantID] = stored.Seq
+	return cloneEntry(stored), nil
 }
 
 func (s *memStore) Get(_ context.Context, id string) (Entry, error) {
@@ -58,7 +61,7 @@ func (s *memStore) Get(_ context.Context, id string) (Entry, error) {
 	if !ok {
 		return Entry{}, ErrNotFound
 	}
-	return e, nil
+	return cloneEntry(e), nil
 }
 
 func (s *memStore) List(_ context.Context, q Query) ([]Entry, string, error) {
@@ -70,7 +73,7 @@ func (s *memStore) List(_ context.Context, q Query) ([]Entry, string, error) {
 		if q.TenantID != "" && e.TenantID != q.TenantID {
 			continue
 		}
-		out = append(out, e)
+		out = append(out, cloneEntry(e))
 	}
 	return out, "", nil
 }
@@ -84,7 +87,7 @@ func (s *memStore) RangeByTenantSeq(ctx context.Context, tenantID string, fn fun
 	for _, id := range s.order {
 		e := s.entries[id]
 		if e.TenantID == tenantID {
-			entries = append(entries, e)
+			entries = append(entries, cloneEntry(e))
 		}
 	}
 	s.mu.Unlock()

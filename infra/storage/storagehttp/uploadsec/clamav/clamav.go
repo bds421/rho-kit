@@ -40,6 +40,13 @@ type Scanner struct {
 	chunkSize   int
 	scanTimeout time.Duration
 
+	// customDial is set by WithDialer so transport-safety checks know
+	// the caller owns dialing (e.g. TLS/mTLS) and may reach remote hosts.
+	customDial bool
+	// allowInsecurePlaintext opts into cleartext TCP to a non-loopback
+	// clamd. Prefer unix sockets or WithDialer with TLS instead.
+	allowInsecurePlaintext bool
+
 	// metrics is the optional Prometheus collector set. nil means
 	// observability is disabled (the default). When set, every Scan
 	// call records duration and outcome via metrics.observeScan.
@@ -54,6 +61,13 @@ type Scanner struct {
 type Option func(*Scanner)
 
 // New returns a ClamAV scanner for address, for example "127.0.0.1:3310".
+//
+// Transport safety: the default network is plaintext TCP. Loopback
+// addresses and unix sockets are permitted as-is. A non-loopback TCP
+// address requires either [WithDialer] (e.g. TLS/mTLS) or an explicit
+// [WithAllowInsecurePlaintext] opt-in — remote uploads otherwise traverse
+// the network in cleartext and an on-path attacker could tamper with the
+// scan verdict. Prefer a local unix socket when clamd is co-located.
 func New(address string, opts ...Option) *Scanner {
 	address = strings.TrimSpace(address)
 	if address == "" {
@@ -74,11 +88,44 @@ func New(address string, opts ...Option) *Scanner {
 		}
 		opt(s)
 	}
+	s.enforceTransportSafety()
 	return s
 }
 
+func (s *Scanner) enforceTransportSafety() {
+	switch s.network {
+	case "tcp", "tcp4", "tcp6":
+	default:
+		return // unix / other non-TCP are local or caller-owned
+	}
+	if s.customDial || s.allowInsecurePlaintext {
+		return
+	}
+	host := s.address
+	if h, _, err := net.SplitHostPort(s.address); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if isLoopbackHost(host) {
+		return
+	}
+	panic("clamav: non-loopback TCP clamd requires WithDialer (TLS/mTLS) or WithAllowInsecurePlaintext; prefer a unix socket for co-located clamd")
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return true
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // WithNetwork sets the network used to dial clamd. Defaults to "tcp";
-// "unix" is useful for local clamd sockets.
+// "unix" is useful for local clamd sockets and is the preferred deployment
+// when clamd is co-located (no cleartext payload on the wire).
 func WithNetwork(network string) Option {
 	network = strings.TrimSpace(network)
 	if network == "" {
@@ -90,13 +137,26 @@ func WithNetwork(network string) Option {
 }
 
 // WithDialer overrides network dialing. It is primarily useful for tests and
-// for services that need custom mTLS or proxy dialing.
+// for services that need custom mTLS or proxy dialing to a remote clamd.
+// Setting a custom dialer satisfies the non-loopback TCP transport check
+// (the caller owns encryption and path trust).
 func WithDialer(dial DialContextFunc) Option {
 	if dial == nil {
 		panic("clamav: WithDialer requires a non-nil dialer")
 	}
 	return func(s *Scanner) {
 		s.dial = dial
+		s.customDial = true
+	}
+}
+
+// WithAllowInsecurePlaintext permits cleartext TCP to a non-loopback
+// clamd address. Use only on a private/trusted network path; prefer
+// [WithNetwork]("unix") or [WithDialer] with TLS instead. Without this
+// opt-in (or a custom dialer), [New] panics for non-loopback TCP.
+func WithAllowInsecurePlaintext() Option {
+	return func(s *Scanner) {
+		s.allowInsecurePlaintext = true
 	}
 }
 
@@ -111,8 +171,8 @@ func WithChunkSize(n int) Option {
 	}
 }
 
-// WithScanTimeout bounds the whole dial/write/read scan exchange. The default
-// is 30 seconds.
+// WithScanTimeout bounds the whole dial/write/read scan exchange, including
+// reads from the caller-supplied body. The default is 30 seconds.
 func WithScanTimeout(d time.Duration) Option {
 	if d <= 0 {
 		panic("clamav: WithScanTimeout requires a positive duration")
@@ -296,7 +356,7 @@ func (s *Scanner) Scan(ctx context.Context, body io.Reader, _ uploadsec.Meta) (r
 	if err := writeAll(conn, []byte("zINSTREAM\x00")); err != nil {
 		return fmt.Errorf("%w: send INSTREAM command: %w", uploadsec.ErrScannerUnavailable, err) // kit:ok-fmt-errorf-wrap
 	}
-	if err := streamBody(conn, body, s.chunkSize); err != nil {
+	if err := streamBody(ctx, conn, body, s.chunkSize); err != nil {
 		return err
 	}
 	response, err := readResponse(conn)
@@ -306,7 +366,24 @@ func (s *Scanner) Scan(ctx context.Context, body io.Reader, _ uploadsec.Meta) (r
 	return parseResponse(response)
 }
 
-func streamBody(w io.Writer, body io.Reader, chunkSize int) error {
+func streamBody(ctx context.Context, w io.Writer, body io.Reader, chunkSize int) error {
+	// Run the body→clamd copy under ctx so a stalled reader cannot hang
+	// past WithScanTimeout. On cancel the conn deadline (set by Scan)
+	// unblocks writes; a pathological body that never returns from Read
+	// may leave a short-lived goroutine until that Read completes.
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- streamBodyUncancellable(w, body, chunkSize)
+	}()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("%w: scan timed out or cancelled: %w", uploadsec.ErrScannerUnavailable, ctx.Err()) // kit:ok-fmt-errorf-wrap
+	case err := <-errCh:
+		return err
+	}
+}
+
+func streamBodyUncancellable(w io.Writer, body io.Reader, chunkSize int) error {
 	buf := make([]byte, chunkSize)
 	var lenbuf [4]byte
 	for {

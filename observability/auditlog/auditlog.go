@@ -198,6 +198,11 @@ type Store interface {
 	// The cursor returned here is a raw store-level cursor; [Logger.List]
 	// wraps it with a signed envelope before exposing it to callers.
 	//
+	// Ownership: each returned Event (including Metadata and HMAC slices)
+	// MUST be caller-owned — deep-copied or freshly decoded so mutations by
+	// the caller cannot affect store internals or other Query results.
+	// [Logger.List] relies on this contract and does not re-clone.
+	//
 	// Query order is for user-facing list views only. It MUST NOT be
 	// relied on for chain integrity: see [Store.RangeChain] for
 	// append-order traversal.
@@ -219,10 +224,16 @@ type Store interface {
 	RangeChain(ctx context.Context, fn func(Event) error) error
 
 	// LastHMAC returns the HMAC of the most recently appended event, or an
-	// empty / all-zero slice if the store is empty. Useful for chain
-	// inspection / operator tooling; not on the Logger.LogE hot path
-	// after the AppendChained refactor. Implementations must be safe for
-	// concurrent reads.
+	// empty / all-zero slice if the store is empty.
+	//
+	// SPI note: this method is intentionally part of the required Store
+	// surface even though [Logger] never calls it on the LogE hot path
+	// (LogE uses AppendChained). It exists so operator tooling, chain
+	// inspectors, and custom verifiers can type against Store without a
+	// separate optional interface. Moving it to an extension interface
+	// would be a breaking change; treat it as a mandatory, callerless SPI
+	// for third-party Stores. Implementations must be safe for concurrent
+	// reads.
 	LastHMAC(ctx context.Context) ([]byte, error)
 }
 
@@ -599,10 +610,9 @@ func (l *Logger) List(ctx context.Context, filter Filter, cursor string, limit i
 		return nil, "", err
 	}
 	signed := l.cursors.encodeCursor(next)
-	// Defensive clone: Store contract says Query returns owned copies, but
-	// a hostile/buggy Store that returns shared metadata maps must not let
-	// mutations leak to callers (pinned by TestLogger_QueryClonesMetadataFromStore).
-	return cloneEvents(events), signed, nil
+	// Store.Query returns caller-owned copies (see Store interface);
+	// do not re-clone here — that doubled allocations on every page.
+	return events, signed, nil
 }
 
 // VerifyChain re-reads every event from the underlying store and

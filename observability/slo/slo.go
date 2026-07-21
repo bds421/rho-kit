@@ -555,11 +555,21 @@ func matchPattern(pattern, value string) bool {
 // not make the service unready (killing traffic to an already-struggling service
 // makes things worse). The check is informational — use the /slo endpoint for
 // dashboards and alerting.
+//
+// Context: the health handler's per-check timeout is observed before evaluation
+// begins (ctx.Err). Prometheus [Gatherer.Gather] itself is not cancellable —
+// if a collector blocks, the check goroutine may outlive the timeout while the
+// health handler still fails the check. Prefer bounded custom collectors.
 func (c *Checker) DependencyCheck() health.DependencyCheck {
 	return health.DependencyCheck{
 		Name:     "slo",
 		Critical: false,
-		Check: func(_ context.Context) string {
+		Check: func(ctx context.Context) string {
+			if ctx != nil {
+				if err := ctx.Err(); err != nil {
+					return health.StatusDegraded
+				}
+			}
 			for _, s := range c.Evaluate() {
 				if s.Breached {
 					return health.StatusDegraded

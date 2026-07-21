@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 1 |
-| **Total (deduplicated)** | **1** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -44,11 +44,4 @@
 > This Redis-data-store family is high-quality, defense-in-depth code: Consume/GCRA/idempotency mutations are genuinely atomic single Lua scripts, keys and prefixes are strictly validated, TTLs are ceil-rounded so sub-second windows survive EX/PX, oversize values are STRLEN-gated with post-GET TOCTOU rechecks, and lock release/extend correctly delegate token-fenced ownership to redsync. Correctness bugs are scarce and mostly live at the seams — degradation fallbacks and window-boundary edge cases — rather than in the core atomic paths. The main residual risks are the fail-open SetNX during degradation and the current-period assumption in budget Refund.
 
 ## Findings
-
-### [LOW] Set and Unlock each cost three round trips (STRLEN, GET, EVALSHA) that one Lua script could do
-
-- **Where**: `data/idempotency/redisstore/store.go:425`
-- **Dimension**: performance
-- **Detail**: doSet reads the lock value back (guarded by a separate STRLEN call) purely to recover the fingerprint, then runs setIfLockedScript — 3 RTTs per cached-response write. doUnlock (lines 500–528) has the same STRLEN+GET+EVAL shape, and doGet pays STRLEN+GET (2 RTTs) on every idempotency check, i.e. on every idempotent request in steady state. The lock-value format ("lock:token:fp") is trivially parseable in Lua with string.sub/string.find, so a single script could verify token ownership, extract the fingerprint, enforce the size cap, and swap in the envelope in one atomic round trip — also removing the read-then-script window the current code has to re-verify inside the script.
-- **Suggestion**: Fold the size guard and lock-value decoding into the Lua scripts so Get is 1 RTT and Set/Unlock are 1 RTT each.
 

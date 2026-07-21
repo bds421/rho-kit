@@ -3,8 +3,9 @@
 //
 // Each lock is a Redis string whose value encodes both the owner token and
 // the request fingerprint, separated by ':'. SET NX gives us atomic acquire;
-// a Lua script handles compare-then-replace for both Set and Unlock so the
-// caller's token is required to mutate or release the slot.
+// Lua scripts handle size-guarded Get and compare-then-replace for Set/
+// Unlock so each operation is a single round trip and the caller's token
+// is required to mutate or release the slot.
 //
 // Cached responses are stored as a JSON envelope under the same key, with
 // the fingerprint embedded so Get can detect "same key, different body"
@@ -15,8 +16,8 @@ package redisstore
 
 import (
 	"bytes"
-	"crypto/subtle"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -32,36 +33,102 @@ import (
 	"github.com/bds421/rho-kit/data/v2/idempotency"
 )
 
-// setIfLockedScript atomically replaces the lock value with the cached
-// response envelope iff the caller still owns the lock.
-//
-// Returns "OK" on success, "LOST" on token mismatch (caller must surface
-// idempotency.ErrLockLost).
+// getCappedScript returns the key value in one RTT with a server-side
+// size guard (STRLEN before GET) so a hostile oversized value is never
+// transferred. Returns false (redis nil) when missing, the string "TOO_LARGE"
+// when over the cap, or the value bytes otherwise.
 //
 //	KEYS[1] = key
-//	ARGV[1] = expected lock value (token:fingerprintB64)
-//	ARGV[2] = new payload (envelope JSON)
+//	ARGV[1] = max bytes
+var getCappedScript = goredis.NewScript(`
+local n = redis.call("STRLEN", KEYS[1])
+if n > tonumber(ARGV[1]) then
+	return "TOO_LARGE"
+end
+return redis.call("GET", KEYS[1])
+`)
+
+// setIfTokenScript atomically replaces a lock with the cached response
+// envelope iff the lock's owner token matches. Size-checks and parses
+// the lock value server-side so Set is one RTT (no pre-GET).
+//
+// Fingerprint for the envelope is recovered from the lock encoding and
+// injected into the JSON payload (ARGV[2] is the CachedResponse JSON only).
+//
+// Returns "OK", "LOST", or "TOO_LARGE".
+//
+//	KEYS[1] = key
+//	ARGV[1] = token
+//	ARGV[2] = response JSON (CachedResponse)
 //	ARGV[3] = TTL in milliseconds
-var setIfLockedScript = goredis.NewScript(`
+//	ARGV[4] = max stored bytes
+var setIfTokenScript = goredis.NewScript(`
 local cur = redis.call("GET", KEYS[1])
-if cur == false or cur ~= ARGV[1] then
+if cur == false then
 	return "LOST"
 end
-redis.call("SET", KEYS[1], ARGV[2], "PX", tonumber(ARGV[3]))
+if #cur > tonumber(ARGV[4]) then
+	return "TOO_LARGE"
+end
+if string.sub(cur, 1, 5) ~= "lock:" then
+	return "LOST"
+end
+local rest = string.sub(cur, 6)
+local colon = string.find(rest, ":", 1, true)
+if not colon then
+	return "LOST"
+end
+local tok = string.sub(rest, 1, colon - 1)
+if tok ~= ARGV[1] then
+	return "LOST"
+end
+local fp_enc = string.sub(rest, colon + 1)
+local fp_json
+if fp_enc == "" then
+	fp_json = "null"
+elseif fp_enc == "=" then
+	fp_json = '""'
+else
+	-- lock stores RawStd base64 after '='; JSON []byte needs StdEncoding (padded).
+	local raw = string.sub(fp_enc, 2)
+	local pad = (4 - (#raw % 4)) % 4
+	fp_json = '"' .. raw .. string.rep("=", pad) .. '"'
+end
+local payload = '{"_m":"resp","fp":' .. fp_json .. ',"resp":' .. ARGV[2] .. '}'
+if #payload > tonumber(ARGV[4]) then
+	return "TOO_LARGE"
+end
+redis.call("SET", KEYS[1], payload, "PX", tonumber(ARGV[3]))
 return "OK"
 `)
 
-// unlockIfOwnerScript atomically deletes the lock iff the caller still owns
-// it. Returns 1 on successful DEL, 0 on token mismatch — the wrapper treats
-// both as success because Unlock is best-effort cleanup.
+// unlockIfTokenScript deletes the lock iff the owner token matches.
+// Size-checks and parses server-side so Unlock is one RTT.
 //
 //	KEYS[1] = key
-//	ARGV[1] = expected lock value (token:fingerprintB64)
-var unlockIfOwnerScript = goredis.NewScript(`
-if redis.call("GET", KEYS[1]) == ARGV[1] then
-	return redis.call("DEL", KEYS[1])
+//	ARGV[1] = token
+//	ARGV[2] = max stored bytes
+var unlockIfTokenScript = goredis.NewScript(`
+local cur = redis.call("GET", KEYS[1])
+if cur == false then
+	return 0
 end
-return 0
+if #cur > tonumber(ARGV[2]) then
+	return 0
+end
+if string.sub(cur, 1, 5) ~= "lock:" then
+	return 0
+end
+local rest = string.sub(cur, 6)
+local colon = string.find(rest, ":", 1, true)
+if not colon then
+	return 0
+end
+local tok = string.sub(rest, 1, colon - 1)
+if tok ~= ARGV[1] then
+	return 0
+end
+return redis.call("DEL", KEYS[1])
 `)
 
 // Compile-time interface check.
@@ -160,7 +227,7 @@ func ttlRoundUp(d time.Duration) time.Duration {
 
 // envelope is the JSON payload stored under a key once a response has been
 // cached. The leading lock value (token:fingerprint) is overwritten with
-// this envelope by setIfLockedScript.
+// this envelope by setIfTokenScript.
 type envelope struct {
 	Marker string `json:"_m"` // "resp" — distinguishes from a lock value
 	// Fingerprint is NOT omitempty: an empty-but-present fingerprint ([]byte{})
@@ -231,11 +298,10 @@ func decodeLockValue(v string) (token string, fingerprint []byte, ok bool) {
 // Get returns a cached response and applies fingerprint comparison if a
 // non-nil fingerprint is supplied.
 //
-// The cap is enforced via STRLEN before GET so a hostile or legacy writer
-// that stored a multi-MB value under the same key prefix cannot force this
-// process to allocate the full response body before the cap runs. A
-// post-GET length check still runs to catch the rare TOCTOU window where
-// the value is replaced between STRLEN and GET.
+// The cap is enforced server-side in getCappedScript (STRLEN before GET
+// in one RTT) so a hostile or legacy writer that stored a multi-MB value
+// under the same key prefix cannot force this process to transfer the
+// full response body. A post-read length check still runs as defence in depth.
 func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
 	ctx, span := s.startSpan(ctx, "idempotency.Get")
 	defer span.End()
@@ -252,20 +318,7 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 		return nil, false, err
 	}
 	redisKey := s.k(key)
-	sz, err := s.client.StrLen(ctx, redisKey).Result()
-	if err != nil {
-		if translated := translateUnavailable(err); translated != err {
-			return nil, false, translated
-		}
-		return nil, false, redact.WrapError("idempotencystore: get strlen", err)
-	}
-	if sz == 0 {
-		// Distinguishing "missing" from "empty stored value" is left to
-		// the GET below — Redis returns redis.Nil for missing keys.
-	} else if sz > maxStoredEntryBytes {
-		return nil, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
-	}
-	data, err := s.client.Get(ctx, redisKey).Bytes()
+	raw, err := getCappedScript.Run(ctx, s.client, []string{redisKey}, maxStoredEntryBytes).Result()
 	if err != nil {
 		if errors.Is(err, goredis.Nil) {
 			return nil, false, nil
@@ -274,6 +327,21 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 			return nil, false, translated
 		}
 		return nil, false, redact.WrapError("idempotencystore: get", err)
+	}
+	if raw == nil {
+		return nil, false, nil
+	}
+	var data []byte
+	switch v := raw.(type) {
+	case string:
+		if v == "TOO_LARGE" {
+			return nil, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
+		}
+		data = []byte(v)
+	case []byte:
+		data = v
+	default:
+		return nil, false, nil
 	}
 	if len(data) > maxStoredEntryBytes {
 		return nil, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
@@ -426,55 +494,18 @@ func (s *Store) doSet(ctx context.Context, key, token string, resp idempotency.C
 	if err := idempotency.ValidateCachedResponse(resp); err != nil {
 		return err
 	}
-	// We need the same fingerprint that was passed at TryLock time so the
-	// envelope embeds it. Recover it by reading the lock value back —
-	// guarded by a STRLEN pre-check so a hostile writer cannot force
-	// us to allocate a multi-MB blob before deciding the lock value is
-	// not even a valid encoding. Mirrors the cap Get applies.
-	if sz, err := s.client.StrLen(ctx, s.k(key)).Result(); err != nil {
-		if translated := translateUnavailable(err); translated != err {
-			return translated
-		}
-		return redact.WrapError("idempotencystore: set strlen", err)
-	} else if sz > maxStoredEntryBytes {
-		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
-	}
-	existing, err := s.client.Get(ctx, s.k(key)).Bytes()
-	if err != nil {
-		if errors.Is(err, goredis.Nil) {
-			return idempotency.ErrLockLost
-		}
-		if translated := translateUnavailable(err); translated != err {
-			return translated
-		}
-		return redact.WrapError("idempotencystore: read lock", err)
-	}
-	if len(existing) > maxStoredEntryBytes {
-		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
-	}
-	curToken, fp, ok := decodeLockValue(string(existing))
-	if !ok || !tokenEqual(curToken, token) {
-		return idempotency.ErrLockLost
-	}
-
-	env := envelope{
-		Marker:      respMarker,
-		Fingerprint: fp,
-		Response:    resp,
-	}
-	payload, err := json.Marshal(env)
+	// One RTT: Lua size-checks the lock, verifies token ownership, recovers
+	// the fingerprint from the lock encoding, and writes the envelope.
+	respJSON, err := json.Marshal(resp)
 	if err != nil {
 		return redact.WrapError("idempotencystore: marshal cached response", err)
 	}
-	// Pass the raw GET bytes as the expected value so legacy encodings
-	// that decode successfully still match Redis-side compare (re-encoding
-	// would produce a different wire form and spuriously report ErrLockLost).
-	expectedLockValue := string(existing)
-	result, err := setIfLockedScript.Run(ctx, s.client,
+	result, err := setIfTokenScript.Run(ctx, s.client,
 		[]string{s.k(key)},
-		expectedLockValue,
-		payload,
+		token,
+		respJSON,
 		ttlMillisRoundUp(ttl),
+		maxStoredEntryBytes,
 	).Text()
 	if err != nil {
 		if translated := translateUnavailable(err); translated != err {
@@ -482,10 +513,14 @@ func (s *Store) doSet(ctx context.Context, key, token string, resp idempotency.C
 		}
 		return redact.WrapError("idempotencystore: set", err)
 	}
-	if result != "OK" {
+	switch result {
+	case "OK":
+		return nil
+	case "TOO_LARGE":
+		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
+	default:
 		return idempotency.ErrLockLost
 	}
-	return nil
 }
 
 // Unlock releases the processing lock under the caller's token. Token
@@ -505,39 +540,9 @@ func (s *Store) doUnlock(ctx context.Context, key, token string) error {
 	if err := validateKey(key); err != nil {
 		return err
 	}
-	// We don't know the fingerprint here — but the lock value encoding is
-	// "lock:token:b64fp", so we read once to recover the original value.
-	// STRLEN gate mirrors Get/Set so a hostile writer cannot force a
-	// multi-MB allocation under the same key prefix.
-	if sz, err := s.client.StrLen(ctx, s.k(key)).Result(); err != nil {
-		if translated := translateUnavailable(err); translated != err {
-			return translated
-		}
-		return redact.WrapError("idempotencystore: unlock strlen", err)
-	} else if sz > maxStoredEntryBytes {
-		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
-	}
-	existing, err := s.client.Get(ctx, s.k(key)).Bytes()
-	if err != nil {
-		if errors.Is(err, goredis.Nil) {
-			return nil
-		}
-		if translated := translateUnavailable(err); translated != err {
-			return translated
-		}
-		return redact.WrapError("idempotencystore: read lock", err)
-	}
-	if len(existing) > maxStoredEntryBytes {
-		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
-	}
-	curToken, _, ok := decodeLockValue(string(existing))
-	if !ok || !tokenEqual(curToken, token) {
-		// Either it's already a response envelope (Set ran), or someone
-		// else holds the lock now. Either way, nothing for us to do.
-		return nil
-	}
-	expectedLockValue := string(existing)
-	if _, err := unlockIfOwnerScript.Run(ctx, s.client, []string{s.k(key)}, expectedLockValue).Result(); err != nil && !errors.Is(err, goredis.Nil) {
+	// One RTT: Lua size-checks, parses lock:token:fp, and DELs on token match.
+	// Token mismatch / missing key / already-a-response are all no-ops.
+	if _, err := unlockIfTokenScript.Run(ctx, s.client, []string{s.k(key)}, token, maxStoredEntryBytes).Result(); err != nil && !errors.Is(err, goredis.Nil) {
 		if translated := translateUnavailable(err); translated != err {
 			return translated
 		}
@@ -572,4 +577,3 @@ func tokenEqual(a, b string) bool {
 	}
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
-

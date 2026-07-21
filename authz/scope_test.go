@@ -80,3 +80,20 @@ func TestScope_MustRegisterPanicsOnInvalid(t *testing.T) {
 
 	assert.Panics(t, func() { MustRegister("Bad Name", "x") })
 }
+
+func TestRegistry_IsolatedFromDefault(t *testing.T) {
+	resetScopesForTest()
+	defer resetScopesForTest()
+
+	r := NewRegistry()
+	_, err := r.Register("isolated.read", "Isolated")
+	require.NoError(t, err)
+	assert.True(t, r.IsRegistered("isolated.read"))
+	assert.False(t, IsRegistered("isolated.read"), "instance must not pollute DefaultRegistry")
+
+	ResetScopes()
+	assert.False(t, IsRegistered("isolated.read"))
+	assert.True(t, r.IsRegistered("isolated.read"), "ResetScopes only clears DefaultRegistry")
+	r.Reset()
+	assert.False(t, r.IsRegistered("isolated.read"))
+}

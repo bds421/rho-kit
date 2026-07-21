@@ -162,7 +162,22 @@ func WithMetricsRegisterer(reg prometheus.Registerer) Option {
 
 // New creates a new Backend. By default, it connects eagerly.
 // Use WithLazyConnect to defer connection.
+//
+// New uses [context.Background] for the initial SSH/SFTP dial and any
+// [Config.PasswordProvider] fetch. Production services that need a
+// startup deadline should call [NewContext] with a bounded ctx instead.
 func New(cfg Config, opts ...Option) (*Backend, error) {
+	return NewContext(context.Background(), cfg, opts...)
+}
+
+// NewContext is the ctx-aware variant of [New]. The supplied ctx bounds
+// the eager SSH dial (when [WithLazyConnect] is not set) and any
+// PasswordProvider invocation during connect. Prefer this constructor
+// over [New] when startup must observe a deadline or cancellation.
+func NewContext(ctx context.Context, cfg Config, opts ...Option) (*Backend, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := cfg.Validate(""); err != nil {
 		return nil, err
 	}
@@ -174,7 +189,7 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("sftpbackend: New option must not be nil")
+			panic("sftpbackend: NewContext option must not be nil")
 		}
 		o(b)
 	}
@@ -183,7 +198,7 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 	}
 
 	if !b.lazyConn {
-		if err := b.connect(context.Background()); err != nil {
+		if err := b.connect(ctx); err != nil {
 			return nil, storage.WrapSafe("sftpbackend: initial connect failed", err)
 		}
 	}
@@ -579,6 +594,12 @@ func sftpRemoteError(op string, err error) error {
 	if errors.Is(err, storage.ErrValidation) {
 		return redact.WrapError("sftpbackend", err)
 	}
+	// Preserve cancellation/deadline identity so callers can distinguish
+	// a cancelled op from a generic remote failure (retry/backoff).
+	// Other causes stay redacted to avoid leaking remote topology.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("sftpbackend: %s failed: %w", op, err) // kit:ok-fmt-errorf-wrap
+	}
 	return fmt.Errorf("sftpbackend: %s failed", op)
 }
 
@@ -904,6 +925,12 @@ func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
 // If the probe fails, the connection is marked as disconnected so the next
 // operation triggers a reconnection via getClient → connect.
 //
+// When the backend was built with [WithLazyConnect] and has not yet
+// connected, Healthy attempts a best-effort connect (bounded by the
+// health probe timeout) so wiring the backend into a critical readiness
+// check cannot permanently dead-lock readiness waiting for the first
+// storage operation that never arrives.
+//
 // Concurrent use with Close is safe at the Go level (no data race) because
 // the client reference is copied under RLock. However, calling Stat on a
 // closed sftp.Client returns an error (which correctly makes Healthy return
@@ -916,12 +943,30 @@ func (b *Backend) Healthy() bool {
 		return false
 	}
 	b.mu.RLock()
-	if !b.connected || b.client == nil {
-		b.mu.RUnlock()
-		return false
-	}
+	connected := b.connected && b.client != nil
 	client := b.client
+	lazy := b.lazyConn
 	b.mu.RUnlock()
+	if !connected {
+		if !lazy {
+			return false
+		}
+		// Best-effort lazy connect so CriticalHealthCheck + WithLazyConnect
+		// can become ready without an intervening storage operation.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := b.connect(ctx)
+		cancel()
+		if err != nil || b.closed.Load() {
+			return false
+		}
+		b.mu.RLock()
+		if !b.connected || b.client == nil {
+			b.mu.RUnlock()
+			return false
+		}
+		client = b.client
+		b.mu.RUnlock()
+	}
 
 	// Stat the root path as a lightweight health probe.
 	// Performed outside the lock to avoid blocking concurrent operations

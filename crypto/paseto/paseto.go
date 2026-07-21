@@ -49,6 +49,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
+
 	"aidanwoods.dev/go-paseto"
 )
 
@@ -121,6 +123,10 @@ type config struct {
 	clockSkewTolerance time.Duration
 	requireExp         bool
 	defaultLifetime    time.Duration
+	// clock is the wall-clock source for WithDefaultLifetime when
+	// Claims.IssuedAt is zero. Defaults to time.Now; override via
+	// [WithClock] for deterministic tests.
+	clock clock.Func
 }
 
 // Option configures the V4 wrappers.
@@ -182,13 +188,26 @@ func WithDefaultLifetime(d time.Duration) Option {
 	return func(c *config) { c.defaultLifetime = d }
 }
 
+// WithClock sets the time source used when [WithDefaultLifetime] derives
+// exp from a zero Claims.IssuedAt. Useful for deterministic tests.
+// Panics if fn is nil.
+func WithClock(fn clock.Func) Option {
+	if fn == nil {
+		panic("paseto: WithClock requires a non-nil time source")
+	}
+	return func(c *config) { c.clock = fn }
+}
+
 func buildConfig(opts []Option) (config, error) {
-	cfg := config{requireExp: true}
+	cfg := config{requireExp: true, clock: time.Now}
 	for _, o := range opts {
 		if o == nil {
 			panic("paseto: option must not be nil")
 		}
 		o(&cfg)
+	}
+	if cfg.clock == nil {
+		cfg.clock = time.Now
 	}
 	if !cfg.allowAnyIssuer && cfg.expectedIssuer == "" {
 		return cfg, errors.New("paseto: either WithExpectedIssuer or WithAllowAnyIssuer is required")
@@ -367,8 +386,8 @@ type V4Local struct {
 	// keyMu guards reads of key against the zero/replace write performed
 	// by Close, matching V4PublicSigner. Seal/Verify take RLock; Close
 	// takes the write lock after setting the closed flag.
-	keyMu  sync.RWMutex
-	key    paseto.V4SymmetricKey
+	keyMu sync.RWMutex
+	key   paseto.V4SymmetricKey
 	// keyBytes is the kit-owned copy of the raw 32-byte key. We
 	// retain it so [V4Local.Close] can zero a slice we own,
 	// independent of whether the upstream library's
@@ -499,7 +518,7 @@ func buildToken(c Claims, cfg config) (paseto.Token, error) {
 	if exp.IsZero() && cfg.defaultLifetime > 0 {
 		base := c.IssuedAt
 		if base.IsZero() {
-			base = time.Now()
+			base = cfg.clock()
 		}
 		exp = base.Add(cfg.defaultLifetime)
 	}

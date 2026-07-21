@@ -296,19 +296,12 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 	}
 	defer func() { _ = root.Close() }()
 
-	if err := b.ensureRegular(root, rel); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, storage.ObjectMeta{}, fmt.Errorf("localbackend: get: %w", storage.ErrObjectNotFound)
-		}
-		return nil, storage.ObjectMeta{}, err
-	}
-
-	f, err := root.Open(rel)
+	f, err := b.openRegular(root, rel)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, storage.ObjectMeta{}, fmt.Errorf("localbackend: get: %w", storage.ErrObjectNotFound)
 		}
-		return nil, storage.ObjectMeta{}, localFileError("get object", err)
+		return nil, storage.ObjectMeta{}, err
 	}
 
 	meta := storage.ObjectMeta{}
@@ -337,17 +330,16 @@ func (b *Backend) Stat(ctx context.Context, key string) (storage.ObjectMeta, err
 		return storage.ObjectMeta{}, redact.WrapError("localbackend: unsafe root", err)
 	}
 	defer func() { _ = root.Close() }()
-	if err := b.ensureRegular(root, rel); err != nil {
+	f, err := b.openRegular(root, rel)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return storage.ObjectMeta{}, fmt.Errorf("localbackend: stat: %w", storage.ErrObjectNotFound)
 		}
 		return storage.ObjectMeta{}, err
 	}
-	info, err := root.Lstat(rel)
+	info, err := f.Stat()
+	_ = f.Close()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return storage.ObjectMeta{}, fmt.Errorf("localbackend: stat: %w", storage.ErrObjectNotFound)
-		}
 		return storage.ObjectMeta{}, localFileError("stat object", err)
 	}
 	return storage.ObjectMeta{
@@ -418,12 +410,14 @@ func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
 	}
 	defer func() { _ = root.Close() }()
 
-	if err := b.ensureRegular(root, rel); err != nil {
+	f, err := b.openRegular(root, rel)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}
 		return false, err
 	}
+	_ = f.Close()
 	return true, nil
 }
 
@@ -439,33 +433,48 @@ func (b *Backend) keyRel(key string) (string, error) {
 	return rel, nil
 }
 
-// ensureRegular verifies that rel resolves, through root, to a regular file
-// that is not itself a symlink. Symlink objects are refused (preserving the
-// historical "refusing symlink object" contract) and non-regular files (e.g.
-// implicit directory keys) are surfaced as os.ErrNotExist so Get/Exists/Copy
-// agree with the in-memory and S3 backends.
-func (b *Backend) ensureRegular(root *os.Root, rel string) error {
-	info, err := root.Lstat(rel)
+// openRegular opens rel under root, then validates the open handle and the
+// path. Opening first (rather than Lstat-then-Open) closes the classic
+// TOCTOU where a regular file is swapped for an in-root symlink between
+// check and open: after a successful open of a regular file the fd is
+// pinned to that inode, and a post-open Lstat that sees a symlink refuses
+// the object instead of returning data read through a redirected path.
+//
+// os.Root follows in-root symlinks by design (even with O_NOFOLLOW in the
+// flag set), so symlink *objects* are refused via a post-open Lstat of the
+// path rather than ELOOP. Non-regular files (e.g. implicit directory keys)
+// surface as os.ErrNotExist so Get/Exists/Copy agree with membackend and S3.
+func (b *Backend) openRegular(root *os.Root, rel string) (*os.File, error) {
+	f, err := root.Open(rel)
 	if err != nil {
-		if isEscapeError(err) {
-			// The final component is reachable only by escaping the root:
-			// no such object as far as this backend is concerned.
-			return fmt.Errorf("localbackend: inspect object: %w", os.ErrNotExist)
+		// Escaping or dangling symlink targets fail Open; still report the
+		// historical "refusing symlink object" contract when the path itself
+		// is a symlink (Lstat does not follow).
+		if linfo, lerr := root.Lstat(rel); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("localbackend: refusing symlink object")
 		}
-		return localFileError("inspect object", err)
+		if errors.Is(err, os.ErrNotExist) || isEscapeError(err) {
+			return nil, fmt.Errorf("localbackend: inspect object: %w", os.ErrNotExist)
+		}
+		return nil, localFileError("open object", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("localbackend: refusing symlink object")
+	// Refuse symlink objects even when Open followed an in-root target.
+	// Done after Open so a swap-to-symlink after we obtained a regular-file
+	// fd fails closed rather than serving redirected content.
+	if linfo, lerr := root.Lstat(rel); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+		_ = f.Close()
+		return nil, fmt.Errorf("localbackend: refusing symlink object")
 	}
-	// Implicit directory keys (e.g. "a" after Put("a/b")) are not objects.
-	// membackend and S3 surface these as ErrObjectNotFound; treat a
-	// non-regular file the same way so Get/Exists/Copy agree across backends
-	// and never hand back a directory handle (whose first Read leaks a raw
-	// *os.PathError carrying the absolute root path).
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, localFileError("stat object", err)
+	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("localbackend: inspect object: %w", os.ErrNotExist)
+		_ = f.Close()
+		return nil, fmt.Errorf("localbackend: inspect object: %w", os.ErrNotExist)
 	}
-	return nil
+	return f, nil
 }
 
 // openRoot opens an [os.Root] confined to the backend's root directory, while

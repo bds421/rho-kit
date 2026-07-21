@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 1 |
-| LOW | 1 |
-| **Total (deduplicated)** | **2** |
+| LOW | 0 |
+| **Total (deduplicated)** | **1** |
 
 **Reviewer impressions:**
 
@@ -55,11 +55,4 @@
 - **Dimension**: correctness
 - **Detail**: Backends implementing `ApproveForTenant` / `RejectForTenant` / `MarkExecutedForTenant` are atomic (preferred path). Generic/in-memory backends still fall back to Get-then-mutate: the state transition can commit before a concurrent reassignment is observed, with only a post-hoc tenant mismatch check. Residual risk remains for non-atomic stores; closing it without a shared atomic API is a larger contract change (v3 / required ForTenant on Store).
 - **Suggestion**: Require tenant-scoped mutators on Store, or document that TenantStore is only race-safe against backends that implement the ForTenant methods.
-
-### [LOW] Read path deep-clones every entry twice (store clone + logger clone) via reflection
-
-- **Where**: `data/actionlog/actionlog.go:732`
-- **Dimension**: performance
-- **Detail**: signedLogger.List calls cloneEntry(e) on every row, and signedLogger.Get does the same — but the bundled memory store has already deep-cloned each returned entry. The defensive clone at the Logger layer is justified for unknown Store implementations, but doubling it for the kit's own stores is pure overhead on the hottest read path.
-- **Suggestion**: Gate the logger clone behind an interface assertion (e.g. a `CloningStore` marker) so bundled stores aren't cloned twice.
 

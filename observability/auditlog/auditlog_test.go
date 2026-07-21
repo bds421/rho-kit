@@ -488,8 +488,9 @@ func (s *captureStore) Query(_ context.Context, _ Filter, _ string, _ int) ([]Ev
 	defer s.mu.Unlock()
 	if len(s.events) == 0 {
 		// Preserve legacy single-event behaviour for tests that set
-		// .event directly without using Append.
-		return []Event{s.event}, "", nil
+		// .event directly without using Append. Clone so the Store
+		// ownership contract holds (Logger.List no longer re-clones).
+		return []Event{cloneEvent(s.event)}, "", nil
 	}
 	out := make([]Event, len(s.events))
 	for i := range s.events {

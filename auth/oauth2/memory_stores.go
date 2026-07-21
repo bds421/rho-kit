@@ -12,8 +12,14 @@ import (
 // MemorySessionStore is an in-process [SessionStore] for tests and
 // single-process services. Production deployments with multiple
 // replicas should back sessions with Redis or Postgres.
+//
+// Expired entries are removed lazily on Get/Delete and via a budgeted
+// opportunistic sweep on Put (at most sweepBudget entries per Put) so
+// Put stays O(1) amortized rather than O(n) in the live map size.
+// Concurrent Gets take a shared [sync.RWMutex] read lock and only
+// upgrade to a write lock when an expired entry must be deleted.
 type MemorySessionStore struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	sessions map[string]memorySession
 }
 
@@ -22,32 +28,25 @@ type memorySession struct {
 	expiresAt time.Time
 }
 
+// sweepBudget caps how many map entries Put inspects for expiry per call.
+// Keeps abandoned-session reclamation bounded without a full O(n) scan.
+const sweepBudget = 64
+
 // NewMemorySessionStore returns a fresh empty store.
 func NewMemorySessionStore() *MemorySessionStore {
 	return &MemorySessionStore{sessions: make(map[string]memorySession)}
 }
 
-// Put implements [SessionStore]. Opportunistically sweeps already-expired
-// sessions so abandoned entries (a login whose owner never returns) cannot
-// accumulate without bound. Overwriting a live session with the same id
-// zeroizes the replaced secrets when they do not share pointers with the
-// incoming session.
+// Put implements [SessionStore]. Opportunistically sweeps a budgeted
+// number of already-expired sessions so abandoned entries (a login
+// whose owner never returns) cannot accumulate without bound.
+// Overwriting a live session with the same id zeroizes the replaced
+// secrets when they do not share pointers with the incoming session.
 func (m *MemorySessionStore) Put(_ context.Context, id string, sess Session, ttl time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
-	for key, entry := range m.sessions {
-		if now.After(entry.expiresAt) {
-			// Zeroize secrets on eviction, matching Get/Delete.
-			if entry.sess.AccessToken != nil {
-				entry.sess.AccessToken.Zero()
-			}
-			if entry.sess.RefreshToken != nil {
-				entry.sess.RefreshToken.Zero()
-			}
-			delete(m.sessions, key)
-		}
-	}
+	m.sweepExpiredLocked(now, sweepBudget)
 	if existing, ok := m.sessions[id]; ok {
 		// Zero replaced secrets when they are distinct objects from the
 		// incoming session (same-pointer reuse is left alone).
@@ -70,24 +69,35 @@ func (m *MemorySessionStore) Put(_ context.Context, id string, sess Session, ttl
 // may retain the snapshot across a concurrent Delete/eviction without the
 // store-owned secret buffers being zeroized under them.
 func (m *MemorySessionStore) Get(_ context.Context, id string) (Session, error) {
+	m.mu.RLock()
+	entry, ok := m.sessions[id]
+	if !ok {
+		m.mu.RUnlock()
+		return Session{}, ErrSessionNotFound
+	}
+	if time.Now().After(entry.expiresAt) {
+		m.mu.RUnlock()
+		m.deleteExpired(id)
+		return Session{}, ErrSessionNotFound
+	}
+	out := cloneSession(entry.sess)
+	m.mu.RUnlock()
+	return out, nil
+}
+
+// deleteExpired re-checks and removes id if it is still present and expired.
+func (m *MemorySessionStore) deleteExpired(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	entry, ok := m.sessions[id]
 	if !ok {
-		return Session{}, ErrSessionNotFound
+		return
 	}
-	if time.Now().After(entry.expiresAt) {
-		// Zeroize secrets on expiry.
-		if entry.sess.AccessToken != nil {
-			entry.sess.AccessToken.Zero()
-		}
-		if entry.sess.RefreshToken != nil {
-			entry.sess.RefreshToken.Zero()
-		}
-		delete(m.sessions, id)
-		return Session{}, ErrSessionNotFound
+	if !time.Now().After(entry.expiresAt) {
+		return
 	}
-	return cloneSession(entry.sess), nil
+	zeroSessionSecrets(entry.sess)
+	delete(m.sessions, id)
 }
 
 // cloneSession returns a Session whose secret pointers and Claims map
@@ -114,21 +124,40 @@ func cloneSession(s Session) Session {
 	return out
 }
 
+func zeroSessionSecrets(s Session) {
+	if s.AccessToken != nil {
+		s.AccessToken.Zero()
+	}
+	if s.RefreshToken != nil {
+		s.RefreshToken.Zero()
+	}
+}
+
 // Delete implements [SessionStore]. Zeroizes the session's secrets
 // before removal so the bytes don't linger in memory.
 func (m *MemorySessionStore) Delete(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if entry, ok := m.sessions[id]; ok {
-		if entry.sess.AccessToken != nil {
-			entry.sess.AccessToken.Zero()
-		}
-		if entry.sess.RefreshToken != nil {
-			entry.sess.RefreshToken.Zero()
-		}
+		zeroSessionSecrets(entry.sess)
 		delete(m.sessions, id)
 	}
 	return nil
+}
+
+// sweepExpiredLocked removes up to budget expired sessions. Caller holds mu write lock.
+func (m *MemorySessionStore) sweepExpiredLocked(now time.Time, budget int) {
+	n := 0
+	for key, entry := range m.sessions {
+		if n >= budget {
+			return
+		}
+		n++
+		if now.After(entry.expiresAt) {
+			zeroSessionSecrets(entry.sess)
+			delete(m.sessions, key)
+		}
+	}
 }
 
 // MemoryStateStore is an in-process [StateStore] for tests and
@@ -136,9 +165,10 @@ func (m *MemorySessionStore) Delete(_ context.Context, id string) error {
 //
 // Live entries are capped at [DefaultMaxStateEntries] (overridable via
 // [WithMaxStateEntries]) so unauthenticated GET /login cannot grow the
-// map unboundedly during the state TTL window.
+// map unboundedly during the state TTL window. Expired entries are
+// reclaimed lazily on Get/Take and via a budgeted sweep on Put.
 type MemoryStateStore struct {
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	entries    map[string]memoryStateEntry
 	maxEntries int
 }
@@ -184,21 +214,24 @@ func NewMemoryStateStore(opts ...MemoryStateStoreOption) *MemoryStateStore {
 	return m
 }
 
-// Put implements [StateStore]. Opportunistically sweeps already-expired
-// entries so abandoned logins (a callback that never arrives) cannot
-// accumulate without bound. Returns [ErrStateStoreFull] when the live
-// entry cap is exceeded after the sweep.
+// Put implements [StateStore]. Opportunistically sweeps a budgeted
+// number of already-expired entries so abandoned logins (a callback
+// that never arrives) cannot accumulate without bound. Returns
+// [ErrStateStoreFull] when the live entry cap is exceeded after the
+// sweep. If still full after the budgeted pass, a second full sweep
+// runs so a legitimate Put is not rejected solely because the budget
+// skipped live-but-expired slots.
 func (m *MemoryStateStore) Put(_ context.Context, state string, entry StateEntry, ttl time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
-	for key, existing := range m.entries {
-		if now.After(existing.expiresAt) {
-			delete(m.entries, key)
-		}
-	}
+	m.sweepExpiredStateLocked(now, sweepBudget)
 	if _, exists := m.entries[state]; !exists && len(m.entries) >= m.maxEntries {
-		return ErrStateStoreFull
+		// Full sweep once to reclaim capacity before failing closed.
+		m.sweepExpiredStateLocked(now, len(m.entries))
+		if _, exists := m.entries[state]; !exists && len(m.entries) >= m.maxEntries {
+			return ErrStateStoreFull
+		}
 	}
 	m.entries[state] = memoryStateEntry{entry: entry, expiresAt: now.Add(ttl)}
 	return nil
@@ -207,17 +240,20 @@ func (m *MemoryStateStore) Put(_ context.Context, state string, entry StateEntry
 // Get implements [StateStore]. Returns ErrStateNotFound if the entry
 // is missing OR expired.
 func (m *MemoryStateStore) Get(_ context.Context, state string) (StateEntry, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
 	entry, ok := m.entries[state]
 	if !ok {
+		m.mu.RUnlock()
 		return StateEntry{}, ErrStateNotFound
 	}
 	if time.Now().After(entry.expiresAt) {
-		delete(m.entries, state)
+		m.mu.RUnlock()
+		m.deleteExpiredState(state)
 		return StateEntry{}, ErrStateNotFound
 	}
-	return entry.entry, nil
+	out := entry.entry
+	m.mu.RUnlock()
+	return out, nil
 }
 
 // Take atomically returns and deletes a state entry (single-use
@@ -243,4 +279,30 @@ func (m *MemoryStateStore) Delete(_ context.Context, state string) error {
 	defer m.mu.Unlock()
 	delete(m.entries, state)
 	return nil
+}
+
+func (m *MemoryStateStore) deleteExpiredState(state string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, ok := m.entries[state]
+	if !ok {
+		return
+	}
+	if !time.Now().After(entry.expiresAt) {
+		return
+	}
+	delete(m.entries, state)
+}
+
+func (m *MemoryStateStore) sweepExpiredStateLocked(now time.Time, budget int) {
+	n := 0
+	for key, existing := range m.entries {
+		if n >= budget {
+			return
+		}
+		n++
+		if now.After(existing.expiresAt) {
+			delete(m.entries, key)
+		}
+	}
 }

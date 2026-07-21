@@ -7,6 +7,28 @@ The previous mass-refute approach was wrong and has been reversed: only findings
 audited **FIXED** evidence (code + tests) are removed from the review trackers. All other
 findings remain **OPEN**.
 
+## Cleanup (LOW batch 2026-07-21 — crypto/oauth/sftp/clamav/observability/idempotency)
+
+- Cleared **17** tracker LOWs (code + docs/tests; no refutes; MEDIUMs left; god-file/v3 skip list honored).
+- Focus packages: `crypto/{paseto,secretcrypt}`, `security/jwtutil`, `auth/oauth2`, `authz`,
+  `infra/storage/{sftpbackend,localbackend,storagehttp/uploadsec/clamav}`,
+  `observability/{auditlog,slo}`, `infra/leaderelection`, `data/{actionlog,idempotency/redisstore}`.
+
+### Fixes landed (code + tests where behavior changed)
+- **paseto**: `WithClock` for `WithDefaultLifetime` / `buildToken` (no bare `time.Now`).
+- **jwtutil**: precompute `stringClaimNames` once at Provider construction for `populateStringClaims`.
+- **secretcrypt**: bounded per-identity AEAD cache (HKDF/GCM rebuild on miss only); cleared on Close.
+- **oauth2 memory stores**: `RWMutex` + lazy delete + budgeted sweep (no full O(n) Put sweep).
+- **authz scopes**: exported `Registry` / `NewRegistry` / `DefaultRegistry` / `ResetScopes`.
+- **sftpbackend**: `NewContext`, context-preserving `sftpRemoteError`, lazy `Healthy` connect attempt.
+- **auditlog**: document `LastHMAC` as required SPI; `List` trusts Store ownership (no double clone).
+- **slo**: `DependencyCheck` observes ctx before Evaluate; document uncancellable Gather.
+- **localbackend**: open-then-Lstat/fstat for symlink-object refusal (closes Lstat-then-Open TOCTOU).
+- **clamav**: non-loopback TCP requires `WithDialer` or `WithAllowInsecurePlaintext`; scanTimeout bounds body stream.
+- **leaderelection**: document divergent callback-drain metric labels across backends.
+- **actionlog**: Logger Get/List no longer re-clone (Store contract); test memStore clones.
+- **idempotency/redisstore**: Get/Set/Unlock folded into single-RTT Lua scripts.
+
 ## Cleanup (LOW batch 2026-07-21 — httpx/websocket/centrifuge/data-core-a)
 
 - Cleared **~51** tracker LOWs from target reviews (code + tests; no refutes; MEDIUMs left).
@@ -56,11 +78,11 @@ findings remain **OPEN**.
 
 ## Cleanup (this pass)
 
-- Remaining findings (`review-01` … `review-26`): **37**
+- Remaining findings (`review-01` … `review-26`): **20**
   - CRITICAL **0**
   - HIGH **0**
   - MEDIUM **5**
-  - LOW **32**
+  - LOW **15**
 
 ## Remaining counts per review file
 
@@ -69,41 +91,44 @@ findings remain **OPEN**.
 | `review-01-core-io.md` | 0 | 0 | 0 | 0 | 0 |
 | `review-02-runtime-resilience.md` | 0 | 0 | 0 | 0 | 0 |
 | `review-03-app-wiring.md` | 0 | 0 | 0 | 0 | 0 |
-| `review-04-crypto.md` | 0 | 0 | 0 | 4 | 4 |
-| `review-05-security.md` | 0 | 0 | 0 | 3 | 3 |
-| `review-06-auth-authz.md` | 0 | 0 | 0 | 2 | 2 |
+| `review-04-crypto.md` | 0 | 0 | 0 | 2 | 2 |
+| `review-05-security.md` | 0 | 0 | 0 | 2 | 2 |
+| `review-06-auth-authz.md` | 0 | 0 | 0 | 0 | 0 |
 | `review-07-httpx-core.md` | 0 | 0 | 0 | 1 | 1 |
 | `review-08-httpx-middleware.md` | 0 | 0 | 0 | 2 | 2 |
 | `review-09-websocket-realtime.md` | 0 | 0 | 1 | 0 | 1 |
 | `review-10-grpcx.md` | 0 | 0 | 0 | 0 | 0 |
-| `review-11-data-core-a.md` | 0 | 0 | 1 | 1 | 2 |
+| `review-11-data-core-a.md` | 0 | 0 | 1 | 0 | 1 |
 | `review-12-data-core-b.md` | 0 | 0 | 1 | 2 | 3 |
 | `review-13-data-pg-stores.md` | 0 | 0 | 0 | 0 | 0 |
-| `review-14-data-redis-stores.md` | 0 | 0 | 0 | 1 | 1 |
+| `review-14-data-redis-stores.md` | 0 | 0 | 0 | 0 | 0 |
 | `review-15-queues-streams.md` | 0 | 0 | 0 | 0 | 0 |
 | `review-16-messaging-core.md` | 0 | 0 | 0 | 0 | 0 |
 | `review-17-messaging-backends.md` | 0 | 0 | 0 | 0 | 0 |
-| `review-18-storage-core.md` | 0 | 0 | 1 | 4 | 5 |
-| `review-19-storage-backends.md` | 0 | 0 | 1 | 7 | 8 |
+| `review-18-storage-core.md` | 0 | 0 | 1 | 3 | 4 |
+| `review-19-storage-backends.md` | 0 | 0 | 1 | 2 | 3 |
 | `review-20-sqldb-outbox.md` | 0 | 0 | 0 | 0 | 0 |
-| `review-21-redis-leader.md` | 0 | 0 | 0 | 1 | 1 |
+| `review-21-redis-leader.md` | 0 | 0 | 0 | 0 | 0 |
 | `review-22-secrets.md` | 0 | 0 | 0 | 0 | 0 |
-| `review-23-observability-flags.md` | 0 | 0 | 0 | 3 | 3 |
+| `review-23-observability-flags.md` | 0 | 0 | 0 | 0 | 0 |
 | `review-24-cmd-clis.md` | 0 | 0 | 0 | 1 | 1 |
 | `review-25-examples.md` | 0 | 0 | 0 | 0 | 0 |
 | `review-26-testing-kits.md` | 0 | 0 | 0 | 0 | 0 |
-| **TOTAL** | **0** | **0** | **5** | **32** | **37** |
+| **TOTAL** | **0** | **0** | **5** | **15** | **20** |
 
 ## Notes
 
-- Before this session (targets only baseline in status file): **160** fleet-wide (0/0/5/155).
-- After this session (full recount of trackers): **37** (0/0/5/32). Target LOWs largely cleared;
-  concurrent sessions also reduced other review files.
+- Before this session: **37** (0/0/5/32).
+- After this session: **20** (0/0/5/15). Cleared 17 easy/medium LOWs.
 - Keep OPEN MEDIUM (v3 / larger): review-09 heartbeat defaults; review-11 TenantStore non-atomic fallback;
   review-12 forgeable tenant key namespace; review-18 optional capability APIs; review-19 SFTP reconnect lease.
-- Target leftovers:
+- Intentionally skipped (god-file / v3 / large):
+  - review-04: KEK metrics parity; Provider/SigningProvider DRY
+  - review-05: jwtutil.go god-file; KeySet mutable policy fields
   - review-07: mcp.go god-file split
   - review-08: idempotency.go god-file; Limiter/KeyedLimiter dedup
-  - review-09: MEDIUM heartbeat/write-timeout defaults
-  - review-11: MEDIUM TenantStore; LOW double-clone on actionlog read path
+  - review-12: Consumer.Consume error return (queue + stream)
+  - review-18: hooks/capability combinator god-files
+  - review-19: Listing parity; Put temp files
+  - review-24: kit-doctor package globals
 - Helper script: `tools/_cleanup_fixed_reviews.py` (matchers can be extended with this batch's titles).

@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 1 |
-| **Total (deduplicated)** | **1** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -32,11 +32,4 @@
 > This is high-quality, unusually well-documented infrastructure code: the four leader-election backends share a coherent drain-watchdog design, defensively recover from callback panics, bound every backend round-trip with a deadline, and the redis Connection carefully guards its health-state machine against close/ping races. The weaknesses are almost all cross-adapter consistency gaps around the shared Elector contract (Run reusability, OnLost-error handling, early-return semantics, and one metric-labeling divergence) rather than crashes or data loss, plus a ReadOnlyAware capability that is fully specified but never wired into any call site.
 
 ## Findings
-
-### [LOW] Four leaderelection backends register the same Prometheus metric FQ-names with incompatible label sets
-
-- **Where**: `infra/leaderelection/redislock/metrics.go:75`
-- **Dimension**: api-design
-- **Detail**: All four adapters register leaderelection_callback_drain_seconds and leaderelection_callback_drain_warn_total, but with different variable label sets: redislock/pgadvisory use {key,state}, etcd uses {election,state} (etcd/metrics.go:76), k8slease uses {namespace,name,state} (k8slease/metrics.go:77). promutil.MustRegisterOrGet only tolerates prometheus.AlreadyRegisteredError; a same-FQName-different-labels registration returns a plain descriptor-inconsistency error, which MustRegisterOrGet turns into a hard panic (promutil/register.go:41). So a process that constructs metrics for two different leaderelection backends against the same registry (e.g. DefaultRegisterer during a backend migration) panics at startup. Sharing a metric namespace across a family that otherwise advertises 'cross-adapter symmetry' is a latent cohesion trap.
-- **Suggestion**: Either give each backend a distinct metric subsystem name, or standardize on one shared label set (e.g. a single 'target' label) across all four.
 

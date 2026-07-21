@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"sync/atomic"
 
 	"golang.org/x/crypto/hkdf"
@@ -35,14 +36,25 @@ var (
 const (
 	derivedKeyLen = 32
 	minMasterLen  = 32
+	// maxAEADCache is the per-Crypter identity→AEAD cache cap. Bounded so a
+	// high-cardinality identity stream cannot grow the cache without limit;
+	// on overflow one arbitrary entry is dropped (map iteration order).
+	maxAEADCache = 256
 )
 
 // Crypter encrypts and decrypts secrets with per-identity keys derived
 // from a single master via HKDF-SHA256.
+//
+// Derived AEADs are cached per identity so repeated Encrypt/Decrypt for
+// the same identity does not re-run HKDF or rebuild the AES-GCM primitive.
+// The cache is cleared on [Crypter.Close].
 type Crypter struct {
 	master []byte
 	label  string
 	closed atomic.Bool
+
+	mu   sync.RWMutex
+	aead map[string]encrypt.AEAD
 }
 
 // New constructs a Crypter. master is copied; domainLabel scopes derived
@@ -59,7 +71,7 @@ func New(master []byte, domainLabel string) (*Crypter, error) {
 	}
 	cp := make([]byte, len(master))
 	copy(cp, master)
-	return &Crypter{master: cp, label: domainLabel}, nil
+	return &Crypter{master: cp, label: domainLabel, aead: make(map[string]encrypt.AEAD)}, nil
 }
 
 // Encrypt seals plaintext with AES-256-GCM. identity participates in key
@@ -71,7 +83,7 @@ func (c *Crypter) Encrypt(identity string, plaintext, aad []byte) ([]byte, error
 	if identity == "" {
 		return nil, ErrEmptyIdentity
 	}
-	aead, err := c.aead(identity)
+	aead, err := c.aeadFor(identity)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +99,7 @@ func (c *Crypter) Decrypt(identity string, blob, aad []byte) ([]byte, error) {
 	if identity == "" {
 		return nil, ErrEmptyIdentity
 	}
-	aead, err := c.aead(identity)
+	aead, err := c.aeadFor(identity)
 	if err != nil {
 		return nil, err
 	}
@@ -104,8 +116,8 @@ func (c *Crypter) validate() error {
 	return nil
 }
 
-// Close zeroes the master key. Subsequent Encrypt/Decrypt calls return
-// [ErrClosed]. Idempotent.
+// Close zeroes the master key and drops the AEAD cache. Subsequent
+// Encrypt/Decrypt calls return [ErrClosed]. Idempotent.
 func (c *Crypter) Close() error {
 	if c == nil {
 		return nil
@@ -113,14 +125,34 @@ func (c *Crypter) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	c.mu.Lock()
 	for i := range c.master {
 		c.master[i] = 0
 	}
+	c.aead = nil
+	c.mu.Unlock()
 	return nil
 }
 
-func (c *Crypter) aead(identity string) (encrypt.AEAD, error) {
-	key, err := deriveKey(c.master, c.label, identity)
+func (c *Crypter) aeadFor(identity string) (encrypt.AEAD, error) {
+	c.mu.RLock()
+	if c.closed.Load() {
+		c.mu.RUnlock()
+		return nil, ErrClosed
+	}
+	if a, ok := c.aead[identity]; ok {
+		c.mu.RUnlock()
+		return a, nil
+	}
+	// Snapshot master under the read lock so Close cannot zero it mid-derive.
+	master := append([]byte(nil), c.master...)
+	label := c.label
+	c.mu.RUnlock()
+
+	key, err := deriveKey(master, label, identity)
+	for i := range master {
+		master[i] = 0
+	}
 	if err != nil {
 		return nil, fmt.Errorf("secretcrypt: derive key: %w", err)
 	}
@@ -130,7 +162,30 @@ func (c *Crypter) aead(identity string) (encrypt.AEAD, error) {
 	for i := range key {
 		key[i] = 0
 	}
-	return aead, err
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() {
+		return nil, ErrClosed
+	}
+	if c.aead == nil {
+		c.aead = make(map[string]encrypt.AEAD)
+	}
+	if existing, ok := c.aead[identity]; ok {
+		return existing, nil
+	}
+	if len(c.aead) >= maxAEADCache {
+		// Drop one arbitrary entry to bound memory under identity churn.
+		for k := range c.aead {
+			delete(c.aead, k)
+			break
+		}
+	}
+	c.aead[identity] = aead
+	return aead, nil
 }
 
 func deriveKey(master []byte, label, identity string) ([]byte, error) {

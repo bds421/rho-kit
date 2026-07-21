@@ -2,7 +2,7 @@
 
 - **Git ref**: main @ 9c370ea2 (v2.3.1 prep)
 - **Scope**: 26 package families spanning all workspace modules; 3 review lenses each (correctness/concurrency, security, design/quality), except examples (1) and testing-kits (2).
-- **Total deduplicated findings**: 375  (CRITICAL 0, HIGH 0, MEDIUM 4, LOW 371)
+- **Total open findings**: 20  (CRITICAL 0, HIGH 0, MEDIUM 5, LOW 15)
 - **Status**: OPEN findings only. Findings with audited FIXED evidence (code + tests) were removed from family reports. Prior mass-refute was reversed.
 - Per-family detail: see `review-01-*.md` … `review-26-*.md`.
 
@@ -10,32 +10,32 @@
 
 | # | Family | Crit | High | Med | Low | Total | Report |
 |---|---|---|---|---|---|---|---|
-| 01 | Core primitives & IO | 0 | 0 | 0 | 1 | 1 | `review-01-core-io.md` |
-| 02 | Runtime & Resilience | 0 | 0 | 0 | 2 | 2 | `review-02-runtime-resilience.md` |
-| 03 | App DI & wiring | 0 | 0 | 0 | 19 | 19 | `review-03-app-wiring.md` |
-| 04 | Crypto & envelope encryption | 0 | 0 | 0 | 11 | 11 | `review-04-crypto.md` |
-| 05 | Security package | 0 | 0 | 0 | 25 | 25 | `review-05-security.md` |
-| 06 | OAuth2 & AuthZ | 0 | 0 | 0 | 8 | 8 | `review-06-auth-authz.md` |
-| 07 | HTTPX core | 0 | 0 | 0 | 21 | 21 | `review-07-httpx-core.md` |
-| 08 | HTTPX middleware | 0 | 0 | 0 | 30 | 30 | `review-08-httpx-middleware.md` |
-| 09 | WebSocket & realtime | 0 | 0 | 1 | 14 | 15 | `review-09-websocket-realtime.md` |
-| 10 | gRPC toolkit | 0 | 0 | 0 | 24 | 24 | `review-10-grpcx.md` |
-| 11 | Data interfaces A | 0 | 0 | 0 | 17 | 17 | `review-11-data-core-a.md` |
-| 12 | Data interfaces B | 0 | 0 | 1 | 25 | 26 | `review-12-data-core-b.md` |
-| 13 | Postgres data stores | 0 | 0 | 0 | 24 | 24 | `review-13-data-pg-stores.md` |
-| 14 | Redis data stores | 0 | 0 | 0 | 16 | 16 | `review-14-data-redis-stores.md` |
-| 15 | Queues & streams | 0 | 0 | 0 | 21 | 21 | `review-15-queues-streams.md` |
-| 16 | Messaging core | 0 | 0 | 0 | 29 | 29 | `review-16-messaging-core.md` |
-| 17 | Messaging backends | 0 | 0 | 0 | 18 | 18 | `review-17-messaging-backends.md` |
-| 18 | Storage core | 0 | 0 | 1 | 13 | 14 | `review-18-storage-core.md` |
-| 19 | Storage backends | 0 | 0 | 1 | 16 | 17 | `review-19-storage-backends.md` |
-| 20 | SQL DB & outbox | 0 | 0 | 0 | 9 | 9 | `review-20-sqldb-outbox.md` |
-| 21 | Redis infra & leader election | 0 | 0 | 0 | 3 | 3 | `review-21-redis-leader.md` |
-| 22 | Secrets management | 0 | 0 | 0 | 6 | 6 | `review-22-secrets.md` |
-| 23 | Observability & flags | 0 | 0 | 0 | 7 | 7 | `review-23-observability-flags.md` |
-| 24 | CLI tools | 0 | 0 | 0 | 10 | 10 | `review-24-cmd-clis.md` |
-| 25 | Examples | 0 | 0 | 0 | 1 | 1 | `review-25-examples.md` |
-| 26 | Testing kits | 0 | 0 | 0 | 1 | 1 | `review-26-testing-kits.md` |
+| 01 | Core primitives & IO | 0 | 0 | 0 | 0 | 0 | `review-01-core-io.md` |
+| 02 | Runtime & Resilience | 0 | 0 | 0 | 0 | 0 | `review-02-runtime-resilience.md` |
+| 03 | App DI & wiring | 0 | 0 | 0 | 0 | 0 | `review-03-app-wiring.md` |
+| 04 | Crypto & envelope encryption | 0 | 0 | 0 | 2 | 2 | `review-04-crypto.md` |
+| 05 | Security package | 0 | 0 | 0 | 2 | 2 | `review-05-security.md` |
+| 06 | OAuth2 & AuthZ | 0 | 0 | 0 | 0 | 0 | `review-06-auth-authz.md` |
+| 07 | HTTPX core | 0 | 0 | 0 | 1 | 1 | `review-07-httpx-core.md` |
+| 08 | HTTPX middleware | 0 | 0 | 0 | 2 | 2 | `review-08-httpx-middleware.md` |
+| 09 | WebSocket & realtime | 0 | 0 | 1 | 0 | 1 | `review-09-websocket-realtime.md` |
+| 10 | gRPC toolkit | 0 | 0 | 0 | 0 | 0 | `review-10-grpcx.md` |
+| 11 | Data interfaces A | 0 | 0 | 1 | 0 | 1 | `review-11-data-core-a.md` |
+| 12 | Data interfaces B | 0 | 0 | 1 | 2 | 3 | `review-12-data-core-b.md` |
+| 13 | Postgres data stores | 0 | 0 | 0 | 0 | 0 | `review-13-data-pg-stores.md` |
+| 14 | Redis data stores | 0 | 0 | 0 | 0 | 0 | `review-14-data-redis-stores.md` |
+| 15 | Queues & streams | 0 | 0 | 0 | 0 | 0 | `review-15-queues-streams.md` |
+| 16 | Messaging core | 0 | 0 | 0 | 0 | 0 | `review-16-messaging-core.md` |
+| 17 | Messaging backends | 0 | 0 | 0 | 0 | 0 | `review-17-messaging-backends.md` |
+| 18 | Storage core | 0 | 0 | 1 | 3 | 4 | `review-18-storage-core.md` |
+| 19 | Storage backends | 0 | 0 | 1 | 2 | 3 | `review-19-storage-backends.md` |
+| 20 | SQL DB & outbox | 0 | 0 | 0 | 0 | 0 | `review-20-sqldb-outbox.md` |
+| 21 | Redis infra & leader election | 0 | 0 | 0 | 0 | 0 | `review-21-redis-leader.md` |
+| 22 | Secrets management | 0 | 0 | 0 | 0 | 0 | `review-22-secrets.md` |
+| 23 | Observability & flags | 0 | 0 | 0 | 0 | 0 | `review-23-observability-flags.md` |
+| 24 | CLI tools | 0 | 0 | 0 | 1 | 1 | `review-24-cmd-clis.md` |
+| 25 | Examples | 0 | 0 | 0 | 0 | 0 | `review-25-examples.md` |
+| 26 | Testing kits | 0 | 0 | 0 | 0 | 0 | `review-26-testing-kits.md` |
 | | **TOTAL** | **0** | **0** | **4** | **371** | **375** | |
 
 ## Findings by dimension

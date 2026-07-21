@@ -55,7 +55,8 @@ func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	return func(c *metricsConfig) { c.registerer = reg }
 }
 
-// NewMetrics creates and registers callback-drain metrics. Pass
+// NewMetrics creates and registers callback-drain metrics (labels {key,state}; incompatible with etcd/k8slease on the same registerer — see package leaderelection docs).
+// Pass
 // [WithRegisterer] to use a non-default registry. Repeated
 // calls reuse already-registered collectors on the same registry.
 func NewMetrics(opts ...MetricsOption) *Metrics {

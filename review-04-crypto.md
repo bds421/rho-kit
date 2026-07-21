@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 4 |
-| **Total (deduplicated)** | **4** |
+| LOW | 2 |
+| **Total (deduplicated)** | **2** |
 
 **Reviewer impressions:**
 
@@ -52,24 +52,10 @@
 - **Detail**: awskms.NewKEK takes `opts ...Option` and ships a Metrics type recording every KMS error to a request_errors_total counter (awskms/metrics.go), while gcpkms.NewKEK (line 94), azurekeyvault.NewKEK, and vaulttransit.NewKEK take no options and record no metrics at all, despite their errors.go files claiming behavioral parity with awskms. Failure scenario: an operator who standardizes dashboards/alerts on awskms_request_errors_total migrates a service to GCP KMS or Key Vault and silently loses all KMS-error observability; separately, the constructor signature difference means adding options to the other adapters later is a breaking-ish churn for wrapper code that abstracts over the four adapters.
 - **Suggestion**: Add the same variadic Option + Metrics pattern (or a shared envelope-level metrics hook) to gcpkms, azurekeyvault, and vaulttransit so the four adapters have uniform constructor shapes and error observability.
 
-### [LOW] buildToken calls time.Now() directly for WithDefaultLifetime, bypassing the package's clock-injection convention
-
-- **Where**: `crypto/paseto/paseto.go:485`
-- **Dimension**: api-design
-- **Detail**: When Claims.ExpiresAt and Claims.IssuedAt are both zero and WithDefaultLifetime is configured, buildToken derives exp from time.Now() (line 485). Everywhere else the package injects time: verification takes an explicit `now` parameter, and Provider/SigningProvider have clock fields with with*Clock options for tests. Sign-side default-lifetime behavior is therefore untestable deterministically — tests must set IssuedAt explicitly or tolerate wall-clock slop — and the inconsistency invites a future clock-related bug when someone assumes the whole package is clock-injectable.
-- **Suggestion**: Thread a clock func through config (defaulting to time.Now) and use it in buildToken, mirroring the signing package's WithClock pattern.
-
 ### [LOW] Provider and SigningProvider duplicate ~200 lines of refresh/lifecycle machinery
 
 - **Where**: `crypto/paseto/signing_provider.go:49`
 - **Dimension**: smell
 - **Detail**: SigningProvider (signing_provider.go) is a near-verbatim copy of Provider (provider.go): identical field sets (stop/done/stopOnce/rootCtx/rootCancel/fetchTimeout/maxStale/clock), identical loop() including the FR-046 comment, identical callOnRefreshError with panic-recover, parallel option sets (WithFetchTimeout/WithSigningFetchTimeout, WithMaxStale/WithSigningMaxStale, etc.), and structurally identical Verify/Sign staleness gates. A future fix to the refresh/shutdown machinery (e.g. the closed-race suppression logic in loop) must be applied twice and can silently drift — the two files already differ only in the payload type and the extra signer Close in SigningProvider.Close.
 - **Suggestion**: Extract a shared unexported refresher[T any] (generic over the atomic.Pointer payload) owning loop/Close/staleness bookkeeping, with Provider and SigningProvider as thin wrappers.
-
-### [LOW] Every Encrypt/Decrypt re-runs HKDF and rebuilds a Tink AEAD even for a repeated identity
-
-- **Where**: `crypto/secretcrypt/secretcrypt.go:84`
-- **Dimension**: performance
-- **Detail**: Crypter.aead (line 84) performs HKDF-SHA256 extraction+expansion plus subtle.NewAESGCM — which internally builds Tink Parameters, a Key object, and the AEAD (several allocations and an AES key schedule) — on every single Encrypt and Decrypt call, with no memoization. Failure scenario: a webhook dispatcher decrypting the same tenant's signing key on every inbound request pays HKDF + full AEAD construction per request; at high QPS this is measurable CPU and allocation churn for byte-identical (label, identity) inputs. The stateless design also removes any place to zero the derived key (see the Close finding).
-- **Suggestion**: Cache the constructed AEAD per identity in a bounded/synchronized map (or document that callers should hold one AEAD per identity via a new exported helper), keeping derivation on the miss path only.
 

@@ -269,7 +269,7 @@ func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
 	if ks == nil {
 		return nil, ErrInvalidKeySet
 	}
-	return verifyToken(ks.set, tokenString, now, ks.ExpectedIssuer, ks.ExpectedAudience, nil)
+	return verifyToken(ks.set, tokenString, now, ks.ExpectedIssuer, ks.ExpectedAudience, defaultStringClaims)
 }
 
 // verifyTimingFloor is the minimum wall-clock duration verifyToken
@@ -310,7 +310,7 @@ func currentVerifyFloor() time.Duration {
 // verifyTimingFloor.
 var defaultStringClaims = []string{"client_id", "azp", "act"}
 
-func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer, expectedAudience string, extraStringClaims []string) (*Claims, error) {
+func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer, expectedAudience string, stringClaimNames []string) (*Claims, error) {
 	start := time.Now()
 	defer func() {
 		floor := currentVerifyFloor()
@@ -425,14 +425,17 @@ func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer,
 		return nil, errMalformedScopesClaim
 	}
 
-	populateStringClaims(tok, claims, extraStringClaims)
+	populateStringClaims(tok, claims, stringClaimNames)
 	return claims, nil
 }
 
-func populateStringClaims(tok jwt.Token, c *Claims, extra []string) {
+// mergeStringClaimNames returns the deduplicated claim-name list used by
+// populateStringClaims. defaultStringClaims are always included; empty
+// entries and duplicates in extra are dropped.
+func mergeStringClaimNames(extra []string) []string {
 	seen := make(map[string]struct{}, len(defaultStringClaims)+len(extra))
-	names := append(append([]string(nil), defaultStringClaims...), extra...)
-	for _, name := range names {
+	out := make([]string, 0, len(defaultStringClaims)+len(extra))
+	for _, name := range defaultStringClaims {
 		if name == "" {
 			continue
 		}
@@ -440,6 +443,23 @@ func populateStringClaims(tok jwt.Token, c *Claims, extra []string) {
 			continue
 		}
 		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	for _, name := range extra {
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func populateStringClaims(tok jwt.Token, c *Claims, names []string) {
+	for _, name := range names {
 		var s string
 		if err := tok.Get(name, &s); err != nil || s == "" {
 			continue
@@ -498,11 +518,15 @@ type Provider struct {
 	expectedAudience  string
 	revocation        RevocationChecker
 	extraStringClaims []string
-	allowAnyIssuer    bool
-	allowAnyAudience  bool
-	allowInsecureURL  bool
-	maxStale          time.Duration
-	clock             func() time.Time
+	// stringClaimNames is the precomputed, deduplicated claim-name list
+	// (defaultStringClaims ∪ extraStringClaims) used by populateStringClaims
+	// so Verify does not reallocate a names slice and seen map per token.
+	stringClaimNames []string
+	allowAnyIssuer   bool
+	allowAnyAudience bool
+	allowInsecureURL bool
+	maxStale         time.Duration
+	clock            func() time.Time
 
 	mu                  sync.RWMutex
 	keyset              *KeySet
@@ -761,6 +785,7 @@ func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opt
 	if p.expectedAudience == "" && !p.allowAnyAudience {
 		panic("jwtutil: NewProvider requires WithExpectedAudience or the explicit WithAllowAnyAudience opt-out (RFC 7519 confused-deputy mitigation)")
 	}
+	p.stringClaimNames = mergeStringClaimNames(p.extraStringClaims)
 	return p
 }
 
@@ -805,6 +830,7 @@ func NewProviderWithKeySet(ks *KeySet, opts ...ProviderOption) *Provider {
 	if p.expectedAudience == "" && !p.allowAnyAudience {
 		panic("jwtutil: NewProviderWithKeySet requires WithExpectedAudience or the explicit WithAllowAnyAudience opt-out (RFC 7519 confused-deputy mitigation)")
 	}
+	p.stringClaimNames = mergeStringClaimNames(p.extraStringClaims)
 	return p
 }
 
@@ -1195,7 +1221,7 @@ func (p *Provider) VerifyContext(ctx context.Context, token string, now time.Tim
 	if ksErr != nil {
 		return nil, ksErr
 	}
-	claims, err := verifyToken(ks.set, token, now, p.expectedIssuer, p.expectedAudience, p.extraStringClaims)
+	claims, err := verifyToken(ks.set, token, now, p.expectedIssuer, p.expectedAudience, p.stringClaimNames)
 	if err != nil {
 		return nil, err
 	}

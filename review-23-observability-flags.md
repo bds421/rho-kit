@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 3 |
-| **Total (deduplicated)** | **3** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -32,25 +32,4 @@
 > This is a mature, carefully-engineered scope: the audit-log HMAC chain, secret-zeroing on close, constant-time comparisons, cardinality guards, and health-check deduplication are all thoughtfully done and heavily documented, and most obvious concurrency/nil/error-handling pitfalls have already been closed (often with explicit audit-finding references). The two most notable issues are subtle semantic mismatches rather than crude bugs: retention pruning by timestamp conflicts with the seq-ordered chain the rest of the module goes out of its way to support, and the health checker evaluates shared/cached state under a per-request cancellable context. Overall correctness and concurrency hygiene are high.
 
 ## Findings
-
-### [LOW] Store.LastHMAC is a mandatory interface method with no production caller
-
-- **Where**: `observability/auditlog/auditlog.go:226`
-- **Dimension**: api-design
-- **Detail**: LastHMAC is part of the required Store interface, forcing every custom Store implementation to write and test it, yet no code in the module calls it (Logger.LogE uses AppendChained; the doc even states it is 'not on the Logger.LogE hot path'). It is described as operator-tooling only. Keeping non-essential operator helpers in the SPI raises the implementation burden and misuse surface for third-party Stores without benefit.
-- **Suggestion**: Move LastHMAC to an optional extension interface (like RetentionStore) that operator tooling can type-assert for, keeping the core Store interface minimal.
-
-### [LOW] Logger.List re-deep-copies events already cloned by the Store
-
-- **Where**: `observability/auditlog/auditlog.go:587`
-- **Dimension**: performance
-- **Detail**: List calls cloneEvents(events) on the slice returned by store.Query, but both bundled stores already return independent copies: MemoryStore.Query builds its result from cloneEvent'd snapshot entries, and postgres.scanEvent allocates a fresh Event with freshly-copied metadata/HMAC slices per row. The extra cloneEvents pass therefore doubles allocations for every page returned with no additional safety, on a path that can return up to MaxPageLimit (10k) events.
-- **Suggestion**: Rely on the Store contract that Query returns owned copies (document it on the interface) and drop the redundant cloneEvents in List, or move the single defensive clone entirely into List and out of the stores.
-
-### [LOW] SLO DependencyCheck ignores the health timeout context
-
-- **Where**: `observability/slo/slo.go:562`
-- **Dimension**: error-handling
-- **Detail**: DependencyCheck's Check closure is func(_ context.Context) string and calls c.Evaluate(), which calls gatherer.Gather() with no context. If the Prometheus Gatherer blocks, the check cannot observe the health handler's per-check timeout cancellation; runCheck times out and the check goroutine is left holding whatever Gather holds until it returns.
-- **Suggestion**: Plumb the supplied context into the evaluation path, or document that Gather is uncancellable so a hung gatherer respects the check timeout.
 

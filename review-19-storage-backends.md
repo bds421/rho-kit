@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 1 |
-| LOW | 7 |
-| **Total (deduplicated)** | **8** |
+| LOW | 2 |
+| **Total (deduplicated)** | **3** |
 
 **Reviewer impressions:**
 
@@ -53,45 +53,10 @@
 - **Detail**: s3backend and sftpbackend implement storage.Lister (they have list.go with a compile-time _ storage.Lister assertion), but gcsbackend and azurebackend do not implement List at all — the gcs Backend only asserts storage.Storage (line 26). Azure even carries NewListBlobsFlatPager in its BlobClient interface but wires it solely into Healthy. A caller writing backend-agnostic code that type-asserts storage.Lister will silently get no listing on GCS/Azure, an easy-to-hold-it-wrong asymmetry between providers that are otherwise presented as interchangeable.
 - **Suggestion**: Either implement Lister for gcsbackend and azurebackend for parity, or document explicitly in each package's doc.go that listing is unsupported so the capability gap is discoverable.
 
-### [LOW] sftpbackend.New has no context-aware variant; eager connect hardcodes context.Background
-
-- **Where**: `infra/storage/sftpbackend/sftp.go:172`
-- **Dimension**: api-design
-- **Detail**: New performs an eager SSH dial with b.connect(context.Background()) (line 172), so a caller cannot bound startup connection time with its own ctx or cancel a hung eager connect beyond the fixed 10s sshConnectTimeout — and a configured PasswordProvider is invoked under a Background-derived ctx rather than the caller's startup deadline. s3backend addresses the same problem with a NewContext constructor and documents why (s3.go lines 123-135); sftpbackend, whose constructor does strictly more remote I/O (TCP dial + SSH handshake + SFTP subsystem + optional password fetch), offers no equivalent.
-- **Suggestion**: Add NewContext(ctx, cfg, opts...) mirroring s3backend, delegating New to it with context.Background().
-
-### [LOW] sftpRemoteError discards the underlying cause, dropping context-cancellation identity
-
-- **Where**: `infra/storage/sftpbackend/sftp.go:504`
-- **Dimension**: error-handling
-- **Detail**: For non-validation errors sftpRemoteError returns a fresh fmt.Errorf('sftpbackend: %s failed') that does not wrap err (line 504). When an SFTP op fails due to context cancellation/deadline (or any other cause), the returned error no longer satisfies errors.Is(err, context.Canceled/DeadlineExceeded) or any typed check, so callers cannot distinguish a cancelled operation from a generic remote failure. This is an intentional redaction choice but it silently strips error identity that callers may rely on for retry/backoff decisions.
-- **Suggestion**: Preserve the sentinel where it is safe — e.g. detect ctx.Err()/context sentinels and wrap them, or attach a typed classification — while still redacting topology-leaking strings.
-
 ### [LOW] Put temp files are visible to List and orphaned on crash
 
 - **Where**: `infra/storage/sftpbackend/sftp.go:570`
 - **Dimension**: bug
 - **Detail**: Put writes to remotePath + ".tmp-" + suffix in the destination directory. List/walkDir has no filter for these names, so a concurrent List during an upload yields phantom keys like 'dir/file.tmp-a1b2c3d4e5f6a7b8' (Get on them later races the rename and returns not-found). If the process dies between Create and Rename, the temp file is orphaned permanently — no sweep exists, and the orphan then appears in every subsequent listing.
 - **Suggestion**: Filter the temp-name pattern out of walkDir results (and reject it in ValidateKey-adjacent logic), and document the orphan behavior or add a best-effort startup sweep for stale '.tmp-*' files older than a threshold.
-
-### [LOW] Healthy() never attempts connection, so WithLazyConnect plus CriticalHealthCheck can deadlock readiness
-
-- **Where**: `infra/storage/sftpbackend/sftp.go:825`
-- **Dimension**: api-design
-- **Detail**: Healthy() returns false whenever b.connected is false (sftp.go:824-828) and never triggers connect(). A backend built with WithLazyConnect stays disconnected until its first storage operation. If such a backend is wired into CriticalHealthCheck, the readiness endpoint returns 503 forever, the orchestrator never routes traffic, no operation ever runs, and the connection is never established — a permanent not-ready deadlock with no error logged.
-- **Suggestion**: Either have Healthy()/the health check attempt a (rate-limited) lazy connect, or document that WithLazyConnect must not be combined with CriticalHealthCheck before the first operation.
-
-### [LOW] clamd INSTREAM defaults to plaintext TCP
-
-- **Where**: `infra/storage/storagehttp/uploadsec/clamav/clamav.go:272`
-- **Dimension**: security
-- **Detail**: defaultNetwork is "tcp" and Scan dials clamd with no transport encryption. When clamd runs on a separate host (a common deployment), the full upload payload (which may contain PII/sensitive files being scanned) and the scan verdict traverse the network in cleartext, and an on-path attacker could tamper with the verdict to force a clean result. Mitigations exist (WithNetwork("unix") for a local socket, or WithDialer for a TLS/mTLS-wrapped conn), but the out-of-the-box default is unencrypted. Failure scenario: clamd deployed on a peer node reachable over a shared L2/L3 segment; an attacker sniffs uploaded documents or MITMs the socket to rewrite an infected verdict to "stream: OK".
-- **Suggestion**: Document that remote clamd must be reached over a private/trusted path, prefer a unix socket, or provide a first-class TLS dialer helper; consider warning at construction when network=="tcp" and the address is non-loopback.
-
-### [LOW] Scan timeout (conn deadline) does not bound reads from the upload body
-
-- **Where**: `infra/storage/storagehttp/uploadsec/clamav/clamav.go:301`
-- **Dimension**: resource-leak
-- **Detail**: WithScanTimeout is documented as bounding 'the whole dial/write/read scan exchange', and the ctx deadline is applied only to the clamd conn (SetDeadline, line 279). streamBody reads from the caller-supplied body with no deadline (line 301). A reader that stalls indefinitely (never returns) blocks in body.Read before any conn.Write, so the conn deadline is never reached and Scan hangs past scanTimeout; a pathological reader returning (0, nil) repeatedly spins the loop (n==0 -> readErr==nil -> continue) burning CPU with no timeout. The primary StorageValidator path spools to a local temp file first, so it is unaffected; the exposure is limited to direct Scanner.Scan callers passing a live network reader.
-- **Suggestion**: Either document that body must be a non-blocking/bounded reader, or wrap body reads with a ctx-aware reader (or run streamBody in a goroutine cancelled by ctx) so scanTimeout actually bounds the body read.
 

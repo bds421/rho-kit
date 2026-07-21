@@ -1158,3 +1158,30 @@ func TestV4PublicSigner_CloseConcurrentWithSign(t *testing.T) {
 	})
 	assert.ErrorIs(t, err, ErrSignerClosed)
 }
+
+func TestWithDefaultLifetime_UsesWithClock(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+	fixed := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	signer, err := NewV4PublicSigner(priv,
+		WithExpectedIssuer("iss"),
+		WithExpectedAudience("aud"),
+		WithDefaultLifetime(15*time.Minute),
+		WithClock(func() time.Time { return fixed }),
+	)
+	require.NoError(t, err)
+	tok, err := signer.Sign(Claims{Subject: "alice"})
+	require.NoError(t, err)
+	v, err := NewV4PublicVerifier([]ed25519.PublicKey{pub},
+		WithExpectedIssuer("iss"),
+		WithExpectedAudience("aud"),
+	)
+	require.NoError(t, err)
+	claims, err := v.Verify(tok, fixed)
+	require.NoError(t, err)
+	assert.Equal(t, fixed.Add(15*time.Minute), claims.ExpiresAt)
+}
+
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { _ = WithClock(nil) })
+}

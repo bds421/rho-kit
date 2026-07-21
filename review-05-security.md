@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 3 |
-| **Total (deduplicated)** | **3** |
+| LOW | 2 |
+| **Total (deduplicated)** | **2** |
 
 **Reviewer impressions:**
 
@@ -64,11 +64,4 @@
 - **Dimension**: api-design
 - **Detail**: KeySet.ExpectedIssuer/ExpectedAudience are exported, mutable fields read by Verify without synchronisation; the type doc carries a long warning ("Set them once, before the KeySet is shared ... assigning a field ... is an unsynchronised data race that silently changes verification policy"). The safe path (Provider carrying policy) exists, but nothing prevents the documented misuse — a caller can still toggle fields on a shared *KeySet per request and get racy, policy-bleeding verification. Invariants this security-critical should be unrepresentable rather than documented.
 - **Suggestion**: In a future API revision make the fields unexported with a WithExpectedIssuer/Audience-style constructor or a KeySet.WithPolicy(iss, aud) copy method (KeySet() already returns snapshots, so a copy-on-write setter is cheap).
-
-### [LOW] populateStringClaims rebuilds the claim-name slice and dedup map on every verification
-
-- **Where**: `security/jwtutil/jwtutil.go:412`
-- **Dimension**: performance
-- **Detail**: For each verified token, populateStringClaims allocates a fresh seen map and a fresh names slice via append(append([]string(nil), defaultStringClaims...), extra...), even though defaultStringClaims and Provider.extraStringClaims are fixed at construction time. On the request-path hot loop this is two avoidable heap allocations per token (plus the map buckets). Failure scenario: none functional; steady per-request allocation pressure in the auth middleware path.
-- **Suggestion**: Precompute the deduplicated, empty-filtered claim-name list once (at Provider construction, or lazily with sync.Once) and iterate over it directly; only allocate c.stringClaims when a claim is actually present (already done).
 

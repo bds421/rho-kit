@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 1 |
-| LOW | 4 |
-| **Total (deduplicated)** | **5** |
+| LOW | 3 |
+| **Total (deduplicated)** | **4** |
 
 **Reviewer impressions:**
 
@@ -66,11 +66,4 @@
 - **Dimension**: smell
 - **Detail**: hooks.go (lines 341-539), retry/combinators.go, and circuitbreaker/combinators.go each hand-enumerate the same 15 {Lister, Copier, PresignedStore, PublicURLer} wrapper structs plus an identical 16-way switch — roughly 700 lines of structurally identical code in three packages. Each file acknowledges the pattern, but the cost is concrete: adding one new forwarded capability (e.g. the Statter suggested for ServeFile, or BatchDeleter forwarding) requires editing 3 × 16 cases and doubling each package's wrapper count, and a missed case in one package silently diverges capability behavior between decorators.
 - **Suggestion**: Extract a single internal composition helper (e.g. an internal/compose package with the 16 wrapper types parameterized over a small interface of listImpl/copyImpl/presign*/urlImpl funcs) that all three decorators reuse, so the combination matrix lives in exactly one place.
-
-### [LOW] TOCTOU between ensureRegular (Lstat) and root.Open weakens the symlink-object refusal
-
-- **Where**: `infra/storage/localbackend/local.go:306`
-- **Dimension**: security
-- **Detail**: Get (and Copy's source open) enforce the "refusing symlink object" contract via ensureRegular's root.Lstat (local.go:299, 410-432), then separately call root.Open(rel) (local.go:306). os.Root follows symlinks that resolve inside the root, so an attacker with write access inside the storage root can swap the regular file for an in-root symlink between the Lstat and the Open; Get then reads through a symlink the contract says is refused (e.g. aliasing another tenant's object stored under the same root). Escapes outside the root remain blocked by os.Root, so impact is limited to cross-key aliasing within the root, but the check-then-act pattern contradicts the file's own TOCTOU rationale for using os.Root.
-- **Suggestion**: Open the file first, then fstat the returned handle (f.Stat on the open fd) and reject non-regular results — validating the object actually opened instead of a pre-open Lstat.
 

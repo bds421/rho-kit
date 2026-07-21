@@ -677,3 +677,24 @@ func TestReadResponse_NonEOFErrorPropagates(t *testing.T) {
 	require.NotErrorIs(t, err, io.EOF)
 	require.Empty(t, resp)
 }
+
+func TestNew_NonLoopbackRequiresOptIn(t *testing.T) {
+	assertPanic(t, func() { New("clamd.internal:3310") })
+	// Explicit opt-in is allowed.
+	s := New("clamd.internal:3310", WithAllowInsecurePlaintext())
+	if s == nil {
+		t.Fatal("expected scanner")
+	}
+	// Custom dialer satisfies the check without the opt-in.
+	s = New("clamd.internal:3310", WithDialer(func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("unused")
+	}))
+	if s == nil {
+		t.Fatal("expected scanner with custom dialer")
+	}
+	// Loopback stays allowed.
+	s = New("127.0.0.1:3310")
+	if s == nil {
+		t.Fatal("expected loopback scanner")
+	}
+}

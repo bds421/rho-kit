@@ -64,21 +64,14 @@ func (b *Backend) Copy(ctx context.Context, srcKey, dstKey string) error {
 	}
 	defer func() { _ = root.Close() }()
 
-	if err := b.ensureRegular(root, srcRel); err != nil {
-		// ensureRegular wraps the not-exist sentinel (including for implicit
+	src, err := b.openRegular(root, srcRel)
+	if err != nil {
+		// openRegular wraps the not-exist sentinel (including for implicit
 		// directory keys and escaping components), so match via errors.Is.
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("localbackend: copy: %w", storage.ErrObjectNotFound)
 		}
 		return err
-	}
-
-	src, err := root.Open(srcRel)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) || isEscapeError(err) {
-			return fmt.Errorf("localbackend: copy: %w", storage.ErrObjectNotFound)
-		}
-		return localFileError("copy open", err)
 	}
 	defer func() { _ = src.Close() }()
 
