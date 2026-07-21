@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 7 |
-| **Total (deduplicated)** | **7** |
+| LOW | 1 |
+| **Total (deduplicated)** | **1** |
 
 **Reviewer impressions:**
 
@@ -39,46 +39,4 @@
 - **Dimension**: concurrency
 - **Detail**: The `parents` map is a package-level variable rebuilt by SetCurrentFile before each file's rules run, and exemptions.go's packageCache is a package-level map mutated during scanning. Both are read/written with no synchronization. This is safe today only because scan() (engine.go) processes files strictly sequentially in one goroutine. It is a latent hazard: any future change that parallelizes rule execution or file walking (a natural optimization for large trees) would introduce a data race and cross-file corruption of the parent map, since a rule for file A could observe parents built for file B. Flagging per the review lens on shared mutable map access; no bug fires under the current single-threaded caller.
 - **Suggestion**: Thread the parent map and package cache through the Rule.Run call (e.g. via a per-scan context struct) instead of package globals, so the state is naturally per-scan and parallelization-safe.
-
-### [LOW] Two components sharing an identical migration filename escape duplicate detection and fail mid-publish, leaving partial state
-
-- **Where**: `cmd/kit-migrate/main.go:401`
-- **Dimension**: error-handling
-- **Detail**: checkDuplicateVersions only flags a collision when two selected migrations share a goose version prefix AND have different filenames (`ok && prev != filename`). When two components ship a file with the exact same name (same version prefix, same filename), no error is raised. buildPublishPlan then reads the on-disk target for each; since nothing has been written yet, both are added to plan.publish for the same target path. cmdPublish (lines 161-168) writes them in sequence via writeNewFile, which uses O_WRONLY|O_CREATE|O_EXCL — the first write succeeds, the second fails with 'already exists', returning exit 1 AFTER a file was already created. The result is a confusing error plus a partially-published directory. Migration filenames are normally timestamp- and component-specific so this is unlikely, but the guard is meant to prevent exactly this class of collision before writing.
-- **Suggestion**: Treat an identical-version, identical-filename pair across distinct components as a collision too (report it), or de-duplicate identical targets in the plan and verify byte-equality before dropping the second.
-
-### [LOW] kit-new leaves a partially-generated tree when a template fails mid-plan
-
-- **Where**: `cmd/kit-new/scaffold.go:245`
-- **Dimension**: error-handling
-- **Detail**: scaffold() preflights every destination, then in the write loop creates parent directories and writes each file. If tmpl.Execute fails on file N (scaffold.go:245), it removes only that one file and returns an error; the output directory and the N-1 files/directories already written in earlier iterations are left on disk. main.go prints the error and exits 1, leaving the user with a half-scaffolded, non-compiling tree that a subsequent `kit-new` re-run into the same -dir will then reject as 'destination already exists'. Template execution failure is unlikely for the shipped templates but possible if a template references a field not on Params.
-- **Suggestion**: Track created files/directories and roll them back on failure (or write into a temp dir and rename into place once every file succeeds), so a failed generation leaves no partial tree.
-
-### [LOW] gateActive has an unreachable MCP case and the gate mechanism is applied inconsistently
-
-- **Where**: `cmd/kit-new/scaffold.go:331`
-- **Dimension**: smell
-- **Detail**: gateActive handles "MCP" (scaffold.go:331-332), but no row in templateFile carries gate:"MCP" — only the Postgres rows are gated (lines 140-143). MCP and Tenant are instead handled purely inside templates via {{if .MCP}}/{{if .Tenant}}, while Postgres is gated both as a row filter and inside templates. The result is an inconsistent design (three feature toggles, one of which uses the gate list, two of which don't) plus a dead switch case that reads as if MCP-gated files exist.
-- **Suggestion**: Either remove the MCP case (and rely on in-template {{if .MCP}} as with Tenant) or, if MCP-specific files are intended, add the corresponding gated rows; document why Postgres is the only file-gated feature.
-
-### [LOW] -insecure disables TLS verification for all probes, including the TLS/security-header assertions
-
-- **Where**: `cmd/kit-verify/main.go:165`
-- **Dimension**: security
-- **Detail**: newProbeHTTPClient sets tlsConfig.InsecureSkipVerify = insecureTLS for the single shared client used by every probe. When an operator runs `kit-verify -url=https://... -insecure`, certificate/hostname verification is skipped for all requests, so the tool will happily report PASS on security-header, readiness, JWT, CSRF and rate-limit probes against a MITM'd or misconfigured TLS endpoint. It is default-false and documented as dev-only (with a //nolint:gosec annotation), so this is an intentional opt-in rather than a bug, but because kit-verify's purpose is to attest a service's security posture, a run that passed under -insecure could be mistaken for a genuine compliance signal in CI logs.
-- **Suggestion**: Emit a prominent warning line (text and a JSON field) whenever insecureTLS is active, e.g. a synthetic Result{Probe:"tls-verification",Status:UNKNOWN,Detail:"cert verification disabled via -insecure"}, so downstream consumers cannot silently treat an -insecure run as authoritative.
-
-### [LOW] -timeout-ms is documented as per-probe but is enforced per-request
-
-- **Where**: `cmd/kit-verify/main.go:213`
-- **Dimension**: api-design
-- **Detail**: The flag help calls -timeout-ms a 'per-probe timeout', and the exit-code/probe-status docs treat each probe as one unit, but the value is assigned to http.Client.Timeout (newProbeHTTPClient), which bounds a single request/response. The ratelimit-emits-retry-after probe issues up to 30 sequential requests (burst const, line 506-521), so with -timeout-ms=5000 that one probe can take up to ~150s of wall clock before yielding UNKNOWN. Operators sizing a CI timeout around the flag's stated meaning will be surprised.
-- **Suggestion**: Either rename/redocument the flag as a per-request timeout, or enforce a genuine per-probe deadline (e.g. a context.WithTimeout around each probe's Run) so the 30-request burst honors the configured bound.
-
-### [LOW] runAll is dead production code that duplicates default paths and can drift from the real entrypoint
-
-- **Where**: `cmd/kit-verify/main.go:286`
-- **Dimension**: smell
-- **Detail**: runAll(hc, base) is only referenced from main_test.go (4 call sites); the production path in run() uses runAllWithConfig with cfg values parsed from flags. runAll re-hardcodes the probe defaults (/ready, /, /api/v1/whoami, /api/v1/state, /) that also live in parseConfig's flag defaults (lines 214-218). Two copies of the same defaults can silently diverge, and tests then exercise a code path that production never takes.
-- **Suggestion**: Move runAll into the _test.go file (it is a test convenience wrapper), or have tests build a probeConfig and call runAllWithConfig so the default paths have a single source of truth.
 

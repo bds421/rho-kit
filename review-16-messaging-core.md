@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 1 |
-| **Total (deduplicated)** | **1** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -45,9 +45,3 @@
 
 ## Findings
 
-### [LOW] buffered_publisher.go is a 1120-line god file mixing publisher logic, options, path containment, and metrics plumbing
-
-- **Where**: `infra/messaging/buffered_publisher.go:106`
-- **Dimension**: smell
-- **Detail**: The file combines the BufferedPublisher state machine (Publish/Run/drain), 14 functional options, state-file path-containment security logic (resolveStateFilePath), persistence orchestration, and eight metric-callback trampolines. At 1120 lines it exceeds the repo's own file-size guidance and forces readers auditing the concurrency-sensitive Publish/drain protocol to wade through option and metrics boilerplate. The journal I/O already lives in buffered_publisher_journal.go, showing the intended decomposition pattern.
-- **Suggestion**: Split options (With*) and the metric trampolines/callMetric into sibling files (e.g. buffered_publisher_options.go, buffered_publisher_hooks.go), leaving the core state machine readable in one place.

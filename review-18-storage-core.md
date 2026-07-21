@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 1 |
-| LOW | 13 |
-| **Total (deduplicated)** | **14** |
+| LOW | 4 |
+| **Total (deduplicated)** | **5** |
 
 **Reviewer impressions:**
 
@@ -46,27 +46,6 @@
 - **Detail**: MultipartUploader (multipart.go), Tagger (tagging.go), Versioner (version.go) and BatchDeleter (batch.go) plus their As* helpers are exported, but no backend in the workspace implements any of them (grep finds only hookedStorage.DeleteMany, a forwarder; s3backend has no multipart/tagging/versioning/batch-delete files despite the docs citing "e.g. S3 multipart upload", "e.g. S3 DeleteObjects"). Worse, the retry, circuitbreaker and encryption decorators are OpaqueDecorators that compose only {Lister, Copier, PresignedStore, PublicURLer} (retry/combinators.go composeRetry), so the moment a backend gains one of these four capabilities it will be invisible through any resilience wrapper: AsBatchDeleter/AsTagger/AsVersioner/AsMultipartUploader stop at the opaque marker and return false, silently degrading (DeleteMany falls back to sequential) or removing the feature.
 - **Suggestion**: Either remove/park the unimplemented interfaces until a backend needs them, or implement them in s3backend and extend the decorator composition (and hooks) to forward them; add a compile-time/test guard that every optional interface is forwarded by each decorator.
 
-### [LOW] DeleteMany's combined error discards the key→error association
-
-- **Where**: `infra/storage/batch.go:111`
-- **Dimension**: api-design
-- **Detail**: batchError iterates only map values (line 110-112) and joins errors wrapped as "delete object", so the keys that failed are not recoverable from the returned error. A caller of storage.DeleteMany that gets a partial failure cannot tell which of up to 1000 keys still exist without re-probing every key, and the redacted wrap typically hides key information from the message too — unlike the BatchDeleter interface itself, which deliberately returns map[string]error.
-- **Suggestion**: Include the key in each wrapped error (static-safe formatting) or return the failures map alongside the error.
-
-### [LOW] EncryptedStorage.Put forwards caller meta to the backend without CloneObjectMeta
-
-- **Where**: `infra/storage/encryption/encryption.go:317`
-- **Dimension**: smell
-- **Detail**: Every other decorator Put clones metadata before handing it to the wrapped backend — circuitbreaker.Put and retry.Put use storage.CloneObjectMeta(meta), hooks.Put clones opMeta, copy.go/migrate.go clone via CloneObjectMeta. encryption.Put (line 317) instead passes the caller-supplied meta value directly to e.backend.Put after only setting meta.Size. Because ObjectMeta.Custom is a reference map, the caller's Custom map is aliased through to the backend; a backend or downstream validator that mutates meta.Custom in place would corrupt the caller's map. The inconsistency also makes this the one Put in the decorator set that violates the codebase's otherwise-uniform copy-before-forward invariant.
-- **Suggestion**: Clone before forwarding: build putMeta := storage.CloneObjectMeta(meta); putMeta.Size = int64(len(ciphertext)); e.backend.Put(ctx, key, bytes.NewReader(ciphertext), putMeta).
-
-### [LOW] Encrypted List unconditionally subtracts GCM overhead from every listed object's size
-
-- **Where**: `infra/storage/encryption/encryption.go:500`
-- **Dimension**: bug
-- **Detail**: encryptedLister.list rewrites every yielded object's Size by subtracting the fixed 28-byte GCM overhead whenever Size >= 28 (lines 500–502), assuming every object under the prefix was written through this encryption layer. If the same bucket/prefix also holds objects written directly to the underlying backend (mixed usage, pre-existing data, or objects put by another writer), their reported sizes are silently reduced by 28 bytes, so callers relying on List sizes (e.g. quota accounting, progress bars via MigrateCount-style flows) see wrong values with no error. The >=28 guard only prevents underflow, not the mis-sizing.
-- **Suggestion**: Document that the encrypted namespace must not be mixed with plaintext writes, or persist an encryption marker in object metadata and only adjust Size for objects that carry it.
-
 ### [LOW] WithHooks hand-enumerates 16 near-identical combination wrapper types (~450 lines of forwarding)
 
 - **Where**: `infra/storage/hooks.go:66`
@@ -94,46 +73,4 @@
 - **Dimension**: security
 - **Detail**: Get (and Copy's source open) enforce the "refusing symlink object" contract via ensureRegular's root.Lstat (local.go:299, 410-432), then separately call root.Open(rel) (local.go:306). os.Root follows symlinks that resolve inside the root, so an attacker with write access inside the storage root can swap the regular file for an in-root symlink between the Lstat and the Open; Get then reads through a symlink the contract says is refused (e.g. aliasing another tenant's object stored under the same root). Escapes outside the root remain blocked by os.Root, so impact is limited to cross-key aliasing within the root, but the check-then-act pattern contradicts the file's own TOCTOU rationale for using os.Root.
 - **Suggestion**: Open the file first, then fstat the returned handle (f.Stat on the open fd) and reject non-regular results — validating the object actually opened instead of a pre-open Lstat.
-
-### [LOW] Dead no-op zero-time normalization in ServeFile's seekable path
-
-- **Where**: `infra/storage/storagehttp/serve.go:134`
-- **Dimension**: smell
-- **Detail**: Lines 133-135 read `modTime := meta.LastModified; if modTime.IsZero() { modTime = time.Time{} }` — assigning the zero value when the value is already zero is a no-op. It suggests an intended-but-missing behavior (e.g. substituting a sentinel so http.ServeContent skips Last-Modified handling, which it already does for zero times) and misleads readers into thinking something is being normalized.
-- **Suggestion**: Delete the conditional and pass meta.LastModified directly to http.ServeContent.
-
-### [LOW] Read error while discarding a non-file part is swallowed
-
-- **Where**: `infra/storage/storagehttp/upload.go:161`
-- **Dimension**: error-handling
-- **Detail**: `n, _ := io.Copy(io.Discard, io.LimitReader(part, limit+1))` discards the io.Copy error. If reading a skipped multipart part fails (truncated body, client disconnect, malformed part boundary), the error is dropped and the loop continues to the next NextPart() call. In practice the corruption usually resurfaces on the subsequent mr.NextPart(), but relying on that is fragile and the swallow makes a mid-part transport failure indistinguishable from a cleanly-skipped part. It is inconsistent with the rest of the function, which wraps every other multipart error via storage.WrapSafe.
-- **Suggestion**: Capture the io.Copy error and return a wrapped error (e.g. storage.WrapSafe("read non-file part", err)) instead of discarding it.
-
-### [LOW] Chain's final rewind returns the raw Seek error, unlike the redacted per-validator rewind
-
-- **Where**: `infra/storage/storagehttp/uploadsec/uploadsec.go:217`
-- **Dimension**: error-handling
-- **Detail**: In Chain, the per-validator rewind at line 206-207 wraps Seek failures with redact.WrapError("uploadsec: rewind body", err), but the final rewind (lines 216-217) returns the error verbatim. When the body is a spooled *os.File (the expected way to satisfy io.ReadSeeker for multipart uploads, and what clamav's spool does), a Seek failure is an *os.PathError whose message embeds the temp-file path — leaking server filesystem detail into an error that upload handlers commonly echo into responses/logs, inconsistent with the package's redaction discipline everywhere else.
-- **Suggestion**: Return redact.WrapError("uploadsec: rewind body", err) on the final rewind as well.
-
-### [LOW] AllowSVG buffers the entire body unbounded, unlike every other validator in the package
-
-- **Where**: `infra/storage/storagehttp/uploadsec/uploadsec.go:507`
-- **Dimension**: resource-leak
-- **Detail**: AllowSVG does io.ReadAll(body) with no limit (line 507) and then holds a second full copy from SanitizeSVG. The raster path in the same file deliberately caps buffering at imageBodyReadLimit (32 MiB) to bound per-request memory, but an SVG upload spooled to a large seekable body buffers its full size twice in RAM. Concrete failure: with ParseAndStore configured Unlimited (documented opt-out) or a large MaxFileSize, N concurrent SVG uploads of size S hold ~2·N·S bytes, enabling memory exhaustion the rest of the package explicitly defends against.
-- **Suggestion**: Apply an svgBodyReadLimit (LimitReader + over-limit rejection) mirroring validateImageBody.
-
-### [LOW] 64 KiB image-header read limit rejects metadata-heavy JPEGs; inconsistent with the 512 KiB limit in storage.ImageDimensions
-
-- **Where**: `infra/storage/storagehttp/uploadsec/uploadsec.go:573`
-- **Dimension**: bug
-- **Detail**: checkImageBody and MaxImageDimensions buffer only imageHeaderReadLimit=64 KiB (line 573) before image.DecodeConfig. JPEGs whose SOF marker sits after >64 KiB of APPn metadata (multi-segment XMP, MPF/thumbnail-heavy camera output) fail DecodeConfig on the truncated header and are rejected with ErrInvalidImage / ErrImageTooLarge-adjacent errors despite being valid images. The sibling validator storage.ImageDimensions (infra/storage/validate.go, imageDimensionReadLimit=512 KiB) chose 512 KiB for the same purpose, so the two pipelines disagree on which uploads are valid.
-- **Suggestion**: Raise imageHeaderReadLimit to match validate.go's 512 KiB, or fall back to the full (already 32 MiB-bounded) body when DecodeConfig fails on the truncated header.
-
-### [LOW] Predictable known_hosts path in shared os.TempDir() is symlink-attackable
-
-- **Where**: `infra/storage/storagetest/sftp.go:123`
-- **Dimension**: security
-- **Detail**: writeKnownHostsFile writes to filepath.Join(os.TempDir(), "rho-kit-sftp-known-hosts-"+port) with os.WriteFile (sftp.go:123-127). On a shared CI/dev host, /tmp is world-writable and the name is predictable once the mapped port is observable: a local attacker can pre-create a symlink at that path (os.WriteFile follows symlinks and truncates, clobbering an attacker-chosen file writable by the CI user) or pre-own the path so the test's 0600 write of trusted host-key material can be influenced. Integration-test-only code, hence LOW, but it runs on shared runners.
-- **Suggestion**: Write the known_hosts file with os.CreateTemp (random name, O_EXCL) or under t.TempDir()-style private directories instead of a fixed name in os.TempDir().
 

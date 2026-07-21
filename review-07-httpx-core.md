@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 10 |
-| **Total (deduplicated)** | **10** |
+| LOW | 1 |
+| **Total (deduplicated)** | **1** |
 
 **Reviewer impressions:**
 
@@ -51,27 +51,6 @@
 
 ## Findings
 
-### [LOW] Upstream-controlled actual-cost header is trusted without an upper bound
-
-- **Where**: `httpx/budget/budget.go:370`
-- **Dimension**: security
-- **Detail**: reconcile() parses the response's actual-cost header (lines 361-375) and charges any non-negative int64 delta against the tenant's budget. There is no sanity cap relative to the estimate or a configured maximum, so a compromised or misbehaving upstream can report e.g. actual=9e18 and, in audit-only mode, silently drain the entire per-key budget in one response (in hard mode the same response also denies the caller the payload). The estimate header on the request side deliberately falls back to a default on junk, but the reconciliation side has no equivalent guard. Failure scenario: a proxy or upstream bug duplicates cost units (tokens vs. characters), one response instantly exhausts every tenant's budget and all subsequent requests fail with ErrBudgetExceeded — a self-inflicted denial of service driven entirely by one untrusted-in-practice header.
-- **Suggestion**: Add an optional WithMaxActual (absolute or multiple-of-estimate) cap; log and clamp deltas exceeding it rather than charging them blindly.
-
-### [LOW] Logger discriminates 'unset' from 'set' by identity-comparing against slog.Default()
-
-- **Where**: `httpx/logger.go:40`
-- **Dimension**: bug
-- **Detail**: Logger falls back via `if l := logging.FromContext(ctx); l != slog.Default()`. logging.FromContext returns slog.Default() when nothing is stored, so this identity comparison is the only 'was it set' signal. Failure scenario: middleware stores the current default logger explicitly (logging.WithContext(ctx, slog.Default()) — which WithContext itself does when handed nil), then slog.SetDefault is called later; alternatively a caller deliberately stores slog.Default(); in both cases the stored logger compares equal to slog.Default() and Logger silently returns the fallback argument instead of the context logger, so request-scoped attrs configured on the default-derived logger are dropped. It is also racy against concurrent slog.SetDefault between FromContext's internal Default() call and the comparison.
-- **Suggestion**: Have logging expose FromContext returning (logger, ok) or a LoggerFromContextOnly helper, and branch on presence rather than pointer identity.
-
-### [LOW] Strict-audit invariant bypassable when tenant extraction fails between precheck and recordActionLog
-
-- **Where**: `httpx/mcp/actionlog.go:117`
-- **Dimension**: error-handling
-- **Detail**: recordActionLog re-extracts the tenant (line 116) and returns nil — no entry written, no error surfaced — when extraction now fails (`!ok || tenantID == ""`, lines 117-119). auditPrecheck validated the tenant before dispatch, but if the caller-supplied tenantExtractor panics (extractTenant recovers to "", false) or returns differently on the second call, the tool has already executed and its result is returned to the caller with no audit entry, even in strict mode where the documented invariant is "every executed tool call produces a signed entry". Failure scenario: a tenantExtractor backed by a request-scoped cache that is evicted mid-call panics on the post-execution lookup; a destructive tool call completes successfully with zero audit trail and no error.
-- **Suggestion**: Resolve tenant (and actor) once in auditPrecheck and thread the resolved values through to recordActionLog, or in strict mode return an error (like errAuditActorMissing) instead of nil when the tenant cannot be re-resolved.
-
 ### [LOW] mcp.go is a 1150-line god file mixing six concerns
 
 - **Where**: `httpx/mcp/mcp.go:1`
@@ -79,44 +58,3 @@
 - **Detail**: mcp.go carries the option surface (~25 ServerOption/ToolOption constructors), server lifecycle + async audit worker pool, generic tool registration and schema resolution, SDK dispatch wrapping (wrapToolHandler), reason sanitisation, and error-mapping — six distinguishable concerns in one file at 1150 lines, well past the repo's own many-small-files guidance (200-400 typical, 800 max). Audit plumbing was already split into actionlog.go, showing the intended decomposition; the rest never followed. This makes the trickiest code in the package (wrapToolHandler's audit-ordering invariants at lines 948-1065) harder to review in isolation.
 - **Suggestion**: Split along the existing seams: options.go (Server/Tool options), register.go (Register + schema resolution/validation), dispatch.go (wrapToolHandler, callHandlerSafely, mapErrorForCaller, errorResult), audit worker pool into actionlog.go.
 
-### [LOW] Hardcoded SDK Implementation version "v0.1.0" and 1150-line god file
-
-- **Where**: `httpx/mcp/mcp.go:432`
-- **Dimension**: smell
-- **Detail**: NewServer always advertises `Version: "v0.1.0"` in the MCP Implementation handshake (mcp.go:430-433) while the module ships as v2.3.1 — every kit-based MCP server reports the same stale version to clients, defeating client-side capability/version diagnostics, and there is no option to override it. Separately, mcp.go is 1150 lines mixing option plumbing, schema resolution, name validation, dispatch, and error mapping — well past the repo's own file-size conventions and hard to review; actionlog.go shows the natural seam already exists.
-- **Suggestion**: Derive the version from the module (or add a WithServerInfo option), and split mcp.go into options/registration/dispatch files.
-
-### [LOW] Register leaves kit catalog inconsistent if SDK AddTool panics after the slot is reserved
-
-- **Where**: `httpx/mcp/mcp.go:700`
-- **Dimension**: error-handling
-- **Detail**: Register reserves the kit slot (s.toolMeta[name] and s.tools append) under s.mu and releases the lock, then calls s.sdk.AddTool outside the lock. AddTool panics on a non-object schema or missing input schema. Current code pre-validates schemas via requireObjectSchema/validateSchemaOverride so this is unreachable today, but if a future SDK version or an override path introduces a panic, the kit catalog already advertises the tool (Tools() lists it, re-Register returns 'already registered') while the SDK never received it, and the panic unwinds the caller. Latent robustness gap rather than an active bug.
-- **Suggestion**: Either perform s.sdk.AddTool before committing the kit-side catalog entry, or wrap the AddTool call and roll back the reserved toolMeta/tools entry on failure.
-
-### [LOW] Validation error text reflected verbatim to MCP caller
-
-- **Where**: `httpx/mcp/mcp.go:1123`
-- **Dimension**: security
-- **Detail**: mapErrorForCaller returns ve.Error() to the MCP client when a handler returns a validation error carrying Fields. The comment asserts these carry only field names, but nothing enforces that: a handler that constructs a validation error whose field Message embeds caller-supplied bytes or internal detail (e.g. echoing an offending value or a downstream error string) will have that text surfaced back to the tool caller, unlike every other error class which collapses to a generic string. This depends on handler-authored messages, so risk is low.
-- **Suggestion**: Document the invariant as a handler contract, or sanitize/strip free-form text from field messages before reflecting them.
-
-### [LOW] Webhook dispatcher SSRF guard is scheme-only by default
-
-- **Where**: `httpx/webhook/webhook.go:213`
-- **Dimension**: security
-- **Detail**: validateURL only rejects non-http(s) schemes; it performs no private/link-local/metadata-IP filtering. Because Send POSTs a signed body (carrying the valid X-Kit-Signature HMAC) to a caller-/customer-supplied URL, the default configuration allows SSRF to internal services (169.254.169.254 metadata, internal admin APIs) unless the operator remembers to wire an SSRF-aware transport into Config.HTTPClient. This is explicitly documented as intentional with a named mitigation, so it is a hardening/unsafe-default note rather than a defect.
-- **Suggestion**: Consider defaulting to (or prominently offering a one-liner for) an SSRF-safe transport, or accept an allowlist of destination hosts at construction.
-
-### [LOW] All transport errors from HTTPClient.Do are classified retryable, including deterministic permanent failures
-
-- **Where**: `httpx/webhook/webhook.go:247`
-- **Dimension**: error-handling
-- **Detail**: attempt() wraps every `d.cfg.HTTPClient.Do(req)` error as retryable(...) with no discrimination. With the kit's recommended clients (httpx.NewResilientHTTPClient / NewHTTPClient), redirects are blocked by default, so a receiver that deterministically answers 3xx surfaces as a Do error (url.Error wrapping ErrRedirectBlocked) and is retried through the entire retry policy with full backoff, even though every attempt is guaranteed to fail identically. The same applies to TLS certificate-verification failures and circuitbreaker.ErrCircuitOpen (retrying while the breaker is open just burns the retry budget). Compare: 3xx HTTP responses that survive to a status code are correctly classified permanent (line 281), so the behavior is inconsistent depending on whether the client follows or blocks the redirect.
-- **Suggestion**: Classify known-permanent transport errors (ErrRedirectBlocked, x509 errors) as permanent, or expose a RetryIf hook so callers can refine the default.
-
-### [LOW] 3xx delivery responses fall into the mislabelled "webhook 4xx; giving up" branch, and blocked redirects are retried as transport errors
-
-- **Where**: `httpx/webhook/webhook.go:267`
-- **Dimension**: error-handling
-- **Detail**: attempt() classifies only >=500 as retryable and everything else non-2xx as the "4xx" branch, so a 301/302 from a receiver is logged as "webhook 4xx; giving up" (line 276) — misleading for operators. Worse, with the doc-recommended kit clients (NewResilientHTTPClient / NewHTTPClient), redirects are blocked in CheckRedirect, so client.Do returns an error (line 245-247) that is wrapped retryable(); a receiver doing a deterministic http→https 301 upgrade then burns the entire retry budget (default retry.DefaultPolicy backoffs) before failing, on every Send.
-- **Suggestion**: Add an explicit 3xx branch (permanent, correctly-worded log), and detect ErrRedirectBlocked in the Do error path to mark it permanent instead of retryable.

@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 8 |
-| **Total (deduplicated)** | **8** |
+| LOW | 4 |
+| **Total (deduplicated)** | **4** |
 
 **Reviewer impressions:**
 
@@ -45,27 +45,6 @@
 
 ## Findings
 
-### [LOW] Bare-keyID Unwrap path does not pin AWS account/partition of the envelope ARN
-
-- **Where**: `crypto/envelope/awskms/awskms.go:224`
-- **Dimension**: security
-- **Detail**: When the KEK is configured with a bare key ID (not an alias, not an ARN), decryptKeyIDFor accepts any envelope keyID that is shaped like a key ARN, ends with the configured ID as a suffix segment, and (only when the SDK surfaced a region) matches the client region — the account and partition fields are never compared, and the region check is silently skipped when k.region is empty (line 230). The attacker-controlled ARN is then forwarded verbatim as the KMS Decrypt KeyId (line 182), so a foreign-account ARN with a matching UUID suffix would be a confused-deputy decrypt if a cross-account grant exists. The suffix match is also loose: a crafted resource like `arn:aws:kms:us-east-1:attacker:key/arn:aws:kms:us-east-1:victim:key/<uuid>` passes both isKMSKeyARN and hasSuffixSegment. Exploitation is impractical today because AWS assigns key UUIDs (an attacker cannot mint a key with a chosen UUID), hence LOW, but the check is weaker than its comment ("reject envelope ARNs from a different region") implies.
-- **Suggestion**: In the bare-keyID branch, require the ARN resource to be exactly "key/<configured-id>" and, when derivable from the client, pin partition/account as well; fail closed (reject ARN forms) when the client region is unknown.
-
-### [LOW] decryptKeyIDFor bare-keyID path forwards envelope ARN without validating the account ID
-
-- **Where**: `crypto/envelope/awskms/awskms.go:234`
-- **Dimension**: security
-- **Detail**: When the KEK is configured with a bare key ID (not an ARN or alias), the suffix-match branch (lines 224-234) accepts any envelope key ARN whose resource segment ends in the configured ID, checks only the region (line 227-232), and then forwards the attacker-controlled ARN to KMS Decrypt as the KeyId. The account field (ARN part 4) is never compared, so the code's stated guarantee ("an attacker-controlled blob cannot redirect the decrypt request at a different AWS key", lines 166-168) is not fully enforced: a cross-account ARN with matching key-UUID suffix and region passes the gate. Practical exploitability is limited because AWS assigns key UUIDs and an attacker cannot mint a key with a chosen UUID in another account, but the gate should pin the account the same way it pins the region rather than rely on UUID unforgeability, and IAM policies with Resource:"*" on kms:Decrypt would not stop the forwarded cross-account call.
-- **Suggestion**: Capture the caller's account (e.g. via sts:GetCallerIdentity at construction, or require operators to configure a full ARN) or at minimum document that bare-key-ID configuration relies on AWS UUID assignment; comparing kmsARNRegion-style an account extractor against a configured/known account closes the gap.
-
-### [LOW] NewEncryptor panics on nil KEK while every sibling constructor in this scope returns an error
-
-- **Where**: `crypto/envelope/envelope.go:92`
-- **Dimension**: api-design
-- **Detail**: NewEncryptor panics when kek is nil (lines 92-94), but every other constructor in the crypto/envelope family returns an error for a nil required dependency: awskms.NewKEK / gcpkms.NewKEK / azurekeyvault.NewKEK / vaulttransit.NewKEK all `return nil, errors.New("...client must not be nil")`, and encrypt.NewFieldEncryptor returns an error. A caller wiring a KEK from config (e.g. a factory that may legitimately produce nil on a misconfiguration) gets a process-crashing panic here but a recoverable error one call away in the same package family. The inconsistency makes the envelope API harder to use defensively and diverges from the repo's established constructor convention.
-- **Suggestion**: Return (*Encryptor, error) with an ErrInvalidEncryptor-style error for nil kek, matching the sibling KEK constructors.
-
 ### [LOW] KEK adapter constructors and observability diverge: only awskms has Options and Prometheus metrics
 
 - **Where**: `crypto/envelope/gcpkms/gcpkms.go:94`
@@ -79,13 +58,6 @@
 - **Dimension**: api-design
 - **Detail**: When Claims.ExpiresAt and Claims.IssuedAt are both zero and WithDefaultLifetime is configured, buildToken derives exp from time.Now() (line 485). Everywhere else the package injects time: verification takes an explicit `now` parameter, and Provider/SigningProvider have clock fields with with*Clock options for tests. Sign-side default-lifetime behavior is therefore untestable deterministically — tests must set IssuedAt explicitly or tolerate wall-clock slop — and the inconsistency invites a future clock-related bug when someone assumes the whole package is clock-injectable.
 - **Suggestion**: Thread a clock func through config (defaulting to time.Now) and use it in buildToken, mirroring the signing package's WithClock pattern.
-
-### [LOW] maxStale check compares a monotonic-bearing now against a wall-only stored timestamp
-
-- **Where**: `crypto/paseto/provider.go:209`
-- **Dimension**: bug
-- **Detail**: lastSuccessfulRefresh is stored as UnixNano (wall clock) and compared via `p.clock().Sub(time.Unix(0, last))`; because time.Unix has no monotonic reading, Sub falls back to wall-clock arithmetic. An NTP step backward after a refresh extends the effective stale window (stale keys trusted longer than maxStale); a step forward causes premature fail-closed ErrKeySetUnavailable even though a refresh just succeeded. The same pattern exists in SigningProvider.Sign (signing_provider.go:218). Impact is bounded by realistic clock steps, but the whole point of maxStale is a time bound, and the ticker-driven refresh loop already provides a monotonic reference.
-- **Suggestion**: Track staleness monotonically, e.g. store the result of a monotonic reference (time.Since on a retained time.Time from clock(), or count missed refresh ticks) instead of round-tripping through UnixNano.
 
 ### [LOW] Provider and SigningProvider duplicate ~200 lines of refresh/lifecycle machinery
 

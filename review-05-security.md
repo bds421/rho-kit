@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 15 |
-| **Total (deduplicated)** | **15** |
+| LOW | 3 |
+| **Total (deduplicated)** | **3** |
 
 **Reviewer impressions:**
 
@@ -51,55 +51,6 @@
 
 ## Findings
 
-### [LOW] ScopedResolver.Resolve returns fast on unknown lookup prefix, giving a prefix-existence timing oracle
-
-- **Where**: `security/apikey/scoped.go:208`
-- **Dimension**: security
-- **Detail**: Resolve calls repo.ActiveByPrefix(lookup) (line 208) and returns immediately on ErrScopedNotFound, performing no hash work; only an existing prefix reaches the bcryptcompat.Verify call (line 219). This is the exact kid-existence timing side channel that the sibling jwtutil package went to lengths to close with verifyTimingFloor, so the inconsistency is notable. Exploitability here is very low: the lookup prefix is 8 random alphanumerics (~47 bits), so enumerating valid prefixes by timing is infeasible, and an attacker still needs the secret to authenticate.
-- **Suggestion**: Consider a constant-time floor or a decoy bcrypt verify on the not-found path to avoid leaking prefix existence, matching the jwtutil verify-timing-floor pattern.
-
-### [LOW] ScopedResolver.Resolve returns repository backend errors verbatim to the auth path
-
-- **Where**: `security/apikey/scoped.go:210`
-- **Dimension**: error-handling
-- **Detail**: The error from repo.ActiveByPrefix is returned unwrapped (line 210). Unlike the package's sentinel errors (ErrScopedNotFound, ErrRevoked, ErrExpired, ErrInvalidSecret), an infrastructure failure (SQL/Redis driver error) flows straight to transport middleware; error mappers that render err.Error() into 401/500 response bodies or logs can leak backend topology (DSN fragments, table names) from the authentication hot path. The sibling revocation package explicitly classifies errors to avoid this (revocation.go errorClass, line 384).
-- **Suggestion**: Wrap non-not-found repository errors in a stable package sentinel (e.g. fmt.Errorf("apikey: lookup scoped key: %w", err)) so callers can distinguish auth-decision errors from infrastructure errors without exposing the raw message.
-
-### [LOW] Duplicated token parser: parseScopedToken re-implements Parse
-
-- **Where**: `security/apikey/scoped.go:254`
-- **Dimension**: smell
-- **Detail**: parseScopedToken (lines 254-260) is a near-verbatim copy of Parse (apikey.go lines 158-170): both strings.Split on '_', require exactly 3 parts, check parts[0]==prefix and non-empty parts[1]/parts[2], returning a malformed-token sentinel. Two copies of the same wire-format invariant can drift (e.g. a future field-count change applied to only one), and the wire format `<prefix>_<id>_<secret>` is exactly the invariant most needs a single source of truth.
-- **Suggestion**: Extract one internal splitter both callers use, or have parseScopedToken delegate to Parse.
-
-### [LOW] scanFileImports silently swallows parse errors, understating ASVS import evidence with no signal
-
-- **Where**: `security/asvs/imports.go:253`
-- **Dimension**: error-handling
-- **Detail**: A file that fails parser.ParseFile returns (nil, nil) — deliberately, per the comment — but unlike ScanDir's text scanner (which does surface read errors), a syntactically-broken or generics-edge-case file contributes zero import claims with no indication anywhere in ImportReport. Failure scenario: a service's main.go (where kit middleware imports typically live) has a parse error under the toolchain version kit-doctor was built with; ScanImports reports those controls as Missing and the compliance report claims a weaker posture than reality, with nothing telling the operator a file was skipped.
-- **Suggestion**: Count skipped files (e.g. ImportReport.SkippedFiles []string) so kit-doctor can render "N files could not be parsed" alongside the evidence table.
-
-### [LOW] EvidenceSummary returns a slice of anonymous structs on an exported API
-
-- **Where**: `security/asvs/imports.go:325`
-- **Dimension**: api-design
-- **Detail**: ImportReport.EvidenceSummary() returns []struct{ ID ID; Evidence Evidence }. Callers (kit-doctor renderers) cannot name this type in their own function signatures, variables of struct type must repeat the literal definition, and the anonymous type cannot grow a field without breaking every consumer that spelled it out. The repetition inside the function body (the type is written three times) shows the cost even locally.
-- **Suggestion**: Introduce `type EvidenceEntry struct { ID ID; Evidence Evidence }` and return []EvidenceEntry.
-
-### [LOW] A single source line over 1 MiB aborts the entire ScanDir walk
-
-- **Where**: `security/asvs/scan.go:105`
-- **Dimension**: error-handling
-- **Detail**: scanFile uses bufio.Scanner with a 1 MiB max buffer (line 96). One generated .go file containing a line longer than that (embedded assets, generated tables — common in real service repos) makes scanner.Err() return bufio.ErrTooLong, which asvsFileError masks as the generic "asvs: scan source file failed" and ScanDir returns an error for the whole tree (line 82), so kit-doctor produces no ASVS report at all instead of skipping the pathological file. The masked error also hides which file caused it.
-- **Suggestion**: Treat bufio.ErrTooLong as skip-this-file (annotations never legitimately live on megabyte lines), or raise the buffer and include the file path in the error.
-
-### [LOW] ApplyJWTActor accepts arbitrary claim values as audit actor strings without sanitization
-
-- **Where**: `security/identity/jwt.go:27`
-- **Dimension**: security
-- **Detail**: The subject is strictly normalized to a UUID, but the actor value taken from ServiceActorClaim/ActorClaim is used verbatim — no length bound, no control-character or whitespace rejection. identity.Format concatenates it into the audit actor string ("service:<actor>"), so a federated or misbehaving issuer that signs a claim containing newlines or very long values can inject line breaks / bloat into audit and action logs. This is notably inconsistent with the same repo's revocation package, which rejects control characters and caps lengths on everything destined for keys/logs.
-- **Suggestion**: Validate the claim value in ApplyJWTActor (reject control chars/whitespace, cap length, e.g. reuse a validPart-style helper) and fall back to the UUID subject or fail closed when it is malformed.
-
 ### [LOW] jwtutil.go is a 1292-line god file spanning several unrelated concerns
 
 - **Where**: `security/jwtutil/jwtutil.go:1`
@@ -114,45 +65,10 @@
 - **Detail**: KeySet.ExpectedIssuer/ExpectedAudience are exported, mutable fields read by Verify without synchronisation; the type doc carries a long warning ("Set them once, before the KeySet is shared ... assigning a field ... is an unsynchronised data race that silently changes verification policy"). The safe path (Provider carrying policy) exists, but nothing prevents the documented misuse — a caller can still toggle fields on a shared *KeySet per request and get racy, policy-bleeding verification. Invariants this security-critical should be unrepresentable rather than documented.
 - **Suggestion**: In a future API revision make the fields unexported with a WithExpectedIssuer/Audience-style constructor or a KeySet.WithPolicy(iss, aud) copy method (KeySet() already returns snapshots, so a copy-on-write setter is cheap).
 
-### [LOW] ParseKeySetFromPEM skips the public-key normalization and use/key_ops filtering that ParseKeySet enforces
-
-- **Where**: `security/jwtutil/jwtutil.go:223`
-- **Dimension**: api-design
-- **Detail**: ParseKeySet routes every JWKS entry through verificationKey(), which rejects symmetric keys, checks use/key_ops/alg, and calls PublicKey() so no private material is retained in the verifier. ParseKeySetFromPEM does none of this: if an operator misconfigures the signer's private-key PEM into the verifier (an easy swap of two mounted files), jwk.ParseKey happily wraps the private key and the verifier KeySet then carries live signing material in memory for the process lifetime, with verification still succeeding so the mistake is invisible. No filtering on use/key_ops is applied either.
-- **Suggestion**: In ParseKeySetFromPEM, call key.PublicKey() before adding to the set (and optionally run the same verificationKey() filter) so a mistakenly supplied private key is reduced to its public part.
-
-### [LOW] requireExpectedJWTType re-parses the entire JWS on every successful verification
-
-- **Where**: `security/jwtutil/jwtutil.go:339`
-- **Dimension**: performance
-- **Detail**: After jwt.Parse has already fully parsed and signature-verified the token, verifyToken calls requireExpectedJWTType(tokenString), which runs jws.Parse over the whole compact serialization again — re-base64-decoding the header, payload, and signature and allocating a second message structure per verified request on the auth hot path. Only the protected header's typ field is needed; the payload/signature decode work is wasted. Failure scenario: none functional, but every authenticated request pays roughly double the parse allocation cost of verification.
-- **Suggestion**: Decode just the protected header (split tokenString at the first '.', base64-decode, unmarshal the small header JSON, or use jws.Parse on the header segment only), or check typ via a jwt.ParseOption/validator hook so the token is parsed once.
-
 ### [LOW] populateStringClaims rebuilds the claim-name slice and dedup map on every verification
 
 - **Where**: `security/jwtutil/jwtutil.go:412`
 - **Dimension**: performance
 - **Detail**: For each verified token, populateStringClaims allocates a fresh seen map and a fresh names slice via append(append([]string(nil), defaultStringClaims...), extra...), even though defaultStringClaims and Provider.extraStringClaims are fixed at construction time. On the request-path hot loop this is two avoidable heap allocations per token (plus the map buckets). Failure scenario: none functional; steady per-request allocation pressure in the auth middleware path.
 - **Suggestion**: Precompute the deduplicated, empty-filtered claim-name list once (at Provider construction, or lazily with sync.Once) and iterate over it directly; only allocate c.stringClaims when a claim is actually present (already done).
-
-### [LOW] Hand-rolled string helpers and error-text matching where stdlib idioms exist
-
-- **Where**: `security/jwtutil/jwtutil.go:904`
-- **Dimension**: smell
-- **Detail**: jwksFetchErrorKind classifies failures with strings.Contains(err.Error(), "jwks endpoint returned unexpected content-type") / "jwks endpoint returned " — brittle string coupling to messages defined 300 lines away in fetch(); a wording tweak silently reclassifies metrics/log kinds to "fetch_failed". Nearby, eqIgnoreCase (line 704) reimplements strings.EqualFold and isJSONContentType (line 680) reimplements mime.ParseMediaType's parameter stripping. Neither path is hot enough (one fetch per ~10 min) to justify avoiding the stdlib.
-- **Suggestion**: Introduce sentinel errors (errJWKSBadStatus, errJWKSUnexpectedContentType) in fetch() and match with errors.Is; replace eqIgnoreCase with strings.EqualFold and the manual media-type trimming with mime.ParseMediaType.
-
-### [LOW] "stale-rejected" is counted per read, inflating a metric named jwks_fetch_failures_total
-
-- **Where**: `security/jwtutil/jwtutil.go:1055`
-- **Dimension**: api-design
-- **Detail**: keySetWithReason increments fetchFailStaleRejected on every call made while the keyset is stale. Since Provider.Verify/VerifyContext and Provider.KeySet call it on every token verification and health probe, the counter grows at request rate during a JWKS outage, while the http/parse reasons in the same metric grow at fetch-attempt rate (every ~10 min). A dashboard or alert built on jwks_fetch_failures_total{reason="stale-rejected"} sees values orders of magnitude larger than the other reasons of the "same" counter, and its magnitude reflects traffic, not fetch health.
-- **Suggestion**: Either count stale transitions once per fetch cycle, or split the per-request rejection into its own metric (e.g. jwt_verifications_rejected_total{reason="jwks_stale"}) and keep jwks_fetch_failures_total strictly fetch-scoped.
-
-### [LOW] session.HMACSigner has no key-rotation overlap, unlike sibling csrf.Issuer
-
-- **Where**: `security/session/session.go:114`
-- **Dimension**: api-design
-- **Detail**: csrf.NewIssuerWithSecrets deliberately supports a current-plus-previous secret ring so HMAC secrets can rotate without invalidating outstanding tokens. session.NewSigner accepts exactly one root key and Verify checks only that key, so rotating the session root instantly invalidates every live session across the fleet — there is no overlap-window API and no doc note warning about it. Failure scenario: an operator rotates the shared root secret following the csrf package's rotation pattern and every logged-in user is force-logged-out at once.
-- **Suggestion**: Mirror the csrf design: accept previous roots for verify-only (NewSignerWithRoots(current, previous...)), signing always with the current key; or explicitly document that rotation is a global session reset.
 

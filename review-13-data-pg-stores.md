@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 1 |
-| **Total (deduplicated)** | **1** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -45,9 +45,3 @@
 
 ## Findings
 
-### [LOW] Put silently switches insert-only vs update-only semantics on inst.UpdatedAt.IsZero(), diverging from the memory backend's upsert
-
-- **Where**: `data/saga/pgstore/store.go:109`
-- **Dimension**: api-design
-- **Detail**: saga.MemoryStateStore.Put is an unconditional upsert, but pgstore.Put routes on a data field: UpdatedAt zero -> INSERT ... ON CONFLICT DO NOTHING (existing row => ErrConcurrentUpdate), non-zero -> UPDATE (missing row => ErrConcurrentUpdate). A caller who constructs a fresh Instance with UpdatedAt set (e.g. copied from another record, or stamped themselves) gets ErrConcurrentUpdate on a table where the memory backend would happily store it — same StateStore interface, different write semantics, selected by an invisible timestamp convention rather than an explicit API. The extensive godoc shows the authors know it is subtle; it remains easy to hold wrong for any caller other than the DurableExecutor.
-- **Suggestion**: Consider explicit methods (Insert/Update) or an ON CONFLICT DO UPDATE upsert matching the memory backend, keeping ErrConcurrentUpdate only for the genuinely racy cases.

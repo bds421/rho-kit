@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 6 |
-| **Total (deduplicated)** | **6** |
+| LOW | 2 |
+| **Total (deduplicated)** | **2** |
 
 **Reviewer impressions:**
 
@@ -57,34 +57,6 @@
 - **Dimension**: performance
 - **Detail**: Put (line 34) iterates the entire sessions map on every call while holding a plain sync.Mutex, so each login is O(n) in the number of live sessions and serializes with all other operations. Get (lines 52-53) also acquires the exclusive Lock (not an RLock) because it may delete an expired entry, so concurrent reads cannot proceed in parallel. For the documented 'single-process service' this is acceptable, but under a burst of concurrent logins/reads it becomes avoidable lock contention and O(n) work per Put.
 - **Suggestion**: Track expirations with a heap/time-ordered structure or a periodic background sweep, and use RWMutex with an RLock fast path in Get that upgrades only when an expired entry must be removed.
-
-### [LOW] Unauthenticated GET /login writes unbounded live entries into the StateStore
-
-- **Where**: `auth/oauth2/memory_stores.go:110`
-- **Dimension**: performance
-- **Detail**: handleLogin (client.go:310) persists a StateEntry on every unauthenticated GET /oauth/login, and MemoryStateStore.Put only sweeps entries whose TTL has already elapsed — there is no cap on live entries. With the default 10-minute stateTTL, a client (or a crawler prefetching login links) issuing requests at even 1k/s accumulates ~600k live map entries (~100+ MB with keys and StateEntry strings) before the sweep can reclaim anything, growing single-process deployments' memory unboundedly during the window. The godoc says the store is for "tests and single-process services", but single-process services are exactly the stated production use.
-- **Suggestion**: Add a configurable max-entries bound to MemoryStateStore (rejecting or evicting-oldest beyond it), or document that /login must sit behind rate limiting when the memory store is used.
-
-### [LOW] A panicking AuditSink (or slog handler) crashes every authorization decision despite Logged's panic-containment posture
-
-- **Where**: `authz/audit.go:173`
-- **Dimension**: error-handling
-- **Detail**: loggedDecider.Allow deliberately routes the inner decider through the recovering authz.Allow helper (Wave 72 comment, line 142-148) so decider panics become ErrDeciderPanic — but the subsequent `d.cfg.emit` call invokes the caller-supplied sink (line 173) and logger with no recovery. Failure scenario: an AuditSinkFunc adapting an audit pipeline panics on a malformed event or a nil dependency; every Allow call — including ones the engine allowed — panics out of the authorization layer, converting an observability bug into request-serving crashes, which is exactly the class Wave 72 set out to contain.
-- **Suggestion**: Wrap emit (or at least the sink call) in a recover that logs the sink panic, keeping the decision result intact.
-
-### [LOW] Caller HTTP clients with a non-*http.Transport RoundTripper silently skip the advertised TLS floor
-
-- **Where**: `authz/openfga/openfga.go:207`
-- **Dimension**: security
-- **Detail**: openFGAHTTPClient hardens TLS (minimum TLS 1.2, InsecureSkipVerify rejection) only for the default transport (line 201-206) or when the caller's Transport type-asserts to *http.Transport (line 207-214). If a caller supplies an *http.Client whose Transport is a custom RoundTripper (a common pattern for tracing/mTLS wrappers), neither branch runs, so the kit's advertised TLS floor and response-header cap are silently not applied — only CheckRedirect is set. The Config docstring (FR-037) tells operators custom clients are 'shallow-copied and hardened', which does not hold for wrapped transports.
-- **Suggestion**: Document that TLS hardening only applies to *http.Transport-based clients, or detect a non-*http.Transport RoundTripper and either refuse it or wrap/validate it so the guarantee holds.
-
-### [LOW] Scope doc overclaims compile-time enforcement; registry is a global singleton
-
-- **Where**: `authz/scope.go:27`
-- **Dimension**: api-design
-- **Detail**: The Scope godoc says 'the compiler enforces that you used a real registered scope and not a typo of one' — but Scope is a plain string type, so authz.Scope("users.raed") or an unregistered constant converts freely and passes any Scope-typed parameter; only a runtime IsRegistered check (which middleware is not shown to perform) could catch a typo. Additionally, registration state lives in the process-global globalScopes with only an unexported resetScopesForTest, so external test packages and multi-tenant binaries cannot isolate or reset catalogues. Failure scenario: a developer relies on the documented compiler guarantee, passes a typo'd Scope literal to middleware, and the OpenAPI spec silently omits the scope while requests are gated on a nonexistent one.
-- **Suggestion**: Soften the doc to describe the convention accurately (constants created via MustRegister), and consider an instance-based Registry with the global as a default.
 
 ### [LOW] Scope registry is a process-global singleton with no exported reset or instance form
 

@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 1 |
-| LOW | 10 |
-| **Total (deduplicated)** | **11** |
+| LOW | 7 |
+| **Total (deduplicated)** | **8** |
 
 **Reviewer impressions:**
 
@@ -46,33 +46,12 @@
 - **Detail**: connect() replaces the client and spawns a cleanup goroutine that closes the old sftp.Client/ssh.Conn after at most 5 seconds — or immediately when another reconnect bumps cleanupGen (the `for b.cleanupGen.Load() == gen` loop exits straight to closeOld). An operation that obtained the old client via getClient and is streaming a large Put/Get for longer than the grace period has its connection closed mid-transfer, failing with a generic remote error; under server flapping the grace shrinks to ~0, so even short in-flight operations race with the close. The code comments acknowledge the 5s heuristic but the generation-bump early-close makes the window effectively unbounded downward.
 - **Suggestion**: Reference-count client leases (getClient returns a release func; cleanup closes when the count drains) instead of a fixed grace period.
 
-### [LOW] AccountName is interpolated into the default endpoint host without format validation
-
-- **Where**: `infra/storage/azurebackend/azure.go:119`
-- **Dimension**: security
-- **Detail**: New (azure.go:119) and NewWithTokenCredential (azure.go:160) build the endpoint as fmt.Sprintf("https://%s.blob.core.windows.net", cfg.AccountName), but Config.Validate only checks the account name is non-empty. A value containing '.', '/', '@', or ':' silently changes the request host (e.g. AccountName "evil.com/x" yields https://evil.com/x.blob.core.windows.net), redirecting all storage traffic — including signed requests — to an unintended host. Explicit Endpoint overrides go through storage.ValidateEndpointURL, so this default-endpoint path is the only place an unvalidated string becomes a URL.
-- **Suggestion**: Validate AccountName against the Azure storage account grammar (^[a-z0-9]{3,24}$) in validateCommon before it is embedded in a URL.
-
 ### [LOW] Listing capability inconsistent across sibling storage backends
 
 - **Where**: `infra/storage/gcsbackend/gcs.go:26`
 - **Dimension**: api-design
 - **Detail**: s3backend and sftpbackend implement storage.Lister (they have list.go with a compile-time _ storage.Lister assertion), but gcsbackend and azurebackend do not implement List at all — the gcs Backend only asserts storage.Storage (line 26). Azure even carries NewListBlobsFlatPager in its BlobClient interface but wires it solely into Healthy. A caller writing backend-agnostic code that type-asserts storage.Lister will silently get no listing on GCS/Azure, an easy-to-hold-it-wrong asymmetry between providers that are otherwise presented as interchangeable.
 - **Suggestion**: Either implement Lister for gcsbackend and azurebackend for parity, or document explicitly in each package's doc.go that listing is unsupported so the capability gap is discoverable.
-
-### [LOW] s3 Copy counts expected source-not-found as an operation error, breaking the cross-backend metrics contract
-
-- **Where**: `infra/storage/s3backend/copy.go:59`
-- **Dimension**: bug
-- **Detail**: Copy passes the raw err to observeOp ('b.metrics.observeOp(b.instance, "copy", start, err)'), while Get/Delete/Exists route through s3MetricErr specifically so expected not-found does not inflate storage_s3_operation_errors_total. Comments across the backends (e.g. azure.go line 319, gcs.go line 235) declare the dashboard contract that expected not-found must not count as errors 'consistently across providers'. A storage.Move over a missing source — normal control flow returning ErrObjectNotFound — will therefore bump the copy error counter and skew error-rate alerts.
-- **Suggestion**: Filter through a not-found-aware helper, e.g. observeOp(..., func() error { if isCopySourceNotFound(err) { return nil }; return err }()).
-
-### [LOW] Generic S3 "InvalidRequest" with a declared size is misclassified as ErrInsufficientCapacity
-
-- **Where**: `infra/storage/s3backend/s3.go:352`
-- **Dimension**: error-handling
-- **Detail**: translateS3Capacity maps any smithy APIError with code "InvalidRequest" to storage.ErrInsufficientCapacity whenever meta.Size>0 (lines 351-354). InvalidRequest is one of S3's most overloaded error codes (bad headers, missing Content-SHA256, malformed SSE parameters, unsupported operations, etc.), and most of those requests carry a non-zero body size. Those failures would then satisfy apperror.IsStorageFull and page operators to a STORAGE_FULL runbook — the same misrouting the code explicitly avoids for ServiceUnavailable (lines 334-339).
-- **Suggestion**: Drop the InvalidRequest branch or gate it on a more specific signal (e.g. an S3 message substring), and let generic InvalidRequest fall through to the safe wrapper as a normal backend error.
 
 ### [LOW] sftpbackend.New has no context-aware variant; eager connect hardcodes context.Background
 

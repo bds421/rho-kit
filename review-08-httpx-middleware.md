@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 14 |
-| **Total (deduplicated)** | **14** |
+| LOW | 2 |
+| **Total (deduplicated)** | **2** |
 
 **Reviewer impressions:**
 
@@ -52,20 +52,6 @@
 ## Findings
 
 
-### [LOW] Double-submit CSRF tokens are not bound to a session/user by default
-
-- **Where**: `httpx/middleware/csrf/csrf.go:564`
-- **Dimension**: security
-- **Detail**: In the legacy double-submit mode (csrf.New without WithSessionExtractor), a valid token is any server-HMAC-signed random value; the state-changing check is only constant-time equality of cookie vs header plus signature verification (lines 558-566). The token is not bound to any user or session, so a token minted for user A validates for user B. If an attacker on a sibling subdomain / same eTLD+1 can Set-Cookie-overwrite the CSRF cookie, they control both halves and the check passes. This is the known double-submit weakness; the package documents it and provides WithAllowedOrigins and WithSessionExtractor as mitigations, but neither is on by default, so the out-of-the-box posture is weaker than a security-conscious default. Failure scenario: multi-tenant app on shared parent domain, attacker subdomain plants a self-minted token cookie+header and drives a cross-origin state-changing request without an Origin allowlist configured.
-- **Suggestion**: Consider defaulting to session-bound tokens when a session extractor is available, or emit a startup warning when neither WithAllowedOrigins nor WithSessionExtractor is configured, so operators consciously accept the bare double-submit posture.
-
-### [LOW] Legacy double-submit CSRF tokens have no server-side expiry; a leaked token verifies forever until secret rotation
-
-- **Where**: `httpx/middleware/csrf/csrf.go:859`
-- **Dimension**: security
-- **Detail**: mintSignedToken produces hex(32 random bytes) + "." + HMAC(tokenHex) with no timestamp, and isValidSignedToken accepts any token signed by any secret in the ring indefinitely. The 24h cookie MaxAge is only client-enforced. A CSRF token exfiltrated once (XSS on a sibling property, log leak, referer leak of a page embedding it) remains valid for as long as the HMAC secret lives — potentially years — whereas the session-bound path (securitycsrf.Issuer with DefaultTTL/WithSessionTTL) correctly expires tokens. Combined with the documented sibling-subdomain Set-Cookie planting weakness of double-submit, unlimited token lifetime widens the replay window materially.
-- **Suggestion**: Embed an issued-at timestamp in the signed payload (tokenHex + "." + ts + "." + hmac) and reject tokens older than a TTL (e.g. 24h to match the cookie MaxAge), mirroring the session-bound issuer's expiry semantics.
-
 ### [LOW] idempotency.go is an 1127-line god file mixing five distinct concerns
 
 - **Where**: `httpx/middleware/idempotency/idempotency.go:1`
@@ -79,74 +65,4 @@
 - **Dimension**: smell
 - **Detail**: KeyedLimiter duplicates Limiter (ratelimit.go:48-392) almost line-for-line: identical shard array + FNV-1a getShard, identical Start/Stop lifecycle state machine (startMu/started/stopped/cancel/doneCh, the same stop-before-start latching, the same panic-recovering ticker loop), and a structurally identical two-phase cleanup. Even the fixed-window bookkeeping differs only cosmetically (windowAt+elapsed vs windowEnd) — a divergence the comments then have to explain away (keyed.go:192-195). Any future fix to the lifecycle or cleanup logic (e.g. the Stop race handling) must be applied twice and can silently drift. The IP limiter is conceptually just a KeyedLimiter whose key is the client IP plus a clientip resolver.
 - **Suggestion**: Extract the shared shard/lifecycle/cleanup machinery into an unexported core (or implement Limiter as a thin wrapper over KeyedLimiter with an IP key extractor), keeping both exported types as facades.
-
-### [LOW] Limiter.maxPerShard is a config field with no configuration path; KeyedLimiter hardcodes its equivalent
-
-- **Where**: `httpx/middleware/ratelimit/ratelimit.go:54`
-- **Dimension**: api-design
-- **Detail**: Limiter carries a maxPerShard field that is always set to defaultMaxPerShard (line 143) — no LimiterOption exposes it, so it is a dead knob that reads as configurable but is not. KeyedLimiter takes the opposite approach and passes the constant defaultMaxKeyedPerShard directly to lru.New (keyed.go:129) with no field at all. Failure scenario: an operator whose service legitimately tracks more than 160k distinct client IPs (16 shards x 10k) cannot raise the cap without forking; under IP-spray the LRU silently evicts live counters and resets windows, and there is no supported tuning path even though the field's existence implies one — while the two sibling limiters disagree on the internal pattern.
-- **Suggestion**: Either add WithMaxPerShard/WithKeyedMaxPerShard options wired to both limiters, or remove the Limiter field and use the constant directly to match KeyedLimiter.
-
-### [LOW] Client-supplied X-Request-Id / X-Correlation-Id is trusted and reflected into logs and response
-
-- **Where**: `httpx/middleware/requestid/requestid.go:21`
-- **Dimension**: security
-- **Detail**: WithRequestID (and identically correlationid/correlationid.go:26) takes the inbound X-Request-Id header verbatim when it matches the safe token alphabet, stores it on the request context, echoes it back in the response header, and stamps it onto every access-log / request-scoped log line for the request. Because the value is fully attacker-controlled (any unauthenticated caller can set it), an attacker can choose an ID that collides with a legitimate user's request ID, or inject a chosen constant across many requests, to defeat log-based forensic correlation and SIEM grouping. The token alphabet check (contextutil.IsValidCorrelationToken) prevents CR/LF header/log injection, so impact is limited to correlation-integrity, not code injection. Failure scenario: attacker sends `X-Request-Id: <victim-request-id>` on abusive requests so an incident responder tracing that ID pulls back the attacker's traffic mixed with the victim's.
-- **Suggestion**: Only trust the inbound ID when RemoteAddr is a configured trusted proxy (mirroring clientip's trust model), otherwise always generate server-side; or at minimum document that these headers must be stripped/re-stamped at the ingress.
-
-### [LOW] Signed-request bodies over 64 KiB are spooled unencrypted to the shared OS temp directory
-
-- **Where**: `httpx/middleware/signedrequest/body.go:114`
-- **Dimension**: security
-- **Detail**: appendChunk spools body overflow to os.CreateTemp("", "rho-signedrequest-body-*.bin"). Webhook/S2S payloads routinely contain PII or secrets; those bytes now hit disk in the world-shared temp dir (mode 0600, and unlinked immediately on Unix, which is good), but on Windows the named file persists until Close/cleanup and survives a hard crash before cleanup runs; on any OS the plaintext may also land in swap-less tmpfs vs. persistent disk depending on TMPDIR. Operators handling regulated payloads get disk persistence they did not opt into and cannot currently disable or redirect.
-- **Suggestion**: Expose the spool directory as an option (so operators can point it at tmpfs/an encrypted volume) and document the disk-spill behaviour on WithInMemoryBodyMax; consider O_TMPFILE on Linux and best-effort delete-on-close FILE_FLAG_DELETE_ON_CLOSE semantics on Windows.
-
-### [LOW] WithCallTimeout and WithNonceTimeout are duplicate exported options for the same knob
-
-- **Where**: `httpx/middleware/signedrequest/redis/redis.go:85`
-- **Dimension**: api-design
-- **Detail**: Two exported Options configure the identical callTimeout field, with the docs declaring one an "alias" of the other "for callers that prefer one name over the other". This doubles the API surface for zero capability, creates a which-one-is-canonical question the docs answer inconsistently (WithNonceTimeout is called "the canonical name" while WithCallTimeout carries the full semantics text), and invites confusing call sites passing both (last one silently wins). No other option in the httpx middleware tree has a same-behavior alias.
-- **Suggestion**: Keep one name (WithCallTimeout matches the field and the sibling idempotency WithPostHandlerTimeout naming), and deprecate or delete the alias before the API is widely consumed.
-
-### [LOW] buildCanonicalFromHash clones and sorts the static requiredHeaders slice on every request
-
-- **Where**: `httpx/middleware/signedrequest/signedrequest.go:614`
-- **Dimension**: performance
-- **Detail**: When WithRequiredHeaders is configured, every verify() call (and every SignCanonical call) executes `hdrs := append([]string(nil), requiredHeaders...); sort.Strings(hdrs)` even though the header list is fixed at middleware construction and never changes per request. That is an allocation plus an O(n log n) sort on the request hot path of an auth middleware that is otherwise carefully tuned (streaming body hash, lazy buffers, pre-sized limits). With several pinned headers at high RPS this is measurable garbage for zero benefit.
-- **Suggestion**: Sort and dedupe cfg.requiredHeaders once in Middleware() (and in normalizeHeaders for SignCanonical) and have buildCanonicalFromHash iterate the pre-sorted slice directly.
-
-### [LOW] Default middleware stack applies no request-body size limit
-
-- **Where**: `httpx/middleware/stack/stack.go:109`
-- **Dimension**: security
-- **Detail**: stack.Default wires recover, secheaders, metrics, request/correlation IDs, tracing, logging, timeout, and request-logger, but does NOT include maxbody. The timeout middleware only bounds the buffered *response* (1 MiB), not the request body, and net/http imposes no default body cap. A handler mounted behind the canonical stack that reads the full body (e.g. a decode that is not itself length-limited) can therefore be driven to arbitrary heap use by a single large upload. Failure scenario: a POST route on a Default-stack service that calls io.ReadAll(r.Body) or an unbounded JSON decode is fed a multi-gigabyte body, exhausting memory. The kit ships maxbody.MaxBodySize but it is neither in the Default chain nor surfaced as a Config toggle.
-- **Suggestion**: Add maxbody with a generous default cap to Default (with a Without*/override option), or document prominently that callers must add maxbody themselves for any body-reading route.
-
-### [LOW] stack.Default cannot inject a Prometheus registerer for the metrics stage, unlike every other configurable stage
-
-- **Where**: `httpx/middleware/stack/stack.go:202`
-- **Dimension**: api-design
-- **Detail**: When EnableMetrics is true the stack calls mwmetrics.Metrics(h), a package-level singleton pinned to prometheus.DefaultRegisterer (metrics/metrics.go:166-171). Config forwards options for secheaders (SecHeadersOptions), compress (CompressOptions), and auditlog (AuditLogOptions), but exposes no way to pass metrics.WithRegisterer. Failure scenario: a service using a non-default registry (common in tests and multi-tenant binaries) must call WithoutMetrics() and hand-wire NewHTTPMetrics(WithRegisterer(...)).Middleware via WithOuter/WithInner at a position that no longer matches the canonical chain ordering the stack documents — or silently double-registers on the global default registry.
-- **Suggestion**: Add a MetricsOptions []metrics.MetricsOption field (or WithHTTPMetrics(*HTTPMetrics) option) mirroring the SecHeadersOptions/CompressOptions pattern.
-
-### [LOW] Handler panic stack trace is lost when the panic is re-raised from the middleware goroutine
-
-- **Where**: `httpx/middleware/timeout/timeout.go:148`
-- **Dimension**: error-handling
-- **Detail**: The handler goroutine's deferred recover (lines 147-152) captures only the panic VALUE into handlerResult and the middleware re-panics with it on the request goroutine (lines 158-159, 186-188). By the time the outer recover middleware calls debug.Stack(), the stack shown is the timeout middleware's re-panic site, not the handler frame that actually panicked — nil-pointer panics become nearly undebuggable ('panic recovered' with a stack pointing at timeout.go). stdlib http.TimeoutHandler captures debug.Stack() at the original recover site and re-panics with value+stack for exactly this reason.
-- **Suggestion**: Capture debug.Stack() in the handler goroutine's recover and re-panic with a wrapper carrying both value and original stack (mirroring net/http's timeoutHandler), or log the original stack before re-raising.
-
-### [LOW] Timeout middleware conflates client disconnect / parent cancellation with deadline expiry
-
-- **Where**: `httpx/middleware/timeout/timeout.go:162`
-- **Dimension**: bug
-- **Detail**: The select's `case <-ctx.Done():` fires both when the WithTimeout deadline expires and when the parent request context is cancelled (client disconnected, server shutting down). In the cancellation case the middleware still calls tw.writeTimeout(), writing a 503 {"error":"request timeout","code":"TIMEOUT"} response and letting the outer access-log/metrics middleware record a 503 timeout for a request that never actually timed out — e.g. a client that gives up after 1s on a 30s-timeout route is logged and counted as a server timeout. This skews 5xx/timeout dashboards and alerting under any burst of client cancellations.
-- **Suggestion**: Check ctx.Err(): only write the TIMEOUT body when errors.Is(ctx.Err(), context.DeadlineExceeded); on plain cancellation skip the 503 (or record a distinct client-cancelled outcome).
-
-### [LOW] timeoutWriter forwards handler Content-Length verbatim while the buffered body may have been truncated
-
-- **Where**: `httpx/middleware/timeout/writer.go:157`
-- **Dimension**: bug
-- **Detail**: writeToReal() copies every buffered handler header (including a handler-set Content-Length) to the real ResponseWriter and then writes tw.buf, but Write() silently truncates the body to bufferCap (default 1 MiB) and returns ErrResponseTooLarge (lines 119-126). Failure scenario: a handler that sets Content-Length: 2000000 via Header().Set and streams a 2 MiB body while ignoring the Write error will, on the normal completion path, emit a response advertising 2 MB but carrying only ~1 MB of body; net/http logs a Content-Length mismatch and the client reads a truncated/short response. Narrow (requires a handler that manually sets Content-Length and ignores the truncation error), hence LOW.
-- **Suggestion**: In writeToReal, drop the Content-Length header before flushing whenever the buffer was truncated (track a truncated flag in Write), so net/http re-derives the correct length from the bytes actually sent.
 

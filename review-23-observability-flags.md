@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 4 |
-| **Total (deduplicated)** | **4** |
+| LOW | 3 |
+| **Total (deduplicated)** | **3** |
 
 **Reviewer impressions:**
 
@@ -32,13 +32,6 @@
 > This is a mature, carefully-engineered scope: the audit-log HMAC chain, secret-zeroing on close, constant-time comparisons, cardinality guards, and health-check deduplication are all thoughtfully done and heavily documented, and most obvious concurrency/nil/error-handling pitfalls have already been closed (often with explicit audit-finding references). The two most notable issues are subtle semantic mismatches rather than crude bugs: retention pruning by timestamp conflicts with the seq-ordered chain the rest of the module goes out of its way to support, and the health checker evaluates shared/cached state under a per-request cancellable context. Overall correctness and concurrency hygiene are high.
 
 ## Findings
-
-### [LOW] Generic Object[T] silently always returns fallback for struct T when used with the bundled MemoryProvider
-
-- **Where**: `flags/flags.go:280`
-- **Dimension**: api-design
-- **Detail**: ObjectE[T] does `raw.(T)` and returns the fallback (with an error) on any type mismatch. The kit's own MemoryProvider.SetObject JSON-round-trips every stored value through deepCopyJSON (memory.go:79-88, 93-106), so an object flag is always stored/returned as map[string]any (or []any), never as a caller struct type. Failure scenario: a test wires MemoryProvider, calls SetObject("cfg", MyStruct{...}), then reads it with flags.Object[MyStruct](client, ctx, "cfg", def) — the assertion `map[string]any` -> MyStruct always fails, so the helper silently returns `def` for a flag that is definitely set, and Object (non-E) swallows the error entirely. The typed generic helper is effectively unusable with the shipped test provider for struct payloads, a surprising misuse trap.
-- **Suggestion**: Document this limitation prominently on Object/ObjectE (object flags decode to map[string]any; use ObjectE and re-marshal into a struct, or provide a JSON-into-T helper), or have the generic helpers marshal the map into T when the direct assertion fails.
 
 ### [LOW] Store.LastHMAC is a mandatory interface method with no production caller
 

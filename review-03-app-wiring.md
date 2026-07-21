@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 4 |
-| **Total (deduplicated)** | **4** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -39,30 +39,3 @@
 
 ## Findings
 
-### [LOW] Three divergent private loopback-host implementations across sibling packages
-
-- **Where**: `app/amqp/amqp.go:295`
-- **Dimension**: smell
-- **Detail**: app/validate.go:36 (isLoopbackHost, resolves hostnames via net.ResolveTCPAddr so "localhost"-style DNS names that resolve to loopback pass), app/amqp/amqp.go:295 (isLoopbackHost, literal-only: only the string "localhost" or an IP literal passes), and app/redis/redis.go:229 (isLoopbackAddr, literal-only plus host:port splitting) implement the same concept with subtly different semantics. A hostname like "lo.example.internal" that resolves to 127.0.0.1 is loopback for the internal-port validator but non-loopback for the amqp transport-safety panic — same kit, different answers. All three sit in packages that already import security/v2/netutil, which is the natural home.
-- **Suggestion**: Hoist one canonical IsLoopbackHost/IsLoopbackAddr into security/v2/netutil with an explicit choice about DNS resolution, and delete the three private copies.
-
-### [LOW] Internal ops server is always plaintext, even when WithInternalNonLoopback exposes it on a routable interface
-
-- **Where**: `app/builder.go:616`
-- **Dimension**: security
-- **Detail**: internalSrv is constructed with only serverErrorLogOpt — the resolved serverTLS is never applied to the internal listener. With the default loopback bind this is fine, but when a service opts in via http.WithInternalNonLoopback() (Docker host networking, scrape-from-network setups) the unauthenticated /metrics, /healthz, /ready and the h2c gRPC health surface are served unencrypted on the network with no way to enable TLS on that listener. Failure scenario: operator legitimately needs non-loopback metrics scraping, accepts the opt-in, and route patterns/tenant labels/process fingerprints transit the network in cleartext.
-- **Suggestion**: Offer TLS on the internal server (reuse serverTLS) or document explicitly that WithInternalNonLoopback implies cleartext and requires network-layer encryption.
-
-### [LOW] PGAdvisoryFromPostgres registered before postgres surfaces as a recovered panic instead of its own ordering error
-
-- **Where**: `app/leader/leader.go:81`
-- **Dimension**: api-design
-- **Detail**: pgAdvisoryModule.Init guards only against the postgres module being absent ("requires postgres module registered before leader"). But ModuleContext's module map is pre-populated with all registered modules before any Init runs (app/module.go:468-470), so if leader is registered BEFORE postgres, LookupModule("postgres") succeeds, the SQLDBProvider assertion succeeds, and sp.SQLDB() panics with "postgres: SQLDB called before Init completed" (app/postgres/postgres.go:114). initOneModule recovers it into "module init failed: panic during init: ...", so startup still aborts, but the module's carefully-worded ordering error at line 75 never fires for the actual ordering mistake it describes — the operator gets a postgres-branded panic string for a leader-module misregistration.
-- **Suggestion**: Have SQLDBProvider (or a second interface) expose an initialized check, or make pgAdvisoryModule.Init detect the not-yet-initialized peer and return the existing actionable ordering error instead of letting the panic propagate.
-
-### [LOW] keyedModule.Populate read-mutates an already-published resource map, undermining SetResource's exclusive-key/double-registration model
-
-- **Where**: `app/ratelimit/ratelimit.go:172`
-- **Dimension**: smell
-- **Detail**: Populate fetches the map published under ResourceKeyedMapKey by an earlier Keyed module and mutates it in place (m2[m.name] = m.limiter) after it has been published. SetResource's own contract says the keyspace is "meant to be exclusive per-adapter" with double-registration panics (app/infrastructure.go:98-101), and this is the only module in the repo that mutates a published resource. It works only because Populate calls are strictly sequential during startup (acknowledged in the comment at lines 157-163); if Populate were ever parallelized, or if a consumer captured the map during its own Populate before a later Keyed module ran, the shared-map mutation becomes a data race / lost registration with no synchronization on the map itself.
-- **Suggestion**: Publish an immutable snapshot per registration (copy-on-write map) or register a small locked registry type once and add limiters through its method, keeping published values effectively immutable.

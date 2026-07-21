@@ -14,8 +14,8 @@
 | CRITICAL | 0 |
 | HIGH | 0 |
 | MEDIUM | 0 |
-| LOW | 1 |
-| **Total (deduplicated)** | **1** |
+| LOW | 0 |
+| **Total (deduplicated)** | **0** |
 
 **Reviewer impressions:**
 
@@ -36,11 +36,4 @@
 > This scope is unusually well-engineered for its problem domain: the outbox claim-token fencing, the FIFO CTE with explicit row_number ordering, and the pgx TLS/sslmode enforcement are all carefully reasoned and heavily documented, and most exported APIs are misuse-resistant (fail-fast panics, verbose opt-out field names, LogValue redaction). The findings are mostly consistency/ergonomics gaps rather than deep bugs: a couple of godoc-vs-behavior mismatches (PrimaryHealthy), one invariant the store enforces everywhere except Heartbeat, and some silent config/metric loss. Overall quality is high; the issues are edge-case correctness and API-polish items worth tightening before release.
 
 ## Findings
-
-### [LOW] Neither Pinger nor ContextPinger is satisfied by the kit's own canonical pgx pool
-
-- **Where**: `infra/sqldb/health.go:22`
-- **Dimension**: api-design
-- **Detail**: The kit declares pgx as the single supported Postgres driver, yet infra/sqldb/pgx.Pool exposes Ping(ctx) — which matches neither Pinger (Ping() error) nor ContextPinger (PingContext(ctx) error). The godoc itself concedes this and tells every caller to hand-write a closure shim. The two health-check interfaces are shaped around *sql.DB (the legacy driver) rather than the sibling package that is supposed to be the golden path, forcing boilerplate at every call site and making the composition awkward.
-- **Suggestion**: Add a ContextPinger adapter constructor in the pgx package (e.g. pgx.Pool.PingContext or a small wrapper) so the canonical driver plugs into HealthCheckContext without a caller-written shim.
 
