@@ -266,25 +266,28 @@ func (g *AllowedLabels) vecName(c prometheus.Collector) string {
 // supplies no descriptor, which would be unusual for the *Vec types
 // this package targets.
 //
-// Uses a buffered channel large enough for the typical fanout (16
-// covers every kit-emitted vec) and runs Describe synchronously, so
-// each cache miss is one allocation rather than one goroutine —
-// previous versions leaked an ephemeral goroutine per first-time vec.
+// Runs Describe in a short-lived goroutine and drains every descriptor
+// so a collector that emits more descriptors than any fixed buffer can
+// never deadlock the caller. The first non-nil descriptor's FQName is
+// returned; remaining descriptors are discarded.
 func describeName(c prometheus.Collector) string {
-	ch := make(chan *prometheus.Desc, 16)
-	c.Describe(ch)
-	close(ch)
+	ch := make(chan *prometheus.Desc)
+	go func() {
+		c.Describe(ch)
+		close(ch)
+	}()
+	name := "<unknown>"
 	for d := range ch {
 		// fqNameFromDesc parses the FQName out of *prometheus.Desc's
 		// String form: `Desc{fqName: "X", help: "...", ...}`. We use
 		// the public fqName accessor when one exists; otherwise the
 		// String form is the only stable surface.
-		if d == nil {
+		if d == nil || name != "<unknown>" {
 			continue
 		}
-		return parseFQName(d.String())
+		name = parseFQName(d.String())
 	}
-	return "<unknown>"
+	return name
 }
 
 // parseFQName extracts the fqName from prometheus.Desc.String(),

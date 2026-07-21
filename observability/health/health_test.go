@@ -243,8 +243,9 @@ func TestChecker_NonCriticalDegrades(t *testing.T) {
 	}
 
 	resp := hc.Evaluate(context.Background())
-	if resp.Status != StatusDegraded {
-		t.Errorf("status = %q, want degraded", resp.Status)
+	// Non-critical Connecting holds traffic (503) rather than Degraded (200).
+	if resp.Status != StatusConnecting {
+		t.Errorf("status = %q, want connecting", resp.Status)
 	}
 }
 
@@ -328,5 +329,43 @@ func TestChecker_CacheExpires(t *testing.T) {
 
 	if callCount != 2 {
 		t.Errorf("check called %d times, want 2 (cache expired)", callCount)
+	}
+}
+
+// TestChecker_CancelledProbeDoesNotPoisonCache is the regression pin for
+// review MEDIUM: Evaluate runs dependency checks under
+// context.WithoutCancel so a single cancelled probe (client disconnect)
+// cannot mark dependencies unhealthy and cache that result for CacheTTL.
+func TestChecker_CancelledProbeDoesNotPoisonCache(t *testing.T) {
+	hc := &Checker{
+		Version:  "1.0.0",
+		CacheTTL: time.Minute, // long TTL so a poisoned result would stick
+		Checks: []DependencyCheck{
+			{Name: "db", Check: func(ctx context.Context) string {
+				// Without WithoutCancel, Evaluate would pass a cancelled
+				// ctx and this would report unhealthy.
+				if ctx.Err() != nil {
+					return StatusUnhealthy
+				}
+				return StatusHealthy
+			}, Critical: true},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled when Evaluate runs
+
+	resp := hc.Evaluate(ctx)
+	if resp.Status != StatusHealthy {
+		t.Fatalf("cancelled probe Evaluate status = %q, want healthy (WithoutCancel protects checks)", resp.Status)
+	}
+	if got := resp.Services["db"]; got != StatusHealthy {
+		t.Fatalf("db status = %q, want healthy", got)
+	}
+
+	// Cached result must remain healthy for a subsequent non-cancelled probe.
+	resp2 := hc.Evaluate(context.Background())
+	if resp2.Status != StatusHealthy {
+		t.Fatalf("cached status after cancelled probe = %q, want healthy (cache was poisoned)", resp2.Status)
 	}
 }

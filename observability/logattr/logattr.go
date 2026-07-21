@@ -6,7 +6,6 @@ package logattr
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"log/slog"
 	"net/url"
 	"strings"
@@ -118,12 +117,13 @@ func URL(raw string) slog.Attr {
 // Secret returns a redaction-safe attribute for sensitive values
 // (Authorization headers, JWTs, API keys, password fields, etc.).
 //
-// FR-085 [LOW]: by default the rendering is "<redacted N bytes>" —
-// no digest. Pre-fix the value carried the first 8 hex chars of
-// SHA-256, which is brute-forceable for low-entropy secrets like
-// 6-digit OTPs or short reset codes. Operators that need
-// across-line correlation (and accept the brute-force cost) can use
-// [SecretWithDigest], which still emits a SHA-256 prefix.
+// FR-085 [LOW]: by default the rendering is a length-bucketed stamp
+// (via [redact.StringValue]) — no digest and no exact byte count.
+// Pre-fix the value carried the first 8 hex chars of SHA-256,
+// which is brute-forceable for low-entropy secrets like 6-digit OTPs
+// or short reset codes. Operators that need across-line correlation
+// (and accept the brute-force cost) can use [SecretWithDigest], which
+// still emits a SHA-256 prefix with a bucketed length.
 //
 // An empty value emits "<redacted empty>".
 //
@@ -136,16 +136,14 @@ func Secret(key, value string) slog.Attr {
 // SecretWithDigest is the legacy correlation-friendly redaction.
 // The first 8 hex chars of SHA-256 leak ~32 bits — fine for a
 // 32-byte JWT, brute-forceable for a 6-digit OTP. Use only for
-// high-entropy secrets.
+// high-entropy secrets. Length is bucketed (exact counts are not
+// disclosed) for the same reason as [Secret].
 func SecretWithDigest(key, value string) slog.Attr {
 	return slog.String(key, redactedValue(value))
 }
 
 func redactedValueNoDigest(value string) string {
-	if value == "" {
-		return "<redacted empty>"
-	}
-	return fmt.Sprintf("<redacted %d bytes>", len(value))
+	return redact.StringValue(value)
 }
 
 // Email returns a redacted "email" attribute that masks the local part
@@ -171,7 +169,14 @@ func redactedValue(value string) string {
 	}
 	sum := sha256.Sum256([]byte(value))
 	digest := hex.EncodeToString(sum[:])[:8]
-	return fmt.Sprintf("<redacted %d bytes sha256:%s>", len(value), digest)
+	// Keep the digest for correlation but reuse StringValue's bucket so
+	// exact lengths are not disclosed alongside the hash prefix.
+	bucket := redact.StringValue(value) // e.g. "<redacted, 16-64 bytes>"
+	// bucket is "<redacted, …>"; insert digest before the closing '>'.
+	if strings.HasSuffix(bucket, ">") {
+		return bucket[:len(bucket)-1] + " sha256:" + digest + ">"
+	}
+	return bucket + " sha256:" + digest
 }
 
 // redactedURL fully redacts raw down to a length-only marker; the URL is

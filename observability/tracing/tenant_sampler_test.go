@@ -171,7 +171,7 @@ func TestTenantSampler_ParentBasedRespectsUpstreamDecision(t *testing.T) {
 	}
 }
 
-func TestTenantSampler_Description_ListsTenantsSorted(t *testing.T) {
+func TestTenantSampler_Description_RedactsTenantIDs(t *testing.T) {
 	s, err := newTenantSampler(0.05, map[string]float64{
 		"zulu":  1,
 		"alpha": 0.5,
@@ -181,14 +181,15 @@ func TestTenantSampler_Description_ListsTenantsSorted(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	desc := s.Description()
-	alphaIdx := strings.Index(desc, "alpha")
-	mikeIdx := strings.Index(desc, "mike")
-	zuluIdx := strings.Index(desc, "zulu")
-	if alphaIdx < 0 || mikeIdx < 0 || zuluIdx < 0 {
-		t.Fatalf("description missing tenant id(s): %q", desc)
+	// Description is emitted by the OTel SDK on every export tick —
+	// raw tenant IDs must not appear (match Config.LogValue policy).
+	for _, id := range []string{"alpha", "mike", "zulu"} {
+		if strings.Contains(desc, id) {
+			t.Fatalf("description must not leak tenant id %q: %q", id, desc)
+		}
 	}
-	if alphaIdx >= mikeIdx || mikeIdx >= zuluIdx {
-		t.Fatalf("description tenants must appear in sorted order to keep observability output stable; got %q", desc)
+	if !strings.Contains(desc, "overrides=3 tenants") {
+		t.Fatalf("description must report override count; got %q", desc)
 	}
 }
 

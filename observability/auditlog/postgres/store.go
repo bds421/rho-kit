@@ -268,29 +268,75 @@ func (s *Store) LastHMAC(ctx context.Context) ([]byte, error) {
 	return hmac, nil
 }
 
-// DeleteBefore removes every event with occurred_at strictly before the
-// given time and returns the number of rows deleted, satisfying
-// [auditlog.RetentionStore] so the documented [auditlog.RetentionJob]
-// wiring compiles with the production Store.
+// DeleteBefore removes a contiguous head of the seq-ordered chain whose
+// events all have occurred_at strictly before the given time, and returns
+// the deleted row count plus the HMAC of the newest deleted event
+// (watermark for [auditlog.VerifyChainFrom]). Satisfies
+// [auditlog.RetentionStore].
 //
-// The boundary is exclusive (< before) to match the [auditlog.RetentionStore]
-// contract ("events with a timestamp before the given time"). Deleting the
-// oldest events leaves the surviving head with a PrevHMAC that links to a
-// now-removed row; operators relying on tamper-evidence must verify with the
-// retention-aware [auditlog.VerifyChainFrom] watermark (see [auditlog.RetentionJob]).
-func (s *Store) DeleteBefore(ctx context.Context, before time.Time) (int64, error) {
+// Contiguous-head semantics: only rows with seq < first(seq where
+// occurred_at >= before) are removed. A backfilled row with an old
+// occurred_at but a high seq is left in place until it becomes part of
+// the head — this prevents interior chain holes that permanently break
+// verification. Deleting the head leaves the surviving oldest event with
+// a PrevHMAC that links to a now-removed row; operators must verify with
+// the returned watermark via [auditlog.VerifyChainFrom].
+func (s *Store) DeleteBefore(ctx context.Context, before time.Time) (int64, []byte, error) {
 	if s == nil || s.pool == nil {
-		return 0, errors.New("auditlog/postgres: store not initialized")
+		return 0, nil, errors.New("auditlog/postgres: store not initialized")
 	}
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	const q = "DELETE FROM audit_log_events WHERE occurred_at < $1"
-	tag, err := s.pool.Exec(ctx, q, before.UTC())
-	if err != nil {
-		return 0, fmt.Errorf("auditlog/postgres: delete before: %w", err)
+	cutoff := before.UTC()
+
+	// first_keep is the lowest seq that must survive (occurred_at >= cutoff).
+	// NULL means every row is older than cutoff (or the table is empty).
+	var firstKeep *int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT MIN(seq) FROM audit_log_events WHERE occurred_at >= $1`, cutoff,
+	).Scan(&firstKeep); err != nil {
+		return 0, nil, fmt.Errorf("auditlog/postgres: delete before bound: %w", err)
 	}
-	return tag.RowsAffected(), nil
+
+	// Watermark: HMAC of the highest-seq row we are about to delete.
+	var watermark []byte
+	var werr error
+	if firstKeep == nil {
+		werr = s.pool.QueryRow(ctx,
+			`SELECT hmac FROM audit_log_events ORDER BY seq DESC LIMIT 1`,
+		).Scan(&watermark)
+	} else {
+		werr = s.pool.QueryRow(ctx,
+			`SELECT hmac FROM audit_log_events WHERE seq < $1 ORDER BY seq DESC LIMIT 1`,
+			*firstKeep,
+		).Scan(&watermark)
+	}
+	if werr != nil && !errors.Is(werr, pgx.ErrNoRows) {
+		return 0, nil, fmt.Errorf("auditlog/postgres: delete before watermark: %w", werr)
+	}
+	if errors.Is(werr, pgx.ErrNoRows) {
+		return 0, nil, nil // nothing to delete
+	}
+
+	var n int64
+	if firstKeep == nil {
+		tag, err := s.pool.Exec(ctx, `DELETE FROM audit_log_events`)
+		if err != nil {
+			return 0, nil, fmt.Errorf("auditlog/postgres: delete before: %w", err)
+		}
+		n = tag.RowsAffected()
+	} else {
+		tag, err := s.pool.Exec(ctx, `DELETE FROM audit_log_events WHERE seq < $1`, *firstKeep)
+		if err != nil {
+			return 0, nil, fmt.Errorf("auditlog/postgres: delete before: %w", err)
+		}
+		n = tag.RowsAffected()
+	}
+	if n == 0 {
+		return 0, nil, nil
+	}
+	return n, watermark, nil
 }
 
 // Compile-time assertions that Store satisfies both the base

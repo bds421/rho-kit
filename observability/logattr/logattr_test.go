@@ -3,7 +3,6 @@ package logattr
 import (
 	"errors"
 	"log/slog"
-	"strconv"
 	"testing"
 	"time"
 
@@ -89,7 +88,9 @@ func TestSecret_RedactsValue(t *testing.T) {
 	assert.NotContains(t, got, "Bearer")
 	assert.NotContains(t, got, "eyJhbGc")
 	assert.Contains(t, got, "redacted")
-	assert.Contains(t, got, "22 bytes")
+	// Exact length is bucketed; 22 bytes falls in 16-64.
+	assert.Contains(t, got, "16-64 bytes")
+	assert.NotContains(t, got, "22 bytes")
 	assert.NotContains(t, got, "sha256:")
 }
 
@@ -155,7 +156,20 @@ func TestURL_LenientParseStillRedacts(t *testing.T) {
 }
 
 func redactedLen(n int) string {
-	return "<redacted " + strconv.Itoa(n) + " bytes>"
+	// Mirror core/redact.StringValue buckets — exact counts are not disclosed.
+	if n == 0 {
+		return "<redacted empty>"
+	}
+	if n < 16 {
+		return "<redacted, <16 bytes>"
+	}
+	if n <= 64 {
+		return "<redacted, 16-64 bytes>"
+	}
+	if n <= 256 {
+		return "<redacted, 65-256 bytes>"
+	}
+	return "<redacted, >256 bytes>"
 }
 
 func TestEmail_Masking(t *testing.T) {

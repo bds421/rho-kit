@@ -446,6 +446,16 @@ func (l *Logger) LogE(ctx context.Context, event Event) error {
 	// so a persisted event verifies after a database round trip. This does not
 	// change canonicalEvent's byte layout, only the accepted stored precision.
 	event.Timestamp = event.Timestamp.UTC().Truncate(time.Microsecond)
+	// JSONB stores re-serialize metadata (key order, whitespace, number
+	// formatting). Canonicalize before signing so the bytes covered by the
+	// HMAC match what scanEvent reads back from Postgres.
+	if len(event.Metadata) > 0 {
+		canonical, err := canonicalizeJSONMetadata(event.Metadata)
+		if err != nil {
+			return fmt.Errorf("auditlog: metadata: %w", err)
+		}
+		event.Metadata = canonical
+	}
 	if event.TraceID == "" {
 		event.TraceID = extractTraceID(ctx)
 	}

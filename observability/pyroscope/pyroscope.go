@@ -68,6 +68,20 @@ func DefaultProfileTypes() []pyroscope.ProfileType {
 	}
 }
 
+// LogValue implements slog.LogValuer so AuthToken is never emitted
+// when a Config is logged (mirrors observability/tracing.Config).
+func (c Config) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("server_address", c.ServerAddress),
+		slog.String("app_name", c.AppName),
+		slog.Int("tags", len(c.Tags)),
+		slog.Duration("upload_rate", c.UploadRate),
+		slog.Int("profile_types", len(c.ProfileTypes)),
+		slog.Bool("auth_token_configured", c.AuthToken != ""),
+		slog.Bool("tenant_id_configured", c.TenantID != ""),
+	)
+}
+
 // Component returns a [lifecycle.Component]-compatible profiler. It
 // starts the pyroscope-go session on Start and stops it on Stop.
 //
@@ -95,6 +109,15 @@ func Component(cfg Config, opts ...Option) (*Profiler, error) {
 	}
 	if len(cfg.ProfileTypes) == 0 {
 		cfg.ProfileTypes = DefaultProfileTypes()
+	}
+	// Detach Tags so later caller mutation cannot race pyroscope.Start
+	// or affect a running session's tag map.
+	if cfg.Tags != nil {
+		tags := make(map[string]string, len(cfg.Tags))
+		for k, v := range cfg.Tags {
+			tags[k] = v
+		}
+		cfg.Tags = tags
 	}
 	return &Profiler{cfg: cfg, logger: cc.logger}, nil
 }

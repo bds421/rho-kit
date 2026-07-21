@@ -2,7 +2,6 @@ package tracing
 
 import (
 	"fmt"
-	"sort"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
@@ -51,12 +50,10 @@ func (s tenantSampler) ShouldSample(p sdktrace.SamplingParameters) sdktrace.Samp
 // diagnostics (collector logs include the sampler description on
 // every export tick).
 func (s tenantSampler) Description() string {
-	keys := make([]string, 0, len(s.overrides))
-	for k := range s.overrides {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return fmt.Sprintf("TenantSampler{default=%s, overrides=%v}", s.defaultSampler.Description(), keys)
+	// Emit only the override count — raw tenant IDs are topology that
+	// Config.LogValue deliberately redacts, and this description is
+	// exported by the OTel SDK on every export tick.
+	return fmt.Sprintf("TenantSampler{default=%s, overrides=%d tenants}", s.defaultSampler.Description(), len(s.overrides))
 }
 
 // newTenantSampler constructs the per-tenant sampler tree and wraps

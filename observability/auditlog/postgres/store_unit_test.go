@@ -34,13 +34,13 @@ func TestStore_NilReceiverReturnsError(t *testing.T) {
 	_, err = s.LastHMAC(ctx)
 	assert.Error(t, err)
 
-	_, err = s.DeleteBefore(ctx, time.Now())
+	_, _, err = s.DeleteBefore(ctx, time.Now())
 	assert.Error(t, err)
 }
 
 func TestStore_DeleteBeforeNilPoolReturnsError(t *testing.T) {
 	s := &Store{pool: nil}
-	n, err := s.DeleteBefore(context.Background(), time.Now())
+	n, _, err := s.DeleteBefore(context.Background(), time.Now())
 	assert.Error(t, err)
 	assert.Zero(t, n)
 }
@@ -49,7 +49,7 @@ func TestStore_DeleteBeforeHonorsCancelledContext(t *testing.T) {
 	s := &Store{pool: nil}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	n, err := s.DeleteBefore(ctx, time.Now())
+	n, _, err := s.DeleteBefore(ctx, time.Now())
 	// nil pool short-circuits first; either way DeleteBefore must not panic
 	// and must surface a non-nil error with a zero count.
 	assert.Error(t, err)

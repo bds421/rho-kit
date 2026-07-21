@@ -391,6 +391,13 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 		critical  bool
 		dependsOn []string
 	}
+	// Evaluate against a detached parent so a single cancelled probe
+	// (client disconnect, short k8s timeout) cannot mark every
+	// dependency unhealthy and poison the shared readiness cache for
+	// the full CacheTTL. Each check still has its own timeout via
+	// runCheck; request cancellation is observed only for the HTTP
+	// wait path above, not for the evaluator itself.
+	evalCtx := context.WithoutCancel(ctx)
 	results := make([]checkResult, len(checks))
 	var wg sync.WaitGroup
 	wg.Add(len(checks))
@@ -399,7 +406,7 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 			defer wg.Done()
 			results[idx] = checkResult{
 				name:      dc.Name,
-				status:    runCheck(ctx, dc),
+				status:    runCheck(evalCtx, dc),
 				critical:  dc.Critical,
 				dependsOn: dc.DependsOn,
 			}
@@ -423,7 +430,13 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 		if cr.critical {
 			overall = StatusUnhealthy
 		} else if overall != StatusUnhealthy {
-			overall = StatusDegraded
+			// Non-critical Connecting holds traffic (503) rather than
+			// surfacing as Degraded (200) - warmup should not receive load.
+			if cr.status == StatusConnecting && overall != StatusDegraded {
+				overall = StatusConnecting
+			} else {
+				overall = StatusDegraded
+			}
 		}
 	}
 

@@ -49,9 +49,12 @@ type Config struct {
 	Insecure bool
 
 	// SampleRate is the fraction of traces to sample (0.0 to 1.0).
-	// Default is 0.05 (5%) when unset — toolkit defaults are conservative
-	// because the cost of sampling everything (CPU + collector storage)
-	// surprises operators. Set to 1.0 explicitly for development.
+	// Zero (the field's zero value) means "unset" and receives the
+	// conservative 5% default — float64 cannot distinguish unset from an
+	// explicit 0.0. Callers that need root sampling fully off should leave
+	// Endpoint empty (noop provider) or install a custom AlwaysOff sampler
+	// via the OTel global provider after Init. Set to 1.0 explicitly for
+	// development.
 	SampleRate float64
 
 	// EnableBaggage enables OpenTelemetry Baggage propagation. Off by default
@@ -306,6 +309,12 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 		return initNoop(cfg.EnableBaggage)
 	}
 
+	// Zero-value SampleRate means "unset" and receives the conservative
+	// 5% default. float64 cannot distinguish unset from explicit 0.0;
+	// callers that need root sampling fully off should leave Endpoint
+	// empty (noop provider) or install a custom AlwaysOff sampler via
+	// the OTel global provider after Init. A future *float64 field
+	// would be a breaking API change reserved for v3.
 	if cfg.SampleRate <= 0 {
 		cfg.SampleRate = 0.05
 	}

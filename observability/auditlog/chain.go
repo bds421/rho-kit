@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -192,6 +193,24 @@ func VerifyChainFrom(events []Event, chainKey []byte, watermark []byte) error {
 func eventWithoutHMAC(event Event) Event {
 	event.HMAC = nil
 	return event
+}
+
+// canonicalizeJSONMetadata re-encodes metadata so the signed bytes match
+// what Postgres JSONB returns after a round trip (compact encoding,
+// sorted object keys). Empty input is returned unchanged.
+func canonicalizeJSONMetadata(raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return raw, nil
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(out), nil
 }
 
 func isZeroBytes(b []byte) bool {

@@ -1238,13 +1238,13 @@ func (s *retentionCaptureStore) RangeChain(context.Context, func(Event) error) e
 	return nil
 }
 
-func (s *retentionCaptureStore) DeleteBefore(_ context.Context, before time.Time) (int64, error) {
+func (s *retentionCaptureStore) DeleteBefore(_ context.Context, before time.Time) (int64, []byte, error) {
 	s.before = before
 	s.deleteCalls++
 	if s.deleteErr != nil {
-		return 0, s.deleteErr
+		return 0, nil, s.deleteErr
 	}
-	return 0, nil
+	return 0, nil, nil
 }
 
 func TestClose_ZeroesKeysAndRejectsSubsequentUse(t *testing.T) {

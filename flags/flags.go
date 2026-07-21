@@ -79,6 +79,13 @@ type Client struct {
 // Returns an error when SetNamedProviderAndWait reports a provider
 // initialization failure. Panics only on programmer errors (nil
 // provider, empty name).
+//
+// Multi-client note: each Client installs its provider on a named
+// OpenFeature domain so they do not clobber each other. Package-level
+// [Shutdown], however, resets the entire process-global OpenFeature
+// SDK and tears down ALL installed providers — call it exactly once
+// at process exit, never when only one of several Clients is going
+// away. There is no per-Client shutdown.
 func New(name string, p Provider) (*Client, error) {
 	if p == nil {
 		panic("flags: New provider must not be nil")
@@ -98,7 +105,7 @@ func New(name string, p Provider) (*Client, error) {
 func MustNew(name string, p Provider) *Client {
 	c, err := New(name, p)
 	if err != nil {
-		panic("flags: MustNew client configuration is invalid")
+		panic(fmt.Sprintf("flags: MustNew: %v", err))
 	}
 	return c
 }
@@ -272,6 +279,11 @@ func Object[T any](c *Client, ctx context.Context, key string, fallback T) T {
 // as T plus any provider error. A successful eval whose returned
 // value is not a T surfaces an explicit error so callers can branch
 // on type mismatches.
+//
+// With the bundled [MemoryProvider], object flags are always stored
+// as map[string]any (JSON round-trip via deepCopyJSON). ObjectE[MyStruct]
+// therefore type-asserts fail and return fallback — re-marshal the
+// map[string]any into T yourself, or use ObjectE[map[string]any].
 func ObjectE[T any](c *Client, ctx context.Context, key string, fallback T) (T, error) {
 	raw, err := c.ObjectE(ctx, key, fallback)
 	if err != nil {
