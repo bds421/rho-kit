@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.6.0 — 2026-07-22
+
+Platform-foundations release (coordination tag `release/v2.6.0`).
+
+- **feat(identity).** Add a canonical authenticated principal and consistent
+  HTTP/gRPC, authorization, and audit-actor projection.
+- **feat(auth).** Add standards-based OIDC relying-party wiring, hardened
+  OAuth2 browser-flow state storage, and client-credentials lifecycle support.
+- **feat(contracts).** Add versioned contract artifacts, compatibility checks,
+  CI validation, and generated-service contract scaffolding.
+- **feat(messaging).** Add a durable PostgreSQL transactional inbox paired
+  with outbox schema-version handling and Docker-backed recovery coverage.
+- **feat(tooling).** Add production scaffolding, contract and OIDC doctor
+  rules, catalog reporting, ADRs, and release verification guidance.
+
 ## v2.5.1 — 2026-07-22
 
 Patch release for S3-compatible object storage.
