@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.5.1 — 2026-07-22
+
+Patch release for S3-compatible object storage.
+
+- **fix(storage/s3).** Keep large `PutObject` requests compatible with custom
+  endpoints that reject optional AWS chunked checksums, while preserving the
+  SDK/operator request and response checksum policies for native AWS S3.
+
 ## v2.5.0 — 2026-07-21
 
 Repository-wide review-remediation and hardening release (coordination tag
