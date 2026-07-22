@@ -3,10 +3,10 @@ module github.com/bds421/rho-kit/grpcx/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.5.0
-	github.com/bds421/rho-kit/observability/v2 v2.5.0
-	github.com/bds421/rho-kit/resilience/v2 v2.5.0
-	github.com/bds421/rho-kit/security/v2 v2.5.0
+	github.com/bds421/rho-kit/core/v2 v2.5.1
+	github.com/bds421/rho-kit/observability/v2 v2.5.1
+	github.com/bds421/rho-kit/resilience/v2 v2.5.1
+	github.com/bds421/rho-kit/security/v2 v2.5.1
 	github.com/lestrrat-go/jwx/v3 v3.1.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
