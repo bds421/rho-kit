@@ -73,14 +73,17 @@ type Entry struct {
 	RoutingKey  string
 	MessageID   string
 	MessageType string
-	Payload     json.RawMessage
-	Headers     json.RawMessage
-	Status      Status
-	Attempts    int
-	CreatedAt   time.Time
-	PublishedAt *time.Time
-	NextRetryAt *time.Time
-	LastError   *string
+	// SchemaVersion identifies the version of the message contract. Zero is
+	// retained for legacy unversioned entries.
+	SchemaVersion uint
+	Payload       json.RawMessage
+	Headers       json.RawMessage
+	Status        Status
+	Attempts      int
+	CreatedAt     time.Time
+	PublishedAt   *time.Time
+	NextRetryAt   *time.Time
+	LastError     *string
 }
 
 // HeadersMap returns the headers as a map. Returns nil if no headers are set.
@@ -107,8 +110,11 @@ type WriteParams struct {
 	RoutingKey  string
 	MessageID   string
 	MessageType string
-	Payload     json.RawMessage
-	Headers     map[string]string
+	// SchemaVersion is forwarded unchanged to the transport by the relay.
+	// Zero is valid for backwards-compatible unversioned messages.
+	SchemaVersion uint
+	Payload       json.RawMessage
+	Headers       map[string]string
 }
 
 // Writer writes outbox entries via an [Inserter]. Safe for concurrent
@@ -250,10 +256,11 @@ func (w *Writer) Write(ctx context.Context, params WriteParams) error {
 		return err
 	}
 	if err := w.sizeLimiter.Check(params.Topic, params.RoutingKey, messaging.Message{
-		ID:      params.MessageID,
-		Type:    params.MessageType,
-		Payload: params.Payload,
-		Headers: params.Headers,
+		ID:            params.MessageID,
+		Type:          params.MessageType,
+		SchemaVersion: params.SchemaVersion,
+		Payload:       params.Payload,
+		Headers:       params.Headers,
 	}); err != nil {
 		return err
 	}
@@ -264,16 +271,17 @@ func (w *Writer) Write(ctx context.Context, params WriteParams) error {
 	}
 
 	entry := Entry{
-		ID:          uuid.UUID(id.NewBytes()),
-		Topic:       params.Topic,
-		RoutingKey:  params.RoutingKey,
-		MessageID:   params.MessageID,
-		MessageType: params.MessageType,
-		Payload:     cloneRawMessage(params.Payload),
-		Headers:     headersJSON,
-		Status:      StatusPending,
-		Attempts:    0,
-		CreatedAt:   time.Now().UTC(),
+		ID:            uuid.UUID(id.NewBytes()),
+		Topic:         params.Topic,
+		RoutingKey:    params.RoutingKey,
+		MessageID:     params.MessageID,
+		MessageType:   params.MessageType,
+		SchemaVersion: params.SchemaVersion,
+		Payload:       cloneRawMessage(params.Payload),
+		Headers:       headersJSON,
+		Status:        StatusPending,
+		Attempts:      0,
+		CreatedAt:     time.Now().UTC(),
 	}
 
 	return w.store.Insert(ctx, entry)

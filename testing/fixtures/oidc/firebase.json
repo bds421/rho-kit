@@ -1,0 +1,1 @@
+{"issuer":"https://securetoken.google.com/project-id","subject":"firebase-user-123","audience":"project-id","claims":{"tenant":"tenant-1"},"note":"Verify Firebase-issued JWTs at the API boundary; browser sign-in is a Firebase client-SDK flow, not the kit browser OIDC RP."}

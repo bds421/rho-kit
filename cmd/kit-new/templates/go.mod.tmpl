@@ -17,5 +17,17 @@ require (
 {{- end}}{{if .Postgres}}
 	github.com/bds421/rho-kit/app/postgres/v2 {{.RhoVersion}}
 	github.com/bds421/rho-kit/infra/sqldb/pgx/v2 {{.RhoVersion}}
+{{- end}}{{if .Production}}
+	github.com/bds421/rho-kit/app/amqp/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/app/authz/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/app/jwt/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/app/tracing/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/authz/openfga/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/infra/outbox/postgres/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/infra/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/observability/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/observability/auditlog/postgres/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/security/v2 {{.RhoVersion}}
 {{- end}}
 ){{end}}

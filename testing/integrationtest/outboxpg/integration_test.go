@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"net"
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,9 +25,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/core/v2/id"
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
+	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
 	outboxpg "github.com/bds421/rho-kit/infra/outbox/postgres/v2"
+	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/infra/v2/outbox"
+	kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
 )
 
 func startPostgres(t *testing.T) string {
@@ -76,6 +81,256 @@ func mustEntry() outbox.Entry {
 		Status:      outbox.StatusPending,
 		CreatedAt:   time.Now().UTC(),
 	}
+}
+
+// TestInbox_AMQPAckAfterCommittedDeduplication is the durable consumer
+// reference proof: RabbitMQ delivers the same logical event twice, but the
+// inbox commits the domain effect exactly once and only then lets the AMQP
+// consumer ACK both deliveries. This exercises the actual broker + Postgres
+// boundary, not merely the store in isolation.
+func TestInbox_AMQPAckAfterCommittedDeduplication(t *testing.T) {
+	pool := openAndMigrate(t, startPostgres(t))
+	ctx := context.Background()
+	_, err := pool.Exec(ctx, `CREATE TABLE processed_events (message_id TEXT PRIMARY KEY)`)
+	require.NoError(t, err)
+
+	brokerURL := kittestamqp.Start(t)
+	conn, err := amqpbackend.Connect(brokerURL, slog.Default(), amqpbackend.WithoutTLS())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
+
+	binding, err := amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
+		Exchange:      "inbox.integration.exchange",
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: "inbox.integration.queue",
+		RoutingKey:    "inbox.integration.key",
+		WithoutRetry:  true,
+	})
+	require.NoError(t, err)
+	egressBinding, err := amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
+		Exchange:      "inbox.integration.egress",
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: "inbox.integration.egress.queue",
+		RoutingKey:    "example.completed",
+		WithoutRetry:  true,
+	})
+	require.NoError(t, err)
+	publisher := amqpbackend.NewPublisher(conn, slog.Default())
+	message, err := messaging.NewMessage("example.created", map[string]string{"id": "42"})
+	require.NoError(t, err)
+	require.NoError(t, publisher.Publish(ctx, binding.Exchange, binding.RoutingKey, message))
+	require.NoError(t, publisher.Publish(ctx, binding.Exchange, binding.RoutingKey, message))
+
+	inbox := outboxpg.NewInbox(pool)
+	outboxStore := outboxpg.New(pool)
+	writer := outbox.NewWriter(outboxStore, outboxpg.RequireTx)
+	consumer := amqpbackend.NewConsumer(conn, nil, slog.Default())
+	consumeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	acked := make(chan struct{})
+	go func() {
+		_ = consumer.ConsumeOnce(consumeCtx, binding, func(handlerCtx context.Context, d messaging.Delivery) error {
+			_, err := inbox.Process(handlerCtx, "example-created", d.Message.ID, func(txCtx context.Context) error {
+				tx, ok := outboxpg.TxFromContext(txCtx)
+				if !ok {
+					return errors.New("missing inbox transaction")
+				}
+				_, err := tx.Exec(txCtx, `INSERT INTO processed_events (message_id) VALUES ($1)`, d.Message.ID)
+				if err != nil {
+					return err
+				}
+				return writer.Write(txCtx, outbox.WriteParams{
+					Topic: egressBinding.Exchange, RoutingKey: egressBinding.RoutingKey,
+					MessageID: d.Message.ID + ".completed", MessageType: "example.completed",
+					Payload: json.RawMessage(`{"id":"42"}`),
+				})
+			})
+			if err == nil {
+				count, countErr := inbox.Count(handlerCtx)
+				if countErr == nil && count == 1 {
+					select {
+					case <-acked:
+					default:
+						close(acked)
+					}
+				}
+			}
+			return err
+		})
+	}()
+
+	select {
+	case <-acked:
+	case <-consumeCtx.Done():
+		t.Fatal("timed out waiting for durable inbox processing")
+	}
+
+	require.Eventually(t, func() bool {
+		ch, err := conn.Channel()
+		if err != nil {
+			return false
+		}
+		defer ch.Close()
+		_, ok, err := ch.Get(binding.ConsumerGroup, true)
+		return err == nil && !ok
+	}, 5*time.Second, 50*time.Millisecond, "both deliveries must be ACKed after inbox commit")
+
+	var effects int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM processed_events`).Scan(&effects))
+	assert.Equal(t, 1, effects, "duplicate delivery must not repeat domain work")
+	var receipts int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM inbox_entries`).Scan(&receipts))
+	assert.Equal(t, 1, receipts)
+
+	// A real relay publishes the event written inside the same inbox
+	// transaction. This completes the reference path rather than proving only
+	// the inbound half of the composition.
+	relay := outbox.NewRelay(outboxStore, outbox.NewMessagingPublisher(publisher), slog.Default(), outbox.WithPollInterval(10*time.Millisecond))
+	relayCtx, stopRelay := context.WithCancel(ctx)
+	relayDone := make(chan error, 1)
+	go func() { relayDone <- relay.Start(relayCtx) }()
+	require.Eventually(t, func() bool {
+		ch, err := conn.Channel()
+		if err != nil {
+			return false
+		}
+		defer ch.Close()
+		delivery, ok, err := ch.Get(egressBinding.ConsumerGroup, true)
+		return err == nil && ok && len(delivery.Body) > 0
+	}, 5*time.Second, 50*time.Millisecond, "outbox relay must publish committed inbox side effect")
+	stopRelay()
+	require.NoError(t, <-relayDone)
+}
+
+// TestInbox_AMQPFailedWorkRedelivers verifies the recovery side of the inbox
+// contract with real dependencies. A failed callback rolls back both the
+// receipt and local work, AMQP routes the delivery through its retry topology,
+// and only the subsequent successful transaction is ACKed and retained.
+func TestInbox_AMQPFailedWorkRedelivers(t *testing.T) {
+	pool := openAndMigrate(t, startPostgres(t))
+	ctx := context.Background()
+	_, err := pool.Exec(ctx, `CREATE TABLE retry_effects (message_id TEXT PRIMARY KEY)`)
+	require.NoError(t, err)
+
+	brokerURL := kittestamqp.Start(t)
+	conn, err := amqpbackend.Connect(brokerURL, slog.Default(), amqpbackend.WithoutTLS())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
+	binding, err := amqpbackend.DeclareAll(conn, messaging.BindingSpec{
+		Exchange:      "inbox.retry.exchange",
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: "inbox.retry.queue",
+		RoutingKey:    "inbox.retry.key",
+		Retry:         &messaging.RetryPolicy{MaxRetries: 1, Delay: 100 * time.Millisecond},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, binding)
+	publisher := amqpbackend.NewPublisher(conn, slog.Default())
+	message, err := messaging.NewMessage("example.retry", map[string]string{"id": "42"})
+	require.NoError(t, err)
+	require.NoError(t, publisher.Publish(ctx, binding[0].Exchange, binding[0].RoutingKey, message))
+
+	inbox := outboxpg.NewInbox(pool)
+	consumer := amqpbackend.NewConsumer(conn, publisher, slog.Default())
+	consumeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		_ = consumer.ConsumeOnce(consumeCtx, binding[0], func(handlerCtx context.Context, d messaging.Delivery) error {
+			attempt := calls.Add(1)
+			_, err := inbox.Process(handlerCtx, "example-retry", d.Message.ID, func(txCtx context.Context) error {
+				if attempt == 1 {
+					return errors.New("transient domain failure")
+				}
+				tx, ok := outboxpg.TxFromContext(txCtx)
+				if !ok {
+					return errors.New("missing inbox transaction")
+				}
+				_, err := tx.Exec(txCtx, `INSERT INTO retry_effects (message_id) VALUES ($1)`, d.Message.ID)
+				return err
+			})
+			if err == nil && attempt == 2 {
+				close(done)
+			}
+			return err
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-consumeCtx.Done():
+		t.Fatalf("timed out waiting for redelivery; calls=%d", calls.Load())
+	}
+	assert.Equal(t, int32(2), calls.Load(), "failed work must be redelivered once")
+	var effects, receipts int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM retry_effects`).Scan(&effects))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM inbox_entries WHERE consumer_name = 'example-retry'`).Scan(&receipts))
+	assert.Equal(t, 1, effects)
+	assert.Equal(t, 1, receipts, "failed attempt must not retain an inbox receipt")
+}
+
+// TestInbox_AMQPSchemaMismatchGoesToDLQ proves that contract validation is a
+// delivery boundary: an event with an unsupported schema version never claims
+// an inbox receipt or applies a domain mutation, and the configured AMQP
+// retry/DLQ topology leaves an operator-visible poison-message record.
+func TestInbox_AMQPSchemaMismatchGoesToDLQ(t *testing.T) {
+	pool := openAndMigrate(t, startPostgres(t))
+	ctx := context.Background()
+	brokerURL := kittestamqp.Start(t)
+	conn, err := amqpbackend.Connect(brokerURL, slog.Default(), amqpbackend.WithoutTLS())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
+
+	bindings, err := amqpbackend.DeclareAll(conn, messaging.BindingSpec{
+		Exchange: "inbox.schema.exchange", ExchangeType: messaging.ExchangeDirect,
+		ConsumerGroup: "inbox.schema.queue", RoutingKey: "schema.checked",
+		Retry: &messaging.RetryPolicy{MaxRetries: 1, Delay: 50 * time.Millisecond},
+	})
+	require.NoError(t, err)
+	binding := bindings[0]
+	publisher := amqpbackend.NewPublisher(conn, slog.Default())
+	poison, err := messaging.NewMessage("schema.checked", map[string]string{"unexpected": "field"})
+	require.NoError(t, err)
+	poison.SchemaVersion = 2 // only v1 is registered below.
+	require.NoError(t, publisher.Publish(ctx, binding.Exchange, binding.RoutingKey, poison))
+
+	registry := messaging.NewInMemorySchemaRegistry()
+	require.NoError(t, registry.Register("schema.checked", 1, []byte(`{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "type":"object", "required":["id"],
+  "properties":{"id":{"type":"string"}}, "additionalProperties":false
+}`)))
+	inbox := outboxpg.NewInbox(pool)
+	dead := make(chan struct{})
+	consumer := amqpbackend.NewConsumer(conn, publisher, slog.Default(), amqpbackend.WithHooks(amqpbackend.ConsumerHooks{
+		OnDeadLetter: func(_, _, _ string, _ int) { close(dead) },
+	}))
+	consumeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	go func() {
+		_ = consumer.Consume(consumeCtx, binding, func(_ context.Context, d messaging.Delivery) error {
+			if err := registry.ValidateMessage(d.Message); err != nil {
+				return err
+			}
+			return errors.New("schema-invalid message unexpectedly passed contract validation")
+		})
+	}()
+	select {
+	case <-dead:
+	case <-consumeCtx.Done():
+		t.Fatal("timed out waiting for schema-invalid event to reach DLQ")
+	}
+	count, err := inbox.Count(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, count, "schema-invalid event must not create an inbox receipt")
+	ch, err := conn.Channel()
+	require.NoError(t, err)
+	defer ch.Close()
+	delivery, ok, err := ch.Get(binding.DeadQueue, true)
+	require.NoError(t, err)
+	assert.True(t, ok, "schema-invalid event must be retained in the dead-letter queue")
+	assert.NotEmpty(t, delivery.Body)
 }
 
 // TestInsertWithTx_AtomicWithBusinessTx is the headline transactional
@@ -396,6 +651,193 @@ func TestRetentionDeletes(t *testing.T) {
 	pending, err := store.CountPending(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), pending)
+}
+
+// TestInboxProcess_AtomicWithDomainAndOutbox is the inbound counterpart to
+// TestInsertWithTx_AtomicWithBusinessTx. A committed delivery receipt, local
+// projection, and outgoing event are one Postgres transaction; a replay sees
+// the receipt and cannot run the application handler again.
+func TestInboxProcess_AtomicWithDomainAndOutbox(t *testing.T) {
+	dsn := startPostgres(t)
+	pool := openAndMigrate(t, dsn)
+	ctx := context.Background()
+	_, err := pool.Exec(ctx, `CREATE TABLE order_projection (id TEXT PRIMARY KEY)`)
+	require.NoError(t, err)
+
+	inbox := outboxpg.NewInbox(pool)
+	store := outboxpg.New(pool)
+	writer := outbox.NewWriter(store, outboxpg.RequireTx)
+
+	result, err := inbox.Process(ctx, "orders.billing", "delivery-1", func(txCtx context.Context) error {
+		tx, ok := outboxpg.TxFromContext(txCtx)
+		if !ok {
+			return errors.New("missing transaction in inbox handler")
+		}
+		if _, err := tx.Exec(txCtx, `INSERT INTO order_projection (id) VALUES ('order-1')`); err != nil {
+			return err
+		}
+		return writer.Write(txCtx, outbox.WriteParams{
+			Topic:       "orders",
+			RoutingKey:  "order.billing.completed",
+			MessageID:   "outbound-1",
+			MessageType: "OrderBillingCompleted",
+			Payload:     json.RawMessage(`{"id":"order-1"}`),
+		})
+	})
+	require.NoError(t, err)
+	assert.False(t, result.Duplicate)
+
+	var projections int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM order_projection`).Scan(&projections))
+	assert.Equal(t, 1, projections)
+	pending, err := store.CountPending(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, pending)
+	receipts, err := inbox.Count(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, receipts)
+
+	replayed, err := inbox.Process(ctx, "orders.billing", "delivery-1", func(context.Context) error {
+		return errors.New("duplicate must not invoke handler")
+	})
+	require.NoError(t, err)
+	assert.True(t, replayed.Duplicate)
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM order_projection`).Scan(&projections))
+	assert.Equal(t, 1, projections)
+}
+
+// TestInboxProcess_HandlerFailureRollsBackAndRedelivers proves a failed local
+// handler leaves neither receipt nor business data behind, so broker redelivery
+// can safely retry the same delivery ID.
+func TestInboxProcess_HandlerFailureRollsBackAndRedelivers(t *testing.T) {
+	dsn := startPostgres(t)
+	pool := openAndMigrate(t, dsn)
+	ctx := context.Background()
+	_, err := pool.Exec(ctx, `CREATE TABLE retry_projection (id TEXT PRIMARY KEY)`)
+	require.NoError(t, err)
+	inbox := outboxpg.NewInbox(pool)
+
+	want := errors.New("temporary domain failure")
+	_, err = inbox.Process(ctx, "orders.billing", "delivery-retry", func(txCtx context.Context) error {
+		tx, _ := outboxpg.TxFromContext(txCtx)
+		_, err := tx.Exec(txCtx, `INSERT INTO retry_projection (id) VALUES ('order-2')`)
+		if err != nil {
+			return err
+		}
+		return want
+	})
+	require.ErrorIs(t, err, want)
+
+	var projections int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM retry_projection`).Scan(&projections))
+	assert.Zero(t, projections)
+	receipts, err := inbox.Count(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, receipts)
+
+	retry, err := inbox.Process(ctx, "orders.billing", "delivery-retry", func(txCtx context.Context) error {
+		tx, _ := outboxpg.TxFromContext(txCtx)
+		_, err := tx.Exec(txCtx, `INSERT INTO retry_projection (id) VALUES ('order-2')`)
+		return err
+	})
+	require.NoError(t, err)
+	assert.False(t, retry.Duplicate)
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM retry_projection`).Scan(&projections))
+	assert.Equal(t, 1, projections)
+}
+
+// TestInboxProcessInTx_CallerRollbackLeavesNoReceipt covers the explicit
+// caller-owned variant: ProcessInTx does no hidden commit, so a surrounding
+// transaction can atomically abandon the receipt and all local effects.
+func TestInboxProcessInTx_CallerRollbackLeavesNoReceipt(t *testing.T) {
+	dsn := startPostgres(t)
+	pool := openAndMigrate(t, dsn)
+	ctx := context.Background()
+	_, err := pool.Exec(ctx, `CREATE TABLE caller_tx_projection (id TEXT PRIMARY KEY)`)
+	require.NoError(t, err)
+	inbox := outboxpg.NewInbox(pool)
+
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	require.NoError(t, err)
+	txCtx := outboxpg.WithTx(ctx, tx)
+	result, err := inbox.ProcessInTx(txCtx, "orders.billing", "delivery-caller-rollback", func(handlerCtx context.Context) error {
+		handlerTx, ok := outboxpg.TxFromContext(handlerCtx)
+		if !ok || handlerTx != tx {
+			return errors.New("handler did not receive caller transaction")
+		}
+		_, err := handlerTx.Exec(handlerCtx, `INSERT INTO caller_tx_projection (id) VALUES ('order-3')`)
+		return err
+	})
+	require.NoError(t, err)
+	assert.False(t, result.Duplicate)
+	require.NoError(t, tx.Rollback(ctx))
+
+	var projections int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM caller_tx_projection`).Scan(&projections))
+	assert.Zero(t, projections)
+	receipts, err := inbox.Count(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, receipts)
+}
+
+// TestInboxProcess_ConcurrentReplicasSerializeOneHandler holds one handler
+// open while a second replica tries the same delivery. The primary key causes
+// exactly one committed handler invocation and a normal duplicate result for
+// the other worker.
+func TestInboxProcess_ConcurrentReplicasSerializeOneHandler(t *testing.T) {
+	dsn := startPostgres(t)
+	pool := openAndMigrate(t, dsn)
+	inbox := outboxpg.NewInbox(pool)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	type outcome struct {
+		result outboxpg.InboxResult
+		err    error
+	}
+	first := make(chan outcome, 1)
+	second := make(chan outcome, 1)
+
+	go func() {
+		result, err := inbox.Process(context.Background(), "orders.billing", "delivery-race", func(context.Context) error {
+			close(entered)
+			<-release
+			return nil
+		})
+		first <- outcome{result, err}
+	}()
+	<-entered
+	go func() {
+		result, err := inbox.Process(context.Background(), "orders.billing", "delivery-race", func(context.Context) error {
+			return errors.New("second handler must not run")
+		})
+		second <- outcome{result, err}
+	}()
+	close(release)
+
+	gotFirst := <-first
+	gotSecond := <-second
+	require.NoError(t, gotFirst.err)
+	require.NoError(t, gotSecond.err)
+	assert.False(t, gotFirst.result.Duplicate)
+	assert.True(t, gotSecond.result.Duplicate)
+}
+
+func TestInboxPruneBefore(t *testing.T) {
+	dsn := startPostgres(t)
+	pool := openAndMigrate(t, dsn)
+	ctx := context.Background()
+	inbox := outboxpg.NewInbox(pool)
+
+	_, err := pool.Exec(ctx, `INSERT INTO inbox_entries (consumer_name, message_id, received_at) VALUES
+        ('orders.billing', 'old', NOW() - INTERVAL '48 hours'),
+        ('orders.billing', 'fresh', NOW())`)
+	require.NoError(t, err)
+	deleted, err := inbox.PruneBefore(ctx, time.Now().Add(-24*time.Hour))
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, deleted)
+	remaining, err := inbox.Count(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, remaining)
 }
 
 func tptr(t time.Time) *time.Time { return &t }

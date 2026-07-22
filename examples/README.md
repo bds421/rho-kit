@@ -28,6 +28,7 @@ README points at.
 | **api-gateway**        | Implemented    | `httpx/middleware/ratelimit`, stubbed JWT auth, `security/apikey` + `httpx/middleware/apikey` (opaque API-key route at `/api/keys-demo`), `resilience/{retry,circuitbreaker}` for downstream fan-out |
 | **realtime-broadcast** | Implemented    | `realtime/centrifuge`, `security/jwtutil`, `httpx` |
 | **saga-coordinator**   | Implemented    | `runtime/saga`, `data/idempotency`, per-key exclusive section (in-memory; pgadvisory in production) |
+| **production resource API** | Implemented via `kit-new -production` | JWT + canonical principal + OpenFGA + Postgres + RabbitMQ inbox/outbox + tracing + contracts |
 
 All six patterns now ship as compileable modules in this
 directory. Each has a smoke test that exercises the composition
@@ -55,3 +56,23 @@ one and apply the others:
 
 When a recipe above graduates to a real example, it adopts this
 same shape.
+
+## Production resource API reference
+
+The production resource API is deliberately generated rather than checked in a
+second, drifting service tree. `cmd/kit-new -production` is its readable
+source reference; `TestScaffold_ProductionProfileGeneratedTreeBuildsAndPasses`
+materializes that exact tree and builds it as a downstream module. The real
+Postgres + RabbitMQ lifecycle proof is
+`testing/integrationtest/outboxpg`: it exercises consume → schema validation
+→ inbox transaction → domain write → outbox relay, duplicate delivery,
+rollback/redelivery, DLQ handling, stale relay recovery, and concurrent
+replicas. Run it with:
+
+```bash
+go test -tags integration ./testing/integrationtest/outboxpg
+```
+
+This keeps the scaffold and reference behaviour one artifact: a change cannot
+make the documented production starting point differ from the buildable
+example shape.

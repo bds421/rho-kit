@@ -1,3 +1,5 @@
+github.com/bds421/rho-kit/authz/v2 v2.5.1 h1:5h8lA2xYAsdIsQMrGDO//L6+KaxZfPu0AQeuch+B1I8=
+github.com/bds421/rho-kit/authz/v2 v2.5.1/go.mod h1:wN6TN6kTqJTVCmT1ERIj40eVLSSVicrbvb+M3jHSJI4=
 github.com/bds421/rho-kit/core/v2 v2.5.1 h1:T/NHUHT4oLpvX/9PirjOU2A9BGpxtySU4kdmI+i8h1E=
 github.com/bds421/rho-kit/core/v2 v2.5.1/go.mod h1:Ju4C9UNb00iL9K8U//mPyB7qj1Vuo28GPOA6hFPPzhw=
 github.com/bds421/rho-kit/crypto/v2 v2.5.1 h1:HPeLAJ8p5vZ6Up+/KvXgiuoLfxHsZDEus0wJYufkKOs=

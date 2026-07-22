@@ -14,7 +14,7 @@ KIT_VERSION ?= latest
 SQLC_VERSION := v1.27.0
 {{- end}}
 
-.PHONY: build test lint fmt vet doctor{{if .Postgres}} sqlc migrate{{end}}{{if .MCP}} mcp-smoke{{end}}
+.PHONY: build test lint fmt vet doctor{{if .Postgres}} sqlc migrate{{end}}{{if .Production}} contracts{{end}}{{if .MCP}} mcp-smoke{{end}}
 
 build:
 	go build ./...
@@ -41,6 +41,13 @@ vet:
 
 doctor:
 	go run github.com/bds421/rho-kit/cmd/kit-doctor/v2@$(KIT_VERSION) .
+{{if .Production}}
+
+# Validate the committed OpenAPI/event contract bundle. In CI compare this
+# directory with a checked-out main/release baseline using kit-contract compare.
+contracts:
+	go run github.com/bds421/rho-kit/cmd/kit-contract/v2@$(KIT_VERSION) validate -dir contracts
+{{end}}
 {{if .Postgres}}
 # sqlc regenerates db/sqlc/*.go from the .sql files in db/queries/.
 # The generated code is checked in so CI doesn't need sqlc installed.

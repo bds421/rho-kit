@@ -112,9 +112,9 @@ func (s *Store) Insert(ctx context.Context, entry outbox.Entry) error {
 	}
 	const q = `
 INSERT INTO outbox_entries
-(id, topic, routing_key, message_id, message_type, payload, headers,
+(id, topic, routing_key, message_id, message_type, schema_version, payload, headers,
  status, attempts, created_at, updated_at, published_at, next_retry_at, last_error)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`
 	var (
 		headers   any
 		published any
@@ -138,7 +138,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
 		status = outbox.StatusPending
 	}
 	args := []any{
-		entry.ID, entry.Topic, entry.RoutingKey, entry.MessageID, entry.MessageType,
+		entry.ID, entry.Topic, entry.RoutingKey, entry.MessageID, entry.MessageType, entry.SchemaVersion,
 		[]byte(entry.Payload), headers, string(status), entry.Attempts,
 		createdAt.UTC(), createdAt.UTC(), published, nextRetry, lastErr,
 	}
@@ -205,12 +205,12 @@ updated AS (
         claim_token = gen_random_uuid()
     FROM ordered
     WHERE o.id = ordered.id
-    RETURNING o.id, o.topic, o.routing_key, o.message_id, o.message_type,
+    RETURNING o.id, o.topic, o.routing_key, o.message_id, o.message_type, o.schema_version,
               o.payload, o.headers, o.status, o.attempts, o.created_at,
               o.published_at, o.next_retry_at, o.last_error, o.claim_token,
               ordered.ord
 )
-SELECT id, topic, routing_key, message_id, message_type, payload, headers,
+SELECT id, topic, routing_key, message_id, message_type, schema_version, payload, headers,
        status, attempts, created_at, published_at, next_retry_at, last_error,
        claim_token
 FROM updated
@@ -553,22 +553,27 @@ type scannable interface {
 // it in the same UPDATE that transitions the row to 'processing'.
 func scanClaimedEntry(s scannable) (outbox.Entry, string, error) {
 	var (
-		e            outbox.Entry
-		payload      []byte
-		headers      []byte
-		status       string
-		publishedAt  *time.Time
-		nextRetryAt  *time.Time
-		lastErrorStr *string
-		token        uuid.UUID
+		e             outbox.Entry
+		schemaVersion int64
+		payload       []byte
+		headers       []byte
+		status        string
+		publishedAt   *time.Time
+		nextRetryAt   *time.Time
+		lastErrorStr  *string
+		token         uuid.UUID
 	)
 	if err := s.Scan(
-		&e.ID, &e.Topic, &e.RoutingKey, &e.MessageID, &e.MessageType,
+		&e.ID, &e.Topic, &e.RoutingKey, &e.MessageID, &e.MessageType, &schemaVersion,
 		&payload, &headers, &status, &e.Attempts, &e.CreatedAt,
 		&publishedAt, &nextRetryAt, &lastErrorStr, &token,
 	); err != nil {
 		return outbox.Entry{}, "", err
 	}
+	if schemaVersion < 0 {
+		return outbox.Entry{}, "", fmt.Errorf("outbox/postgres: negative schema version")
+	}
+	e.SchemaVersion = uint(schemaVersion)
 	e.Payload = json.RawMessage(payload)
 	if len(headers) > 0 {
 		e.Headers = json.RawMessage(headers)

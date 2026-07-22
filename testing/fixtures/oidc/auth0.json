@@ -1,0 +1,1 @@
+{"issuer":"https://tenant.eu.auth0.com/","subject":"auth0|user-123","audience":"orders-api","claims":{"org_id":"tenant-1","scope":"orders:read"}}

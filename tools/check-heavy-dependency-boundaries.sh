@@ -47,6 +47,7 @@ allowed_for_boundary_dep() {
         github.com/redis/go-redis/v9|github.com/alicebob/miniredis/v2|github.com/bds421/rho-kit/infra/redis/v2|github.com/bds421/rho-kit/infra/redis/redistest/v2)
             case "$gomod" in
                 app/redis/go.mod|\
+		auth/oauth2/redis/go.mod|\
                 data/budget/redis/go.mod|\
                 data/cache/rediscache/go.mod|\
                 data/idempotency/redisstore/go.mod|\
@@ -81,6 +82,7 @@ allowed_for_boundary_dep() {
                 data/cron/pgstore/go.mod|\
                 data/saga/pgstore/go.mod|\
                 infra/leaderelection/pgadvisory/go.mod|\
+		infra/inbox/postgres/go.mod|\
                 infra/outbox/postgres/go.mod|\
                 infra/sqldb/dbtest/go.mod|\
                 infra/sqldb/pgx/go.mod|\

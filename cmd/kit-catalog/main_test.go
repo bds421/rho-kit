@@ -200,6 +200,26 @@ func TestScanFleet_FindsMultipleServices(t *testing.T) {
 	assert.Equal(t, "github.com/example/svc-b", services[1].Module)
 }
 
+func TestBuildSupportReport_OrdersOldestServiceFirst(t *testing.T) {
+	report := buildSupportReport([]service{
+		{Module: "new", KitVersions: map[string]string{"github.com/bds421/rho-kit/httpx/v2": "v2.5.0"}},
+		{Module: "old", KitVersions: map[string]string{"github.com/bds421/rho-kit/httpx/v2": "v2.3.1"}},
+	}, "v2.5.0")
+	require.Len(t, report.Services, 2)
+	assert.Equal(t, "old", report.Services[0].Module)
+	assert.False(t, report.Services[0].Modules[0].Supported)
+	assert.Equal(t, 1, report.Services[0].Modules[0].UpgradePriority)
+	assert.True(t, report.Services[1].Modules[0].Supported)
+}
+
+func TestValidVersionAndComparison(t *testing.T) {
+	assert.True(t, validVersion("v2.5.0"))
+	assert.False(t, validVersion("v2.5"))
+	assert.False(t, validVersion("v2.5.0-rc1"))
+	assert.Less(t, compareVersion("v2.4.9", "v2.5.0"), 0)
+	assert.Greater(t, compareVersion("v2.6.0", "v2.5.0"), 0)
+}
+
 // TestManifest_JSONRoundTrip pins the on-the-wire shape so
 // fleet-operator tooling that consumes the output can rely on it.
 func TestManifest_JSONRoundTrip(t *testing.T) {

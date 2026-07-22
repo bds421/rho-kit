@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	kit-new SERVICE_NAME -module-path github.com/org/SERVICE_NAME [-dir ./SERVICE_NAME] [-mcp] [-postgres] [-tenant] [-rho-version vX.Y.Z]
+//	kit-new SERVICE_NAME -module-path github.com/org/SERVICE_NAME [-dir ./SERVICE_NAME] [-mcp] [-postgres] [-tenant] [-production] [-rho-version vX.Y.Z]
 //
 // Flags:
 //
@@ -50,6 +50,7 @@ func main() {
 	withMCP := flag.Bool("mcp", false, "scaffold a sample MCP tool registration in internal/app/wire.go")
 	withPostgres := flag.Bool("postgres", false, "scaffold the sqlc + pgx + goose data path (db/queries, db/migrations, sqlc.yaml, migrations package)")
 	withTenant := flag.Bool("tenant", false, "scaffold strict X-Tenant-Id extraction plus tenant-wrapped Redis cache and idempotency stores")
+	production := flag.Bool("production", false, "scaffold the resource-API production profile (JWT, OpenFGA, Postgres, RabbitMQ inbox/outbox, tracing, contracts)")
 	rhoVersion := flag.String("rho-version", "", "pin rho-kit module version in go.mod (e.g. v2.0.0); empty leaves go.mod without explicit require so go mod tidy resolves from imports")
 	leadingName, args := splitLeadingServiceName(os.Args[1:])
 	if err := flag.CommandLine.Parse(args); err != nil {
@@ -59,12 +60,12 @@ func main() {
 	name := leadingName
 	if name == "" {
 		if flag.NArg() != 1 {
-			fmt.Fprintln(os.Stderr, "usage: kit-new SERVICE_NAME -module-path github.com/org/SERVICE_NAME [-dir ./SERVICE_NAME] [-mcp] [-postgres] [-tenant] [-rho-version vX.Y.Z]")
+			fmt.Fprintln(os.Stderr, "usage: kit-new SERVICE_NAME -module-path github.com/org/SERVICE_NAME [-dir ./SERVICE_NAME] [-mcp] [-postgres] [-tenant] [-production] [-rho-version vX.Y.Z]")
 			os.Exit(2)
 		}
 		name = flag.Arg(0)
 	} else if flag.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: kit-new SERVICE_NAME -module-path github.com/org/SERVICE_NAME [-dir ./SERVICE_NAME] [-mcp] [-postgres] [-tenant] [-rho-version vX.Y.Z]")
+		fmt.Fprintln(os.Stderr, "usage: kit-new SERVICE_NAME -module-path github.com/org/SERVICE_NAME [-dir ./SERVICE_NAME] [-mcp] [-postgres] [-tenant] [-production] [-rho-version vX.Y.Z]")
 		os.Exit(2)
 	}
 	if err := ValidateServiceName(name); err != nil {
@@ -80,7 +81,7 @@ func main() {
 		out = "./" + name
 	}
 
-	p := Params{ServiceName: name, ModulePath: *modulePath, MCP: *withMCP, Postgres: *withPostgres, Tenant: *withTenant, RhoVersion: *rhoVersion}
+	p := Params{ServiceName: name, ModulePath: *modulePath, MCP: *withMCP, Postgres: *withPostgres, Tenant: *withTenant, Production: *production, RhoVersion: *rhoVersion}
 	if err := scaffold(out, p); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

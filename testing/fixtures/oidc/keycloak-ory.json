@@ -1,0 +1,1 @@
+{"issuer":"https://id.example.test/realms/rho","subject":"federated-user-123","audience":"orders-api","claims":{"organization":"tenant-1","scope":"orders:read"}}

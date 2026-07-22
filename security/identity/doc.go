@@ -1,3 +1,5 @@
-// Package identity defines transport-agnostic actor classification and audit
-// string formatting shared by httpx/middleware/auth and grpcx/interceptor.
+// Package identity defines the transport-agnostic canonical Principal, actor
+// classification, audit formatting, and authorization seam shared by HTTP and
+// gRPC auth. Use [Allow] for canonical authorization subjects and [AuditActor]
+// in HTTP audit middleware extractors.
 package identity

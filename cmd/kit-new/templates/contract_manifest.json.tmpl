@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "artifacts": [{
+    "id": "{{.ServiceName}}.http",
+    "owner": "{{.ServiceName}}",
+    "kind": "openapi",
+    "version": "1.0.0",
+    "path": "openapi.json",
+    "compatibility": {"mode": "backward"}
+  }, {
+    "id": "{{.ServiceName}}.command.processed",
+    "owner": "{{.ServiceName}}",
+    "kind": "event-jsonschema",
+    "version": "1.0.0",
+    "path": "events/command-processed.schema.json",
+    "schema_version": 1,
+    "compatibility": {"mode": "backward"}
+  }]
+}

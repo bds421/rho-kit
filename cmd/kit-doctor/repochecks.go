@@ -13,6 +13,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -34,7 +35,50 @@ func repoCheckers() []repoChecker {
 		checkDependencyAllowlist,
 		checkGoWorkSum,
 		checkServiceConfigEnvVars,
+		checkContractArtifacts,
 	}
+}
+
+// checkContractArtifacts handles only unambiguous repository shapes. A
+// service that has elected to create contracts/ must commit its manifest; the
+// production profile additionally embeds the exact published event schema, so
+// a byte mismatch is drift rather than a subjective policy decision.
+func checkContractArtifacts(root string) ([]rules.Finding, error) {
+	contractsDir := filepath.Join(root, "contracts")
+	info, err := os.Stat(contractsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat contracts: %w", err)
+	}
+	if !info.IsDir() {
+		return []rules.Finding{{Rule: "contract-artifacts-invalid", Severity: rules.High, File: contractsDir, Message: "contracts must be a directory", Suggestion: "create contracts/contracts.json and place contract artifacts beneath it"}}, nil
+	}
+	manifest := filepath.Join(contractsDir, "contracts.json")
+	if _, err := os.Stat(manifest); err != nil {
+		if os.IsNotExist(err) {
+			return []rules.Finding{{Rule: "contract-manifest-missing", Severity: rules.High, File: contractsDir, Message: "contracts directory has no contracts.json manifest", Suggestion: "commit the provider-neutral manifest and validate it with kit-contract"}}, nil
+		}
+		return nil, fmt.Errorf("stat contract manifest: %w", err)
+	}
+	published := filepath.Join(contractsDir, "events", "command-processed.schema.json")
+	embedded := filepath.Join(root, "internal", "app", "schemas", "command-processed.schema.json")
+	publishedBytes, pubErr := os.ReadFile(published)
+	embeddedBytes, embedErr := os.ReadFile(embedded)
+	if os.IsNotExist(pubErr) || os.IsNotExist(embedErr) {
+		return nil, nil // not the production profile's event shape.
+	}
+	if pubErr != nil {
+		return nil, fmt.Errorf("read published production event schema: %w", pubErr)
+	}
+	if embedErr != nil {
+		return nil, fmt.Errorf("read embedded production event schema: %w", embedErr)
+	}
+	if !bytes.Equal(publishedBytes, embeddedBytes) {
+		return []rules.Finding{{Rule: "contract-runtime-schema-drift", Severity: rules.High, File: embedded, Message: "embedded production event schema differs from contracts/events/command-processed.schema.json", Suggestion: "regenerate the production profile artifact so runtime validation and the published contract agree"}}, nil
+	}
+	return nil, nil
 }
 
 // runRepoCheckers invokes every repo-level checker against root and

@@ -178,13 +178,17 @@ go get github.com/bds421/rho-kit/httpx/v2
 - `app` – service bootstrap, infrastructure wiring, lifecycle, and graceful shutdown.
 - `core/config`, `core/apperror`, `core/validate`, `core/secret`, `core/tenant` – configuration, typed errors, validation, and focused primitives.
 - `httpx`, `httpx/middleware/*`, `httpx/healthhttp`, `httpx/pagination`, `httpx/mcp` – hardened HTTP servers, JSON helpers, middleware, health endpoints, pagination, and MCP handlers.
+- `cmd/kit-contract` – portable OpenAPI/event-schema artifacts and conservative compatibility checks for CI.
 - `authz`, `authz/openfga`, `httpx/authz` – authorization interfaces, OpenFGA adapter, and HTTP bridge.
-- `security/jwtutil`, `security/netutil`, `security/csrf`, `security/asvs` – JWT verification, mTLS/SSRF-safe networking, CSRF helpers, and ASVS scanning metadata.
+- `security/jwtutil`, `security/identity`, `security/netutil`, `security/csrf`, `security/asvs` – JWT verification and canonical principals, mTLS/SSRF-safe networking, CSRF helpers, and ASVS scanning metadata.
+- `auth/oauth2`, `auth/oauth2/redis` – provider-neutral browser OIDC and durable Redis session/state stores.
+- `app/oidc` – Builder composition for OIDC login/callback/logout routes and session-to-principal projection.
 - `crypto/encrypt`, `crypto/envelope`, `crypto/paseto`, `crypto/passhash`, `crypto/signing` – encryption, token, password, and request-signing primitives.
 - `infra/sqldb`, `infra/sqldb/pgx`, `infra/sqldb/dbtest` – SQL contracts, pgx backend, migrations, and Docker-backed DB test helper module.
 - `infra/redis`, `infra/redis/redistest` – resilient Redis connection management plus the split Docker-backed Redis test helper module.
 - `data/cache`, `data/cache/rediscache`, `data/idempotency`, `data/lock`, `data/queue`, `data/stream`, `data/ratelimit` – data interfaces, memory implementations, and optional Redis/Postgres adapters.
 - `infra/messaging`, `infra/messaging/amqpbackend`, `infra/messaging/redisbackend`, `infra/messaging/natsbackend` – message contracts, buffered delivery, RabbitMQ, Redis Streams, and NATS JetStream adapters.
+- `infra/inbox/postgres`, `infra/outbox`, `infra/outbox/postgres` – durable inbound deduplication plus transactional outbound delivery for at-least-once messaging.
 - `infra/storage` plus `s3backend`, `azurebackend`, `gcsbackend`, `sftpbackend`, `storagehttp/uploadsec`, `storagehttp/uploadsec/clamav`, `storagetest` – storage interfaces, cloud/SFTP/local backends, upload validation/scanning, and backend compliance tests.
 - `observability/health`, `observability/logging`, `observability/logattr`, `observability/redmetrics`, `observability/runtimemetrics`, `observability/slo`, `observability/pprof`, `observability/tracing` – health, logs, metrics, profiling, SLOs, and tracing.
 - `runtime/lifecycle`, `runtime/concurrency`, `runtime/eventbus`, `runtime/cron`, `runtime/batchworker` – lifecycle orchestration, worker patterns, eventing, and scheduling.

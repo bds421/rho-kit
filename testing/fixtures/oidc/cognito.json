@@ -1,0 +1,1 @@
+{"issuer":"https://cognito-idp.eu-west-1.amazonaws.com/pool","subject":"cognito-user-123","audience":"orders-api","claims":{"custom:tenant":"tenant-1","scope":"orders:read"}}

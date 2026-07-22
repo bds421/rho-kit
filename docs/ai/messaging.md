@@ -1,6 +1,6 @@
 # Messaging — Cross-Service Durable Messaging
 
-Packages: `infra/messaging` (interfaces), `infra/outbox` (transactional outbox), `infra/messaging/amqpbackend` (RabbitMQ), `infra/messaging/natsbackend` (NATS JetStream), `infra/messaging/kafkabackend` (Apache Kafka), `infra/messaging/redisbackend` (Redis Streams), `infra/messaging/membroker` (unit tests)
+Packages: `infra/messaging` (interfaces), `infra/inbox/postgres` (transactional inbound deduplication), `infra/outbox` (transactional outbox), `infra/messaging/amqpbackend` (RabbitMQ), `infra/messaging/natsbackend` (NATS JetStream), `infra/messaging/kafkabackend` (Apache Kafka), `infra/messaging/redisbackend` (Redis Streams), `infra/messaging/membroker` (unit tests)
 
 Snippet status: Go blocks in this recipe are illustrative fragments unless
 explicitly introduced as generated or executable code. Buildable golden-path
@@ -433,6 +433,46 @@ The relay polls pending rows, retries transient failures with exponential
 backoff, marks exhausted rows as failed, recovers stale processing rows, and
 cleans old published/failed rows on startup plus periodic cleanup ticks. Keep
 `WithFailedRetention` long enough for incident review.
+
+## Transactional Inbox
+
+Use `infra/inbox/postgres` at an at-least-once consumer boundary when the
+delivery receipt, local writes, and optional outbox records must commit
+together. `Process` starts the transaction; it returns `Duplicate: true` for
+an already committed `(consumer, messageID)` and does not invoke the handler.
+
+```go
+inbox := inboxpostgres.New(pool)
+store := outboxpostgres.New(pool)
+writer := outbox.NewWriter(store, outboxpostgres.RequireTx)
+
+result, err := inbox.Process(ctx, "orders.billing", delivery.ID, func(txCtx context.Context) error {
+    tx, _ := outboxpostgres.TxFromContext(txCtx)
+    if _, err := tx.Exec(txCtx, `INSERT INTO billing_projection ...`); err != nil {
+        return err
+    }
+    return writer.Write(txCtx, outbox.WriteParams{
+        Topic: "orders", RoutingKey: "billing.completed",
+        MessageID: delivery.ID, MessageType: "BillingCompleted", Payload: payload,
+    })
+})
+if err != nil {
+    return err // do not ACK: the broker may redeliver
+}
+if result.Duplicate {
+    return nil // ACK: this consumer already committed the delivery
+}
+return nil // ACK only after this successful return
+```
+
+For a caller-owned wider transaction, put its `pgx.Tx` in the context with
+`outboxpostgres.WithTx` and call `ProcessInTx`; the caller then commits or
+rolls back. Run `PruneBefore` as a scheduled retention task and monitor the
+retained receipt count. `Inbox.HealthCheck()` is critical readiness because a
+consumer must not ACK without durable receipts; the default Prometheus metrics
+are `inbox_processed_total`, `inbox_duplicates_total`, and
+`inbox_failures_total` (none use untrusted delivery labels). This provides effectively-once local effects, not
+exactly-once effects against external systems.
 
 ## Debug HTTP Handlers (AMQP)
 

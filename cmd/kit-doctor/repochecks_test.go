@@ -211,6 +211,25 @@ func TestCheckServiceConfigEnvVars_NoFileSkips(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
+func TestCheckContractArtifacts_FlagsMissingManifestAndRuntimeDrift(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "contracts"), 0o700))
+	findings, err := checkContractArtifacts(dir)
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "contract-manifest-missing", findings[0].Rule)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "contracts", "contracts.json"), []byte(`{"format":1}`), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "contracts", "events"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "app", "schemas"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "contracts", "events", "command-processed.schema.json"), []byte(`{"type":"object"}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "app", "schemas", "command-processed.schema.json"), []byte(`{"type":"string"}`), 0o600))
+	findings, err = checkContractArtifacts(dir)
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "contract-runtime-schema-drift", findings[0].Rule)
+}
+
 // TestRunRepoCheckers_SurfacesErrorAsWarningFinding pins the
 // recovery contract: a checker that returns an error is reported as
 // a single Warning-severity finding rather than aborting the run.

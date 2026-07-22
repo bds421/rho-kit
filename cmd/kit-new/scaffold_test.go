@@ -362,6 +362,29 @@ func TestScaffold_AllFeaturesGeneratedTreeBuildsAndPasses(t *testing.T) {
 	runScaffoldBuildTest(t, Params{Postgres: true, MCP: true, Tenant: true})
 }
 
+func TestScaffold_ProductionProfileGeneratedTreeBuildsAndPasses(t *testing.T) {
+	runScaffoldBuildTest(t, Params{Production: true})
+}
+
+func TestScaffold_ProductionProfileWritesVisiblePlatformArtifacts(t *testing.T) {
+	out := t.TempDir()
+	require.NoError(t, scaffold(out, Params{ServiceName: "demo", ModulePath: "example.com/demo", Production: true}))
+	for _, path := range []string{
+		"internal/app/consumer.go", "db/migrations/00002_processed_commands.sql",
+		"contracts/contracts.json", "contracts/openapi.json", "contracts/events/command-processed.schema.json",
+		"internal/app/schemas/command-processed.schema.json", ".env.example",
+	} {
+		_, err := os.Stat(filepath.Join(out, path))
+		require.NoError(t, err, "production profile must write %s", path)
+	}
+	wire, err := os.ReadFile(filepath.Join(out, "internal/app/wire.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(wire), "kitjwt.Module(")
+	assert.Contains(t, string(wire), "openfga.New(")
+	assert.Contains(t, string(wire), "kitamqp.Module(")
+	assert.Contains(t, string(wire), "httpauth.JWT(")
+}
+
 // runScaffoldBuildTest scaffolds a fresh tree, points the kit
 // require at the local checkout (the only practical way to run a
 // downstream-style build before the kit publishes a tag), then runs
@@ -384,6 +407,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		MCP:         opts.MCP,
 		Postgres:    opts.Postgres,
 		Tenant:      opts.Tenant,
+		Production:  opts.Production,
 	}))
 
 	repoRoot, err := filepath.Abs("../..")
@@ -425,6 +449,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		"app/tenant",
 		"app/tracing",
 		"authz",
+		"authz/openfga",
 		"core",
 		"crypto",
 		"data",
@@ -446,6 +471,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		// satisfy build-time imports against the local checkout.
 		"infra/messaging/amqpbackend",
 		"infra/messaging/natsbackend",
+		"infra/outbox/postgres",
 		"infra/redis",
 		"infra/sqldb/pgx",
 	}

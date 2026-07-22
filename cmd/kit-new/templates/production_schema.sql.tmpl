@@ -1,0 +1,6 @@
+-- The production-profile durable consumer inserts this receipt-domain row in
+-- the same transaction as inbox_entries and the outgoing outbox event.
+CREATE TABLE IF NOT EXISTS processed_commands (
+    message_id TEXT PRIMARY KEY,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

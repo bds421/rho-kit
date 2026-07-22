@@ -5,7 +5,8 @@ Packages: `crypto/encrypt`, `crypto/envelope`, `crypto/envelope/awskms`,
 `crypto/envelope/vaulttransit`, `crypto/signing`,
 `security/jwtutil`, `security/jwtutil/revocation`, `security/apikey`,
 `data/apikey/postgres`, `httpx/middleware/apikey`, `app/apikey`,
-`crypto/masking`, `security/netutil`, `security/mtlsidentity`, `security/asvs`
+`auth/oauth2`, `auth/oauth2/redis`, `security/identity`, `crypto/masking`,
+`security/netutil`, `security/mtlsidentity`, `security/asvs`
 
 Snippet status: Go and JavaScript blocks in this recipe are illustrative
 fragments unless explicitly introduced as generated or executable code.
@@ -22,6 +23,8 @@ Buildable golden-path evidence lives in `cmd/kit-new` scaffold tests and
 | Sign/verify webhooks | `crypto/signing` (HMAC-SHA256) |
 | Sign service-to-service HTTP requests with replay protection | `httpx/sign` + `httpx/middleware/signedrequest` |
 | Verify JWTs from a JWKS endpoint | `security/jwtutil` |
+| Browser OIDC login across replicas | `auth/oauth2` + `auth/oauth2/redis` |
+| Project a verified identity for HTTP/gRPC/audit | `security/identity` |
 | Revoke JWTs after logout | `security/jwtutil/revocation` |
 | Issue/verify opaque API keys for external/customer access | `security/apikey` + `httpx/middleware/apikey` + `app/apikey` |
 | Persist API keys | `data/apikey/postgres` (or `apikey.NewMemoryRepository`) |
@@ -259,6 +262,58 @@ provider := jwtutil.NewProviderWithKeySet(ks, // no HTTP fetch
     jwtutil.WithExpectedIssuer("https://issuer.test"),
     jwtutil.WithExpectedAudience("test-audience"),
 )
+```
+
+## Browser OIDC and Canonical Principal
+
+For a browser/BFF service, use `app/oidc` plus `auth/oauth2/redis` for the
+standards flow, server-side session, and callback state. `app/oidc` rejects
+memory session/state stores unless `WithInMemoryStoresForTesting()` is passed
+explicitly, so a production browser deployment cannot accidentally lose login
+state during replica changes. This works with generic OIDC providers such as Auth0, Keycloak/Ory,
+Cognito, and Google without provider SDKs. Firebase browser sign-in is a
+client-SDK flow; verify the Firebase-issued JWT at an API boundary with the
+normal JWKS path instead of treating it as an OIDC browser RP.
+
+```go
+redisStore := oauth2redis.New(redisClient, oauth2redis.WithPrefix("orders:oidc:"))
+oidcModule := appoidc.Module(oauth2.Config{
+    Issuer: "https://issuer.example.com", ClientID: cfg.OIDCClientID,
+    ClientSecret: secret.NewFromString(cfg.OIDCClientSecret),
+    RedirectURL: "https://app.example.com/oauth/callback",
+},
+    appoidc.WithSessionStore(redisStore.SessionStore()),
+    appoidc.WithStateStore(redisStore.States()),
+)
+app.New("orders", version, base).With(oidcModule).Router(...).Run()
+```
+
+`security/identity.Principal` is the provider-neutral object stamped by the
+HTTP and gRPC authentication paths. Build a `MappingProfile` to opt in to
+specific verified provider claims; the zero profile maps only the verified
+subject. It never exposes an unbounded raw claim map or a bearer token to
+business handlers. Keep Redis protected with TLS/authentication and never log
+stored session values.
+
+### Service-to-service OAuth
+
+Use `oauth2.NewClientCredentials` for outbound OAuth client-credentials
+tokens. It caches a token until shortly before expiry and serializes refresh
+work, so concurrent callers do not stampede the token endpoint. Register it
+as a `runtime/lifecycle.Component` to refresh independently of request load;
+`HealthCheck()` is a critical readiness dependency. It emits bounded
+cache-hit, refresh-success, refresh-failure, and refresh-latency metrics and
+never labels them with client IDs or token material.
+
+```go
+tokens, err := oauth2.NewClientCredentials(oauth2.ClientCredentialsConfig{
+    TokenURL: cfg.TokenURL, ClientID: cfg.ClientID,
+    ClientSecret: secret.NewFromString(cfg.ClientSecret),
+    Scopes: []string{"orders.write"},
+})
+if err != nil { return err }
+token, err := tokens.Token(ctx) // refresh observes ctx deadline/cancellation
+req.Header.Set("Authorization", token.Type()+" "+token.AccessToken)
 ```
 
 ## API Keys (Opaque, External-Facing)

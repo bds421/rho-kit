@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-short test-race test-integration test-cover build tidy fmt vet clean help ci ci-fast release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-tidy check-release-team bench check-bench-regression update-bench-baseline
+.PHONY: lint vulncheck test test-short test-race test-integration test-cover build tidy fmt vet clean help ci ci-fast release-candidate kit-doctor kit-contract release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-tidy check-release-team bench check-bench-regression update-bench-baseline
 
 GOLANGCI_LINT_VERSION := v2.10.1
 GOVULNCHECK_VERSION  ?= v1.1.4
@@ -109,6 +109,10 @@ ci-fast: check-no-binaries check-dependency-allowlist check-dependency-boundarie
 ## kit-doctor: Run strict critical kit-doctor checks against this repository
 kit-doctor:
 	@go run ./cmd/kit-doctor -format=json -strict=critical .
+
+## kit-contract: Validate the repository's contract bundle when present
+kit-contract:
+	@test ! -f contracts.json || go run ./cmd/kit-contract validate -dir .
 
 ## release-candidate: Run the full pre-release quality gate
 release-candidate: ci vulncheck test-integration test-cover kit-doctor

@@ -81,6 +81,7 @@ func Registered() []Rule {
 		jwtMissingClaimsRule{},
 		idempotencyMissingUserExtractorRule{},
 		idempotencyMemoryStoreRule{},
+		oidcMemoryStoreRule{},
 		tenantKeyPrefixRule{},
 		defaultHTTPClientRule{},
 		httpServerMissingErrorLogRule{},

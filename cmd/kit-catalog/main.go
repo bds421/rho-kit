@@ -92,15 +92,42 @@ type manifest struct {
 	Services     []service `json:"services"`
 }
 
+// supportReport turns an inventory into an actionable fleet upgrade view.
+// A module pin below RequiredVersion is unsupported; the ordered Services list
+// puts the furthest-behind services first so rollout owners have one stable
+// starting point.
+type supportReport struct {
+	ScannedAt       string          `json:"scanned_at"`
+	RequiredVersion string          `json:"required_version"`
+	Services        []serviceReport `json:"services"`
+}
+
+type serviceReport struct {
+	Module  string          `json:"module"`
+	Path    string          `json:"path"`
+	Modules []moduleSupport `json:"modules"`
+}
+
+type moduleSupport struct {
+	Module          string `json:"module"`
+	Version         string `json:"version"`
+	Supported       bool   `json:"supported"`
+	UpgradePriority int    `json:"upgrade_priority"`
+}
+
 func main() {
 	var (
 		fleet      string
 		usesFilter string
 		format     string
+		report     bool
+		required   string
 	)
 	flag.StringVar(&fleet, "fleet", "", "Scan every immediate subdirectory with a go.mod (default: scan the current directory as a single service).")
 	flag.StringVar(&usesFilter, "uses", "", "Filter to services that import this kit package (exact import path).")
 	flag.StringVar(&format, "format", "json", "Output format: json | table | csv.")
+	flag.BoolVar(&report, "report", false, "Emit a fleet support report ordered by upgrade priority.")
+	flag.StringVar(&required, "required-version", "", "Required rho-kit release baseline for -report (for example v2.5.0).")
 	flag.Parse()
 
 	var services []service
@@ -135,6 +162,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	if report {
+		if required == "" || !validVersion(required) {
+			fail("-report requires -required-version in vMAJOR.MINOR.PATCH form")
+		}
+		r := buildSupportReport(services, required)
+		var emitErr error
+		switch format {
+		case "json":
+			emitErr = emitJSON(os.Stdout, r)
+		case "table":
+			emitErr = emitSupportTable(os.Stdout, r)
+		default:
+			fail("-report supports -format json|table")
+		}
+		if emitErr != nil {
+			fail("write %s support report: %v", format, emitErr)
+		}
+		return
+	}
+
 	m := manifest{
 		ScannedAt:    time.Now().UTC().Format(time.RFC3339),
 		ServiceCount: len(services),
@@ -154,6 +201,88 @@ func main() {
 	if emitErr != nil {
 		fail("write %s manifest: %v", format, emitErr)
 	}
+}
+
+func buildSupportReport(services []service, required string) supportReport {
+	report := supportReport{ScannedAt: time.Now().UTC().Format(time.RFC3339), RequiredVersion: required}
+	for _, svc := range services {
+		entry := serviceReport{Module: svc.Module, Path: svc.Path}
+		for mod, version := range svc.KitVersions {
+			entry.Modules = append(entry.Modules, moduleSupport{
+				Module: mod, Version: version, Supported: compareVersion(version, required) >= 0,
+			})
+		}
+		sort.Slice(entry.Modules, func(i, j int) bool { return entry.Modules[i].Module < entry.Modules[j].Module })
+		report.Services = append(report.Services, entry)
+	}
+	sort.Slice(report.Services, func(i, j int) bool {
+		return serviceVersionFloor(report.Services[i]) < serviceVersionFloor(report.Services[j])
+	})
+	for i := range report.Services {
+		for j := range report.Services[i].Modules {
+			report.Services[i].Modules[j].UpgradePriority = i + 1
+		}
+	}
+	return report
+}
+
+func serviceVersionFloor(s serviceReport) string {
+	if len(s.Modules) == 0 {
+		return "v999.999.999"
+	}
+	floor := s.Modules[0].Version
+	for _, module := range s.Modules[1:] {
+		if compareVersion(module.Version, floor) < 0 {
+			floor = module.Version
+		}
+	}
+	return floor
+}
+
+func validVersion(v string) bool {
+	if !strings.HasPrefix(v, "v") {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(v, "v"), ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// compareVersion compares stable vMAJOR.MINOR.PATCH versions. Catalog reports
+// intentionally reject prerelease versions at flag validation rather than
+// giving them a misleading production-support verdict.
+func compareVersion(a, b string) int {
+	parse := func(v string) [3]int {
+		var out [3]int
+		for i, part := range strings.Split(strings.TrimPrefix(v, "v"), ".") {
+			for _, r := range part {
+				out[i] = out[i]*10 + int(r-'0')
+			}
+		}
+		return out
+	}
+	av, bv := parse(a), parse(b)
+	for i := range av {
+		if av[i] < bv[i] {
+			return -1
+		}
+		if av[i] > bv[i] {
+			return 1
+		}
+	}
+	return 0
 }
 
 func scanFleet(root string) ([]service, error) {
@@ -357,7 +486,7 @@ func filterByImport(services []service, target string) []service {
 	return out
 }
 
-func emitJSON(out io.Writer, m manifest) error {
+func emitJSON(out io.Writer, m any) error {
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(m); err != nil {
@@ -396,6 +525,27 @@ func emitTable(out io.Writer, m manifest) error {
 		}
 		if _, err := fmt.Fprintln(out); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func emitSupportTable(out io.Writer, report supportReport) error {
+	if _, err := fmt.Fprintf(out, "kit-catalog support report: baseline %s; %d service(s) scanned at %s\n\n", report.RequiredVersion, len(report.Services), report.ScannedAt); err != nil {
+		return err
+	}
+	for _, service := range report.Services {
+		if _, err := fmt.Fprintf(out, "== %s\n   path: %s\n", service.Module, service.Path); err != nil {
+			return err
+		}
+		for _, module := range service.Modules {
+			status := "supported"
+			if !module.Supported {
+				status = "upgrade required"
+			}
+			if _, err := fmt.Fprintf(out, "   [%d] %s @ %s — %s\n", module.UpgradePriority, module.Module, module.Version, status); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

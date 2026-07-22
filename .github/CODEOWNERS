@@ -19,6 +19,12 @@ tools/release-version.sh @bds421/security
 tools/rehearse-v2-release.sh @bds421/security
 tools/check-release-team.sh @bds421/security
 
+# Security implementation surfaces.
+crypto/ @bds421/security
+security/ @bds421/security
+authz/ @bds421/security
+SECURITY.md @bds421/security
+
 # NOTE: This file is non-functional until the @bds421/security team exists in
 # the GitHub org AND branch protection on main requires CODEOWNERS reviews.
 # Run `make check-release-team` to verify both before tagging v2.0.0;

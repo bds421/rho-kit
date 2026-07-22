@@ -94,6 +94,11 @@ type Params struct {
 	// shared scoped-key encoder instead of hand-rolled prefixes. v2.0.0
 	// moved Redis wiring out of app/v2 into app/redis.
 	Tenant bool
+	// Production enables the explicit resource-API baseline: Postgres,
+	// RabbitMQ, JWT/JWKS verification, OpenFGA authorization, transactional
+	// inbox/outbox, tracing, and committed contract artifacts. It deliberately
+	// selects resource JWT auth; browser apps opt into app/oidc separately.
+	Production bool
 }
 
 // DefaultGoVersion is the bare major.minor line emitted into the
@@ -141,6 +146,13 @@ var templateFile = []struct {
 	{"db_query_sample.sql.tmpl", "db/queries/users.sql", "Postgres"},
 	{"db_schema_sample.sql.tmpl", "db/migrations/00001_users.sql", "Postgres"},
 	{"db_migrations_pkg.go.tmpl", "db/migrations/migrations.go", "Postgres"},
+	{"production_consumer.go.tmpl", "internal/app/consumer.go", "Production"},
+	{"production_schema.sql.tmpl", "db/migrations/00002_processed_commands.sql", "Production"},
+	{"contract_manifest.json.tmpl", "contracts/contracts.json", "Production"},
+	{"contract_openapi.json.tmpl", "contracts/openapi.json", "Production"},
+	{"contract_event.json.tmpl", "contracts/events/command-processed.schema.json", "Production"},
+	{"contract_event.json.tmpl", "internal/app/schemas/command-processed.schema.json", "Production"},
+	{"production_env.tmpl", ".env.example", "Production"},
 }
 
 type plannedFile struct {
@@ -152,6 +164,9 @@ type plannedFile struct {
 // scaffold writes the generated tree into outDir. It refuses to overwrite
 // existing files and preflights every destination before creating anything.
 func scaffold(outDir string, p Params) error {
+	if p.Production {
+		p.Postgres = true
+	}
 	if err := ValidateServiceName(p.ServiceName); err != nil {
 		return err
 	}
@@ -339,11 +354,13 @@ func renderString(t *template.Template, data any) (string, error) {
 // field name like "Postgres" or "MCP") is true. Unknown gate names
 // panic — they indicate a code-side typo, not a runtime user error.
 func gateActive(p Params, gate string) bool {
-	// Only Postgres uses the row-level gate list; MCP/Tenant are handled
-	// inside templates via {{if .MCP}} / {{if .Tenant}} (review-24).
+	// MCP/Tenant are handled inside shared templates; file-level gates keep
+	// database and production-only artifacts out of the smaller profiles.
 	switch gate {
 	case "Postgres":
 		return p.Postgres
+	case "Production":
+		return p.Production
 	default:
 		panic("kit-new: unknown template gate")
 	}

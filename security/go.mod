@@ -9,6 +9,7 @@ module github.com/bds421/rho-kit/security/v2
 go 1.26.2
 
 require (
+	github.com/bds421/rho-kit/authz/v2 v2.5.1
 	github.com/bds421/rho-kit/core/v2 v2.5.1
 	github.com/bds421/rho-kit/crypto/v2 v2.5.1
 	github.com/bds421/rho-kit/resilience/v2 v2.5.1

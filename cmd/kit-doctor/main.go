@@ -64,18 +64,27 @@ func main() {
 		fmt.Fprintf(os.Stderr, "kit-doctor: scan: %v\n", err)
 		os.Exit(2)
 	}
+	// Repository-shaped policy checks are part of the normal report and exit
+	// status, not merely an interactive convenience. Otherwise CI JSON could
+	// report a clean scan while missing a high-severity repository finding.
+	findings = append(findings, runRepoCheckers(path, repoCheckers())...)
 
 	switch *format {
 	case "json":
-		_ = json.NewEncoder(os.Stdout).Encode(findings)
+		suppressions, err := suppressionInventory(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kit-doctor: suppression inventory: %v\n", err)
+			os.Exit(2)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(newReport(path, *strict, findings, suppressions))
 	default:
 		fmt.Print(formatFindings(findings))
 	}
 
 	// Interactive mode prompts for every finding that carries a Fix —
 	// AST-rule findings from scan() (e.g. auth-identity drift) plus
-	// repo-level checkers. Repo findings without a prior text/json
-	// appearance still print at the prompt so operators see them.
+	// Repository findings are already included in the normal report, so use
+	// the same unified list here instead of rerunning them.
 	if *interactive {
 		var fixable []rules.Finding
 		for _, f := range findings {
@@ -83,8 +92,6 @@ func main() {
 				fixable = append(fixable, f)
 			}
 		}
-		repoFindings := runRepoCheckers(path, repoCheckers())
-		fixable = append(fixable, repoFindings...)
 		res := runInteractiveSession(os.Stdin, os.Stdout, fixable)
 		// Unresolved fixable findings + remaining non-fixable scan
 		// findings drive the exit code.

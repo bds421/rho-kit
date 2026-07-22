@@ -127,6 +127,7 @@ whole catalog.
 | **B2B webhook receiver** (Stripe, GitHub, etc. push to us) | [examples/webhook-receiver](examples/webhook-receiver) | `signedrequest.Middleware` + `signedrequest.NewMemoryNonceStore` (or Redis) + `httpx/middleware/idempotency` + `data/idempotency/pgstore` + typed JSON handler + optionally `infra/outbox` for crash-safe downstream dispatch |
 | **Async background worker** (consumes a queue, processes, retries) | [examples/background-worker](examples/background-worker) | `messaging.TypedSubscription[T]` + a backend Consumer (`amqpbackend` / `kafkabackend` / `natsbackend` / `redisbackend`) + `resilience/circuitbreaker` + `resilience/retry` + `runtime/lifecycle.Runner` |
 | **Browser real-time** (live updates, presence, chat) | [examples/realtime-broadcast](examples/realtime-broadcast) | `realtime/centrifuge.NewNode` + `security/jwtutil.Provider` + `centrifuge.WithChannelClassifier` + `lifecycle.Component` wiring + optionally Redis presence backend |
+| **Browser/BFF OIDC application** (server-side login session) | manual wiring on `app.Builder` | `app/oidc.Module` + `auth/oauth2/redis.New` for durable session/state + `security/identity.Principal`; use `app/jwt.Module` instead for a resource API |
 | **Multi-step transactional workflow** (saga: reserve → charge → ship → compensate on fail) | [examples/saga-coordinator](examples/saga-coordinator) | In-memory: `runtime/saga.Run` + `data/idempotency.Store` (pgstore in prod) + `data/lock/pgadvisory.AcquireTx` + optionally `infra/outbox` for crash-safe step-event dispatch. Durable (crash-recovery, multi-replica): `runtime/saga.DurableExecutor` + `data/saga/pgstore.New` |
 | **gRPC service** (internal RPC, server-streaming) | manual wiring on `app.Builder` | `app/grpc.Module` + `grpcx/interceptor.MaxConcurrentStreamsServer` + `grpcx/interceptor.StreamIdleTimeout` + `resilience/retry` for downstream clients |
 | **Leader-elected periodic job** (cron-on-one-replica only) | manual wiring | `runtime/cron.Scheduler` + `cron.WithLeaderGate(elector.IsLeader)` + `infra/leaderelection/{pgadvisory \| k8slease \| etcd \| redislock}` |
@@ -158,10 +159,12 @@ row you start from:
   / gRPC / messaging boundary.
 - **Run `kit-doctor` before merging** — catches the dozen
   most-common misuses (missing JWT claims, idempotency
-  in-memory in production, missing rate-limit, etc.). The
-  rule list is exhaustive and the suppression markers are
-  documented.
-- **Run `kit-catalog`** at the fleet level when a kit version
+  in-memory in production, missing rate-limit, etc.). Its `-format=json`
+  output is the versioned `rho-kit-doctor/v1` CI report. The
+  report inventories inline suppressions, including owner/reason/review and
+  security-posture metadata when supplied; see [the incremental CI
+  baseline](docs/ai/ci.md).
+- **Run `kit-catalog -report -required-version vX.Y.Z`** at the fleet level when a kit version
   changes — answers "which services pin which kit modules
   where" without grep.
 
@@ -206,7 +209,9 @@ row you start from:
 | Sign/verify webhooks (HMAC) | `crypto/signing` | [security](docs/ai/security.md) |
 | Verify JWTs (JWKS) | `security/jwtutil` | [security](docs/ai/security.md) |
 | Revoke JWTs after logout | `security/jwtutil/revocation` | [security](docs/ai/security.md) |
-| OAuth2 / OIDC relying-party client (login via Auth0 / Keycloak / Cognito / Google / Okta) | `auth/oauth2` (NewClient + Handlers; PKCE on by default; state/nonce CSRF guards; stdlib-only) | [security](docs/ai/security.md) |
+| OAuth2 / OIDC relying-party client (login via Auth0 / Keycloak / Cognito / Google / Okta) | `app/oidc` + `auth/oauth2/redis` for multi-replica browser sessions (PKCE, state/nonce CSRF guards, `/oauth/*` routes); use raw `auth/oauth2` for custom mounts | [security](docs/ai/security.md) |
+| Obtain outbound OAuth client-credentials token | `auth/oauth2.NewClientCredentials` (lifecycle component; deadline-safe serialized refresh + health/metrics) | [security](docs/ai/security.md) |
+| Read the canonical authenticated principal | `security/identity` (`FromContext`; mapped verified claims only) | [security](docs/ai/security.md) |
 | mTLS between services | `security/netutil` | [security](docs/ai/security.md) |
 | Prevent SSRF | `security/netutil` | [security](docs/ai/security.md) |
 | Validate structs | `core/validate` | [utilities](docs/ai/utilities.md) |
@@ -260,12 +265,14 @@ row you start from:
 | Tamper-evident audit log (implementation: HMAC chain, Store, VerifyChain) | `observability/auditlog` (in-process `MemoryStore`) → `observability/auditlog/postgres` (durable, schema via `cmd/kit-migrate auditlog`) | [observability](docs/ai/observability.md) |
 | Tamper-evident audit log (Builder wiring as an app.Module) | `app/auditlog` (thin bridge; pass to `app.Builder.With(...)`) | [observability](docs/ai/observability.md) |
 | Transactional outbox (at-least-once messaging, DB + broker) | `infra/outbox` (Relay) + `infra/outbox/postgres` (durable Store; schema via `cmd/kit-migrate outbox`; `WithTx`/`RequireTx` for caller-tx atomicity) | [messaging](docs/ai/messaging.md) |
+| Transactional inbox (dedupe inbound delivery + local work in one DB transaction) | `infra/inbox/postgres` (`Process` / `ProcessInTx`; schema is co-published by `cmd/kit-migrate outbox`) | [messaging](docs/ai/messaging.md) |
 | Distributed tracing helpers | `observability/tracing` | [observability](docs/ai/observability.md) |
 | RFC 7807 problem-details responses | `httpx/problemdetails` | [http](docs/ai/http.md) |
 | OpenAPI helpers | `httpx/openapi` | [http](docs/ai/http.md) |
+| Publish/verify HTTP and event contracts in CI | `cmd/kit-contract` | [contracts](docs/ai/contracts.md) |
 | Run a gRPC service | `grpcx` (Server, RegisterServices) | [http](docs/ai/http.md) |
 | Dial a gRPC service (kit-hardened client) | `grpcx/client` (NewClient with TLS or loopback-insecure, chained recovery/logging/metrics/retry/deadline, mirrors server option vocabulary) | [http](docs/ai/http.md) |
-| Scaffold a new service | `cmd/kit-new` (`-tenant` for tenant-aware Redis/cache/idempotency) | — |
+| Scaffold a new service | `cmd/kit-new` (`-tenant` for tenant-aware Redis/cache/idempotency; `-production` for resource JWT + OpenFGA + Postgres/RabbitMQ inbox/outbox baseline) | — |
 | Audit a service for security regressions | `cmd/kit-doctor` (`-interactive` prompts to apply safe, idempotent fixes per finding; default `[y/N/skip-all]` is "no") | [observability](docs/ai/observability.md) |
 | Verify a running service's ASVS controls | `cmd/kit-verify` | [security](docs/ai/security.md) |
 | NATS JetStream messaging | `infra/messaging/natsbackend` | [messaging](docs/ai/messaging.md) |

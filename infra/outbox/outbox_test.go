@@ -437,11 +437,12 @@ func TestWriter_Write(t *testing.T) {
 	require.NoError(t, err)
 
 	params := outbox.WriteParams{
-		Topic:       "orders",
-		RoutingKey:  "order.created",
-		MessageID:   "msg-1",
-		MessageType: "order.created",
-		Payload:     payload,
+		Topic:         "orders",
+		RoutingKey:    "order.created",
+		MessageID:     "msg-1",
+		MessageType:   "order.created",
+		SchemaVersion: 2,
+		Payload:       payload,
 	}
 
 	err = writer.Write(ctx, params)
@@ -457,6 +458,7 @@ func TestWriter_Write(t *testing.T) {
 	assert.Equal(t, "order.created", entry.RoutingKey)
 	assert.Equal(t, "msg-1", entry.MessageID)
 	assert.Equal(t, "order.created", entry.MessageType)
+	assert.Equal(t, uint(2), entry.SchemaVersion)
 	assert.Equal(t, outbox.StatusPending, entry.Status)
 	assert.Equal(t, 0, entry.Attempts)
 	assert.Nil(t, entry.PublishedAt)

@@ -21,6 +21,18 @@ The `-tenant` scaffold enables strict `X-Tenant-Id` extraction and
 Redis-backed tenant cache/idempotency resources. Set `REDIS_URL` or
 `REDIS_HOST`/`REDIS_PASSWORD` before starting the service.
 {{- end}}
+{{- if .Production}}
+
+The `-production` profile is a resource-API baseline. It requires Postgres,
+RabbitMQ, a JWKS issuer/audience, and OpenFGA configuration from `.env.example`.
+It also requires shared `AUDIT_CHAIN_KEY` and `AUDIT_CURSOR_KEY` values (32+
+bytes each) and `make migrate` publishes the audit-log migration alongside the
+outbox/inbox migration.
+It wires JWT authentication → canonical principal → OpenFGA, then starts a
+durable `consume → inbox transaction → outbox relay` command path. Run
+`make contracts` in CI with a checked-out baseline as described in the kit CI
+recipe.
+{{- end}}
 
 ## Operate
 
@@ -29,6 +41,10 @@ Redis-backed tenant cache/idempotency resources. Set `REDIS_URL` or
 - Public routes require `X-Tenant-Id`
 {{else -}}
 - Health endpoint: `GET /healthz`
+{{end -}}
+{{if .Production -}}
+- Protected endpoint: `GET /v1/status` (JWT + OpenFGA `read` check)
+- Durable command queue: `{{.ServiceName}}.commands` → `{{.ServiceName}}.events`
 {{end -}}
 - Logs: structured JSON to stdout
 

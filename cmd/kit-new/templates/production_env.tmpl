@@ -1,0 +1,17 @@
+# Production resource-API profile. Secrets support the kit's *_FILE convention.
+SERVER_PORT=8080
+ENVIRONMENT=development
+LOG_LEVEL=info
+DATABASE_URL=postgres://user:password@localhost:5432/{{.ServiceName}}?sslmode=disable
+AMQP_URL=amqp://guest:guest@127.0.0.1:5672/
+JWT_JWKS_URL=https://issuer.example.com/.well-known/jwks.json
+JWT_ISSUER=https://issuer.example.com
+JWT_AUDIENCE={{.ServiceName}}
+OPENFGA_API_URL=https://openfga.example.com
+OPENFGA_STORE_ID=replace-me
+OPENFGA_MODEL_ID=replace-me
+OTEL_EXPORTER_OTLP_ENDPOINT=
+# Must be distinct, shared 32+ byte secrets across every replica. `_FILE`
+# variants are supported for mounted secret-manager values.
+AUDIT_CHAIN_KEY=replace-with-32-byte-minimum-secret
+AUDIT_CURSOR_KEY=replace-with-32-byte-minimum-secret

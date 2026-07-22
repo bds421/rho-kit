@@ -3,6 +3,7 @@ package interceptor
 import (
 	"context"
 	"slices"
+	"strings"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
 	"github.com/bds421/rho-kit/security/v2/identity"
@@ -30,6 +31,13 @@ var (
 // stampIdentity writes subject/actor fields onto ctx. Mirrors the HTTP
 // httpx/middleware/auth stamp contract; permissions and scopes are optional.
 func stampIdentity(ctx context.Context, subject, actor string, kind ActorKind, perms []string, scopes string, trusted bool) context.Context {
+	ctx = identity.WithPrincipal(ctx, identity.Principal{
+		Subject:     subject,
+		Actor:       actor,
+		Kind:        kind,
+		Scopes:      strings.Fields(scopes),
+		Permissions: perms,
+	})
 	if subject != "" {
 		ctx = subjectKey.Set(ctx, grpcSubject(subject))
 		ctx = userIDKey.Set(ctx, grpcUserID(subject))

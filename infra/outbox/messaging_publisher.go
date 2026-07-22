@@ -49,10 +49,11 @@ func (m *MessagingPublisher) Publish(ctx context.Context, entry Entry) error {
 		return redact.WrapError("outbox: messaging publisher decode headers", err)
 	}
 	msg := messaging.Message{
-		ID:      entry.MessageID,
-		Type:    entry.MessageType,
-		Payload: entry.Payload,
-		Headers: headers,
+		ID:            entry.MessageID,
+		Type:          entry.MessageType,
+		SchemaVersion: entry.SchemaVersion,
+		Payload:       entry.Payload,
+		Headers:       headers,
 	}
 	if err := m.publisher.Publish(ctx, entry.Topic, entry.RoutingKey, msg); err != nil {
 		return redact.WrapError("outbox: messaging publisher delegate", err)

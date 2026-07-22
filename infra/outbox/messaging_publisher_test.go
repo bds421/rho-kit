@@ -38,13 +38,14 @@ func TestMessagingPublisher_ConvertsEntryFields(t *testing.T) {
 
 	headers := []byte(`{"x-correlation-id":"abc"}`)
 	entry := outbox.Entry{
-		ID:          uuid.New(),
-		Topic:       "orders",
-		RoutingKey:  "order.created",
-		MessageID:   "msg-1",
-		MessageType: "OrderCreated",
-		Payload:     json.RawMessage(`{"order_id":42}`),
-		Headers:     headers,
+		ID:            uuid.New(),
+		Topic:         "orders",
+		RoutingKey:    "order.created",
+		MessageID:     "msg-1",
+		MessageType:   "OrderCreated",
+		SchemaVersion: 3,
+		Payload:       json.RawMessage(`{"order_id":42}`),
+		Headers:       headers,
 	}
 
 	require.NoError(t, pub.Publish(context.Background(), entry))
@@ -52,6 +53,7 @@ func TestMessagingPublisher_ConvertsEntryFields(t *testing.T) {
 	assert.Equal(t, "order.created", inner.gotRoutingKey)
 	assert.Equal(t, "msg-1", inner.gotMessage.ID)
 	assert.Equal(t, "OrderCreated", inner.gotMessage.Type)
+	assert.Equal(t, uint(3), inner.gotMessage.SchemaVersion)
 	assert.JSONEq(t, `{"order_id":42}`, string(inner.gotMessage.Payload))
 	assert.Equal(t, "abc", inner.gotMessage.Headers["x-correlation-id"])
 }

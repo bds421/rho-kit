@@ -3,6 +3,9 @@
 package app
 
 import (
+{{- if .Production}}
+	"context"
+{{- end}}
 {{- if .MCP}}
 	"context"
 {{- end}}
@@ -14,6 +17,13 @@ import (
 	"time"
 
 	kitratelimit "github.com/bds421/rho-kit/app/ratelimit/v2"
+{{- if .Production}}
+	kitamqp "github.com/bds421/rho-kit/app/amqp/v2"
+	kitauthz "github.com/bds421/rho-kit/app/authz/v2"
+	kitjwt "github.com/bds421/rho-kit/app/jwt/v2"
+	kittracing "github.com/bds421/rho-kit/app/tracing/v2"
+	openfga "github.com/bds421/rho-kit/authz/openfga/v2"
+{{- end}}
 {{- if .Tenant}}
 	kitredisadapter "github.com/bds421/rho-kit/app/redis/v2"
 	kittenant "github.com/bds421/rho-kit/app/tenant/v2"
@@ -47,6 +57,15 @@ import (
 	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 
 	"{{.ModulePath}}/db/migrations"
+{{- end}}
+{{- if .Production}}
+
+	httpxauthz "github.com/bds421/rho-kit/httpx/v2/authz"
+	httpauth "github.com/bds421/rho-kit/httpx/v2/middleware/auth"
+	"github.com/bds421/rho-kit/observability/v2/tracing"
+	auditlog "github.com/bds421/rho-kit/observability/v2/auditlog"
+	auditpostgres "github.com/bds421/rho-kit/observability/auditlog/postgres/v2"
+	"github.com/bds421/rho-kit/security/v2/identity"
 {{- end}}
 )
 
@@ -183,6 +202,31 @@ func Run(_ *slog.Logger, version string) error {
 		With(kitleader.PGAdvisoryFromPostgres("{{.ServiceName}}")).
 		With(kitcron.Module())
 {{- end}}
+{{- if .Production}}
+
+	// Resource-API production profile: every boundary is explicit. Browser/BFF
+	// services select app/oidc + durable Redis stores instead of this JWT path.
+	fga, err := openfga.New(openfga.Config{
+		APIURL:  config.Get("OPENFGA_API_URL", ""),
+		StoreID: config.Get("OPENFGA_STORE_ID", ""),
+		ModelID: config.Get("OPENFGA_MODEL_ID", ""),
+	})
+	if err != nil {
+		return err
+	}
+	b = b.
+		With(kitjwt.Module(config.Get("JWT_JWKS_URL", ""),
+			kitjwt.WithIssuer(config.Get("JWT_ISSUER", "")),
+			kitjwt.WithAudience(config.Get("JWT_AUDIENCE", "")),
+		)).
+		With(kitauthz.Module(fga)).
+		With(kitamqp.Module(config.Get("AMQP_URL", ""), kitamqp.WithCriticalBroker())).
+		With(kittracing.Module(tracing.Config{
+			ServiceName: "{{.ServiceName}}", ServiceVersion: version,
+			Environment: cfg.Environment, Endpoint: config.Get("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+			SampleRate: 0.05,
+		}))
+{{- end}}
 {{- if .Tenant}}
 
 	b = b.
@@ -199,6 +243,27 @@ func Run(_ *slog.Logger, version string) error {
 			}
 {{- end}}
 			mux := http.NewServeMux()
+{{- if .Production}}
+			pool := kitpostgres.Pool(infra)
+			audit := auditlog.New(auditpostgres.New(pool.Pool()),
+				auditlog.WithChainKey([]byte(config.MustGetSecret("AUDIT_CHAIN_KEY", ""))),
+				auditlog.WithCursorKey([]byte(config.MustGetSecret("AUDIT_CURSOR_KEY", ""))),
+			)
+			startProductionConsumer(infra, pool, audit)
+			protected := httpauth.JWT(kitjwt.Provider(infra))(
+				httpxauthz.RequirePermission(
+					httpxauthz.FromDecider(kitauthz.Decider(infra)), "read",
+					httpxauthz.StaticResource("{{.ServiceName}}:status"),
+					httpxauthz.SubjectFromContext(func(ctx context.Context) string {
+						principal, _ := identity.FromContext(ctx)
+						return principal.Subject
+					}),
+				)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusNoContent)
+				})),
+			)
+			mux.Handle("GET /v1/status", protected)
+{{- end}}
 {{- if not .Tenant}}
 			mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)

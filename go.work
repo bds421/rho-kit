@@ -19,6 +19,7 @@ use (
 	./app/jwt
 	./app/leader
 	./app/nats
+	./app/oidc
 	./app/paseto
 	./app/postgres
 	./app/ratelimit
@@ -29,9 +30,11 @@ use (
 	./app/tenant
 	./app/tracing
 	./auth/oauth2
+	./auth/oauth2/redis
 	./authz
 	./authz/openfga
 	./cmd/kit-catalog
+	./cmd/kit-contract
 	./cmd/kit-doctor
 	./cmd/kit-migrate
 	./cmd/kit-new
@@ -75,6 +78,7 @@ use (
 	./infra/leaderelection/k8slease
 	./infra/leaderelection/pgadvisory
 	./infra/leaderelection/redislock
+	./infra/inbox/postgres
 	./infra/messaging/amqpbackend
 	./infra/messaging/amqpbackend/debughttp
 	./infra/messaging/kafkabackend

@@ -16,6 +16,7 @@ import (
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/security/v2/apikey"
+	"github.com/bds421/rho-kit/security/v2/identity"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
 	"github.com/bds421/rho-kit/security/v2/session"
 )
@@ -145,6 +146,14 @@ func Strategy(a Authenticator) func(http.Handler) http.Handler {
 // context-key contract has a single touch point.
 func stampIdentity(ctx context.Context, id Identity) context.Context {
 	id = id.Normalize()
+	ctx = identity.WithPrincipal(ctx, identity.Principal{
+		Subject:     id.Subject,
+		Actor:       id.Actor,
+		Kind:        id.ActorKind,
+		Tenant:      id.Tenant,
+		Scopes:      id.ScopeList,
+		Permissions: id.Permissions,
+	})
 	if id.Subject != "" {
 		ctx = subjectKey.Set(ctx, authSubject(id.Subject))
 		ctx = userIDKey.Set(ctx, authUserID(id.Subject))

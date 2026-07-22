@@ -1,0 +1,1 @@
+{"issuer":"https://issuer.example.test","subject":"user-123","audience":"orders-api","claims":{"tenant":"tenant-1","scope":"orders:read"}}
