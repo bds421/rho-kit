@@ -85,14 +85,22 @@ bin_dir="$tmpdir/bin"
 mkdir -p "$repo" "$home" "$gopath" "$gocache" "$consumer" "$bin_dir"
 
 echo "==> Copy current working tree"
+# A linked worktree has a `.git` pointer file rather than a `.git/`
+# directory. Exclude the name regardless of its type so `git init` below
+# always creates a genuinely isolated rehearsal repository.
 rsync -a --delete \
-  --exclude '.git/' \
+  --exclude '.git' \
   --exclude '.claude/' \
   --exclude 'dist/' \
   --exclude 'coverage.out' \
   --exclude '.DS_Store' \
   --exclude 'docs/release/rehearsals/' \
   "$SOURCE_ROOT"/ "$repo"/
+
+if [[ -e "$repo/.git" || -L "$repo/.git" ]]; then
+  echo "ERROR: rehearsal copy retained source Git metadata: $repo/.git" >&2
+  exit 1
+fi
 
 cd "$repo"
 git init -q -b main

@@ -256,7 +256,15 @@ func buildAWSConfig(ctx context.Context, cfg Config) (aws.Config, error) {
 		))
 	}
 	if cfg.Endpoint != "" {
-		opts = append(opts, awsconfig.WithBaseEndpoint(cfg.Endpoint))
+		opts = append(opts,
+			awsconfig.WithBaseEndpoint(cfg.Endpoint),
+			// PutObject receives a trusted ContentLength from storage.ObjectMeta.
+			// For explicitly configured S3-compatible endpoints, avoid the SDK's
+			// optional aws-chunked request checksum stream: older MinIO releases
+			// reject its large chunks even when the object is within contract.
+			// Native AWS keeps its SDK/operator-selected checksum policy.
+			awsconfig.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
+		)
 	}
 	return awsconfig.LoadDefaultConfig(ctx, opts...)
 }

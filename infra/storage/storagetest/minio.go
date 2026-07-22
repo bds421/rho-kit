@@ -16,6 +16,10 @@ import (
 // StartMinIO starts a real S3-compatible endpoint for multipart conformance.
 // The container is scoped to the calling test and terminated automatically.
 func StartMinIO(t *testing.T, bucket string) s3backend.Config {
+	return startMinIO(t, bucket, "minio/minio:RELEASE.2025-09-07T16-13-09Z")
+}
+
+func startMinIO(t *testing.T, bucket, image string) s3backend.Config {
 	t.Helper()
 	ctx := context.Background()
 	const (
@@ -25,7 +29,7 @@ func StartMinIO(t *testing.T, bucket string) s3backend.Config {
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		Started: true,
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image: "minio/minio:RELEASE.2025-09-07T16-13-09Z", ExposedPorts: []string{"9000/tcp"},
+			Image: image, ExposedPorts: []string{"9000/tcp"},
 			Env:        map[string]string{"MINIO_ROOT_USER": accessKey, "MINIO_ROOT_PASSWORD": secretKey},
 			Cmd:        []string{"server", "/data", "--console-address", ":9001"},
 			WaitingFor: wait.ForHTTP("/minio/health/live").WithPort("9000/tcp"),
