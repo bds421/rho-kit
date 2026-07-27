@@ -22,13 +22,14 @@ import (
 
 // mockS3Client implements Client for unit tests.
 type mockS3Client struct {
-	putFn    func(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error)
-	getFn    func(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error)
-	deleteFn func(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error)
-	headFn   func(ctx context.Context, input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error)
-	headBFn  func(ctx context.Context, input *s3.HeadBucketInput) (*s3.HeadBucketOutput, error)
-	listFn   func(ctx context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error)
-	copyFn   func(ctx context.Context, input *s3.CopyObjectInput) (*s3.CopyObjectOutput, error)
+	putFn      func(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error)
+	getFn      func(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error)
+	deleteFn   func(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error)
+	headFn     func(ctx context.Context, input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error)
+	headBFn    func(ctx context.Context, input *s3.HeadBucketInput) (*s3.HeadBucketOutput, error)
+	listFn     func(ctx context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error)
+	versionsFn func(ctx context.Context, input *s3.ListObjectVersionsInput) (*s3.ListObjectVersionsOutput, error)
+	copyFn     func(ctx context.Context, input *s3.CopyObjectInput) (*s3.CopyObjectOutput, error)
 }
 
 func (m *mockS3Client) PutObject(ctx context.Context, params *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
@@ -71,6 +72,13 @@ func (m *mockS3Client) ListObjectsV2(ctx context.Context, params *s3.ListObjects
 		return m.listFn(ctx, params)
 	}
 	return &s3.ListObjectsV2Output{}, nil
+}
+
+func (m *mockS3Client) ListObjectVersions(ctx context.Context, params *s3.ListObjectVersionsInput, _ ...func(*s3.Options)) (*s3.ListObjectVersionsOutput, error) {
+	if m.versionsFn != nil {
+		return m.versionsFn(ctx, params)
+	}
+	return &s3.ListObjectVersionsOutput{}, nil
 }
 
 func (m *mockS3Client) CopyObject(ctx context.Context, params *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {

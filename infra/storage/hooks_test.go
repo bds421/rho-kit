@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"iter"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
+	"github.com/bds421/rho-kit/infra/v2/storage/membackend"
 )
 
 func TestWithHooks(t *testing.T) {
@@ -294,6 +296,32 @@ func TestWithHooks_BatchDelete(t *testing.T) {
 		// The aborted key must never reach the backend Delete.
 		assert.Equal(t, []string{"ok.txt"}, backend.keys)
 	})
+}
+
+func TestWithHooks_ExactVersionPreservesDeleteHooks(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := membackend.NewImmutable()
+	require.NoError(t, backend.Put(ctx, "objects/a", strings.NewReader("body"), storage.ObjectMeta{}))
+	object, _, err := backend.CurrentVersion(ctx, "objects/a")
+	require.NoError(t, err)
+
+	var before, after int
+	wrapped := storage.WithHooks(backend, storage.Hooks{
+		BeforeDelete: func(context.Context, string) error {
+			before++
+			return nil
+		},
+		AfterDelete: func(context.Context, string) {
+			after++
+		},
+	})
+	exact, ok := storage.AsExactVersionStore(wrapped)
+	require.True(t, ok)
+	require.NoError(t, exact.DeleteVersion(ctx, object))
+	assert.Equal(t, 1, before)
+	assert.Equal(t, 1, after)
 }
 
 // countingDeleteBackend records Delete keys for sequential DeleteMany tests.

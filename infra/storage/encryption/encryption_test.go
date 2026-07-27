@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"strings"
 	"testing"
 	"time"
 
@@ -788,4 +789,34 @@ func TestAsLister_EncryptionDoesNotClaimWhenBackendLacks(t *testing.T) {
 	enc := New(hidden, StaticKey(testKey(t)))
 	_, ok := storage.AsLister(enc)
 	assert.False(t, ok, "encryption must NOT claim Lister when underlying lacks it")
+}
+
+func TestAsExactVersionStore_EncryptionDecryptsPinnedGeneration(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := membackend.NewImmutable()
+	encrypted := New(backend, StaticKey(testKey(t)))
+	require.NoError(t, encrypted.Put(ctx, "objects/a", strings.NewReader("plaintext"), storage.ObjectMeta{}))
+
+	exact, ok := storage.AsExactVersionStore(encrypted)
+	require.True(t, ok)
+	object, meta, err := exact.CurrentVersion(ctx, "objects/a")
+	require.NoError(t, err)
+	assert.Equal(t, int64(len("plaintext")), meta.Size)
+
+	reader, meta, err := exact.GetVersion(ctx, object)
+	require.NoError(t, err)
+	body, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	assert.Equal(t, "plaintext", string(body))
+	assert.Equal(t, int64(len("plaintext")), meta.Size)
+
+	require.NoError(t, exact.DeleteVersion(ctx, object))
+	_, _, err = exact.GetVersion(ctx, object)
+	assert.ErrorIs(t, err, storage.ErrObjectNotFound)
+
+	_, ok = storage.AsExactVersionStore(New(membackend.New(), StaticKey(testKey(t))))
+	assert.False(t, ok)
 }
