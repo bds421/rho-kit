@@ -61,8 +61,13 @@ func WithHooks(backend Storage, hooks Hooks) Storage {
 	_, isCopier := AsCopier(backend)
 	_, isPresigned := AsPresigned(backend)
 	_, isURLer := AsPublicURLer(backend)
+	_, isExactVersion := AsExactVersionStore(backend)
 
-	return composeHookCaps(h, isLister, isCopier, isPresigned, isURLer)
+	composed := composeHookCaps(h, isLister, isCopier, isPresigned, isURLer)
+	if isExactVersion {
+		return &hookedExactVersionStorage{Storage: composed, hooked: h}
+	}
+	return composed
 }
 
 type hookedStorage struct {
@@ -244,6 +249,100 @@ func errorSeq(err error) iter.Seq2[ObjectInfo, error] {
 		yield(ObjectInfo{}, err)
 	}
 }
+
+type hookedExactVersionStorage struct {
+	Storage
+	hooked *hookedStorage
+}
+
+func (wrapper *hookedExactVersionStorage) Unwrap() Storage { return wrapper.Storage }
+func (wrapper *hookedExactVersionStorage) Close() error    { return Close(wrapper.Storage) }
+
+func (wrapper *hookedExactVersionStorage) exact() (ExactVersionStore, error) {
+	exact, ok := AsExactVersionStore(wrapper.hooked.backend)
+	if !ok {
+		return nil, ErrExactVersionUnavailable
+	}
+	return exact, nil
+}
+
+func (wrapper *hookedExactVersionStorage) CurrentVersion(
+	ctx context.Context,
+	key string,
+) (ObjectVersion, ObjectMeta, error) {
+	if err := ValidateKey(key); err != nil {
+		return ObjectVersion{}, ObjectMeta{}, err
+	}
+	exact, err := wrapper.exact()
+	if err != nil {
+		return ObjectVersion{}, ObjectMeta{}, err
+	}
+	object, meta, err := exact.CurrentVersion(ctx, key)
+	return object, CloneObjectMeta(meta), err
+}
+
+func (wrapper *hookedExactVersionStorage) StatVersion(
+	ctx context.Context,
+	object ObjectVersion,
+) (ObjectMeta, error) {
+	if err := object.Validate(); err != nil {
+		return ObjectMeta{}, err
+	}
+	exact, err := wrapper.exact()
+	if err != nil {
+		return ObjectMeta{}, err
+	}
+	meta, err := exact.StatVersion(ctx, object)
+	return CloneObjectMeta(meta), err
+}
+
+func (wrapper *hookedExactVersionStorage) GetVersion(
+	ctx context.Context,
+	object ObjectVersion,
+) (io.ReadCloser, ObjectMeta, error) {
+	if err := object.Validate(); err != nil {
+		return nil, ObjectMeta{}, err
+	}
+	exact, err := wrapper.exact()
+	if err != nil {
+		return nil, ObjectMeta{}, err
+	}
+	reader, meta, err := exact.GetVersion(ctx, object)
+	if err != nil {
+		return nil, ObjectMeta{}, err
+	}
+	if wrapper.hooked.hooks.AfterGet != nil {
+		wrapper.hooked.hooks.AfterGet(ctx, object.Key, CloneObjectMeta(meta))
+	}
+	return reader, meta, nil
+}
+
+func (wrapper *hookedExactVersionStorage) DeleteVersion(
+	ctx context.Context,
+	object ObjectVersion,
+) error {
+	if err := object.Validate(); err != nil {
+		return err
+	}
+	if wrapper.hooked.hooks.BeforeDelete != nil {
+		if err := wrapper.hooked.hooks.BeforeDelete(ctx, object.Key); err != nil {
+			return err
+		}
+	}
+	exact, err := wrapper.exact()
+	if err != nil {
+		return err
+	}
+	if err = exact.DeleteVersion(ctx, object); err != nil {
+		return err
+	}
+	if wrapper.hooked.hooks.AfterDelete != nil {
+		wrapper.hooked.hooks.AfterDelete(ctx, object.Key)
+	}
+	return nil
+}
+
+var _ ExactVersionStore = (*hookedExactVersionStorage)(nil)
 
 // --- Capability composition ---
 //

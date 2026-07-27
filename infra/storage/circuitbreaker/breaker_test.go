@@ -807,3 +807,34 @@ func (b *validationProbeBackend) List(context.Context, string, storage.ListOptio
 		yield(storage.ObjectInfo{}, errors.New("backend should not be called"))
 	}
 }
+
+func TestAsExactVersionStore_CircuitBreakerForwardsAndGates(t *testing.T) {
+	t.Parallel()
+
+	backend := &failingExactVersionBackend{ImmutableBackend: membackend.NewImmutable()}
+	wrapped := New(backend, WithThreshold(1), WithResetTimeout(time.Hour))
+	exact, ok := storage.AsExactVersionStore(wrapped)
+	require.True(t, ok)
+
+	_, _, err := exact.CurrentVersion(context.Background(), "objects/a")
+	require.Error(t, err)
+	_, _, err = exact.CurrentVersion(context.Background(), "objects/a")
+	assert.ErrorIs(t, err, ErrCircuitOpen)
+	assert.Equal(t, 1, backend.calls, "open circuit must not reach exact-version backend")
+
+	_, ok = storage.AsExactVersionStore(New(membackend.New()))
+	assert.False(t, ok)
+}
+
+type failingExactVersionBackend struct {
+	*membackend.ImmutableBackend
+	calls int
+}
+
+func (backend *failingExactVersionBackend) CurrentVersion(
+	context.Context,
+	string,
+) (storage.ObjectVersion, storage.ObjectMeta, error) {
+	backend.calls++
+	return storage.ObjectVersion{}, storage.ObjectMeta{}, errors.New("backend unavailable")
+}

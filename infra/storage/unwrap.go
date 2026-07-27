@@ -107,3 +107,9 @@ func AsMultipartUploadLister(s Storage) (MultipartUploadLister, bool) {
 func AsStatter(s Storage) (Statter, bool) {
 	return asImpl[Statter](s)
 }
+
+// AsExactVersionStore walks the Unwrap chain to find generation-pinned
+// object access and deletion without bypassing opaque decorators.
+func AsExactVersionStore(s Storage) (ExactVersionStore, bool) {
+	return asImpl[ExactVersionStore](s)
+}

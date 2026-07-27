@@ -35,6 +35,15 @@ type BlobClient interface {
 	NewListBlobsFlatPager(opts *container.ListBlobsFlatOptions) BlobPager
 }
 
+// versionedBlobClient is the optional SDK seam required for exact generation
+// access. Custom BlobClient implementations that do not provide it continue to
+// satisfy the base Storage contract; exact-version calls fail closed.
+type versionedBlobClient interface {
+	GetPropertiesVersion(context.Context, string, string) (blob.GetPropertiesResponse, error)
+	DownloadVersion(context.Context, string, string) (blob.DownloadStreamResponse, error)
+	DeleteVersion(context.Context, string, string) (blob.DeleteResponse, error)
+}
+
 // BlobPager abstracts the Azure pager for listing blobs.
 type BlobPager interface {
 	More() bool
@@ -457,6 +466,47 @@ func (c *azureBlobClient) DeleteBlob(ctx context.Context, blobName string, opts 
 
 func (c *azureBlobClient) NewListBlobsFlatPager(opts *container.ListBlobsFlatOptions) BlobPager {
 	return c.client.NewListBlobsFlatPager(c.container, opts)
+}
+
+func (c *azureBlobClient) versioned(blobName, versionID string) (*blob.Client, error) {
+	client := c.client.ServiceClient().NewContainerClient(c.container).NewBlobClient(blobName)
+	if versionID == "" {
+		return client, nil
+	}
+	return client.WithVersionID(versionID)
+}
+
+func (c *azureBlobClient) GetPropertiesVersion(
+	ctx context.Context,
+	blobName, versionID string,
+) (blob.GetPropertiesResponse, error) {
+	client, err := c.versioned(blobName, versionID)
+	if err != nil {
+		return blob.GetPropertiesResponse{}, err
+	}
+	return client.GetProperties(ctx, nil)
+}
+
+func (c *azureBlobClient) DownloadVersion(
+	ctx context.Context,
+	blobName, versionID string,
+) (blob.DownloadStreamResponse, error) {
+	client, err := c.versioned(blobName, versionID)
+	if err != nil {
+		return blob.DownloadStreamResponse{}, err
+	}
+	return client.DownloadStream(ctx, nil)
+}
+
+func (c *azureBlobClient) DeleteVersion(
+	ctx context.Context,
+	blobName, versionID string,
+) (blob.DeleteResponse, error) {
+	client, err := c.versioned(blobName, versionID)
+	if err != nil {
+		return blob.DeleteResponse{}, err
+	}
+	return client.Delete(ctx, nil)
 }
 
 // Healthy reports whether the container is accessible.

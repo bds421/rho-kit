@@ -60,9 +60,10 @@ func (s *StaticKeyProvider) EncryptionKey(context.Context) ([]byte, error) {
 // forwarded only when the underlying backend supports it; see [New] for
 // the dispatch.
 var (
-	_ storage.Storage         = (*EncryptedStorage)(nil)
-	_ storage.OpaqueDecorator = (*EncryptedStorage)(nil)
-	_ storage.Copier          = (*EncryptedStorage)(nil)
+	_ storage.Storage           = (*EncryptedStorage)(nil)
+	_ storage.OpaqueDecorator   = (*EncryptedStorage)(nil)
+	_ storage.Copier            = (*EncryptedStorage)(nil)
+	_ storage.ExactVersionStore = (*encryptedExactVersion)(nil)
 )
 
 // EncryptedStorage intentionally does NOT implement storage.PresignedStore:
@@ -251,12 +252,16 @@ func New(backend storage.Storage, keys KeyProvider, opts ...Option) storage.Stor
 		opt(e)
 	}
 
+	var composed storage.Storage = e
 	// Forward Lister only when the underlying chain exposes it. AsLister
 	// honors opaque-decorator markers in the underlying chain.
 	if _, ok := storage.AsLister(backend); ok {
-		return &encryptedLister{e}
+		composed = &encryptedLister{e}
 	}
-	return e
+	if _, ok := storage.AsExactVersionStore(backend); ok {
+		return &encryptedExactVersion{Storage: composed, encrypted: e}
+	}
+	return composed
 }
 
 // encryptedLister wraps EncryptedStorage to expose the conditional Lister
@@ -388,6 +393,16 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 // one open-plaintext slot until process restart (or Close). ctx cancellation
 // during either acquire wait returns ctx.Err().
 func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	return e.getWith(ctx, key, func(ctx context.Context) (io.ReadCloser, storage.ObjectMeta, error) {
+		return e.backend.Get(ctx, key)
+	})
+}
+
+func (e *EncryptedStorage) getWith(
+	ctx context.Context,
+	key string,
+	open func(context.Context) (io.ReadCloser, storage.ObjectMeta, error),
+) (io.ReadCloser, storage.ObjectMeta, error) {
 	if ctx == nil {
 		// Normalise a nil context up front so the semaphore acquire and
 		// the underlying backend never see one, mirroring Put.
@@ -430,7 +445,7 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	}
 	defer zeroBytes(keyBytes)
 
-	rc, meta, err := e.backend.Get(ctx, key)
+	rc, meta, err := open(ctx)
 	if err != nil {
 		return nil, storage.ObjectMeta{}, storage.WrapSafe("encryption: get failed", err)
 	}
@@ -547,6 +562,95 @@ func (e *EncryptedStorage) Exists(ctx context.Context, key string) (bool, error)
 		return false, storage.WrapSafe("encryption: exists failed", err)
 	}
 	return ok, nil
+}
+
+type encryptedExactVersion struct {
+	storage.Storage
+	encrypted *EncryptedStorage
+}
+
+func (wrapper *encryptedExactVersion) Unwrap() storage.Storage { return wrapper.Storage }
+func (wrapper *encryptedExactVersion) Close() error            { return storage.Close(wrapper.Storage) }
+
+func (wrapper *encryptedExactVersion) exact() (storage.ExactVersionStore, error) {
+	exact, ok := storage.AsExactVersionStore(wrapper.encrypted.backend)
+	if !ok {
+		return nil, storage.ErrExactVersionUnavailable
+	}
+	return exact, nil
+}
+
+func (wrapper *encryptedExactVersion) CurrentVersion(
+	ctx context.Context,
+	key string,
+) (storage.ObjectVersion, storage.ObjectMeta, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return storage.ObjectVersion{}, storage.ObjectMeta{}, err
+	}
+	exact, err := wrapper.exact()
+	if err != nil {
+		return storage.ObjectVersion{}, storage.ObjectMeta{}, err
+	}
+	object, meta, err := exact.CurrentVersion(ctx, key)
+	return object, exactVersionPlaintextMeta(meta), err
+}
+
+func (wrapper *encryptedExactVersion) StatVersion(
+	ctx context.Context,
+	object storage.ObjectVersion,
+) (storage.ObjectMeta, error) {
+	if err := object.Validate(); err != nil {
+		return storage.ObjectMeta{}, err
+	}
+	exact, err := wrapper.exact()
+	if err != nil {
+		return storage.ObjectMeta{}, err
+	}
+	meta, err := exact.StatVersion(ctx, object)
+	return exactVersionPlaintextMeta(meta), err
+}
+
+func (wrapper *encryptedExactVersion) GetVersion(
+	ctx context.Context,
+	object storage.ObjectVersion,
+) (io.ReadCloser, storage.ObjectMeta, error) {
+	if err := object.Validate(); err != nil {
+		return nil, storage.ObjectMeta{}, err
+	}
+	exact, err := wrapper.exact()
+	if err != nil {
+		return nil, storage.ObjectMeta{}, err
+	}
+	return wrapper.encrypted.getWith(ctx, object.Key,
+		func(ctx context.Context) (io.ReadCloser, storage.ObjectMeta, error) {
+			return exact.GetVersion(ctx, object)
+		})
+}
+
+func (wrapper *encryptedExactVersion) DeleteVersion(
+	ctx context.Context,
+	object storage.ObjectVersion,
+) error {
+	if err := object.Validate(); err != nil {
+		return err
+	}
+	exact, err := wrapper.exact()
+	if err != nil {
+		return err
+	}
+	if err = exact.DeleteVersion(ctx, object); err != nil {
+		return storage.WrapSafe("encryption: delete version failed", err)
+	}
+	return nil
+}
+
+func exactVersionPlaintextMeta(meta storage.ObjectMeta) storage.ObjectMeta {
+	const gcmOverhead = 12 + 16
+	meta = storage.CloneObjectMeta(meta)
+	if meta.Size >= gcmOverhead {
+		meta.Size -= gcmOverhead
+	}
+	return meta
 }
 
 // zeroBytes overwrites a byte slice with zeros to scrub key material from memory.

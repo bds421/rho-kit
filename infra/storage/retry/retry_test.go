@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"iter"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -575,6 +576,41 @@ func TestAsPublicURLer_ReachesUnderlyingThroughRetry(t *testing.T) {
 	url, err := urler.URL(ctx, "key")
 	require.NoError(t, err)
 	assert.Equal(t, "https://public/key", url)
+}
+
+func TestAsExactVersionStore_RetryForwardsAndRetries(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := &flakyExactVersionBackend{ImmutableBackend: membackend.NewImmutable()}
+	require.NoError(t, backend.Put(ctx, "objects/a", strings.NewReader("body"), storage.ObjectMeta{}))
+	object, _, err := backend.CurrentVersion(ctx, "objects/a")
+	require.NoError(t, err)
+
+	wrapped := New(backend, WithMaxAttempts(2), WithBaseDelay(time.Millisecond))
+	exact, ok := storage.AsExactVersionStore(wrapped)
+	require.True(t, ok)
+	require.NoError(t, exact.DeleteVersion(ctx, object))
+	assert.Equal(t, 2, backend.deleteCalls)
+
+	_, ok = storage.AsExactVersionStore(New(membackend.New()))
+	assert.False(t, ok)
+}
+
+type flakyExactVersionBackend struct {
+	*membackend.ImmutableBackend
+	deleteCalls int
+}
+
+func (backend *flakyExactVersionBackend) DeleteVersion(
+	ctx context.Context,
+	object storage.ObjectVersion,
+) error {
+	backend.deleteCalls++
+	if backend.deleteCalls == 1 {
+		return storage.NewTransientError("delete-version", object.Key, errors.New("temporary"))
+	}
+	return backend.ImmutableBackend.DeleteVersion(ctx, object)
 }
 
 func TestRetryStorage_Put_RewindsToInitialOffsetOnRetry(t *testing.T) {

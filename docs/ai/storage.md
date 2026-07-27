@@ -33,6 +33,7 @@ before use; missing capabilities return `ok == false` rather than an error.
 | `storage.Copier` | yes | yes | yes | no* | yes | yes |
 | `storage.PresignedStore` | yes | no | no | no | no | no |
 | `storage.PublicURLer` | yes | yes | yes | no | no | no |
+| `storage.ExactVersionStore` | versioning* | yes | versioning* | no | immutable* | immutable* |
 | Multipart upload (`AsMultipartUploader`) | yes | no | no | no | no | no |
 
 * SFTP may implement server-side copy when the remote supports it; check the
@@ -132,6 +133,45 @@ hooks and decorators always observe per-key deletes.
 `storage.Migrate` streams objects one at a time and caps retained per-key
 errors at `storage.MaxMigrationErrors`; the `Failed` counter and progress
 callback still report every failure.
+
+### Exact object generations
+
+Use the optional `storage.ExactVersionStore` capability when a durable plan
+must later read or delete the same physical object generation without risking
+a newer object at the same key:
+
+```go
+exact, ok := storage.AsExactVersionStore(backend)
+if !ok {
+    return storage.ErrExactVersionUnavailable
+}
+
+object, _, err := exact.CurrentVersion(ctx, key)
+if err != nil { return err }
+
+// Persist object.Key and the opaque object.Version with the deletion plan.
+// DeleteVersion is idempotent when that exact generation is already absent.
+// Success includes a generation-pinned absence verification.
+return exact.DeleteVersion(ctx, object)
+```
+
+The opaque version maps to S3 `VersionId`, GCS generation, Azure version ID,
+or a generated identity in immutable local/memory mode. S3 bucket
+versioning and Azure blob versioning must be enabled; otherwise
+`CurrentVersion` fails closed with `storage.ErrExactVersionUnavailable`.
+GCS generations are available natively.
+
+The ordinary local and memory constructors remain mutable and therefore do
+not expose the capability. Use `localbackend.NewImmutable` only when one
+process has exclusive write ownership of the root, or
+`membackend.NewImmutable` in tests. These modes reject overwriting a present
+key and serialize writes with exact deletion. Local immutable mode is for
+single-process development and Docker deployments, not shared/network
+filesystems.
+
+Retry, circuit breaker, client-side encryption, and storage hooks preserve
+exact-version semantics. Discover the outer capability with
+`storage.AsExactVersionStore` so an opaque decorator cannot be bypassed.
 
 ## Multi-Disk Manager
 
