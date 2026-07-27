@@ -35,6 +35,130 @@ func TestRetryStorage_SucceedsImmediately(t *testing.T) {
 	assert.Equal(t, []byte("hello"), data)
 }
 
+func TestExactVersionListerIsPreservedByRetry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend := membackend.NewImmutable()
+	require.NoError(t, backend.Put(
+		ctx,
+		"objects/a",
+		bytes.NewReader([]byte("body")),
+		storage.ObjectMeta{Size: 4},
+	))
+
+	versions, ok := storage.AsExactVersionLister(New(backend))
+	require.True(t, ok)
+	retained, err := versions.Versions(ctx, "objects/a", 2)
+	require.NoError(t, err)
+	require.Len(t, retained, 1)
+
+	_, ok = storage.AsExactVersionLister(New(membackend.New()))
+	require.False(t, ok)
+}
+
+func TestExactVersionPrefixListerIsPreservedByRetry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend := membackend.NewImmutable()
+	require.NoError(t, backend.Put(
+		ctx,
+		"operations/a/object",
+		bytes.NewReader([]byte("body")),
+		storage.ObjectMeta{Size: 4},
+	))
+	versions, ok := storage.AsExactVersionPrefixLister(New(backend))
+	require.True(t, ok)
+	retained, err := versions.VersionsByPrefix(ctx, "operations/a/", 2)
+	require.NoError(t, err)
+	require.Len(t, retained, 1)
+	_, ok = storage.AsExactVersionPrefixLister(New(membackend.New()))
+	require.False(t, ok)
+}
+
+type exactVersionListerOnlyBackend struct {
+	*membackend.Backend
+	calls atomic.Int32
+}
+
+func (backend *exactVersionListerOnlyBackend) Versions(
+	context.Context,
+	string,
+	int,
+) ([]storage.ObjectVersion, error) {
+	backend.calls.Add(1)
+	return []storage.ObjectVersion{}, nil
+}
+
+type exactVersionPrefixListerOnlyBackend struct {
+	*membackend.Backend
+	calls atomic.Int32
+}
+
+func (backend *exactVersionPrefixListerOnlyBackend) VersionsByPrefix(
+	context.Context,
+	string,
+	int,
+) ([]storage.ObjectVersion, error) {
+	backend.calls.Add(1)
+	return []storage.ObjectVersion{}, nil
+}
+
+func TestExactVersionListCapabilitiesRemainIndependentThroughRetry(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		backend    storage.Storage
+		wantExact  bool
+		wantPrefix bool
+	}{
+		{
+			name:      "exact-only",
+			backend:   &exactVersionListerOnlyBackend{Backend: membackend.New()},
+			wantExact: true,
+		},
+		{
+			name:       "prefix-only",
+			backend:    &exactVersionPrefixListerOnlyBackend{Backend: membackend.New()},
+			wantPrefix: true,
+		},
+		{
+			name:       "both",
+			backend:    membackend.NewImmutable(),
+			wantExact:  true,
+			wantPrefix: true,
+		},
+		{name: "neither", backend: membackend.New()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped := New(tc.backend)
+			_, exact := storage.AsExactVersionLister(wrapped)
+			_, prefix := storage.AsExactVersionPrefixLister(wrapped)
+			assert.Equal(t, tc.wantExact, exact)
+			assert.Equal(t, tc.wantPrefix, prefix)
+		})
+	}
+}
+
+func TestExactVersionListValidationDoesNotReachRetryBackend(t *testing.T) {
+	t.Parallel()
+	exactBackend := &exactVersionListerOnlyBackend{Backend: membackend.New()}
+	exact, ok := storage.AsExactVersionLister(New(exactBackend))
+	require.True(t, ok)
+	_, err := exact.Versions(context.Background(), "objects/a", 0)
+	require.ErrorIs(t, err, storage.ErrBatchTooLarge)
+	assert.Zero(t, exactBackend.calls.Load())
+
+	prefixBackend := &exactVersionPrefixListerOnlyBackend{
+		Backend: membackend.New(),
+	}
+	prefix, ok := storage.AsExactVersionPrefixLister(New(prefixBackend))
+	require.True(t, ok)
+	_, err = prefix.VersionsByPrefix(context.Background(), "../", 1)
+	require.ErrorIs(t, err, storage.ErrValidation)
+	assert.Zero(t, prefixBackend.calls.Load())
+}
+
 func TestRetryStorage_RetriesTransient(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

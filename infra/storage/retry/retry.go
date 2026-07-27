@@ -153,10 +153,22 @@ func New(backend storage.Storage, opts ...Option) storage.Storage {
 	_, hasMultipart := storage.AsMultipartUploader(backend)
 	_, hasMultipartLister := storage.AsMultipartUploadLister(backend)
 	_, hasExactVersion := storage.AsExactVersionStore(backend)
+	_, hasExactVersionLister := storage.AsExactVersionLister(backend)
+	_, hasExactVersionPrefixLister :=
+		storage.AsExactVersionPrefixLister(backend)
 
 	base := composeRetry(r, hasLister, hasCopier, hasPresigned, hasURLer)
 	if hasExactVersion {
 		base = &retryExactVersion{Storage: base, retry: r}
+	}
+	if hasExactVersionLister {
+		base = &retryExactVersionLister{Storage: base, retry: r}
+	}
+	if hasExactVersionPrefixLister {
+		base = &retryExactVersionPrefixLister{
+			Storage: base,
+			retry:   r,
+		}
 	}
 	switch {
 	case hasMultipart && hasMultipartLister:
@@ -492,6 +504,94 @@ func (wrapper *retryExactVersion) DeleteVersion(
 }
 
 var _ storage.ExactVersionStore = (*retryExactVersion)(nil)
+
+type retryExactVersionLister struct {
+	storage.Storage
+	retry *RetryStorage
+}
+
+func (wrapper *retryExactVersionLister) Unwrap() storage.Storage {
+	return wrapper.Storage
+}
+
+func (wrapper *retryExactVersionLister) Close() error {
+	return storage.Close(wrapper.Storage)
+}
+
+func (wrapper *retryExactVersionLister) Versions(
+	ctx context.Context,
+	key string,
+	limit int,
+) ([]storage.ObjectVersion, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateExactVersionListLimit(limit); err != nil {
+		return nil, err
+	}
+	versions, ok := storage.AsExactVersionLister(wrapper.retry.backend)
+	if !ok {
+		return nil, storage.ErrExactVersionUnavailable
+	}
+	var result []storage.ObjectVersion
+	err := kitretry.DoWith(ctx, wrapper.retry.policy(), func(ctx context.Context) error {
+		var callErr error
+		result, callErr = versions.Versions(ctx, key, limit)
+		return callErr
+	})
+	return result, err
+}
+
+var _ storage.ExactVersionLister = (*retryExactVersionLister)(nil)
+
+type retryExactVersionPrefixLister struct {
+	storage.Storage
+	retry *RetryStorage
+}
+
+func (wrapper *retryExactVersionPrefixLister) Unwrap() storage.Storage {
+	return wrapper.Storage
+}
+
+func (wrapper *retryExactVersionPrefixLister) Close() error {
+	return storage.Close(wrapper.Storage)
+}
+
+func (wrapper *retryExactVersionPrefixLister) VersionsByPrefix(
+	ctx context.Context,
+	prefix string,
+	limit int,
+) ([]storage.ObjectVersion, error) {
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateExactVersionListLimit(limit); err != nil {
+		return nil, err
+	}
+	versions, ok := storage.AsExactVersionPrefixLister(
+		wrapper.retry.backend,
+	)
+	if !ok {
+		return nil, storage.ErrExactVersionUnavailable
+	}
+	var result []storage.ObjectVersion
+	err := kitretry.DoWith(
+		ctx,
+		wrapper.retry.policy(),
+		func(ctx context.Context) error {
+			var callErr error
+			result, callErr = versions.VersionsByPrefix(
+				ctx,
+				prefix,
+				limit,
+			)
+			return callErr
+		},
+	)
+	return result, err
+}
+
+var _ storage.ExactVersionPrefixLister = (*retryExactVersionPrefixLister)(nil)
 
 type retryMultipart struct {
 	storage.Storage

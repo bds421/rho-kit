@@ -40,6 +40,20 @@ func TestAsExactVersionStoreHonorsOpaqueDecorator(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestValidateExactVersionListLimit(t *testing.T) {
+	t.Parallel()
+	for _, limit := range []int{1, storage.MaxExactVersionListEntries} {
+		require.NoError(t, storage.ValidateExactVersionListLimit(limit))
+	}
+	for _, limit := range []int{0, -1, storage.MaxExactVersionListEntries + 1} {
+		require.ErrorIs(
+			t,
+			storage.ValidateExactVersionListLimit(limit),
+			storage.ErrBatchTooLarge,
+		)
+	}
+}
+
 type exactVersionStub struct{}
 
 func (exactVersionStub) Put(context.Context, string, io.Reader, storage.ObjectMeta) error {

@@ -219,6 +219,90 @@ func (backend *ImmutableBackend) DeleteVersion(
 	return storage.ErrExactVersionStillExists
 }
 
+func (backend *ImmutableBackend) Versions(
+	ctx context.Context,
+	key string,
+	limit int,
+) ([]storage.ObjectVersion, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateExactVersionListLimit(limit); err != nil {
+		return nil, err
+	}
+	backend.mu.RLock()
+	defer backend.mu.RUnlock()
+	exists, err := backend.backend.Exists(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return []storage.ObjectVersion{}, nil
+	}
+	version, err := backend.markerVersion(ctx, key)
+	if err != nil {
+		return nil, storage.ErrExactVersionUnavailable
+	}
+	return []storage.ObjectVersion{{Key: key, Version: version}}, nil
+}
+
+func (backend *ImmutableBackend) VersionsByPrefix(
+	ctx context.Context,
+	prefix string,
+	limit int,
+) ([]storage.ObjectVersion, error) {
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateExactVersionListLimit(limit); err != nil {
+		return nil, err
+	}
+	backend.mu.RLock()
+	defer backend.mu.RUnlock()
+	lister, ok := storage.AsLister(backend.backend)
+	if !ok {
+		return nil, storage.ErrExactVersionUnavailable
+	}
+	result := make([]storage.ObjectVersion, 0)
+	startAfter := ""
+	for {
+		page, err := storage.ListPage(
+			ctx,
+			lister,
+			prefix,
+			storage.ListOptions{
+				MaxKeys:    min(1000, limit-len(result)+1),
+				StartAfter: startAfter,
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+		for _, object := range page.Objects {
+			version, versionErr := backend.markerVersion(ctx, object.Key)
+			if versionErr != nil {
+				return nil, storage.ErrExactVersionUnavailable
+			}
+			result = append(result, storage.ObjectVersion{
+				Key:     object.Key,
+				Version: version,
+			})
+			if len(result) > limit {
+				return nil, storage.ErrBatchTooLarge
+			}
+		}
+		if !page.Truncated {
+			break
+		}
+		if page.NextStartAfter == "" ||
+			page.NextStartAfter == startAfter {
+			return nil, storage.ErrExactVersionUnavailable
+		}
+		startAfter = page.NextStartAfter
+	}
+	return result, nil
+}
+
 func (backend *ImmutableBackend) Close() error {
 	return errors.Join(backend.backend.Close(), backend.markers.Close())
 }
@@ -282,9 +366,11 @@ func newImmutableVersion() (string, error) {
 }
 
 var (
-	_ storage.Storage           = (*ImmutableBackend)(nil)
-	_ storage.Statter           = (*ImmutableBackend)(nil)
-	_ storage.Lister            = (*ImmutableBackend)(nil)
-	_ storage.Copier            = (*ImmutableBackend)(nil)
-	_ storage.ExactVersionStore = (*ImmutableBackend)(nil)
+	_ storage.Storage                  = (*ImmutableBackend)(nil)
+	_ storage.Statter                  = (*ImmutableBackend)(nil)
+	_ storage.Lister                   = (*ImmutableBackend)(nil)
+	_ storage.Copier                   = (*ImmutableBackend)(nil)
+	_ storage.ExactVersionStore        = (*ImmutableBackend)(nil)
+	_ storage.ExactVersionLister       = (*ImmutableBackend)(nil)
+	_ storage.ExactVersionPrefixLister = (*ImmutableBackend)(nil)
 )

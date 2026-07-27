@@ -182,10 +182,22 @@ func New(backend storage.Storage, opts ...Option) Stater {
 	_, hasMultipart := storage.AsMultipartUploader(backend)
 	_, hasMultipartLister := storage.AsMultipartUploadLister(backend)
 	_, hasExactVersion := storage.AsExactVersionStore(backend)
+	_, hasExactVersionLister := storage.AsExactVersionLister(backend)
+	_, hasExactVersionPrefixLister :=
+		storage.AsExactVersionPrefixLister(backend)
 
 	base := composeBreaker(cb, hasLister, hasCopier, hasPresigned, hasURLer)
 	if hasExactVersion {
 		base = &breakerExactVersion{Stater: base, breaker: cb}
+	}
+	if hasExactVersionLister {
+		base = &breakerExactVersionLister{Stater: base, breaker: cb}
+	}
+	if hasExactVersionPrefixLister {
+		base = &breakerExactVersionPrefixLister{
+			Stater:  base,
+			breaker: cb,
+		}
 	}
 	switch {
 	case hasMultipart && hasMultipartLister:
@@ -529,6 +541,90 @@ func (wrapper *breakerExactVersion) DeleteVersion(
 }
 
 var _ storage.ExactVersionStore = (*breakerExactVersion)(nil)
+
+type breakerExactVersionLister struct {
+	Stater
+	breaker *CircuitBreaker
+}
+
+func (wrapper *breakerExactVersionLister) Unwrap() storage.Storage {
+	return wrapper.Stater
+}
+
+func (wrapper *breakerExactVersionLister) Close() error {
+	return storage.Close(wrapper.Stater)
+}
+
+func (wrapper *breakerExactVersionLister) Versions(
+	ctx context.Context,
+	key string,
+	limit int,
+) ([]storage.ObjectVersion, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateExactVersionListLimit(limit); err != nil {
+		return nil, err
+	}
+	versions, ok := storage.AsExactVersionLister(wrapper.breaker.backend)
+	if !ok {
+		return nil, storage.ErrExactVersionUnavailable
+	}
+	var result []storage.ObjectVersion
+	err := wrapper.breaker.cb.Execute(func() error {
+		var callErr error
+		result, callErr = versions.Versions(ctx, key, limit)
+		return callErr
+	})
+	return result, err
+}
+
+var _ storage.ExactVersionLister = (*breakerExactVersionLister)(nil)
+
+type breakerExactVersionPrefixLister struct {
+	Stater
+	breaker *CircuitBreaker
+}
+
+func (wrapper *breakerExactVersionPrefixLister) Unwrap() storage.Storage {
+	return wrapper.Stater
+}
+
+func (wrapper *breakerExactVersionPrefixLister) Close() error {
+	return storage.Close(wrapper.Stater)
+}
+
+func (wrapper *breakerExactVersionPrefixLister) VersionsByPrefix(
+	ctx context.Context,
+	prefix string,
+	limit int,
+) ([]storage.ObjectVersion, error) {
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateExactVersionListLimit(limit); err != nil {
+		return nil, err
+	}
+	versions, ok := storage.AsExactVersionPrefixLister(
+		wrapper.breaker.backend,
+	)
+	if !ok {
+		return nil, storage.ErrExactVersionUnavailable
+	}
+	var result []storage.ObjectVersion
+	err := wrapper.breaker.cb.Execute(func() error {
+		var callErr error
+		result, callErr = versions.VersionsByPrefix(
+			ctx,
+			prefix,
+			limit,
+		)
+		return callErr
+	})
+	return result, err
+}
+
+var _ storage.ExactVersionPrefixLister = (*breakerExactVersionPrefixLister)(nil)
 
 type breakerMultipart struct {
 	Stater

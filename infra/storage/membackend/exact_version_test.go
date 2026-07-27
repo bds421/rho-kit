@@ -64,3 +64,21 @@ func TestImmutableBackendExactVersionValidationAndCancellation(t *testing.T) {
 	err = backend.DeleteVersion(context.Background(), storage.ObjectVersion{Key: "objects/a"})
 	assert.True(t, errors.Is(err, storage.ErrValidation))
 }
+
+func TestImmutableBackendVersionsByPrefixIsSortedAndBounded(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend := NewImmutable()
+	for _, key := range []string{"operations/a/z", "outside/a", "operations/a/a"} {
+		require.NoError(t, backend.Put(
+			ctx, key, bytes.NewBufferString(key), storage.ObjectMeta{},
+		))
+	}
+	versions, err := backend.VersionsByPrefix(ctx, "operations/a/", 2)
+	require.NoError(t, err)
+	require.Len(t, versions, 2)
+	assert.Equal(t, "operations/a/a", versions[0].Key)
+	assert.Equal(t, "operations/a/z", versions[1].Key)
+	_, err = backend.VersionsByPrefix(ctx, "operations/a/", 1)
+	assert.ErrorIs(t, err, storage.ErrBatchTooLarge)
+}

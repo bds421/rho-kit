@@ -22,6 +22,9 @@ func TestImmutableBackendDeletesOnlyExactVersion(t *testing.T) {
 	first, meta, err := backend.CurrentVersion(ctx, "objects/a")
 	require.NoError(t, err)
 	assert.Equal(t, int64(5), meta.Size)
+	versions, err := backend.Versions(ctx, "objects/a", 2)
+	require.NoError(t, err)
+	require.Equal(t, []storage.ObjectVersion{first}, versions)
 	require.ErrorIs(t,
 		backend.Put(ctx, "objects/a", bytes.NewBufferString("second"), storage.ObjectMeta{}),
 		storage.ErrValidation,
@@ -38,6 +41,9 @@ func TestImmutableBackendDeletesOnlyExactVersion(t *testing.T) {
 	assert.Equal(t, "first", string(got))
 
 	require.NoError(t, backend.DeleteVersion(ctx, first))
+	versions, err = backend.Versions(ctx, "objects/a", 2)
+	require.NoError(t, err)
+	require.Empty(t, versions)
 	_, _, err = backend.GetVersion(ctx, first)
 	assert.ErrorIs(t, err, storage.ErrObjectNotFound)
 
@@ -75,4 +81,24 @@ func TestImmutableBackendPersistsGenerationAcrossRestart(t *testing.T) {
 	current, _, err := reopened.CurrentVersion(ctx, "objects/a")
 	require.NoError(t, err)
 	assert.Equal(t, first, current)
+}
+
+func TestImmutableBackendVersionsByPrefixIsSortedAndBounded(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend, err := NewImmutable(t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	for _, key := range []string{"operations/a/z", "outside/a", "operations/a/a"} {
+		require.NoError(t, backend.Put(
+			ctx, key, bytes.NewBufferString(key), storage.ObjectMeta{},
+		))
+	}
+	versions, err := backend.VersionsByPrefix(ctx, "operations/a/", 2)
+	require.NoError(t, err)
+	require.Len(t, versions, 2)
+	assert.Equal(t, "operations/a/a", versions[0].Key)
+	assert.Equal(t, "operations/a/z", versions[1].Key)
+	_, err = backend.VersionsByPrefix(ctx, "operations/a/", 1)
+	assert.ErrorIs(t, err, storage.ErrBatchTooLarge)
 }

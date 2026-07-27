@@ -86,6 +86,97 @@ func TestExactVersionRequiresS3VersionID(t *testing.T) {
 	assert.ErrorIs(t, err, storage.ErrExactVersionUnavailable)
 }
 
+func TestExactVersionsByPrefixPagesEveryKeyVersionAndCountsDeleteMarkers(
+	t *testing.T,
+) {
+	t.Parallel()
+	calls := 0
+	backend := newTestBackend(&mockS3Client{
+		versionsFn: func(
+			_ context.Context,
+			input *s3.ListObjectVersionsInput,
+		) (*s3.ListObjectVersionsOutput, error) {
+			calls++
+			require.Equal(t, "operations/a/", aws.ToString(input.Prefix))
+			switch calls {
+			case 1:
+				require.Nil(t, input.KeyMarker)
+				require.Nil(t, input.VersionIdMarker)
+				return &s3.ListObjectVersionsOutput{
+					Versions: []types.ObjectVersion{
+						{Key: aws.String("operations/a/one"), VersionId: aws.String("v1")},
+						{Key: aws.String("operations/a/one"), VersionId: aws.String("v2")},
+					},
+					DeleteMarkers: []types.DeleteMarkerEntry{
+						{Key: aws.String("operations/a/deleted"), VersionId: aws.String("d1")},
+					},
+					IsTruncated:         aws.Bool(true),
+					NextKeyMarker:       aws.String("operations/a/one"),
+					NextVersionIdMarker: aws.String("v2"),
+				}, nil
+			case 2:
+				require.Equal(t, "operations/a/one", aws.ToString(input.KeyMarker))
+				require.Equal(t, "v2", aws.ToString(input.VersionIdMarker))
+				return &s3.ListObjectVersionsOutput{
+					Versions: []types.ObjectVersion{
+						{Key: aws.String("operations/a/two"), VersionId: aws.String("v1")},
+					},
+				}, nil
+			default:
+				t.Fatalf("unexpected page %d", calls)
+				return nil, nil
+			}
+		},
+	})
+	versions, err := backend.VersionsByPrefix(
+		context.Background(),
+		"operations/a/",
+		4,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []storage.ObjectVersion{
+		{Key: "operations/a/one", Version: "v1"},
+		{Key: "operations/a/one", Version: "v2"},
+		{Key: "operations/a/two", Version: "v1"},
+	}, versions)
+	require.Equal(t, 2, calls)
+
+	calls = 0
+	_, err = backend.VersionsByPrefix(
+		context.Background(),
+		"operations/a/",
+		3,
+	)
+	assert.ErrorIs(t, err, storage.ErrBatchTooLarge)
+}
+
+func TestExactVersionsByPrefixRejectsUnchangedPaginationMarkers(
+	t *testing.T,
+) {
+	t.Parallel()
+	calls := 0
+	backend := newTestBackend(&mockS3Client{
+		versionsFn: func(
+			_ context.Context,
+			_ *s3.ListObjectVersionsInput,
+		) (*s3.ListObjectVersionsOutput, error) {
+			calls++
+			return &s3.ListObjectVersionsOutput{
+				IsTruncated:         aws.Bool(true),
+				NextKeyMarker:       aws.String("operations/a/one"),
+				NextVersionIdMarker: aws.String("v1"),
+			}, nil
+		},
+	})
+	_, err := backend.VersionsByPrefix(
+		context.Background(),
+		"operations/a/",
+		4,
+	)
+	assert.ErrorIs(t, err, storage.ErrExactVersionUnavailable)
+	require.Equal(t, 2, calls)
+}
+
 func TestExactVersionRequiresProviderToConfirmPinnedVersion(t *testing.T) {
 	t.Parallel()
 
@@ -98,4 +189,68 @@ func TestExactVersionRequiresProviderToConfirmPinnedVersion(t *testing.T) {
 		Key: "objects/a", Version: "v1",
 	})
 	assert.ErrorIs(t, err, storage.ErrExactVersionUnavailable)
+}
+
+func TestVersionsEnumeratesEveryExactKeyGenerationAcrossPages(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	backend := newTestBackend(&mockS3Client{
+		versionsFn: func(
+			_ context.Context,
+			input *s3.ListObjectVersionsInput,
+		) (*s3.ListObjectVersionsOutput, error) {
+			calls++
+			require.Equal(t, "objects/a", aws.ToString(input.Prefix))
+			if calls == 1 {
+				return &s3.ListObjectVersionsOutput{
+					Versions: []types.ObjectVersion{
+						{Key: aws.String("objects/a"), VersionId: aws.String("v3")},
+						{Key: aws.String("objects/a"), VersionId: aws.String("v2")},
+					},
+					IsTruncated:         aws.Bool(true),
+					NextKeyMarker:       aws.String("objects/a"),
+					NextVersionIdMarker: aws.String("v2"),
+				}, nil
+			}
+			require.Equal(t, "objects/a", aws.ToString(input.KeyMarker))
+			require.Equal(t, "v2", aws.ToString(input.VersionIdMarker))
+			return &s3.ListObjectVersionsOutput{
+				Versions: []types.ObjectVersion{
+					{Key: aws.String("objects/a"), VersionId: aws.String("v1")},
+					{Key: aws.String("objects/a-suffix"), VersionId: aws.String("other")},
+				},
+			}, nil
+		},
+	})
+
+	versions, err := backend.Versions(context.Background(), "objects/a", 8)
+	require.NoError(t, err)
+	require.Equal(t, []storage.ObjectVersion{
+		{Key: "objects/a", Version: "v3"},
+		{Key: "objects/a", Version: "v2"},
+		{Key: "objects/a", Version: "v1"},
+	}, versions)
+	require.Equal(t, 2, calls)
+}
+
+func TestVersionsRefusesTruncationAtBound(t *testing.T) {
+	t.Parallel()
+
+	backend := newTestBackend(&mockS3Client{
+		versionsFn: func(
+			context.Context,
+			*s3.ListObjectVersionsInput,
+		) (*s3.ListObjectVersionsOutput, error) {
+			return &s3.ListObjectVersionsOutput{
+				Versions: []types.ObjectVersion{
+					{Key: aws.String("objects/a"), VersionId: aws.String("v2")},
+					{Key: aws.String("objects/a"), VersionId: aws.String("v1")},
+				},
+			}, nil
+		},
+	})
+
+	_, err := backend.Versions(context.Background(), "objects/a", 1)
+	require.ErrorIs(t, err, storage.ErrBatchTooLarge)
 }

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
@@ -186,6 +188,73 @@ func (backend *ImmutableBackend) DeleteVersion(
 	return nil
 }
 
+func (backend *ImmutableBackend) Versions(
+	ctx context.Context,
+	key string,
+	limit int,
+) ([]storage.ObjectVersion, error) {
+	if err := ctxErr(ctx); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateKey(key); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateExactVersionListLimit(limit); err != nil {
+		return nil, err
+	}
+	backend.mu.RLock()
+	defer backend.mu.RUnlock()
+	if _, ok := backend.object(key); !ok {
+		return []storage.ObjectVersion{}, nil
+	}
+	version := backend.versions[key]
+	if version == "" {
+		return nil, storage.ErrExactVersionUnavailable
+	}
+	return []storage.ObjectVersion{{Key: key, Version: version}}, nil
+}
+
+func (backend *ImmutableBackend) VersionsByPrefix(
+	ctx context.Context,
+	prefix string,
+	limit int,
+) ([]storage.ObjectVersion, error) {
+	if err := ctxErr(ctx); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateExactVersionListLimit(limit); err != nil {
+		return nil, err
+	}
+	backend.mu.RLock()
+	defer backend.mu.RUnlock()
+	backend.backend.mu.RLock()
+	defer backend.backend.mu.RUnlock()
+	result := make([]storage.ObjectVersion, 0)
+	for key := range backend.backend.objects {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		version := backend.versions[key]
+		if version == "" {
+			return nil, storage.ErrExactVersionUnavailable
+		}
+		result = append(result, storage.ObjectVersion{
+			Key:     key,
+			Version: version,
+		})
+		if len(result) > limit {
+			return nil, storage.ErrBatchTooLarge
+		}
+	}
+	slices.SortFunc(result, func(left, right storage.ObjectVersion) int {
+		return strings.Compare(left.Key, right.Key)
+	})
+	return result, nil
+}
+
 func (backend *ImmutableBackend) Close() error {
 	return backend.backend.Close()
 }
@@ -220,9 +289,11 @@ func contextAndVersion(ctx context.Context, object storage.ObjectVersion) error 
 }
 
 var (
-	_ storage.Storage           = (*ImmutableBackend)(nil)
-	_ storage.Statter           = (*ImmutableBackend)(nil)
-	_ storage.Lister            = (*ImmutableBackend)(nil)
-	_ storage.Copier            = (*ImmutableBackend)(nil)
-	_ storage.ExactVersionStore = (*ImmutableBackend)(nil)
+	_ storage.Storage                  = (*ImmutableBackend)(nil)
+	_ storage.Statter                  = (*ImmutableBackend)(nil)
+	_ storage.Lister                   = (*ImmutableBackend)(nil)
+	_ storage.Copier                   = (*ImmutableBackend)(nil)
+	_ storage.ExactVersionStore        = (*ImmutableBackend)(nil)
+	_ storage.ExactVersionLister       = (*ImmutableBackend)(nil)
+	_ storage.ExactVersionPrefixLister = (*ImmutableBackend)(nil)
 )

@@ -10,7 +10,14 @@ import (
 	"unicode/utf8"
 )
 
-const maxObjectVersionLen = 2048
+const (
+	maxObjectVersionLen = 2048
+
+	// MaxExactVersionListEntries is the portable upper bound for one exact
+	// generation enumeration request. Backends must fail closed instead of
+	// silently truncating above this bound.
+	MaxExactVersionListEntries = 4096
+)
 
 var (
 	// ErrExactVersionUnavailable means the backend cannot provide a stable
@@ -68,4 +75,39 @@ type ExactVersionStore interface {
 	StatVersion(ctx context.Context, object ObjectVersion) (ObjectMeta, error)
 	GetVersion(ctx context.Context, object ObjectVersion) (io.ReadCloser, ObjectMeta, error)
 	DeleteVersion(ctx context.Context, object ObjectVersion) error
+}
+
+// ExactVersionLister is the bounded maintenance-side complement to
+// ExactVersionStore. Versions returns every retained content generation for
+// one exact key, oldest or newest ordering being backend-defined. It must fail
+// closed instead of truncating when more than limit generations exist.
+//
+// Delete markers and provider tombstones contain no object body and are not
+// returned. Callers use this capability to seal an immutable deletion plan;
+// they must re-enumerate and require an empty result before activating a final
+// legal-erasure receipt.
+type ExactVersionLister interface {
+	Versions(ctx context.Context, key string, limit int) ([]ObjectVersion, error)
+}
+
+// ExactVersionPrefixLister enumerates every retained content generation below
+// one exact key prefix. It is the bounded legal-erasure complement to
+// [ExactVersionLister]: implementations must count provider tombstones and
+// fail closed instead of truncating when more than limit provider entries
+// exist, while returning only content-bearing generations.
+type ExactVersionPrefixLister interface {
+	VersionsByPrefix(
+		ctx context.Context,
+		prefix string,
+		limit int,
+	) ([]ObjectVersion, error)
+}
+
+// ValidateExactVersionListLimit enforces the provider-neutral bound shared by
+// exact-key and exact-prefix generation enumeration.
+func ValidateExactVersionListLimit(limit int) error {
+	if limit < 1 || limit > MaxExactVersionListEntries {
+		return ErrBatchTooLarge
+	}
+	return nil
 }

@@ -113,3 +113,18 @@ func AsStatter(s Storage) (Statter, bool) {
 func AsExactVersionStore(s Storage) (ExactVersionStore, bool) {
 	return asImpl[ExactVersionStore](s)
 }
+
+// AsExactVersionLister walks the Unwrap chain to find bounded retained-version
+// enumeration without bypassing opaque decorators.
+func AsExactVersionLister(s Storage) (ExactVersionLister, bool) {
+	return asImpl[ExactVersionLister](s)
+}
+
+// AsExactVersionPrefixLister walks the Unwrap chain to find bounded retained
+// generation enumeration under a key prefix without bypassing opaque
+// decorators.
+func AsExactVersionPrefixLister(
+	s Storage,
+) (ExactVersionPrefixLister, bool) {
+	return asImpl[ExactVersionPrefixLister](s)
+}
