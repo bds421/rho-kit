@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	maxObjectVersionLen = 2048
+	maxObjectVersionLen      = 2048
+	maxExactVersionCursorLen = 8192
 
 	// MaxExactVersionListEntries is the portable upper bound for one exact
 	// generation enumeration request. Backends must fail closed instead of
@@ -103,11 +104,69 @@ type ExactVersionPrefixLister interface {
 	) ([]ObjectVersion, error)
 }
 
+// ExactVersionCursor is an opaque, backend-issued continuation token for
+// [ExactVersionPageLister]. Callers may persist and return it to the same
+// backend with the same prefix, but must not parse, construct, or modify it.
+// A cursor binds the provider's key and generation position; a key-only cursor
+// is insufficient when several generations of one key cross a page boundary.
+type ExactVersionCursor string
+
+// ExactVersionPageOptions bounds one provider enumeration page. Limit is the
+// page budget: delete markers and tombstones consume it even though they do
+// not carry content and are therefore omitted from the returned Objects.
+type ExactVersionPageOptions struct {
+	Limit  int
+	Cursor ExactVersionCursor
+}
+
+// ExactVersionPage is one bounded page of content-bearing provider
+// generations. Truncated is true exactly when NextCursor is non-empty.
+type ExactVersionPage struct {
+	Objects    []ObjectVersion
+	NextCursor ExactVersionCursor
+	Truncated  bool
+}
+
+// ExactVersionPageLister is the recovery/export complement to the bounded
+// legal-erasure listers above. Each returned page accounts for at most
+// options.Limit provider entries and returns an opaque key+generation cursor
+// when more remain.
+//
+// Implementations must count delete markers and tombstones toward Limit while
+// returning only content-bearing generations. They must fail closed if a
+// provider reports truncation without a usable, advancing cursor.
+type ExactVersionPageLister interface {
+	VersionsPage(
+		ctx context.Context,
+		prefix string,
+		options ExactVersionPageOptions,
+	) (ExactVersionPage, error)
+}
+
 // ValidateExactVersionListLimit enforces the provider-neutral bound shared by
 // exact-key and exact-prefix generation enumeration.
 func ValidateExactVersionListLimit(limit int) error {
 	if limit < 1 || limit > MaxExactVersionListEntries {
 		return ErrBatchTooLarge
+	}
+	return nil
+}
+
+// ValidateExactVersionPageOptions rejects unbounded pages and malformed
+// transport cursors before they reach a provider. Cursor meaning remains
+// backend-private; this validation only enforces a portable framing bound.
+func ValidateExactVersionPageOptions(options ExactVersionPageOptions) error {
+	if err := ValidateExactVersionListLimit(options.Limit); err != nil {
+		return err
+	}
+	cursor := string(options.Cursor)
+	if len(cursor) > maxExactVersionCursorLen || !utf8.ValidString(cursor) {
+		return fmt.Errorf("%w: exact-version cursor is invalid", ErrValidation)
+	}
+	for _, r := range cursor {
+		if unicode.IsControl(r) || unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) {
+			return fmt.Errorf("%w: exact-version cursor contains invalid characters", ErrValidation)
+		}
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 
@@ -81,4 +82,50 @@ func TestImmutableBackendVersionsByPrefixIsSortedAndBounded(t *testing.T) {
 	assert.Equal(t, "operations/a/z", versions[1].Key)
 	_, err = backend.VersionsByPrefix(ctx, "operations/a/", 1)
 	assert.ErrorIs(t, err, storage.ErrBatchTooLarge)
+}
+
+func TestImmutableBackendPagesBeyondExactVersionListBound(t *testing.T) {
+	ctx := context.Background()
+	backend := NewImmutable()
+	const total = storage.MaxExactVersionListEntries + 4
+	for index := range total {
+		key := fmt.Sprintf("objects/%05d", index)
+		require.NoError(t, backend.Put(
+			ctx,
+			key,
+			bytes.NewReader([]byte("x")),
+			storage.ObjectMeta{Size: 1},
+		))
+	}
+
+	pager, ok := storage.AsExactVersionPageLister(backend)
+	require.True(t, ok)
+	first, err := pager.VersionsPage(
+		ctx,
+		"objects/",
+		storage.ExactVersionPageOptions{
+			Limit: storage.MaxExactVersionListEntries,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, first.Objects, storage.MaxExactVersionListEntries)
+	require.True(t, first.Truncated)
+	require.NotEmpty(t, first.NextCursor)
+	assert.Equal(t, "objects/00000", first.Objects[0].Key)
+	assert.Equal(t, "objects/04095", first.Objects[len(first.Objects)-1].Key)
+
+	second, err := pager.VersionsPage(
+		ctx,
+		"objects/",
+		storage.ExactVersionPageOptions{
+			Limit:  storage.MaxExactVersionListEntries,
+			Cursor: first.NextCursor,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, second.Objects, 4)
+	assert.Equal(t, "objects/04096", second.Objects[0].Key)
+	assert.Equal(t, "objects/04099", second.Objects[3].Key)
+	assert.False(t, second.Truncated)
+	assert.Empty(t, second.NextCursor)
 }

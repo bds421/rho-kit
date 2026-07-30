@@ -102,3 +102,53 @@ func TestImmutableBackendVersionsByPrefixIsSortedAndBounded(t *testing.T) {
 	_, err = backend.VersionsByPrefix(ctx, "operations/a/", 1)
 	assert.ErrorIs(t, err, storage.ErrBatchTooLarge)
 }
+
+func TestImmutableBackendExactVersionPagesAreStableAndPrefixBound(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend, err := NewImmutable(t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	for _, key := range []string{"objects/a", "objects/b", "objects/c"} {
+		require.NoError(t, backend.Put(
+			ctx,
+			key,
+			bytes.NewReader([]byte(key)),
+			storage.ObjectMeta{Size: int64(len(key))},
+		))
+	}
+
+	first, err := backend.VersionsPage(
+		ctx,
+		"objects/",
+		storage.ExactVersionPageOptions{Limit: 2},
+	)
+	require.NoError(t, err)
+	require.Len(t, first.Objects, 2)
+	require.True(t, first.Truncated)
+	assert.Equal(t, "objects/a", first.Objects[0].Key)
+	assert.Equal(t, "objects/b", first.Objects[1].Key)
+
+	second, err := backend.VersionsPage(
+		ctx,
+		"objects/",
+		storage.ExactVersionPageOptions{
+			Limit:  2,
+			Cursor: first.NextCursor,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, second.Objects, 1)
+	assert.Equal(t, "objects/c", second.Objects[0].Key)
+	assert.False(t, second.Truncated)
+
+	_, err = backend.VersionsPage(
+		ctx,
+		"other/",
+		storage.ExactVersionPageOptions{
+			Limit:  2,
+			Cursor: first.NextCursor,
+		},
+	)
+	assert.ErrorIs(t, err, storage.ErrExactVersionUnavailable)
+}

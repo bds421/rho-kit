@@ -2,6 +2,7 @@ package s3backend
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -282,6 +283,151 @@ func (b *Backend) VersionsByPrefix(
 	return result, nil
 }
 
+func (b *Backend) VersionsPage(
+	ctx context.Context,
+	prefix string,
+	options storage.ExactVersionPageOptions,
+) (storage.ExactVersionPage, error) {
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	if err := storage.ValidateExactVersionPageOptions(options); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	client, ok := b.client.(exactVersionListClient)
+	if !ok {
+		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+	}
+	keyMarker, versionMarker, err := decodeExactVersionPageCursor(
+		prefix,
+		options.Cursor,
+	)
+	if err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	output, err := client.ListObjectVersions(
+		ctx,
+		&s3.ListObjectVersionsInput{
+			Bucket:          aws.String(b.bucket),
+			Prefix:          aws.String(prefix),
+			KeyMarker:       keyMarker,
+			VersionIdMarker: versionMarker,
+			MaxKeys:         aws.Int32(int32(options.Limit)),
+		},
+	)
+	if err != nil {
+		return storage.ExactVersionPage{}, storage.WrapSafe(
+			"s3backend: page exact versions failed",
+			err,
+		)
+	}
+	if output == nil {
+		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+	}
+	seenEntries := len(output.DeleteMarkers) + len(output.Versions)
+	if seenEntries > options.Limit {
+		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+	}
+	page := storage.ExactVersionPage{
+		Objects: make([]storage.ObjectVersion, 0, len(output.Versions)),
+	}
+	for _, marker := range output.DeleteMarkers {
+		if !strings.HasPrefix(aws.ToString(marker.Key), prefix) {
+			return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+		}
+	}
+	for _, version := range output.Versions {
+		object := storage.ObjectVersion{
+			Key:     aws.ToString(version.Key),
+			Version: aws.ToString(version.VersionId),
+		}
+		if !strings.HasPrefix(object.Key, prefix) || object.Validate() != nil {
+			return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+		}
+		page.Objects = append(page.Objects, object)
+	}
+	if !aws.ToBool(output.IsTruncated) {
+		return page, nil
+	}
+	nextKey := aws.ToString(output.NextKeyMarker)
+	nextVersion := aws.ToString(output.NextVersionIdMarker)
+	if nextKey == "" ||
+		nextKey == aws.ToString(keyMarker) &&
+			nextVersion == aws.ToString(versionMarker) {
+		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+	}
+	page.NextCursor, err = encodeExactVersionPageCursor(
+		prefix,
+		nextKey,
+		nextVersion,
+	)
+	if err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	page.Truncated = true
+	return page, nil
+}
+
+const exactVersionPageCursorKind = "rho-kit-s3-exact-page-v1"
+
+func encodeExactVersionPageCursor(
+	prefix string,
+	key string,
+	version string,
+) (storage.ExactVersionCursor, error) {
+	if !strings.HasPrefix(key, prefix) {
+		return "", storage.ErrExactVersionUnavailable
+	}
+	if version == "" {
+		if err := storage.ValidateKey(key); err != nil {
+			return "", storage.ErrExactVersionUnavailable
+		}
+	} else if err := (storage.ObjectVersion{
+		Key: key, Version: version,
+	}).Validate(); err != nil {
+		return "", storage.ErrExactVersionUnavailable
+	}
+	raw := strings.Join(
+		[]string{exactVersionPageCursorKind, prefix, key, version},
+		"\x00",
+	)
+	return storage.ExactVersionCursor(
+		base64.RawURLEncoding.EncodeToString([]byte(raw)),
+	), nil
+}
+
+func decodeExactVersionPageCursor(
+	prefix string,
+	cursor storage.ExactVersionCursor,
+) (keyMarker *string, versionMarker *string, err error) {
+	if cursor == "" {
+		return nil, nil, nil
+	}
+	raw, decodeErr := base64.RawURLEncoding.DecodeString(string(cursor))
+	if decodeErr != nil {
+		return nil, nil, storage.ErrExactVersionUnavailable
+	}
+	parts := strings.Split(string(raw), "\x00")
+	if len(parts) != 4 ||
+		parts[0] != exactVersionPageCursorKind ||
+		parts[1] != prefix ||
+		!strings.HasPrefix(parts[2], prefix) {
+		return nil, nil, storage.ErrExactVersionUnavailable
+	}
+	if parts[3] == "" {
+		if validateErr := storage.ValidateKey(parts[2]); validateErr != nil {
+			return nil, nil, storage.ErrExactVersionUnavailable
+		}
+		return aws.String(parts[2]), nil, nil
+	}
+	if validateErr := (storage.ObjectVersion{
+		Key: parts[2], Version: parts[3],
+	}).Validate(); validateErr != nil {
+		return nil, nil, storage.ErrExactVersionUnavailable
+	}
+	return aws.String(parts[2]), aws.String(parts[3]), nil
+}
+
 func s3HeadMeta(output *s3.HeadObjectOutput) storage.ObjectMeta {
 	meta := storage.ObjectMeta{
 		ContentType: aws.ToString(output.ContentType),
@@ -315,3 +461,4 @@ func s3GetMeta(output *s3.GetObjectOutput) storage.ObjectMeta {
 var _ storage.ExactVersionStore = (*Backend)(nil)
 var _ storage.ExactVersionLister = (*Backend)(nil)
 var _ storage.ExactVersionPrefixLister = (*Backend)(nil)
+var _ storage.ExactVersionPageLister = (*Backend)(nil)

@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
+	"github.com/bds421/rho-kit/infra/v2/storage/internal/exactversioncursor"
 )
 
 // ImmutableBackend adds generation-pinned access to a local backend whose root
@@ -303,6 +304,89 @@ func (backend *ImmutableBackend) VersionsByPrefix(
 	return result, nil
 }
 
+func (backend *ImmutableBackend) VersionsPage(
+	ctx context.Context,
+	prefix string,
+	options storage.ExactVersionPageOptions,
+) (storage.ExactVersionPage, error) {
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	if err := storage.ValidateExactVersionPageOptions(options); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	position, err := exactversioncursor.Decode(
+		immutablePageCursorKind,
+		prefix,
+		options.Cursor,
+		false,
+	)
+	if err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	startAfter, cursorVersion := position.Key, position.Version
+	backend.mu.RLock()
+	defer backend.mu.RUnlock()
+	if startAfter != "" {
+		current, versionErr := backend.markerVersion(ctx, startAfter)
+		if versionErr != nil || current != cursorVersion {
+			return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+		}
+	}
+	lister, ok := storage.AsLister(backend.backend)
+	if !ok {
+		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+	}
+	listed, err := storage.ListPage(
+		ctx,
+		lister,
+		prefix,
+		storage.ListOptions{
+			MaxKeys:    options.Limit,
+			StartAfter: startAfter,
+		},
+	)
+	if err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	page := storage.ExactVersionPage{
+		Objects: make([]storage.ObjectVersion, 0, len(listed.Objects)),
+	}
+	for _, object := range listed.Objects {
+		version, versionErr := backend.markerVersion(ctx, object.Key)
+		if versionErr != nil {
+			return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+		}
+		page.Objects = append(page.Objects, storage.ObjectVersion{
+			Key:     object.Key,
+			Version: version,
+		})
+	}
+	if !listed.Truncated {
+		return page, nil
+	}
+	if len(page.Objects) == 0 ||
+		listed.NextStartAfter != page.Objects[len(page.Objects)-1].Key {
+		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+	}
+	last := page.Objects[len(page.Objects)-1]
+	page.NextCursor, err = exactversioncursor.Encode(
+		immutablePageCursorKind,
+		prefix,
+		exactversioncursor.Position{
+			Key: last.Key, Version: last.Version,
+		},
+		false,
+	)
+	if err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	page.Truncated = true
+	return page, nil
+}
+
+const immutablePageCursorKind = "rho-kit-local-immutable-exact-page-v1"
+
 func (backend *ImmutableBackend) Close() error {
 	return errors.Join(backend.backend.Close(), backend.markers.Close())
 }
@@ -373,4 +457,5 @@ var (
 	_ storage.ExactVersionStore        = (*ImmutableBackend)(nil)
 	_ storage.ExactVersionLister       = (*ImmutableBackend)(nil)
 	_ storage.ExactVersionPrefixLister = (*ImmutableBackend)(nil)
+	_ storage.ExactVersionPageLister   = (*ImmutableBackend)(nil)
 )

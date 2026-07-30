@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
+	"github.com/bds421/rho-kit/infra/v2/storage/internal/exactversioncursor"
 )
 
 // ImmutableBackend exposes generation-pinned operations for an in-memory
@@ -255,6 +256,83 @@ func (backend *ImmutableBackend) VersionsByPrefix(
 	return result, nil
 }
 
+func (backend *ImmutableBackend) VersionsPage(
+	ctx context.Context,
+	prefix string,
+	options storage.ExactVersionPageOptions,
+) (storage.ExactVersionPage, error) {
+	if err := ctxErr(ctx); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	if err := storage.ValidateExactVersionPageOptions(options); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	position, err := exactversioncursor.Decode(
+		immutablePageCursorKind,
+		prefix,
+		options.Cursor,
+		false,
+	)
+	if err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	startAfter, cursorVersion := position.Key, position.Version
+	backend.mu.RLock()
+	defer backend.mu.RUnlock()
+	backend.backend.mu.RLock()
+	defer backend.backend.mu.RUnlock()
+	if startAfter != "" {
+		if _, ok := backend.backend.objects[startAfter]; !ok ||
+			backend.versions[startAfter] != cursorVersion {
+			return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+		}
+	}
+	keys := make([]string, 0)
+	for key := range backend.backend.objects {
+		if err := ctxErr(ctx); err != nil {
+			return storage.ExactVersionPage{}, err
+		}
+		if strings.HasPrefix(key, prefix) && key > startAfter {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	pageLength := min(len(keys), options.Limit)
+	page := storage.ExactVersionPage{
+		Objects: make([]storage.ObjectVersion, 0, pageLength),
+	}
+	for _, key := range keys[:pageLength] {
+		version := backend.versions[key]
+		object := storage.ObjectVersion{Key: key, Version: version}
+		if object.Validate() != nil {
+			return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+		}
+		page.Objects = append(page.Objects, object)
+	}
+	if len(keys) <= options.Limit {
+		return page, nil
+	}
+	last := page.Objects[len(page.Objects)-1]
+	page.NextCursor, err = exactversioncursor.Encode(
+		immutablePageCursorKind,
+		prefix,
+		exactversioncursor.Position{
+			Key: last.Key, Version: last.Version,
+		},
+		false,
+	)
+	if err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	page.Truncated = true
+	return page, nil
+}
+
+const immutablePageCursorKind = "rho-kit-memory-immutable-exact-page-v1"
+
 func (backend *ImmutableBackend) Close() error {
 	return backend.backend.Close()
 }
@@ -296,4 +374,5 @@ var (
 	_ storage.ExactVersionStore        = (*ImmutableBackend)(nil)
 	_ storage.ExactVersionLister       = (*ImmutableBackend)(nil)
 	_ storage.ExactVersionPrefixLister = (*ImmutableBackend)(nil)
+	_ storage.ExactVersionPageLister   = (*ImmutableBackend)(nil)
 )
