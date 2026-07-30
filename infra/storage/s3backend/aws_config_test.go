@@ -19,7 +19,7 @@ func TestBuildAWSConfigPreservesNativeAWSRequestChecksumPolicy(t *testing.T) {
 	require.Equal(t, aws.ResponseChecksumValidationWhenSupported, config.ResponseChecksumValidation)
 }
 
-func TestBuildAWSConfigUsesCompatibleRequestChecksumsForCustomEndpoint(t *testing.T) {
+func TestBuildAWSConfigUsesCompatibleChecksumsForCustomEndpoint(t *testing.T) {
 	t.Setenv("AWS_REQUEST_CHECKSUM_CALCULATION", "WHEN_SUPPORTED")
 	t.Setenv("AWS_RESPONSE_CHECKSUM_VALIDATION", "WHEN_SUPPORTED")
 	config, err := buildAWSConfig(context.Background(), Config{
@@ -28,5 +28,5 @@ func TestBuildAWSConfigUsesCompatibleRequestChecksumsForCustomEndpoint(t *testin
 	})
 	require.NoError(t, err)
 	require.Equal(t, aws.RequestChecksumCalculationWhenRequired, config.RequestChecksumCalculation)
-	require.Equal(t, aws.ResponseChecksumValidationWhenSupported, config.ResponseChecksumValidation)
+	require.Equal(t, aws.ResponseChecksumValidationWhenRequired, config.ResponseChecksumValidation)
 }
