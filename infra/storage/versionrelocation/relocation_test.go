@@ -143,3 +143,39 @@ func TestRelocationRejectsCrossKeyAndResolverFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestRelocationForwardsBackendClose(t *testing.T) {
+	backend := &closingBackend{Storage: membackend.NewImmutable()}
+	wrapped, err := New(
+		backend,
+		ResolverFunc(func(
+			_ context.Context,
+			object storage.ObjectVersion,
+		) (storage.ObjectVersion, error) {
+			return object, nil
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = storage.Close(wrapped); err != nil {
+		t.Fatal(err)
+	}
+	if !backend.closed {
+		t.Fatal("relocation wrapper did not close its backend")
+	}
+}
+
+type closingBackend struct {
+	storage.Storage
+	closed bool
+}
+
+func (backend *closingBackend) Unwrap() storage.Storage {
+	return backend.Storage
+}
+
+func (backend *closingBackend) Close() error {
+	backend.closed = true
+	return nil
+}

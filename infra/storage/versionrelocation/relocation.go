@@ -175,8 +175,13 @@ func (relocated *relocatedStorage) Unwrap() storage.Storage {
 	return relocated.backend
 }
 
+func (relocated *relocatedStorage) Close() error {
+	return storage.Close(relocated.backend)
+}
+
 var (
 	_ storage.Storage           = (*relocatedStorage)(nil)
 	_ storage.ExactVersionStore = (*relocatedStorage)(nil)
 	_ storage.Unwrapper         = (*relocatedStorage)(nil)
+	_ io.Closer                 = (*relocatedStorage)(nil)
 )
