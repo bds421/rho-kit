@@ -220,3 +220,5 @@ release-bin-all:
 		echo "==> Building $$name"; \
 		$(MAKE) release-bin BIN=$$name || exit 1; \
 	done
+
+# ci-probe: temporary, will be deleted
