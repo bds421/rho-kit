@@ -11,7 +11,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.69.0
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260724162435-b2f20204f0df
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260729162451-8efbd57d26e0
 	google.golang.org/grpc v1.83.0
 )
 

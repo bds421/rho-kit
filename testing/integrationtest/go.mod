@@ -48,8 +48,8 @@ require (
 	github.com/pressly/goose/v3 v3.27.3
 	github.com/rabbitmq/amqp091-go v1.13.0
 	github.com/redis/go-redis/v9 v9.21.0
-	github.com/riverqueue/river v0.41.1
-	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.41.1
+	github.com/riverqueue/river v0.42.0
+	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.42.0
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.43.0
@@ -150,9 +150,9 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
-	github.com/riverqueue/river/riverdriver v0.41.1 // indirect
-	github.com/riverqueue/river/rivershared v0.41.1 // indirect
-	github.com/riverqueue/river/rivertype v0.41.1 // indirect
+	github.com/riverqueue/river/riverdriver v0.42.0 // indirect
+	github.com/riverqueue/river/rivershared v0.42.0 // indirect
+	github.com/riverqueue/river/rivertype v0.42.0 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect

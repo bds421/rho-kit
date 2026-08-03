@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.7.0 — 2026-08-03
+
+Object-storage exact-generation release (coordination tag `release/v2.7.0`).
+Additive only; no v2 API or behavior changes for existing callers.
+
+- **feat(storage).** Add paged exact-generation enumeration
+  (`ExactVersionPageLister`, `ExactVersionCursor`, `ExactVersionPage`) as the
+  recovery and export complement to the bounded legal-erasure listers. Cursors
+  are opaque and bind key plus generation; delete markers and tombstones count
+  against the page limit, and backends fail closed when a provider reports
+  truncation without an advancing cursor. Implemented for the memory, local,
+  and S3 backends and forwarded through the retry, circuit-breaker, and
+  encryption decorators.
+- **feat(storage).** Add `versionrelocation`, an opt-in decorator that resolves
+  historical exact-generation identities to their current physical generation
+  through a caller-owned resolver. Unversioned operations and physical
+  enumeration remain unchanged; resolvers may move a generation but never
+  rewrite an object key.
+- **fix(storage/s3).** Use `WhenRequired` response checksum validation for
+  explicitly configured S3-compatible endpoints, which commonly omit optional
+  response checksum headers and otherwise produced one SDK warning per
+  successful `GetObject`. Native AWS keeps its SDK/operator-selected policy.
+- **chore(deps).** Refresh every direct external dependency to its latest
+  minor/patch release, including the AWS SDK, smithy-go, gRPC, Prometheus
+  client, jwx, goose, River, Kubernetes client, and the Google Cloud SDKs.
+
 ## v2.6.0 — 2026-07-22
 
 Platform-foundations release (coordination tag `release/v2.6.0`).
