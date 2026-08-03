@@ -3,9 +3,9 @@ module github.com/bds421/rho-kit/infra/leaderelection/etcd/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.6.0
-	github.com/bds421/rho-kit/infra/v2 v2.6.0
-	github.com/bds421/rho-kit/observability/v2 v2.6.0
+	github.com/bds421/rho-kit/core/v2 v2.7.0
+	github.com/bds421/rho-kit/infra/v2 v2.7.0
+	github.com/bds421/rho-kit/observability/v2 v2.7.0
 	github.com/prometheus/client_golang v1.24.1
 	go.etcd.io/etcd/client/v3 v3.7.1
 )
@@ -15,7 +15,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
-	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
