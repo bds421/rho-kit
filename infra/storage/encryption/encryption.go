@@ -60,10 +60,11 @@ func (s *StaticKeyProvider) EncryptionKey(context.Context) ([]byte, error) {
 // forwarded only when the underlying backend supports it; see [New] for
 // the dispatch.
 var (
-	_ storage.Storage           = (*EncryptedStorage)(nil)
-	_ storage.OpaqueDecorator   = (*EncryptedStorage)(nil)
-	_ storage.Copier            = (*EncryptedStorage)(nil)
-	_ storage.ExactVersionStore = (*encryptedExactVersion)(nil)
+	_ storage.Storage                = (*EncryptedStorage)(nil)
+	_ storage.OpaqueDecorator        = (*EncryptedStorage)(nil)
+	_ storage.Copier                 = (*EncryptedStorage)(nil)
+	_ storage.ExactVersionStore      = (*encryptedExactVersion)(nil)
+	_ storage.ExactVersionPageLister = (*encryptedExactVersionPageLister)(nil)
 )
 
 // EncryptedStorage intentionally does NOT implement storage.PresignedStore:
@@ -258,8 +259,14 @@ func New(backend storage.Storage, keys KeyProvider, opts ...Option) storage.Stor
 	if _, ok := storage.AsLister(backend); ok {
 		composed = &encryptedLister{e}
 	}
+	if _, ok := storage.AsExactVersionPageLister(backend); ok {
+		composed = &encryptedExactVersionPageLister{
+			Storage:   composed,
+			encrypted: e,
+		}
+	}
 	if _, ok := storage.AsExactVersionStore(backend); ok {
-		return &encryptedExactVersion{Storage: composed, encrypted: e}
+		composed = &encryptedExactVersion{Storage: composed, encrypted: e}
 	}
 	return composed
 }
@@ -651,6 +658,39 @@ func exactVersionPlaintextMeta(meta storage.ObjectMeta) storage.ObjectMeta {
 		meta.Size -= gcmOverhead
 	}
 	return meta
+}
+
+type encryptedExactVersionPageLister struct {
+	storage.Storage
+	encrypted *EncryptedStorage
+}
+
+func (wrapper *encryptedExactVersionPageLister) Unwrap() storage.Storage {
+	return wrapper.Storage
+}
+
+func (wrapper *encryptedExactVersionPageLister) Close() error {
+	return storage.Close(wrapper.Storage)
+}
+
+func (wrapper *encryptedExactVersionPageLister) VersionsPage(
+	ctx context.Context,
+	prefix string,
+	options storage.ExactVersionPageOptions,
+) (storage.ExactVersionPage, error) {
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	if err := storage.ValidateExactVersionPageOptions(options); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	versions, ok := storage.AsExactVersionPageLister(
+		wrapper.encrypted.backend,
+	)
+	if !ok {
+		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+	}
+	return versions.VersionsPage(ctx, prefix, options)
 }
 
 // zeroBytes overwrites a byte slice with zeros to scrub key material from memory.

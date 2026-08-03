@@ -185,6 +185,8 @@ func New(backend storage.Storage, opts ...Option) Stater {
 	_, hasExactVersionLister := storage.AsExactVersionLister(backend)
 	_, hasExactVersionPrefixLister :=
 		storage.AsExactVersionPrefixLister(backend)
+	_, hasExactVersionPageLister :=
+		storage.AsExactVersionPageLister(backend)
 
 	base := composeBreaker(cb, hasLister, hasCopier, hasPresigned, hasURLer)
 	if hasExactVersion {
@@ -195,6 +197,12 @@ func New(backend storage.Storage, opts ...Option) Stater {
 	}
 	if hasExactVersionPrefixLister {
 		base = &breakerExactVersionPrefixLister{
+			Stater:  base,
+			breaker: cb,
+		}
+	}
+	if hasExactVersionPageLister {
+		base = &breakerExactVersionPageLister{
 			Stater:  base,
 			breaker: cb,
 		}
@@ -625,6 +633,51 @@ func (wrapper *breakerExactVersionPrefixLister) VersionsByPrefix(
 }
 
 var _ storage.ExactVersionPrefixLister = (*breakerExactVersionPrefixLister)(nil)
+
+type breakerExactVersionPageLister struct {
+	Stater
+	breaker *CircuitBreaker
+}
+
+func (wrapper *breakerExactVersionPageLister) Unwrap() storage.Storage {
+	return wrapper.Stater
+}
+
+func (wrapper *breakerExactVersionPageLister) Close() error {
+	return storage.Close(wrapper.Stater)
+}
+
+func (wrapper *breakerExactVersionPageLister) VersionsPage(
+	ctx context.Context,
+	prefix string,
+	options storage.ExactVersionPageOptions,
+) (storage.ExactVersionPage, error) {
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	if err := storage.ValidateExactVersionPageOptions(options); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	versions, ok := storage.AsExactVersionPageLister(
+		wrapper.breaker.backend,
+	)
+	if !ok {
+		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+	}
+	var result storage.ExactVersionPage
+	err := wrapper.breaker.cb.Execute(func() error {
+		var callErr error
+		result, callErr = versions.VersionsPage(
+			ctx,
+			prefix,
+			options,
+		)
+		return callErr
+	})
+	return result, err
+}
+
+var _ storage.ExactVersionPageLister = (*breakerExactVersionPageLister)(nil)
 
 type breakerMultipart struct {
 	Stater

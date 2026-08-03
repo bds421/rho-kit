@@ -128,3 +128,11 @@ func AsExactVersionPrefixLister(
 ) (ExactVersionPrefixLister, bool) {
 	return asImpl[ExactVersionPrefixLister](s)
 }
+
+// AsExactVersionPageLister walks the Unwrap chain to find paged exact
+// generation enumeration without bypassing opaque decorators.
+func AsExactVersionPageLister(
+	s Storage,
+) (ExactVersionPageLister, bool) {
+	return asImpl[ExactVersionPageLister](s)
+}

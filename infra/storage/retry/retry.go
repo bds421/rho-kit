@@ -156,6 +156,8 @@ func New(backend storage.Storage, opts ...Option) storage.Storage {
 	_, hasExactVersionLister := storage.AsExactVersionLister(backend)
 	_, hasExactVersionPrefixLister :=
 		storage.AsExactVersionPrefixLister(backend)
+	_, hasExactVersionPageLister :=
+		storage.AsExactVersionPageLister(backend)
 
 	base := composeRetry(r, hasLister, hasCopier, hasPresigned, hasURLer)
 	if hasExactVersion {
@@ -166,6 +168,12 @@ func New(backend storage.Storage, opts ...Option) storage.Storage {
 	}
 	if hasExactVersionPrefixLister {
 		base = &retryExactVersionPrefixLister{
+			Storage: base,
+			retry:   r,
+		}
+	}
+	if hasExactVersionPageLister {
+		base = &retryExactVersionPageLister{
 			Storage: base,
 			retry:   r,
 		}
@@ -592,6 +600,55 @@ func (wrapper *retryExactVersionPrefixLister) VersionsByPrefix(
 }
 
 var _ storage.ExactVersionPrefixLister = (*retryExactVersionPrefixLister)(nil)
+
+type retryExactVersionPageLister struct {
+	storage.Storage
+	retry *RetryStorage
+}
+
+func (wrapper *retryExactVersionPageLister) Unwrap() storage.Storage {
+	return wrapper.Storage
+}
+
+func (wrapper *retryExactVersionPageLister) Close() error {
+	return storage.Close(wrapper.Storage)
+}
+
+func (wrapper *retryExactVersionPageLister) VersionsPage(
+	ctx context.Context,
+	prefix string,
+	options storage.ExactVersionPageOptions,
+) (storage.ExactVersionPage, error) {
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	if err := storage.ValidateExactVersionPageOptions(options); err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	versions, ok := storage.AsExactVersionPageLister(
+		wrapper.retry.backend,
+	)
+	if !ok {
+		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+	}
+	var result storage.ExactVersionPage
+	err := kitretry.DoWith(
+		ctx,
+		wrapper.retry.policy(),
+		func(ctx context.Context) error {
+			var callErr error
+			result, callErr = versions.VersionsPage(
+				ctx,
+				prefix,
+				options,
+			)
+			return callErr
+		},
+	)
+	return result, err
+}
+
+var _ storage.ExactVersionPageLister = (*retryExactVersionPageLister)(nil)
 
 type retryMultipart struct {
 	storage.Storage

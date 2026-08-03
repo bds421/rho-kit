@@ -262,8 +262,13 @@ func buildAWSConfig(ctx context.Context, cfg Config) (aws.Config, error) {
 			// For explicitly configured S3-compatible endpoints, avoid the SDK's
 			// optional aws-chunked request checksum stream: older MinIO releases
 			// reject its large chunks even when the object is within contract.
+			// Compatible endpoints also commonly omit optional response checksum
+			// headers. Requiring validation only when the API requires it avoids
+			// an SDK warning for every successful GetObject while retaining the
+			// native AWS policy when no custom endpoint is configured.
 			// Native AWS keeps its SDK/operator-selected checksum policy.
 			awsconfig.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
+			awsconfig.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
 		)
 	}
 	return awsconfig.LoadDefaultConfig(ctx, opts...)
