@@ -8,13 +8,24 @@
 #   1. main is clean (`git status` empty) and on the commit you want
 #      to tag from.
 #   2. main is locally release-green (`make release-candidate` passes).
-#   3. Branch protection's required PR review is temporarily disabled
-#      (the dance pushes ~7 commits + tag batches directly to main).
-#      Re-enable it after the run.
+#   3. You hold the repository admin role.
 #
-#      gh api -X DELETE repos/<owner>/<repo>/branches/main/protection/required_pull_request_reviews
-#      ... run this script ...
-#      gh api -X PATCH ... (restore)
+# Branch protection no longer needs to be toggled. `main` keeps required
+# CODEOWNERS reviews and linear history for everyone, but classic branch
+# protection runs with `enforce_admins: false`, so the admin running this
+# script can push the per-level commits and tags directly. The previous
+# flow deleted `required_pull_request_reviews` before the run and restored
+# it afterwards; that left `main` unprotected for the whole run and silently
+# unprotected forever if the run died in the middle.
+#
+# Note for a future move to repository rulesets: `main`'s workflows are
+# path-filtered (ci.yml has paths-ignore for docs/**, dashboards.yml and
+# supply-chain.yml only trigger on their own paths). Required status checks
+# therefore cannot be enabled as-is — a docs-only PR would sit forever on a
+# check that never runs. Add an always-runs aggregate gate job first.
+# `tools/check-release-team.sh` also reads the CLASSIC protection endpoint
+# and requires `require_code_owner_reviews: true`, so it must be taught about
+# rulesets before classic protection can be removed.
 #
 # What it does (mirrors tools/rehearse-v2-release.sh but against the
 # real origin instead of a temp bare repo):
@@ -33,11 +44,11 @@
 # previous level's tags from origin via direct git (GONOPROXY skips
 # proxy.golang.org so newly-pushed tags are immediately resolvable).
 #
-# After the script completes, run a downstream-consumer smoke test:
-#   tmpdir=$(mktemp -d); cd "$tmpdir"
-#   go mod init verify
-#   go get github.com/bds421/rho-kit/app/v2@$RELEASE_VERSION ...
-#   go list -m all | grep rho-kit  # should all show $RELEASE_VERSION
+# The run finishes with an automated downstream-consumer smoke test: a
+# throwaway module outside the workspace resolves every released module at
+# $RELEASE_VERSION and builds against it. A release whose internal require
+# rewrites are inconsistent fails there instead of reaching a consumer.
+# Set RELEASE_SKIP_SMOKE=1 to skip it.
 
 set -euo pipefail
 
@@ -60,10 +71,40 @@ if ! git merge-base --is-ancestor origin/main HEAD; then
   exit 1
 fi
 
+echo "==> Preflight: verify a dirty tree will not be swept into a release commit"
+# The per-level loop stages `git add -A <dir>/go.mod` and `<dir>/go.sum`, so an
+# unrelated edit to one of those files would be committed and tagged silently.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "ERROR: working tree or index is dirty; commit or stash before releasing." >&2
+  exit 1
+fi
+
 echo "==> Compute release plan for $VERSION"
 RELEASE_MODE=all RELEASE_FORMAT=tsv RELEASE_VERSION="$VERSION" make release-plan > "$PLAN"
 max_level=$(awk -F'\t' 'NR>1 && $1>max {max=$1} END{print max+0}' "$PLAN")
 echo "max level: $max_level"
+
+echo "==> Preflight: verify no $VERSION tag already exists on origin"
+# `git tag -a` fails on an existing tag, and under `set -e` that aborts the run
+# *after* earlier levels' tags are already pushed — the exact half-released
+# state the origin/main preflight above exists to prevent. Check every planned
+# tag plus the coordination tag before anything is pushed.
+existing_remote_tags="$(git ls-remote --tags origin 2>/dev/null \
+  | sed -n 's#.*refs/tags/\(.*\)$#\1#p' | sed 's/\^{}$//' | sort -u)"
+collisions=""
+while IFS= read -r tag; do
+  [ -z "$tag" ] && continue
+  if printf '%s\n' "$existing_remote_tags" | grep -qxF "$tag"; then
+    collisions="${collisions}  $tag"$'\n'
+  fi
+done <<< "$(awk -F'\t' 'NR>1 {print $4}' "$PLAN"; echo "release/$VERSION")"
+if [ -n "$collisions" ]; then
+  echo "ERROR: $VERSION tags already exist on origin:" >&2
+  printf '%s' "$collisions" >&2
+  echo "       Pick an unused version, or delete those tags if the release was aborted." >&2
+  exit 1
+fi
+echo "  no collisions"
 
 for level in $(seq 0 "$max_level"); do
   echo ""
@@ -123,7 +164,17 @@ for level in $(seq 0 "$max_level"); do
     # These mechanical commits are created only after the release candidate
     # and rehearsal have passed. Skip push-triggered GitHub workflows so one
     # coordinated release does not launch the same CI suite once per level.
-    git commit -q -m "release: prepare $VERSION module level $level [skip ci]"
+    #
+    # The FINAL level is the exception: it is the commit `main` is left at, and
+    # skipping CI there meant the released head was never validated by CI at
+    # all. Every level rewrites internal require pins, so the head can differ
+    # from the last CI-verified commit in exactly the way check-tidy and
+    # check-publishable exist to catch. Let the last one run.
+    skip_ci=" [skip ci]"
+    if [ "$level" -eq "$max_level" ]; then
+      skip_ci=""
+    fi
+    git commit -q -m "release: prepare $VERSION module level $level$skip_ci"
     # --force-with-lease only succeeds if origin/main is still at the
     # remote-tracking ref this run last fetched; if another push raced
     # in, fail loudly here rather than silently overwriting it. (The
@@ -155,8 +206,48 @@ echo "==> Coordination tag"
 git tag -a "release/$VERSION" -m "rho-kit $VERSION release coordination tag" HEAD
 git push origin "release/$VERSION"
 
+if [ "${RELEASE_SKIP_SMOKE:-0}" = "1" ]; then
+  echo ""
+  echo "==> Downstream smoke test SKIPPED (RELEASE_SKIP_SMOKE=1)"
+else
+  echo ""
+  echo "==> Downstream consumer smoke test"
+  # Resolve every released module from a throwaway module OUTSIDE the
+  # workspace, so go.work cannot mask a bad require pin with local sources.
+  # This is the check that actually proves the release is consumable.
+  smoke_dir="$(mktemp -d)"
+  trap 'rm -rf "$smoke_dir"' EXIT
+
+  # macOS ships bash 3.2, which has no `mapfile`; keep this readable there.
+  awk -F'\t' 'NR>1 {print $3}' "$PLAN" | grep . | sort -u > "$smoke_dir/modules.txt"
+  smoke_count="$(grep -c . "$smoke_dir/modules.txt" || true)"
+  if [ "${smoke_count:-0}" -eq 0 ]; then
+    echo "ERROR: release plan carried no module paths to smoke test." >&2
+    exit 1
+  fi
+
+  (
+    cd "$smoke_dir"
+    GOWORK=off go mod init rho-kit-release-smoke >/dev/null
+    sed "s|\$|@$VERSION|" modules.txt \
+      | xargs env GOWORK=off GOFLAGS=-mod=mod go get
+  ) || {
+    echo "ERROR: downstream smoke test failed to resolve $VERSION." >&2
+    echo "       The tags are already pushed; investigate before announcing." >&2
+    exit 1
+  }
+
+  skew="$(cd "$smoke_dir" && GOWORK=off go list -m all 2>/dev/null \
+    | awk '/github.com\/bds421\/rho-kit/ {print $2}' | sort -u | grep -v "^$VERSION$" || true)"
+  if [ -n "$skew" ]; then
+    echo "ERROR: resolved rho-kit modules at unexpected versions:" >&2
+    printf '  %s\n' $skew >&2
+    exit 1
+  fi
+  echo "  $smoke_count modules resolve at $VERSION with no version skew"
+fi
+
 echo ""
 echo "Release complete. Remember to:"
-echo "  - Re-enable branch protection required PR review."
-echo "  - Run a downstream consumer smoke test (go get ...@$VERSION)."
-echo "  - Optionally create a GitHub Release: gh release create release/$VERSION --notes ..."
+echo "  - Create a GitHub Release: gh release create release/$VERSION --notes ..."
+echo "  - Check CI on the final release commit (the last level intentionally runs it)."

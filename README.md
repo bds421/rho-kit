@@ -31,41 +31,55 @@ subsequent releases just bump version numbers and tag.
    "Rehearsal passed." before touching origin.
    The manual `Release Rehearsal` GitHub workflow exists only for validating
    release machinery changes; it is not required for every release.
-3. **Temporarily disable PR-review branch protection** (the dance
-   pushes ~7 commits + tag batches directly to main; main is
-   normally PR-only):
-   ```bash
-   gh api -X DELETE repos/<owner>/<repo>/branches/main/protection/required_pull_request_reviews
-   ```
-4. **Run the real release.**
+3. **Run the real release.** Branch protection is *not* toggled any more —
+   see "Why the release can push to main" below.
    ```bash
    RELEASE_VERSION=v2.x.y bash tools/release-version.sh
    ```
+   Preflights first: `main` clean, `origin/main` not ahead, and no `v2.x.y`
+   tag already on origin (a collision used to abort mid-run, after earlier
+   levels were already pushed).
+
    Per-level: bumps internal kit requires to the target version,
    tidies, commits, tags every module in the level, pushes tags
    atomically. Mechanical release commits contain `[skip ci]` so the
-   dependency levels do not launch duplicate GitHub jobs. After all levels:
-   pushes coordination tag `release/v2.x.y`.
-5. **Restore branch protection immediately.** Capture the live protection
-   response before step 3 and restore those exact values. The current policy
-   is:
-   ```bash
-   gh api -X PATCH repos/<owner>/<repo>/branches/main/protection/required_pull_request_reviews \
-     --input - <<EOF
-   {"dismiss_stale_reviews": true, "require_code_owner_reviews": true,
-    "require_last_push_approval": false, "required_approving_review_count": 0}
-   EOF
-   ```
-6. **Smoke-test downstream resolution.**
-   ```bash
-   tmpdir=$(mktemp -d); cd "$tmpdir"
-   go mod init verify
-   go get github.com/bds421/rho-kit/app/v2@v2.x.y
-   go list -m all | grep rho-kit   # all should show v2.x.y
-   ```
-7. **Publish the GitHub Release.** Use the version entry in `CHANGELOG.md`,
+   dependency levels do not launch duplicate GitHub jobs — **except the
+   final level**, which is the commit `main` is left at and therefore does
+   run CI. After all levels: pushes coordination tag `release/v2.x.y`, then
+   runs the downstream smoke test automatically (resolves every released
+   module at `v2.x.y` from a throwaway module outside the workspace and
+   fails the release on any version skew).
+4. **Publish the GitHub Release.** Use the version entry in `CHANGELOG.md`,
    call out breaking changes, and link the comparison from the previous
    coordination tag. Do not reuse the historical v2.0.0 notes.
+
+#### Why the release can push to main
+
+Releases must land in dependency waves: level N's tag has to be on origin
+before level N+1 can `go mod tidy`, because that is what its `go.sum` hashes
+are computed from. That is inherent to Go module versioning in a monorepo and
+cannot be collapsed into a single PR.
+
+Classic branch protection on `main` therefore runs with
+`enforce_admins: false`. Everyone still needs a PR with CODEOWNERS review and
+linear history; the repository admin running the release can push the wave
+commits and tags directly. Previously the release deleted
+`required_pull_request_reviews` and restored it afterwards, which left `main`
+unprotected for the whole run — and silently unprotected forever if the run
+died in the middle.
+
+Two things block a move to repository rulesets today, both worth fixing before
+attempting it:
+
+- Every workflow is path-filtered (`ci.yml` has `paths-ignore` for `docs/**`
+  and `*.md`; `dashboards.yml` and `supply-chain.yml` only trigger on their own
+  paths). Required status checks would leave any PR that misses those paths
+  permanently pending. An always-runs aggregate gate job has to come first.
+- `tools/check-release-team.sh` reads the classic
+  `/branches/main/protection` endpoint and requires
+  `require_code_owner_reviews: true`. It must learn about rulesets before
+  classic protection can be removed, or `make check-release-team` — a release
+  gate — starts failing.
 
 ## Adoption
 
