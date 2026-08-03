@@ -20,8 +20,22 @@ func setupRedis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{
-		Addr:               mr.Addr(),
-		MaxRetries:         -1,
+		Addr: mr.Addr(),
+		// miniredis runs in-process and stays reachable for the whole test,
+		// so the only transient worth absorbing is scheduler starvation on a
+		// loaded runner: `make test-short` builds and runs every workspace
+		// package in a single invocation, and under that contention a command
+		// can exceed the client's default timeout. With command retries
+		// disabled a single hiccup failed the test outright (observed as
+		// "lock: acquire failed: context.DeadlineExceeded" in CI).
+		//
+		// The tests that close miniredis to simulate a transport outage still
+		// fail fast: the dial is refused immediately rather than timing out,
+		// so a bounded retry budget costs backoff, not stalled timeouts.
+		MaxRetries:      3,
+		MinRetryBackoff: time.Millisecond,
+		MaxRetryBackoff: 10 * time.Millisecond,
+		// Keep dial failure itself single-shot so outage assertions stay quick.
 		DialerRetries:      1,
 		DialerRetryTimeout: time.Millisecond,
 	})
