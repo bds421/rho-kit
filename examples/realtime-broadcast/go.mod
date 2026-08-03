@@ -3,22 +3,22 @@ module github.com/bds421/rho-kit/examples/realtime-broadcast/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/app/http/v2 v2.6.0
-	github.com/bds421/rho-kit/app/v2 v2.6.0
-	github.com/bds421/rho-kit/realtime/centrifuge/v2 v2.6.0
-	github.com/bds421/rho-kit/security/v2 v2.6.0
+	github.com/bds421/rho-kit/app/http/v2 v2.7.0
+	github.com/bds421/rho-kit/app/v2 v2.7.0
+	github.com/bds421/rho-kit/realtime/centrifuge/v2 v2.7.0
+	github.com/bds421/rho-kit/security/v2 v2.7.0
 	github.com/lestrrat-go/jwx/v3 v3.2.0
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
 	github.com/FZambia/eagle v0.2.0 // indirect
-	github.com/bds421/rho-kit/core/v2 v2.6.0 // indirect
-	github.com/bds421/rho-kit/httpx/v2 v2.6.0 // indirect
-	github.com/bds421/rho-kit/infra/v2 v2.6.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.6.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.6.0 // indirect
-	github.com/bds421/rho-kit/runtime/v2 v2.6.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.7.0 // indirect
+	github.com/bds421/rho-kit/httpx/v2 v2.7.0 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.7.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.7.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.7.0 // indirect
+	github.com/bds421/rho-kit/runtime/v2 v2.7.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/centrifugal/centrifuge v0.38.0 // indirect
@@ -66,12 +66,10 @@ require (
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
-	golang.org/x/exp v0.0.0-20260718201538-764159d718ef // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260729162451-8efbd57d26e0 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
