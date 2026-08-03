@@ -115,7 +115,14 @@ kit-contract:
 	@test ! -f contracts.json || go run ./cmd/kit-contract validate -dir .
 
 ## release-candidate: Run the full pre-release quality gate
-release-candidate: ci vulncheck test-integration test-cover kit-doctor
+#
+# `test-short` is listed explicitly even though `ci` already runs `test-race`.
+# They are not redundant: `ci` runs tests per module (sequential, one `go test`
+# per module), while `test-short` runs every workspace package in a SINGLE
+# invocation. Only the latter reproduces the cross-package parallelism of the
+# GitHub "Fast checks and unit tests" job, so timing-sensitive tests can pass
+# the per-module runs and still fail the gate CI actually enforces.
+release-candidate: ci test-short vulncheck test-integration test-cover kit-doctor
 
 ## release-plan: Compute dependency-aware module release levels
 release-plan:
