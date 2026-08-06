@@ -7,13 +7,36 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
 	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 )
+
+func TestDriverFromPoolWithListenerSchemaOverridesOnlyListenerNamespace(t *testing.T) {
+	driver, err := DriverFromPoolWithListenerSchema(&pgxpool.Pool{}, "public")
+	require.NoError(t, err)
+	require.Equal(t, "public", driver.GetListener(
+		&riverdriver.GetListenenerParams{Schema: "role_private"},
+	).Schema())
+	require.NotNil(t, driver.GetExecutor())
+}
+
+func TestDriverFromPoolWithListenerSchemaRejectsNonCanonicalIdentifiers(t *testing.T) {
+	for _, schema := range []string{
+		"", "Public", "1public", "public-role", "public.role", strings.Repeat("a", 64),
+	} {
+		t.Run(schema, func(t *testing.T) {
+			driver, err := DriverFromPoolWithListenerSchema(&pgxpool.Pool{}, schema)
+			require.ErrorIs(t, err, ErrInvalidListenerSchema)
+			require.Nil(t, driver)
+		})
+	}
+}
 
 // TestEnvelopeArgs_DedupeKeyedByIDOnly guards FR-059: with ByArgs set,
 // River scopes the uniqueness hash to the fields tagged `river:"unique"`.

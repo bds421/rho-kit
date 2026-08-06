@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.7.1 — 2026-08-06
+
+Patch release for role-isolated River workers.
+
+- **fix(riverqueue).** Add `DriverFromPoolWithListenerSchema` so workers can
+  retain role-local leadership tables while subscribing to the shared
+  LISTEN/NOTIFY namespace used by producers. The listener schema is an exact,
+  validated unquoted PostgreSQL identifier and does not change executor,
+  migration, or leadership schema selection.
+
 ## v2.7.0 — 2026-08-03
 
 Object-storage exact-generation release (coordination tag `release/v2.7.0`).

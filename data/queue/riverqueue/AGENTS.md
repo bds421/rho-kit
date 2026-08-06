@@ -14,6 +14,9 @@
 ## Key APIs
 
 - `NewPublisher(client, opts...)` — wraps `*river.Client[pgx.Tx]`.
+- `DriverFromPoolWithListenerSchema(pool, schema)` — keeps executor and
+  leadership schema selection unchanged while binding LISTEN/NOTIFY to one
+  reviewed shared namespace for role-isolated workers.
 - `Enqueue(ctx, queue, msg kitqueue.Message)` — adapts to river's `Insert`. The `Message.ID`, if non-empty, drives river's `UniqueOpts{ByArgs, ByQueue}` for deduplication.
 - `WithoutUniqueByID()` — opt out of FR-059 dedup if you genuinely want every Enqueue to deliver.
 

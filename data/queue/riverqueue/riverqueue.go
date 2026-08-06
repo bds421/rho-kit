@@ -20,10 +20,12 @@ package riverqueue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
@@ -286,4 +288,58 @@ type JobState = rivertype.JobState
 // app/postgres + app/queue bridges for the canonical setup.
 func DriverFromPool(pool *pgxpool.Pool) *riverpgxv5.Driver {
 	return riverpgxv5.New(pool)
+}
+
+// ErrInvalidListenerSchema reports a non-canonical PostgreSQL schema passed to
+// [DriverFromPoolWithListenerSchema].
+var ErrInvalidListenerSchema = errors.New("riverqueue: invalid listener schema")
+
+// DriverFromPoolWithListenerSchema returns a River driver whose ordinary SQL
+// and leadership schema still come from River's Config/search path, while all
+// LISTEN subscriptions use one explicit shared notification schema.
+//
+// This is required when least-privilege worker roles keep role-local
+// river_leader tables but producers and workers share public river_job tables:
+// River prefixes control and insert notification topics with the listener
+// schema, so every process must subscribe to the same namespace. The schema is
+// restricted to a canonical unquoted PostgreSQL identifier and never changes
+// executor queries, migrations, or leadership storage.
+func DriverFromPoolWithListenerSchema(
+	pool *pgxpool.Pool,
+	schema string,
+) (riverdriver.Driver[pgx.Tx], error) {
+	if !validListenerSchema(schema) {
+		return nil, ErrInvalidListenerSchema
+	}
+	return &listenerSchemaDriver{
+		Driver:         riverpgxv5.New(pool),
+		listenerSchema: schema,
+	}, nil
+}
+
+type listenerSchemaDriver struct {
+	riverdriver.Driver[pgx.Tx]
+	listenerSchema string
+}
+
+func (driver *listenerSchemaDriver) GetListener(
+	_ *riverdriver.GetListenenerParams,
+) riverdriver.Listener {
+	return driver.Driver.GetListener(&riverdriver.GetListenenerParams{
+		Schema: driver.listenerSchema,
+	})
+}
+
+func validListenerSchema(schema string) bool {
+	if len(schema) == 0 || len(schema) > 63 ||
+		!((schema[0] >= 'a' && schema[0] <= 'z') || schema[0] == '_') {
+		return false
+	}
+	for index := 1; index < len(schema); index++ {
+		value := schema[index]
+		if (value < 'a' || value > 'z') && (value < '0' || value > '9') && value != '_' {
+			return false
+		}
+	}
+	return true
 }
