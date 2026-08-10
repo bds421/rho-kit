@@ -5,7 +5,7 @@ go 1.26.2
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/bds421/rho-kit/data/lock/redislock/v2 v2.7.0
-	github.com/redis/go-redis/v9 v9.21.0
+	github.com/redis/go-redis/v9 v9.22.0
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -16,9 +16,9 @@ require (
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel v1.44.0 // indirect
-	go.opentelemetry.io/otel/metric v1.44.0 // indirect
-	go.opentelemetry.io/otel/trace v1.44.0 // indirect
+	go.opentelemetry.io/otel v1.45.0 // indirect
+	go.opentelemetry.io/otel/metric v1.45.0 // indirect
+	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 )
 
 require (
