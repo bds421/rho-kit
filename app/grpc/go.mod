@@ -10,7 +10,7 @@ require (
 	github.com/bds421/rho-kit/runtime/v2 v2.7.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/net v0.57.0
-	google.golang.org/grpc v1.83.0
+	google.golang.org/grpc v1.83.1
 )
 
 require (
