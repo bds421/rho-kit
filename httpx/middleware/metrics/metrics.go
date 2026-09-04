@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -20,9 +21,25 @@ import (
 type routePatternKey struct{}
 
 // routePatternSlot is shared via context between [CaptureRoute]
-// (innermost, writes) and [HTTPMetrics.Middleware] (outer, reads).
+// (innermost, writes) and [HTTPMetrics.Middleware] / the tracing
+// middleware (outer, read). The two sides can run on DIFFERENT
+// goroutines: timeout.Timeout serves the inner chain on its own goroutine
+// and returns to the outer chain as soon as the request context is
+// cancelled (client disconnect, deadline), so an outer reader can observe
+// the slot while CaptureRoute is still writing it. The pattern is held
+// behind an atomic pointer for that reason; a plain string here was a
+// data race (torn read of the string header) under any cancelled request.
 type routePatternSlot struct {
-	pattern string
+	pattern atomic.Pointer[string]
+}
+
+func (s *routePatternSlot) set(pattern string) { s.pattern.Store(&pattern) }
+
+func (s *routePatternSlot) get() string {
+	if p := s.pattern.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // CaptureRoute is the innermost middleware that records r.Pattern into
@@ -35,7 +52,7 @@ func CaptureRoute(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
 		if slot, ok := r.Context().Value(routePatternKey{}).(*routePatternSlot); ok && slot != nil {
-			slot.pattern = r.Pattern
+			slot.set(r.Pattern)
 		}
 	})
 }
@@ -54,7 +71,7 @@ func EnsureRoutePatternSlot(ctx context.Context) context.Context {
 // [CaptureRoute], or "" if none was captured.
 func RoutePatternFromContext(ctx context.Context) string {
 	if slot, ok := ctx.Value(routePatternKey{}).(*routePatternSlot); ok && slot != nil {
-		return slot.pattern
+		return slot.get()
 	}
 	return ""
 }
@@ -184,7 +201,7 @@ func (m *HTTPMetrics) Middleware(next http.Handler) http.Handler {
 			// Prefer the innermost CaptureRoute pattern; fall back to this
 			// request's Pattern for stacks that wrap the mux without
 			// intermediate WithContext clones.
-			pattern := slot.pattern
+			pattern := slot.get()
 			if pattern == "" {
 				pattern = r.Pattern
 			}

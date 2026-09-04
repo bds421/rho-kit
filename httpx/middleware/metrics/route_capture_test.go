@@ -1,6 +1,7 @@
 package metrics_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -61,4 +62,35 @@ func TestCaptureRoute_PropagatesPatternPastWithContextClone(t *testing.T) {
 		}
 	}
 	t.Fatalf("expected route=/api/v1/items/{id}, got %v", routes)
+}
+
+// The slot is written by CaptureRoute on the goroutine that serves the
+// inner chain and read by outer middleware on the goroutine that owns the
+// request; under timeout.Timeout those are different goroutines and the
+// outer one returns as soon as the context is cancelled. Pass condition is
+// "no data race under -race", nothing else: a plain-string slot fails
+// this the moment the reader wins the schedule.
+func TestCaptureRoute_ConcurrentOuterReadIsRaceFree(t *testing.T) {
+	for iter := 0; iter < 200; iter++ {
+		ctx := metrics.EnsureRoutePatternSlot(context.Background())
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /items/{id}", func(http.ResponseWriter, *http.Request) {})
+		req := httptest.NewRequest(http.MethodGet, "/items/1", nil).WithContext(ctx)
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			metrics.CaptureRoute(mux).ServeHTTP(httptest.NewRecorder(), req)
+		}()
+		// Outer reader racing the writer, as finishHTTPSpan / the metrics
+		// defer do after a cancelled request.
+		got := metrics.RoutePatternFromContext(ctx)
+		<-done
+		if got != "" && got != "GET /items/{id}" {
+			t.Fatalf("torn or foreign pattern observed: %q", got)
+		}
+		if after := metrics.RoutePatternFromContext(ctx); after != "GET /items/{id}" {
+			t.Fatalf("pattern after completion = %q", after)
+		}
+	}
 }

@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.7.2 — 2026-09-04
+
+Patch release for the HTTP middleware stack (module tag `httpx/v2.7.1`; no
+other module changes).
+
+- **fix(httpx/middleware/metrics).** The route-pattern slot that `CaptureRoute`
+  fills for the metrics and tracing middleware was a plain string shared across
+  goroutines. Under `timeout.Timeout` the inner chain runs on its own goroutine
+  and the outer chain returns the moment the request context is cancelled
+  (client disconnect, deadline), so `finishHTTPSpan` and the metrics `defer`
+  could read the slot while `CaptureRoute` was still writing it: a data race,
+  observed as a torn string read in a consumer's `-race` suite
+  (sigma-tkgd `TestReplication_EndToEnd_Converges`, a replica long-poll
+  cancelled at shutdown). The slot now holds the pattern behind an
+  `atomic.Pointer[string]` with `set`/`get` accessors; the three call sites are
+  unchanged in behaviour. No API change. Regression probe
+  `TestCaptureRoute_ConcurrentOuterReadIsRaceFree` races an outer read against
+  the capture 200 times and fails under `-race` on the previous code.
+
 ## v2.7.1 — 2026-08-06
 
 Patch release for role-isolated River workers.
