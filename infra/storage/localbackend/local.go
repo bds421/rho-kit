@@ -531,13 +531,17 @@ const errPathEscapesText = "path escapes from parent"
 // rejection (or a wrapper thereof). os.Root returns this when a path component
 // is a symlink that would resolve outside the root; callers treat it as an
 // unreachable object rather than a hard filesystem failure.
+//
+// The whole wrap chain is searched: since Go 1.26.6, MkdirAll on a component
+// that is itself an escaping symlink nests the rejection one level deeper
+// (PathError{mkdirat, PathError{statat, "path escapes from parent"}}), so
+// checking only the outermost PathError missed it and a refused escape was
+// misreported as a generic "create dirs failed".
 func isEscapeError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var pe *os.PathError
-	if errors.As(err, &pe) && pe.Err != nil && pe.Err.Error() == errPathEscapesText {
-		return true
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if e.Error() == errPathEscapesText {
+			return true
+		}
 	}
 	return false
 }

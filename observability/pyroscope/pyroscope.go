@@ -157,9 +157,12 @@ func (p *Profiler) Start(ctx context.Context) error {
 		Tags:            p.cfg.Tags,
 		ProfileTypes:    p.cfg.ProfileTypes,
 		UploadRate:      p.cfg.UploadRate,
-		AuthToken:       p.cfg.AuthToken,
-		TenantID:        p.cfg.TenantID,
-		Logger:          slogPyroscopeAdapter{l: p.logger},
+		// SA1019: deprecated upstream in favour of basic auth, but still
+		// honoured, and Config.AuthToken is this package's documented
+		// bearer-token API. Migrating is a public API change; tracked in CHANGELOG.
+		AuthToken: p.cfg.AuthToken, //nolint:staticcheck
+		TenantID:  p.cfg.TenantID,
+		Logger:    slogPyroscopeAdapter{l: p.logger},
 	}
 	session, err := pyroscope.Start(cfg)
 	if err != nil {

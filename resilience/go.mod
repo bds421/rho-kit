@@ -4,7 +4,7 @@
 // See AGENTS.md "Module shape" for the consolidation map.
 module github.com/bds421/rho-kit/resilience/v2
 
-go 1.26.2
+go 1.26.8
 
 require (
 	github.com/bds421/rho-kit/observability/v2 v2.7.0

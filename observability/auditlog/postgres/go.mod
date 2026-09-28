@@ -1,6 +1,6 @@
 module github.com/bds421/rho-kit/observability/auditlog/postgres/v2
 
-go 1.26.2
+go 1.26.8
 
 require (
 	github.com/bds421/rho-kit/observability/v2 v2.7.0

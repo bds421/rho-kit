@@ -233,7 +233,6 @@ func (b *Backend) collectObjects(
 // walk after an error has already been yielded to the caller.
 var errStopWalk = errors.New("localbackend: stop walk")
 
-
 // objectMaxHeap is a max-heap of ObjectInfo ordered by Key (largest root).
 // Used to retain only the MaxKeys smallest keys while walking.
 type objectMaxHeap []storage.ObjectInfo

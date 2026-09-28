@@ -9,7 +9,7 @@
 // later) don't pay the SDK cost.
 module github.com/bds421/rho-kit/authz/openfga/v2
 
-go 1.26.2
+go 1.26.8
 
 require (
 	github.com/bds421/rho-kit/authz/v2 v2.7.0
