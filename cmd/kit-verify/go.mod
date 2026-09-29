@@ -19,8 +19,8 @@ module github.com/bds421/rho-kit/cmd/kit-verify/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.7.0
-	github.com/bds421/rho-kit/security/v2 v2.7.0
+	github.com/bds421/rho-kit/core/v2 v2.8.0
+	github.com/bds421/rho-kit/security/v2 v2.8.0
 	github.com/stretchr/testify v1.11.1
 )
 

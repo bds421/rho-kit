@@ -23,11 +23,11 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.7.0
-	github.com/bds421/rho-kit/infra/v2 v2.7.0
-	github.com/bds421/rho-kit/io/v2 v2.7.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.7.0
-	github.com/bds421/rho-kit/resilience/v2 v2.7.0
+	github.com/bds421/rho-kit/core/v2 v2.8.0
+	github.com/bds421/rho-kit/infra/v2 v2.8.0
+	github.com/bds421/rho-kit/io/v2 v2.8.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.8.0
+	github.com/bds421/rho-kit/resilience/v2 v2.8.0
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -39,7 +39,7 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
