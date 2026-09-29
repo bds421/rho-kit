@@ -12,8 +12,8 @@ go 1.26.8
 
 require (
 	cloud.google.com/go/kms v1.33.0
-	github.com/bds421/rho-kit/core/v2 v2.7.0
-	github.com/bds421/rho-kit/crypto/v2 v2.7.0
+	github.com/bds421/rho-kit/core/v2 v2.8.0
+	github.com/bds421/rho-kit/crypto/v2 v2.8.0
 	github.com/googleapis/gax-go/v2 v2.23.0
 	github.com/prometheus/client_golang v1.24.1
 	google.golang.org/grpc v1.83.2
