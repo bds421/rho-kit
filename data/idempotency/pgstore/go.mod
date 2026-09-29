@@ -3,8 +3,8 @@ module github.com/bds421/rho-kit/data/idempotency/pgstore/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.7.0
-	github.com/bds421/rho-kit/data/v2 v2.7.0
+	github.com/bds421/rho-kit/core/v2 v2.8.0
+	github.com/bds421/rho-kit/data/v2 v2.8.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
 )
