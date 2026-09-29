@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## v2.8.0 — 2026-09-29
 
-Security maintenance: Go toolchain and gRPC. Suggested version: **v2.8.0**,
-because the minimum Go version every consumer must satisfy rises
-(1.26.2 → 1.26.8); no API changes.
+Security maintenance: Go toolchain, gRPC and x/crypto, plus a localbackend
+fix for Go ≥ 1.26.6. Minor release because the minimum Go version every
+consumer must satisfy rises (1.26.2 → 1.26.8); no API changes. govulncheck
+is clean in every workspace module.
 
 - **fix(infra/storage/localbackend): escape detection broken on Go ≥ 1.26.6.**
   Go 1.26.6 changed how `os.Root.MkdirAll` reports a path component that is
