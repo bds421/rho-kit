@@ -1,6 +1,6 @@
 module github.com/bds421/rho-kit/infra/inbox/postgres/v2
 
-go 1.26.2
+go 1.26.8
 
 require (
 	github.com/bds421/rho-kit/infra/outbox/postgres/v2 v2.7.0

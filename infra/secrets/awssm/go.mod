@@ -3,7 +3,7 @@
 // the aws-sdk-go-v2 dep closure only lands in services that import it.
 module github.com/bds421/rho-kit/infra/secrets/awssm/v2
 
-go 1.26.2
+go 1.26.8
 
 require (
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.44.3

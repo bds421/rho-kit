@@ -1,6 +1,6 @@
 module github.com/bds421/rho-kit/infra/storage/azurebackend/v2
 
-go 1.26.2
+go 1.26.8
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.8.0

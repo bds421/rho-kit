@@ -1,6 +1,6 @@
 module github.com/bds421/rho-kit/data/ratelimit/redis/v2
 
-go 1.26.2
+go 1.26.8
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0

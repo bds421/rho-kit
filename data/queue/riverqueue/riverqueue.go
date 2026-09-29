@@ -332,7 +332,7 @@ func (driver *listenerSchemaDriver) GetListener(
 
 func validListenerSchema(schema string) bool {
 	if len(schema) == 0 || len(schema) > 63 ||
-		!((schema[0] >= 'a' && schema[0] <= 'z') || schema[0] == '_') {
+		(schema[0] < 'a' || schema[0] > 'z') && schema[0] != '_' {
 		return false
 	}
 	for index := 1; index < len(schema); index++ {

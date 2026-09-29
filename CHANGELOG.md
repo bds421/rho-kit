@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased
+
+Security maintenance: Go toolchain and gRPC. Suggested version: **v2.8.0**,
+because the minimum Go version every consumer must satisfy rises
+(1.26.2 → 1.26.8); no API changes.
+
+- **fix(infra/storage/localbackend): escape detection broken on Go ≥ 1.26.6.**
+  Go 1.26.6 changed how `os.Root.MkdirAll` reports a path component that is
+  itself a symlink escaping the root. The rejection is now nested
+  (`PathError{mkdirat, PathError{statat, "path escapes from parent"}}`), and
+  `isEscapeError` only matched the outermost `PathError`. The write was
+  **still refused** (os.Root held, and no bytes landed outside the root), but
+  the refusal was misreported as a generic `create dirs failed` instead of the
+  redacted `unsafe parent` error. As a result, `TestLocalBackend_Put/rejects_symlinked_parent`
+  and both `TestTOCTOU_EscapingSymlinkComponentRefused` write cases failed on
+  every patched toolchain. CI stayed green only because it ran Go 1.26.5.
+  `isEscapeError` now walks the whole wrap chain. The new
+  `TestIsEscapeError_ErrorShapes` pins both error shapes independently of the
+  toolchain running the tests.
+- **security(go): minimum Go 1.26.2 → 1.26.8 across all 111 modules;
+  workspace toolchain go1.27.1; CI `go-version` 1.26.5 → 1.27.1.** govulncheck
+  reported reachable standard-library advisories in every gRPC-using module:
+  GO-2026-5026, -5037, -5039, -5856, -5972, -6090 and -6218 (`net/http`,
+  `crypto/tls`, `net/url`, `encoding/asn1`, ...), all fixed in Go ≤ 1.26.6. The
+  workspace pinned `toolchain go1.26.2` and CI ran 1.26.5, so builds, tests
+  and vulncheck all ran on affected toolchains. Modules declare 1.26.8 (the
+  lowest release clearing every advisory) rather than 1.27, so consumers are
+  not forced onto a new major toolchain.
+- **security(grpc): google.golang.org/grpc v1.83.0 → v1.83.2** in `grpcx`,
+  `observability`, `app/tracing`, `app/grpc`, `crypto/envelope/gcpkms`,
+  `infra/secrets/gcpsm`, `infra/leaderelection/etcd` and
+  `infra/storage/gcsbackend`. Fixes GO-2026-6443 (server panic via a missing
+  `:authority`/Host header; reachable from `app/grpc`) and GO-2026-6348.
+  v1.83.2 is deliberately chosen over v1.84.0: the 1.84 line has no fixed
+  stable release for GO-2026-6443 yet. Move to the first stable ≥ v1.85.0.
+- **security(x/crypto): golang.org/x/crypto → v0.57.0** in the 30 modules that
+  required an older version. Fixes GO-2026-6354 and GO-2026-6355 (fixed in
+  v0.56.0), reachable from `infra/storage/sftpbackend`.
+- **chore(tooling): golangci-lint v2.10.1 → v2.14.0, govulncheck v1.1.4 →
+  v1.8.0.** Both older releases bundle an `x/tools` that cannot read Go 1.27
+  export data (`export data version 4 is greater than maximum supported
+  version 2`), so every lint run failed with typecheck errors on the new
+  toolchain. v2.14.0's staticcheck flagged one new QF1001 in
+  `riverqueue.validListenerSchema`; rewritten with De Morgan's law, same
+  semantics (pinned by the existing `Public`/`1public` rejection cases).
+  It also flagged SA1019 on `pyroscope.Config.AuthToken` (deprecated upstream
+  in favour of `BasicAuthUser`/`BasicAuthPassword`). It is suppressed with a
+  reason, because `observability/pyroscope.Config.AuthToken` is this kit's
+  documented bearer-token API. **Follow-up:** add basic-auth fields before
+  pyroscope-go removes `AuthToken`.
+- **chore(riverqueue): tidy + allowlist `github.com/riverqueue/river/riverdriver`.**
+  `dfe5ae9b` (listener schema) imports `riverdriver` directly but left it
+  `// indirect`, so `check-tidy` failed on `main`. Tidying makes it a direct
+  dependency; it is added to `docs/audit/dependency-allowlist.txt` next to the
+  already-approved `river`, `riverpgxv5` and `rivertype` (same upstream
+  project). **Needs reviewer sign-off per the allowlist policy.**
+
 ## v2.7.2 — 2026-09-04
 
 Patch release for the HTTP middleware stack (module tag `httpx/v2.7.1`; no

@@ -14,7 +14,7 @@
 // REFRESHES tokens against an upstream OIDC issuer.
 module github.com/bds421/rho-kit/auth/oauth2/v2
 
-go 1.26.2
+go 1.26.8
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.7.0

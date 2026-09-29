@@ -10,7 +10,7 @@
 // API tokens, signing keys) directly.
 module github.com/bds421/rho-kit/infra/secrets/v2
 
-go 1.26.2
+go 1.26.8
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.7.0

@@ -6,7 +6,7 @@
 // regardless. See AGENTS.md "Module shape" for the consolidation map.
 module github.com/bds421/rho-kit/core/v2
 
-go 1.26.2
+go 1.26.8
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1

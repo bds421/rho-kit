@@ -4,7 +4,7 @@
 // uploader) is pulled in only by services that opt in.
 module github.com/bds421/rho-kit/observability/pyroscope/v2
 
-go 1.26.2
+go 1.26.8
 
 require (
 	github.com/grafana/pyroscope-go v1.4.1
