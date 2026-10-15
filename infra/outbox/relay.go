@@ -61,6 +61,7 @@ type Relay struct {
 	cancel    context.CancelFunc
 	mu        sync.Mutex
 	done      chan struct{}
+	wake      chan struct{}
 	started   bool
 	stopped   bool
 	pollCount int
@@ -245,6 +246,7 @@ func NewRelay(store RelayStore, publisher Publisher, logger *slog.Logger, opts .
 		staleDuration:        defaultStaleDuration,
 		publishTimeout:       defaultPublishTimeout,
 		claimed:              make(map[string]struct{}),
+		wake:                 make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -258,6 +260,21 @@ func NewRelay(store RelayStore, publisher Publisher, logger *slog.Logger, opts .
 			"stale_duration", r.staleDuration)
 	}
 	return r
+}
+
+// Wake requests an additional bounded poll without waiting for the periodic
+// timer. It is safe to call concurrently, before Start or after Stop, and never
+// performs database or publisher I/O in the caller. Repeated notifications
+// coalesce; a notification during a poll schedules one later poll.
+//
+// Call after the outbox transaction commits, or from a committed database
+// notification listener. This is only a scheduling hint: periodic polling and
+// durable claim/retry recovery remain authoritative when a notification is lost.
+func (r *Relay) Wake() {
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
 }
 
 // Start begins polling the outbox table. Blocks until ctx is cancelled.
@@ -336,6 +353,8 @@ func (r *Relay) Start(ctx context.Context) error {
 			r.logger.Info("outbox relay stopping")
 			return nil
 		case <-ticker.C:
+			r.poll(runCtx)
+		case <-r.wake:
 			r.poll(runCtx)
 		case <-cleanupTicker.C:
 			r.cleanup(runCtx)

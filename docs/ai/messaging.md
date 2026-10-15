@@ -434,6 +434,19 @@ backoff, marks exhausted rows as failed, recovers stale processing rows, and
 cleans old published/failed rows on startup plus periodic cleanup ticks. Keep
 `WithFailedRetention` long enough for incident review.
 
+For prompt delivery, call `relay.Wake()` after the transaction has successfully
+committed, or when a dedicated PostgreSQL listener receives a committed outbox
+notification. Wake is a nonblocking, coalescing scheduling hint; it performs no
+database or publisher I/O in the caller. A hint received during a poll retains one
+additional poll. Keep periodic polling enabled: disconnected listeners and lost
+notifications must recover from durable rows, not from the hint stream.
+
+In a multi-process deployment, a direct call wakes only that process's relay.
+Each worker can use a dedicated LISTEN connection with a fixed channel and empty
+notification payload, establish LISTEN before its first poll, and call Wake after
+reconnect to catch up. Keep listener cancellation and completion in the worker's
+lifecycle; never treat a hint as an acknowledgement or an authorization decision.
+
 ## Transactional Inbox
 
 Use `infra/inbox/postgres` at an at-least-once consumer boundary when the

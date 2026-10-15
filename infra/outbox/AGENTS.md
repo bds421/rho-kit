@@ -17,6 +17,7 @@
 - `outbox.Publisher` interface — implementations consume entries and publish them.
 - `outbox.MessagingPublisher` (wave 156) — bridge that adapts any `messaging.Publisher` to `outbox.Publisher`. Drop-in for AMQP / Kafka / NATS / Redis backends.
 - `outbox.Multiplex` (wave 149) — dispatcher with prefix-based routing to multiple publishers.
+- `Relay.Wake()` — nonblocking coalescing scheduling hint after transaction commit or committed database notification; durable periodic polls remain the fallback. It does not publish or acknowledge work in the caller.
 
 ## Common mistakes
 
