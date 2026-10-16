@@ -26,6 +26,7 @@ import (
 	"github.com/bds421/rho-kit/core/v2/contextutil"
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/httpx/v2/middleware"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
@@ -375,12 +376,15 @@ func (rw *recordingWriter) Flush() {
 //
 //nolint:wrapcheck // direct delegation by design
 func (rw *recordingWriter) FlushError() error {
+	if !middleware.SupportsNativeFlush(rw.ResponseWriter) {
+		return http.ErrNotSupported
+	}
 	rw.markStarted()
-	if f, ok := rw.ResponseWriter.(interface{ FlushError() error }); ok {
-		return f.FlushError()
-	}
-	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-	return nil
+	return http.NewResponseController(rw.ResponseWriter).Flush()
+}
+
+// SupportsNativeFlush keeps this transparent recorder from advertising a flush
+// operation when its underlying writer cannot perform it.
+func (rw *recordingWriter) SupportsNativeFlush() bool {
+	return middleware.SupportsNativeFlush(rw.ResponseWriter)
 }
