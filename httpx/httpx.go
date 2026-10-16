@@ -20,7 +20,6 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/net/http/httpguts"
-	"golang.org/x/net/http2"
 )
 
 // defaultMaxIdleConnsPerHost overrides the stdlib default of 2, which causes
@@ -31,17 +30,8 @@ const defaultMaxIdleConnsPerHost = transportdefaults.DefaultMaxIdleConnsPerHost
 
 const minimumTLSVersion = transportdefaults.MinimumTLSVersion
 
-// HTTP/2 hardening pins applied by [NewServer]. Without these, the
-// `net/http2` defaults are large enough to be DoS-relevant:
-//
-//   - MaxReadFrameSize defaults to 1 MiB internally but is renegotiable
-//     up to 16 MiB by the peer's SETTINGS frame; pinning at 1 MiB
-//     bounds the per-stream read buffer footprint.
-//   - MaxConcurrentStreams defaults to 250 in `golang.org/x/net/http2`,
-//     which is still ~250× the per-handler goroutine cost a single
-//     TCP peer can pin until the request times out. 1000 keeps parity
-//     with the gRPC ceiling so the kit-wide stream-flood story
-//     (THREAT_MODEL.md §4.2 G-03) reads consistently across protocols.
+// HTTP/2 limits applied by [NewServer] to TLS servers. Explicit limits keep
+// the receive-frame and concurrent-stream budgets stable across Go releases.
 const (
 	defaultHTTP2MaxReadFrameSize     uint32 = 1 << 20
 	defaultHTTP2MaxConcurrentStreams uint32 = 1000
@@ -288,20 +278,15 @@ func (h dynamicDefaultHandler) WithGroup(string) slog.Handler { return h }
 // to the new default handler instead of pinning the bootstrap one.
 //
 // When a TLS config is set (via [WithTLSConfig]), the returned server
-// has HTTP/2 hardening installed via [http2.ConfigureServer] with
-// [defaultHTTP2MaxReadFrameSize] and [defaultHTTP2MaxConcurrentStreams]
-// applied. Pinning these explicitly matters because the `net/http2`
-// defaults are renegotiable by the peer (frame size) or large
-// (concurrent streams) and would otherwise let a single TCP peer pin
-// server memory and goroutines well above the THREAT_MODEL.md §4.2
-// G-03 streaming-flood budget. Operators who need to raise these limits
-// should compose a custom server rather than silently undoing the pin.
+// has [http.Server.HTTP2] configured with [defaultHTTP2MaxReadFrameSize] and
+// [defaultHTTP2MaxConcurrentStreams]. Other caller-supplied HTTP/2 settings
+// are preserved in an owned copy. Unless an option explicitly selects the
+// protocols, TLS servers accept HTTP/1 and HTTP/2; net/http installs ALPN
+// support when serving.
 //
-// The hardening is gated on TLS because http2.ConfigureServer would
-// initialize TLSConfig on a plaintext server, breaking the
-// `srv.TLSConfig != nil` TLS-enabled probe. Plaintext h2c deployments
-// (e.g. behind a TLS-terminating load balancer) get no HTTP/2 pins from
-// NewServer and must configure http2.Server limits themselves.
+// Plaintext servers retain a nil TLSConfig so lifecycle code can distinguish
+// them from TLS servers. Plaintext HTTP/2 remains an explicit opt-in through
+// [http.Server.Protocols]; its HTTP/2 limits belong to the caller.
 func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Server {
 	if addr == "" {
 		panic("httpx: NewServer requires a non-empty addr")
@@ -325,26 +310,21 @@ func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Se
 		}
 		opt(srv)
 	}
-	// Pin HTTP/2 limits after options run so a caller-supplied
-	// TLSConfig (which forces TLS-ALPN h2 negotiation) still picks up
-	// the kit defaults. http2.ConfigureServer returns an error only on
-	// programmer mistakes (e.g. nil server); kit construction panics
-	// rather than papering over the misconfiguration.
-	//
-	// Gate on srv.TLSConfig != nil: http2.ConfigureServer initializes
-	// TLSConfig when it is nil, which would trick the lifecycle wrapper
-	// (and any caller using `srv.TLSConfig != nil` as a TLS-enabled
-	// probe) into calling ListenAndServeTLS on plaintext servers — that
-	// returns immediately with an empty-cert error and never serves any
-	// traffic. HTTP/2 over plaintext requires h2c, which is the
-	// caller's responsibility.
+	// Apply the fixed TLS HTTP/2 budgets after options without changing
+	// caller-owned configuration or implicitly enabling plaintext HTTP/2.
 	if srv.TLSConfig != nil {
-		if err := http2.ConfigureServer(srv, &http2.Server{
-			MaxReadFrameSize:     defaultHTTP2MaxReadFrameSize,
-			MaxConcurrentStreams: defaultHTTP2MaxConcurrentStreams,
-		}); err != nil {
-			panic("httpx: http2.ConfigureServer failed: " + err.Error())
+		if srv.Protocols == nil {
+			srv.Protocols = new(http.Protocols)
+			srv.Protocols.SetHTTP1(true)
+			srv.Protocols.SetHTTP2(true)
 		}
+		var config http.HTTP2Config
+		if srv.HTTP2 != nil {
+			config = *srv.HTTP2
+		}
+		config.MaxReadFrameSize = int(defaultHTTP2MaxReadFrameSize)
+		config.MaxConcurrentStreams = int(defaultHTTP2MaxConcurrentStreams)
+		srv.HTTP2 = new(config)
 	}
 	return srv
 }
