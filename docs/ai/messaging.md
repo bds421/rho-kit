@@ -438,7 +438,7 @@ For a Postgres relay that currently serves only selected destinations, configure
 the maintained store before creating the relay:
 
 ```go
-store := outboxpostgres.New(pool, outboxpostgres.WithClaimRoutes(
+store := outboxpostgres.NewWithOptions(pool, outboxpostgres.WithClaimRoutes(
     outboxpostgres.ClaimRoute{Topic: "events", RoutingKey: "active-consumer"},
     outboxpostgres.ClaimRoute{Topic: "organization-events", RoutingKey: "active-consumer"},
 ))
@@ -451,6 +451,7 @@ an explicitly empty, invalid or over-256-pair selection panics at construction.
 This option does not filter inserts, table-wide pending counts or janitor work, and is not
 an authorization boundary. Keep a separate writer store when appropriate. Do
 not return a successful publish merely to defer a row.
+The original `New(pool)` constructor and its exact function type remain unchanged.
 
 ## Transactional Inbox
 

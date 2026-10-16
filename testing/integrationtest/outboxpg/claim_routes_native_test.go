@@ -35,7 +35,7 @@ func TestFetchPending_ClaimRoutesNative(t *testing.T) {
 		outboxpg.ClaimRoute{Topic: "events", RoutingKey: "web"},
 		outboxpg.ClaimRoute{Topic: "changes", RoutingKey: "audit"},
 	)
-	selected := outboxpg.New(pool, routes)
+	selected := outboxpg.NewWithOptions(pool, routes)
 	base := time.Now().UTC().Add(-time.Hour)
 	insert := func(topic, key string, order int) outbox.Entry {
 		e := mustEntry()
@@ -74,7 +74,7 @@ func TestFetchPending_ClaimRoutesNative(t *testing.T) {
 	var workers sync.WaitGroup
 	for range 2 {
 		workers.Go(func() {
-			entries, err := outboxpg.New(pool, routes).FetchPending(ctx, 1)
+			entries, err := outboxpg.NewWithOptions(pool, routes).FetchPending(ctx, 1)
 			results <- result{entries, err}
 		})
 	}

@@ -11,7 +11,7 @@
 // their own transactions against the pool and do not consult ctx for
 // a tx handle.
 //
-// WithClaimRoutes can restrict a relay store to exact topic/routing-key pairs
+// NewWithOptions with WithClaimRoutes restricts a relay store to exact route pairs
 // before batch selection and locking. Deferred recipients stay pending without
 // consuming publish attempts; omission keeps the existing claim-all behavior.
 //

@@ -54,10 +54,17 @@ var (
 	_ outbox.PendingResetter = (*Store)(nil)
 )
 
-// New returns a Store wrapping pool. It panics on a nil pool or option.
-// Omitting options preserves the existing claim-all behavior; WithClaimRoutes
-// restricts claim selection without changing inserts or the relay contract.
-func New(pool *pgxpool.Pool, opts ...Option) *Store {
+// New returns a Store wrapping pool with the existing claim-all behavior.
+// It preserves the original constructor's exact function type and panics on a
+// nil pool. Use NewWithOptions to configure selective claims.
+func New(pool *pgxpool.Pool) *Store {
+	return NewWithOptions(pool)
+}
+
+// NewWithOptions returns a Store wrapping pool. It panics on a nil pool or
+// option. WithClaimRoutes restricts claim selection without changing inserts or
+// the relay contract; omitting it preserves the existing claim-all behavior.
+func NewWithOptions(pool *pgxpool.Pool, opts ...Option) *Store {
 	if pool == nil {
 		panic("outbox/postgres: New pool must not be nil")
 	}
