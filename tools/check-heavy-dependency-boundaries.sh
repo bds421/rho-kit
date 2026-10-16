@@ -287,10 +287,20 @@ allowed_for_boundary_dep() {
             return 1
             ;;
 
-        github.com/coder/websocket|github.com/bds421/rho-kit/httpx/websocket/v2)
+        github.com/coder/websocket)
             case "$gomod" in
                 httpx/websocket/go.mod|\
+                realtime/centrifuge/go.mod|\
                 testing/integrationtest/go.mod)
+                    return 0
+                    ;;
+            esac
+            return 1
+            ;;
+
+        github.com/bds421/rho-kit/httpx/websocket/v2)
+            case "$gomod" in
+                httpx/websocket/go.mod|testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac

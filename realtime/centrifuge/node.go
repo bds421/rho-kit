@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,17 +28,24 @@ import (
 // [Node.Start] may be called at most once; a re-entry returns an
 // error rather than racing the centrifuge node's internal state.
 type Node struct {
-	node                *cfg.Node
-	logger              *slog.Logger
-	verifier            *jwtutil.Provider
-	classifier          ChannelClassifier
-	metrics             *Metrics
-	subscribeAuthorizer ChannelAuthorizer
-	publishAuthorizer   ChannelAuthorizer
-	openChannelsUnsafe  bool
-	anonymousUnsafe     bool
-	wsMessageSizeLimit  int
-	wsWriteTimeout      time.Duration
+	node                      *cfg.Node
+	logger                    *slog.Logger
+	verifier                  *jwtutil.Provider
+	classifier                ChannelClassifier
+	metrics                   *Metrics
+	subscribeAuthorizer       ChannelAuthorizer
+	publishAuthorizer         ChannelAuthorizer
+	openChannelsUnsafe        bool
+	anonymousUnsafe           bool
+	wsMessageSizeLimit        int
+	wsWriteTimeout            time.Duration
+	connectPolicy             VerifiedConnectPolicy
+	refreshPolicy             VerifiedRefreshPolicy
+	connectObserver           func(Connection)
+	disconnectObserver        func(Connection, cfg.DisconnectEvent)
+	subscriptionReadyObserver func(Connection, string)
+	publicationWritePolicy    func(Connection, PublicationWriteEvent) bool
+	maxMessagesInFrame        int
 
 	// lifecycleMu serialises Start/Stop so check-then-act across the
 	// started/stopped atomics cannot leak a running node that Stop
@@ -45,6 +53,7 @@ type Node struct {
 	lifecycleMu sync.Mutex
 	started     atomic.Bool
 	stopped     atomic.Bool
+	ready       atomic.Bool
 }
 
 // NewNode constructs a kit-wrapped centrifuge node. Options are
@@ -73,11 +82,30 @@ func NewNode(opts ...Option) (*Node, error) {
 	if c.verifier == nil && !c.anonymousUnsafe {
 		return nil, errors.New("realtime/centrifuge: NewNode requires WithJWTAuth or explicit WithAnonymousConnectionsUnsafe (bare nodes are not open pub/sub buses)")
 	}
+	if c.verifier == nil && (c.connectPolicy != nil || c.refreshPolicy != nil) {
+		return nil, errors.New("realtime/centrifuge: verified connection policies require WithJWTAuth")
+	}
+	if c.publicationWritePolicy != nil {
+		if c.maxMessagesInFrame > 1 {
+			return nil, errors.New("realtime/centrifuge: publication write policy requires MaxMessagesInFrame of one")
+		}
+		c.maxMessagesInFrame = 1
+	}
 
-	cnode, err := cfg.New(cfg.Config{
-		LogLevel:   toCentrifugeLogLevel(c.logLevel),
-		LogHandler: makeLogHandler(logger),
-	})
+	nativeConfig := cfg.Config{
+		LogLevel:           toCentrifugeLogLevel(c.logLevel),
+		LogHandler:         makeLogHandler(logger),
+		ClientQueueMaxSize: c.clientQueueMaxSize,
+		ClientChannelLimit: c.clientChannelLimit,
+	}
+	if c.publicationWritePolicy != nil {
+		// Upstream only retains queue-item channels when namespace metrics are
+		// enabled. Use a fixed label and disable its channel cache: the writer
+		// gets the real channel without retaining private names in metrics.
+		nativeConfig.Metrics.GetChannelNamespaceLabel = func(string) string { return "default" }
+		nativeConfig.Metrics.ChannelNamespaceCacheSize = -1
+	}
+	cnode, err := cfg.New(nativeConfig)
 	if err != nil {
 		return nil, redact.WrapError("realtime/centrifuge: node construction", err)
 	}
@@ -92,17 +120,24 @@ func NewNode(opts ...Option) (*Node, error) {
 	}
 
 	n := &Node{
-		node:                cnode,
-		logger:              logger,
-		verifier:            c.verifier,
-		classifier:          c.classifier,
-		metrics:             metrics,
-		subscribeAuthorizer: c.subscribeAuthorizer,
-		publishAuthorizer:   c.publishAuthorizer,
-		openChannelsUnsafe:  c.openChannelsUnsafe,
-		anonymousUnsafe:     c.anonymousUnsafe,
-		wsMessageSizeLimit:  c.wsMessageSizeLimit,
-		wsWriteTimeout:      c.wsWriteTimeout,
+		node:                      cnode,
+		logger:                    logger,
+		verifier:                  c.verifier,
+		classifier:                c.classifier,
+		metrics:                   metrics,
+		subscribeAuthorizer:       c.subscribeAuthorizer,
+		publishAuthorizer:         c.publishAuthorizer,
+		openChannelsUnsafe:        c.openChannelsUnsafe,
+		anonymousUnsafe:           c.anonymousUnsafe,
+		wsMessageSizeLimit:        c.wsMessageSizeLimit,
+		wsWriteTimeout:            c.wsWriteTimeout,
+		connectPolicy:             c.connectPolicy,
+		refreshPolicy:             c.refreshPolicy,
+		connectObserver:           c.connectObserver,
+		disconnectObserver:        c.disconnectObserver,
+		subscriptionReadyObserver: c.subscriptionReadyObserver,
+		publicationWritePolicy:    c.publicationWritePolicy,
+		maxMessagesInFrame:        c.maxMessagesInFrame,
 	}
 
 	// Install kit-side callback wiring (connect auth, channel authz,
@@ -129,6 +164,12 @@ func NewNode(opts ...Option) (*Node, error) {
 // logic that bypasses the kit's auth chain.
 func (n *Node) Underlying() *cfg.Node {
 	return n.node
+}
+
+// Ready reports successful native Run while Start's context is active and Stop
+// has not begun. It establishes no application/session or provider authority.
+func (n *Node) Ready() bool {
+	return n != nil && n.ready.Load() && !n.stopped.Load()
 }
 
 // Start runs the centrifuge node. It starts the node's internal
@@ -163,7 +204,9 @@ func (n *Node) Start(ctx context.Context) error {
 	// Mark started only after Run succeeds so a failed Start can be
 	// retried and Stop's never-ran guard stays accurate.
 	n.started.Store(true)
+	n.ready.Store(true)
 	n.lifecycleMu.Unlock()
+	defer n.ready.Store(false)
 	// Block until ctx cancels — Run() returns immediately after
 	// starting internal goroutines; lifecycle.Component contract
 	// requires Start to block.
@@ -231,8 +274,14 @@ func (n *Node) installCallbacks() {
 			// Only reachable with WithAnonymousConnectionsUnsafe (NewNode
 			// refuses bare nodes). Count as accepted: the operator opted in.
 			n.metrics.observeConnect(connectOutcomeAccepted)
+			var policyContext context.Context
+			if n.publicationWritePolicy != nil {
+				policyContext = n.writeContext(ctx)
+			}
 			return cfg.ConnectReply{
-				Credentials: &cfg.Credentials{UserID: ""},
+				Context:            policyContext,
+				MaxMessagesInFrame: n.maxMessagesInFrame,
+				Credentials:        &cfg.Credentials{UserID: ""},
 			}, nil
 		}
 		token := extractBearer(e.Token)
@@ -260,14 +309,40 @@ func (n *Node) installCallbacks() {
 			n.logger.WarnContext(ctx, "centrifuge: connect token missing subject")
 			return cfg.ConnectReply{}, cfg.DisconnectInvalidToken
 		}
+		policy := ConnectionPolicyReply{}
+		if n.connectPolicy != nil {
+			copy := *claims
+			copy.Permissions = slices.Clone(claims.Permissions)
+			policy, err = n.connectPolicy(ctx, e, copy)
+			if err != nil {
+				n.metrics.observeConnect(connectOutcomeRejected)
+				return cfg.ConnectReply{}, cfg.DisconnectPermissionDenied
+			}
+		}
+		expiry, err := boundedPolicyExpiry(ctx, claims.ExpiresAt, policy, time.Now())
+		if err != nil {
+			n.metrics.observeConnect(connectOutcomeRejected)
+			return cfg.ConnectReply{}, cfg.DisconnectExpired
+		}
 		n.metrics.observeConnect(connectOutcomeAccepted)
+		policyContext := policy.Context
+		if n.publicationWritePolicy != nil && policyContext == nil {
+			policyContext = ctx
+		}
 		return cfg.ConnectReply{
+			Context:            n.writeContext(policyContext),
+			MaxMessagesInFrame: n.maxMessagesInFrame,
+			ClientSideRefresh:  n.refreshPolicy != nil,
 			Credentials: &cfg.Credentials{
 				UserID:   claims.Subject,
-				ExpireAt: claims.ExpiresAt,
+				ExpireAt: expiry,
+				Info:     slices.Clone(policy.Info),
 			},
 		}, nil
 	})
+	if n.publicationWritePolicy != nil {
+		n.installPublicationWritePolicy()
+	}
 
 	n.node.OnConnect(func(client *cfg.Client) {
 		client.OnSubscribe(func(e cfg.SubscribeEvent, cb cfg.SubscribeCallback) {
@@ -276,7 +351,16 @@ func (n *Node) installCallbacks() {
 				cb(cfg.SubscribeReply{}, err)
 				return
 			}
-			cb(cfg.SubscribeReply{}, nil)
+			if n.subscriptionReadyObserver == nil {
+				cb(cfg.SubscribeReply{}, nil)
+				return
+			}
+			ready := make(chan struct{})
+			alreadySubscribed := slices.Contains(client.Channels(), e.Channel)
+			cb(cfg.SubscribeReply{SubscriptionReady: ready}, nil)
+			if !alreadySubscribed {
+				n.observeSubscriptionReady(client, e.Channel, ready)
+			}
 		})
 		client.OnPublish(func(e cfg.PublishEvent, cb cfg.PublishCallback) {
 			n.metrics.observePublish(n.classifier(e.Channel))
@@ -288,7 +372,18 @@ func (n *Node) installCallbacks() {
 		})
 		client.OnDisconnect(func(e cfg.DisconnectEvent) {
 			n.metrics.observeDisconnect(disconnectReason(e.Disconnect))
+			if n.disconnectObserver != nil {
+				n.disconnectObserver(Connection{client: client}, e)
+			}
 		})
+		if n.refreshPolicy != nil {
+			client.OnRefresh(func(e cfg.RefreshEvent, cb cfg.RefreshCallback) {
+				n.refresh(client, e, cb)
+			})
+		}
+		if n.connectObserver != nil {
+			n.connectObserver(Connection{client: client})
+		}
 	})
 }
 

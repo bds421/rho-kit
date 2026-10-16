@@ -78,6 +78,31 @@
 // [Node.Underlying] — centrifuge installs those hooks only through
 // OnConnect, and replacing OnConnect drops kit metrics and authz.
 //
+// # Publication admission and readiness
+//
+// [WithSubscriptionReadyObserver] observes an installed, live subscription after
+// the native callback completes. It is not browser acknowledgement. Mandatory
+// authentication, channel authorization and metrics remain installed.
+//
+// [WithPublicationWritePolicy] receives one [PublicationWriteEvent] with native
+// encoding, channel, frame type, protocol and direction. Its bytes are read-only
+// and borrowed only for the synchronous call; clone before retaining them.
+// Enabling the policy defaults frame aggregation to one and rejects larger values.
+// Subscription/context/shutdown guards run before and after policy. Native close
+// unsubscribes before flushing, so pending publications are refused without policy
+// I/O. First refusal permanently latches the connection, then asynchronously
+// disconnects without flushing. Policies must be bounded/concurrency-safe and must
+// not synchronously disconnect. Control frames, Send, history and recovery replies
+// are not publication frames and are outside this gate.
+// This is not a network completion or hard wire-deadline guarantee. Applications
+// own resource authority, admission and conservative expiry bounds.
+//
+// [WithClientQueueMaxSize], [WithClientChannelLimit], and [WithMaxMessagesInFrame]
+// select positive native limits; omission preserves upstream defaults except for
+// the policy's single-message aggregation requirement above.
+// Frame aggregation is not a queue-count limit. [Node.Ready] reports native Run
+// success through [Node.Start], not application/provider authorization.
+//
 // # When centrifuge is NOT the right answer
 //
 // Per [httpx/websocket]'s doc, raw WebSocket is preferable when:
