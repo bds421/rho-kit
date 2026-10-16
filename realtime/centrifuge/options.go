@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	cfg "github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/protocol"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
@@ -59,22 +61,158 @@ type ChannelAuthEvent struct {
 // secure-by-default posture while still emitting metrics.
 type ChannelAuthorizer func(ctx context.Context, e ChannelAuthEvent) error
 
+// VerifiedConnectPolicy runs after mandatory JWT verification. Claims are a
+// value copy; the authenticated subject cannot be replaced by the policy.
+// Derive Reply.Context from ctx to preserve cancellation and request metadata.
+// All policy callbacks must be safe for concurrent use.
+type VerifiedConnectPolicy func(ctx context.Context, event cfg.ConnectEvent, claims jwtutil.Claims) (ConnectionPolicyReply, error)
+
+// VerifiedRefreshPolicy checks current application/session authority after
+// mandatory verification of a fresh token for the same authenticated subject.
+// Refresh uses the client-side SDK flow, not an unverified server renewal.
+type VerifiedRefreshPolicy func(ctx context.Context, client Connection, event cfg.RefreshEvent, claims jwtutil.Claims) (ConnectionPolicyReply, error)
+
+// ConnectionPolicyReply can add server-owned context/info and tighten expiry.
+// ExpireAt zero preserves JWT expiry; a nonzero expiry may not extend it.
+// Context is used only on connect. Info may be exposed by presence features,
+// so do not place credentials or private session data there.
+type ConnectionPolicyReply struct {
+	Context  context.Context
+	Info     []byte
+	ExpireAt int64
+}
+
 // Option configures [NewNode].
 type Option func(*config)
 
 type config struct {
-	logger              *slog.Logger
-	verifier            *jwtutil.Provider
-	classifier          ChannelClassifier
-	metrics             *Metrics
-	registerer          prometheus.Registerer
-	logLevel            logLevel
-	subscribeAuthorizer ChannelAuthorizer
-	publishAuthorizer   ChannelAuthorizer
-	openChannelsUnsafe  bool
-	anonymousUnsafe     bool
-	wsMessageSizeLimit  int
-	wsWriteTimeout      time.Duration
+	logger                    *slog.Logger
+	verifier                  *jwtutil.Provider
+	classifier                ChannelClassifier
+	metrics                   *Metrics
+	registerer                prometheus.Registerer
+	logLevel                  logLevel
+	subscribeAuthorizer       ChannelAuthorizer
+	publishAuthorizer         ChannelAuthorizer
+	openChannelsUnsafe        bool
+	anonymousUnsafe           bool
+	wsMessageSizeLimit        int
+	wsWriteTimeout            time.Duration
+	connectPolicy             VerifiedConnectPolicy
+	refreshPolicy             VerifiedRefreshPolicy
+	connectObserver           func(Connection)
+	disconnectObserver        func(Connection, cfg.DisconnectEvent)
+	subscriptionReadyObserver func(Connection, string)
+	publicationWritePolicy    func(Connection, PublicationWriteEvent) bool
+	clientQueueMaxSize        int
+	clientChannelLimit        int
+	maxMessagesInFrame        int
+}
+
+// WithSubscriptionReadyObserver observes a successful native subscription after
+// its callback completed and the channel is installed. This is not proof that a
+// browser observed the reply. The observer must return promptly and respect the
+// connection context; it must not replace authentication or channel handlers.
+func WithSubscriptionReadyObserver(fn func(Connection, string)) Option {
+	if fn == nil {
+		panic("realtime/centrifuge: WithSubscriptionReadyObserver requires a non-nil observer")
+	}
+	return func(c *config) { c.subscriptionReadyObserver = fn }
+}
+
+// PublicationWriteEvent describes one native publication about to be written.
+// Data is one bare encoded protocol.Reply, or protocol.Push when Unidirectional
+// is true. It has no WebSocket framing or protobuf length prefix. Protocol and
+// Unidirectional come from the native transport, never from inspecting Data.
+//
+// Data is borrowed and READ-ONLY for the synchronous policy call only. Do not
+// mutate it, retain it or hand it to another goroutine; clone it for an owned
+// lifetime. Native encodings may be shared across clients. This is a caller
+// contract, not immutability enforced by Go. Other fields are value snapshots.
+type PublicationWriteEvent struct {
+	Channel        string
+	Data           []byte
+	FrameType      protocol.FrameType
+	Protocol       cfg.ProtocolType
+	Unidirectional bool
+}
+
+// WithPublicationWritePolicy runs immediately before the native transport writer
+// for publication frames only, while the channel remains subscribed. A false
+// result permanently refuses this connection's publications, including remaining
+// close-flush items, and asynchronously disconnects it without a queue flush.
+// Enabling it defaults MaxMessagesInFrame to one and rejects a larger value.
+// Callbacks must be bounded/concurrency-safe, follow PublicationWriteEvent's byte
+// lifetime contract, and must not synchronously Stop or Disconnect.
+// This gate is not a network completion or browser-observation guarantee.
+func WithPublicationWritePolicy(fn func(Connection, PublicationWriteEvent) bool) Option {
+	if fn == nil {
+		panic("realtime/centrifuge: WithPublicationWritePolicy requires a non-nil policy")
+	}
+	return func(c *config) { c.publicationWritePolicy = fn }
+}
+
+// WithClientQueueMaxSize selects the upstream maximum queued bytes per client.
+// Omission preserves the native default. This does not bound queued frame count.
+func WithClientQueueMaxSize(n int) Option {
+	if n <= 0 {
+		panic("realtime/centrifuge: WithClientQueueMaxSize requires n > 0")
+	}
+	return func(c *config) { c.clientQueueMaxSize = n }
+}
+
+// WithClientChannelLimit selects the upstream client-side subscription limit.
+func WithClientChannelLimit(n int) Option {
+	if n <= 0 {
+		panic("realtime/centrifuge: WithClientChannelLimit requires n > 0")
+	}
+	return func(c *config) { c.clientChannelLimit = n }
+}
+
+// WithMaxMessagesInFrame selects the native writer's message aggregation bound.
+// A value of one disables aggregation; it is not a queued-message count limit.
+func WithMaxMessagesInFrame(n int) Option {
+	if n <= 0 {
+		panic("realtime/centrifuge: WithMaxMessagesInFrame requires n > 0")
+	}
+	return func(c *config) { c.maxMessagesInFrame = n }
+}
+
+// WithVerifiedConnectPolicy adds application binding policy without replacing
+// mandatory JWT identity verification or the kit's authorization/metrics wiring.
+// Requires WithJWTAuth; an anonymous node cannot use this option.
+func WithVerifiedConnectPolicy(fn VerifiedConnectPolicy) Option {
+	if fn == nil {
+		panic("realtime/centrifuge: WithVerifiedConnectPolicy requires a non-nil policy")
+	}
+	return func(c *config) { c.connectPolicy = fn }
+}
+
+// WithVerifiedRefreshPolicy enables SDK client-side token refresh. Every refresh
+// re-verifies JWT and subject before invoking current session/resource policy.
+// Requires WithJWTAuth. Omission preserves the existing expiration behavior.
+func WithVerifiedRefreshPolicy(fn VerifiedRefreshPolicy) Option {
+	if fn == nil {
+		panic("realtime/centrifuge: WithVerifiedRefreshPolicy requires a non-nil policy")
+	}
+	return func(c *config) { c.refreshPolicy = fn }
+}
+
+// WithConnectObserver observes accepted clients after kit handlers are installed.
+// Connection exposes client control but not callback replacement methods.
+func WithConnectObserver(fn func(Connection)) Option {
+	if fn == nil {
+		panic("realtime/centrifuge: WithConnectObserver requires a non-nil observer")
+	}
+	return func(c *config) { c.connectObserver = fn }
+}
+
+// WithDisconnectObserver adds lifecycle cleanup after kit disconnect metrics.
+func WithDisconnectObserver(fn func(Connection, cfg.DisconnectEvent)) Option {
+	if fn == nil {
+		panic("realtime/centrifuge: WithDisconnectObserver requires a non-nil observer")
+	}
+	return func(c *config) { c.disconnectObserver = fn }
 }
 
 // logLevel mirrors a subset of centrifuge's LogLevel — the kit

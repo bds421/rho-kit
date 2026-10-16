@@ -102,6 +102,7 @@ go.etcd.io/etcd/client/v3
 
 # Real-time framework (realtime/centrifuge only).
 github.com/centrifugal/centrifuge
+github.com/centrifugal/protocol
 
 # Test infrastructure.
 github.com/stretchr/testify

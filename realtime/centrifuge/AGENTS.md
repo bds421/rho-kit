@@ -18,6 +18,8 @@
 - `NewNode(opts...)` — constructs the kit-wrapped node. Implements `lifecycle.Component` so it composes with `lifecycle.Runner` alongside the HTTP server.
 - `WithJWTAuth(*jwtutil.Provider)` — installs the connect-time bearer-token verification callback.
 - `WithSubscribeAuthorizer` / `WithPublishAuthorizer` — channel-level authz (fail-closed without them). Prefer these over touching the underlying node.
+- `WithVerifiedConnectPolicy` / `WithVerifiedRefreshPolicy` — additive session/resource policy after JWT verification; refresh requires the same subject. Policy expiry can tighten token expiry, not extend it. Preserve incoming context/cancellation.
+- `WithConnectObserver` / `WithDisconnectObserver` — observe accepted client lifecycle through `Connection` (ID/UserID/Context/Send/Disconnect), which exposes no callback replacement methods. Application policy and current-scope checks still precede private sends.
 - `WithOpenChannelsUnsafe` — deliberate allow-all for demos; name is grep-able like `httpx/websocket.WithAnyOriginUnsafe`.
 - `WithChannelClassifier(fn)` — REQUIRED for production. Maps each channel to a short bounded set of class strings ("user", "room", "system"). Without it, the default classifier returns "default" for everything — no observability.
 - `Node.WebsocketHandler()` — returns `http.Handler` to mount at the centrifuge client's expected path (`/connection/websocket`).

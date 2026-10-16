@@ -7,6 +7,9 @@ require (
 	github.com/bds421/rho-kit/observability/v2 v2.8.0
 	github.com/bds421/rho-kit/security/v2 v2.8.0
 	github.com/centrifugal/centrifuge v0.38.0
+	github.com/centrifugal/protocol v0.19.2
+	github.com/coder/websocket v1.8.15
+	github.com/lestrrat-go/jwx/v3 v3.2.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/stretchr/testify v1.11.1
 )
@@ -18,7 +21,6 @@ require (
 	github.com/bds421/rho-kit/resilience/v2 v2.8.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
-	github.com/centrifugal/protocol v0.19.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
@@ -35,7 +37,6 @@ require (
 	github.com/lestrrat-go/dsig-secp256k1 v1.0.0 // indirect
 	github.com/lestrrat-go/httpcc v1.0.1 // indirect
 	github.com/lestrrat-go/httprc/v3 v3.0.6 // indirect
-	github.com/lestrrat-go/jwx/v3 v3.2.0 // indirect
 	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
 	github.com/mailru/easyjson v0.9.2 // indirect
 	github.com/maypok86/otter v1.2.4 // indirect
