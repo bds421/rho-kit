@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/url"
@@ -18,13 +17,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
 	outboxpg "github.com/bds421/rho-kit/infra/outbox/postgres/v2"
 	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
@@ -48,39 +43,6 @@ func startPostgres(t *testing.T) string {
 		RawQuery: q.Encode(),
 	}
 	return u.String()
-}
-
-func openAndMigrate(t *testing.T, dsn string) *pgxpool.Pool {
-	t.Helper()
-	ctx := context.Background()
-
-	pool, err := pgxpool.New(ctx, dsn)
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
-
-	sqlDB := stdlib.OpenDBFromPool(pool)
-	t.Cleanup(func() { _ = sqlDB.Close() })
-
-	sub, err := fs.Sub(outboxpg.Migrations, "migrations")
-	require.NoError(t, err)
-	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, sub)
-	require.NoError(t, err)
-	_, err = provider.Up(ctx)
-	require.NoError(t, err)
-	return pool
-}
-
-func mustEntry() outbox.Entry {
-	return outbox.Entry{
-		ID:          uuid.UUID(id.NewBytes()),
-		Topic:       "events",
-		RoutingKey:  "user.created",
-		MessageID:   "msg-" + uuid.NewString(),
-		MessageType: "UserCreated",
-		Payload:     json.RawMessage(`{"id":1}`),
-		Status:      outbox.StatusPending,
-		CreatedAt:   time.Now().UTC(),
-	}
 }
 
 // TestInbox_AMQPAckAfterCommittedDeduplication is the durable consumer

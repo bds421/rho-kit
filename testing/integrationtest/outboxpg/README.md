@@ -10,6 +10,22 @@ It uses real Postgres and RabbitMQ. The bounded test contexts deliberately
 turn a stalled dependency or broker lifecycle into a test failure rather than
 an indefinite CI wait.
 
+The focused route-selection proof can also run against an explicitly prepared
+native PostgreSQL database without Docker or RabbitMQ:
+
+```bash
+# Set a protected DSN for a new empty loopback database named rho_outbox_claims_<unique>.
+RHO_OUTBOX_NATIVE_DATABASE_ISOLATED=1 go test -tags 'integration,nativepostgres' \
+    -run '^TestFetchPending_ClaimRoutesNative$' ./testing/integrationtest/outboxpg
+```
+
+Supply `RHO_OUTBOX_NATIVE_DATABASE_URL` through the test environment. The test
+applies the maintained migration sequence, creates no cluster roles, and never
+starts a provider. Its caller must remove the unique database afterwards. It
+proves exact pair matching before the limit, unchanged deferred rows, due-time
+selection, FIFO, concurrent replica claims, legacy selection, and absence of row
+locks on excluded recipients while an eligible claim is held in flight.
+
 | Failure / recovery condition | Executable proof | Operator-visible outcome |
 | --- | --- | --- |
 | Duplicate delivery and concurrent replicas | `TestInbox_AMQPAckAfterCommittedDeduplication`, `TestInboxProcess_ConcurrentReplicasSerializeOneHandler` | One domain row, one inbox receipt, one outbox event; both broker deliveries ACK only after commit. |

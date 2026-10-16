@@ -447,6 +447,24 @@ notification payload, establish LISTEN before its first poll, and call Wake afte
 reconnect to catch up. Keep listener cancellation and completion in the worker's
 lifecycle; never treat a hint as an acknowledgement or an authorization decision.
 
+For a Postgres relay that currently serves only selected destinations, configure
+the maintained store before creating the relay:
+
+```go
+store := outboxpostgres.New(pool, outboxpostgres.WithClaimRoutes(
+    outboxpostgres.ClaimRoute{Topic: "events", RoutingKey: "active-consumer"},
+    outboxpostgres.ClaimRoute{Topic: "organization-events", RoutingKey: "active-consumer"},
+))
+```
+
+These are exact pairs, not independent allowlists or wildcard routes. Selection
+runs before `LIMIT` and `FOR UPDATE SKIP LOCKED`, so older deferred destinations
+cannot fill a batch or consume attempts. Omitting the option claims all routes;
+an explicitly empty, invalid or over-256-pair selection panics at construction.
+This option does not filter inserts, table-wide pending counts or janitor work, and is not
+an authorization boundary. Keep a separate writer store when appropriate. Do
+not return a successful publish merely to defer a row.
+
 ## Transactional Inbox
 
 Use `infra/inbox/postgres` at an at-least-once consumer boundary when the
