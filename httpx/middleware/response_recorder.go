@@ -77,24 +77,62 @@ func (r *ResponseRecorder) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
-// Flush delegates to the underlying writer if it implements http.Flusher.
-//
-// net/http's Flush implicitly commits a 200 header when none has been written,
-// so the recorder latches wroteHeader=true (statusCode keeps its 200 default)
-// before delegating. Without this, panic-recovery consumers see
-// WroteHeader()==false and report 500 even though the wire already carried 200
-// from the flush, desyncing the recorder from the committed response. Only the
-// final status latches; statusCode is left untouched when WriteHeader already
-// ran, and the flag is left clear when the writer is not an http.Flusher (no
-// implicit commit happens in that case).
+// Flush retains http.Flusher compatibility. Use http.ResponseController.Flush
+// when the caller needs the underlying flush error.
 func (r *ResponseRecorder) Flush() {
-	f, ok := r.ResponseWriter.(http.Flusher)
-	if !ok {
-		return
+	_ = r.FlushError()
+}
+
+// FlushError preserves the native error and records a supported flush before
+// delegation: even a failed or panicking flush may already have committed the
+// response. Unsupported writers do not commit a header. An explicit final status
+// remains unchanged; an implicit commit keeps the recorder's default 200.
+//
+//nolint:wrapcheck // native flush error identity is preserved by design
+func (r *ResponseRecorder) FlushError() error {
+	if !SupportsNativeFlush(r.ResponseWriter) {
+		return http.ErrNotSupported
 	}
 	r.wroteHeader = true
-	f.Flush()
+	return http.NewResponseController(r.ResponseWriter).Flush()
 }
+
+// SupportsNativeFlush follows error-aware and legacy flush capabilities through
+// transparent wrappers. Kit recorders report the underlying capability instead
+// of their unconditional forwarding methods; a nil-Unwrap buffering barrier with
+// only void Flush is unsupported. A functional FlushError is never skipped for
+// Unwrap. This performs no I/O and does not promise wire delivery through other
+// buffering wrappers.
+func SupportsNativeFlush(w http.ResponseWriter) bool {
+	for {
+		switch writer := w.(type) {
+		case interface{ SupportsNativeFlush() bool }:
+			return writer.SupportsNativeFlush()
+		case interface{ FlushError() error }:
+			// A functional error-reporting wrapper owns its flush operation;
+			// ResponseController prefers it to both Flusher and Unwrap.
+			return true
+		case interface{ Unwrap() http.ResponseWriter }:
+			inner := writer.Unwrap()
+			// The buffering timeout deliberately hides its native writer.
+			if inner == nil {
+				return false
+			}
+			if _, ok := w.(http.Flusher); ok {
+				return true
+			}
+			w = inner
+		case http.Flusher:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+// SupportsNativeFlush reports the wrapped writer's capability without treating
+// this recorder's unconditional forwarding methods as a native implementation.
+func (r *ResponseRecorder) SupportsNativeFlush() bool { return SupportsNativeFlush(r.ResponseWriter) }
 
 // Hijack implements http.Hijacker by delegating to the underlying ResponseWriter.
 // Required for WebSocket upgrades (gorilla/websocket asserts http.Hijacker).
