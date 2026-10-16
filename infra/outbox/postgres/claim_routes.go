@@ -11,8 +11,9 @@ type ClaimRoute struct {
 	RoutingKey string
 }
 
-// Option configures a Store before it is used. Options must not be applied to a
-// live Store; constructor configuration is immutable and safe for concurrent use.
+// Option configures a Store through NewWithOptions before it is used. Options
+// must not be applied to a live Store; constructor configuration is immutable
+// and safe for concurrent use.
 type Option func(*Store)
 
 // WithClaimRoutes limits FetchPending to the supplied exact route pairs. The

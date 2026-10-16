@@ -9,6 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Existing callers may retain New as a typed factory, not just call it directly.
+var _ func(*pgxpool.Pool) *Store = New
+
 func TestClaimRoutesRejectEmptyAndInvalidSelection(t *testing.T) {
 	assert.Panics(t, func() { WithClaimRoutes() })
 	var empty []ClaimRoute
@@ -23,7 +26,8 @@ func TestClaimRoutesRejectEmptyAndInvalidSelection(t *testing.T) {
 	} {
 		assert.Panics(t, func() { WithClaimRoutes(route) })
 	}
-	assert.Panics(t, func() { New(&pgxpool.Pool{}, nil) })
+	assert.Panics(t, func() { NewWithOptions(&pgxpool.Pool{}, nil) })
+	assert.Panics(t, func() { NewWithOptions(nil) })
 }
 
 func TestClaimRoutesCopyInputAndPreserveExactPairs(t *testing.T) {
@@ -31,7 +35,7 @@ func TestClaimRoutesCopyInputAndPreserveExactPairs(t *testing.T) {
 	option := WithClaimRoutes(routes...)
 	routes[0] = ClaimRoute{Topic: "deferred", RoutingKey: "other"}
 	for range 2 {
-		store := New(&pgxpool.Pool{}, option)
+		store := NewWithOptions(&pgxpool.Pool{}, option)
 		require.Equal(t, []string{"events", "changes"}, store.claimTopics)
 		require.Equal(t, []string{"web", "audit"}, store.claimRoutingKeys)
 	}
@@ -39,10 +43,13 @@ func TestClaimRoutesCopyInputAndPreserveExactPairs(t *testing.T) {
 	store := New(&pgxpool.Pool{})
 	assert.Nil(t, store.claimTopics)
 	assert.Nil(t, store.claimRoutingKeys)
+	configured := NewWithOptions(&pgxpool.Pool{})
+	assert.Nil(t, configured.claimTopics)
+	assert.Nil(t, configured.claimRoutingKeys)
 }
 
 func TestClaimRoutesRepeatedOptionReplacesSelection(t *testing.T) {
-	store := New(&pgxpool.Pool{},
+	store := NewWithOptions(&pgxpool.Pool{},
 		WithClaimRoutes(ClaimRoute{Topic: "events", RoutingKey: "web"}),
 		WithClaimRoutes(ClaimRoute{Topic: "changes", RoutingKey: "audit"}),
 	)
