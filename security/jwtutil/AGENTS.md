@@ -18,6 +18,7 @@
 - `WithAllowAnyIssuer()` / `WithAllowAnyAudience()` (Provider options) and `KeySet.WithAllowAnyIssuer` / `KeySet.WithAllowAnyAudience` / `AllowAny*` fields — explicit override; "Any" makes the relaxation auditable in code review. `KeySet.Verify` returns `ErrPolicyRequired` when neither Expected* nor AllowAny* is set for a dimension.
 - `WithRevocationChecker(checker)` — optional per-token revocation lookup (Redis JTI denylist, etc.).
 - `Provider.VerifyContext(ctx, token, now)` — returns `*Claims` or error. Time argument is explicit for reproducible tests.
+- `WithSigningStringClaims("sid", "sv")` plus `SigningProvider.SignWithStringClaims(ctx, claims, fields)` — explicit immutable allowlist for bounded additional strings. Existing Sign/SignContext never forward verified extras. Registered/kit/header names cannot be overridden; keep caller authority/expiry checks before and after credential issuance.
 
 ## Common mistakes
 

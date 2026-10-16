@@ -218,6 +218,28 @@ embedded credentials; local `http://` endpoints require the explicit
 starts. Treat providers as one-shot lifecycle components; construct a new
 provider instead of restarting a stopped one.
 
+### Explicit additional JWT strings at issuance
+
+Use the maintained `jwtutil.SigningProvider` for rotating asymmetric issuance.
+Configure `WithSigningStringClaims("sid", "sv")` when an application requires
+signed session bindings, then call `SignWithStringClaims(ctx, claims, fields)`.
+Verifier extraction remains `WithStringClaims("sid", "sv")`; it is not an issuer
+policy. Existing `Sign`/`SignContext` always omit extra verified strings.
+
+The frozen allowlist defaults empty, accepts up to 16 unique ASCII identifiers
+(1..64 bytes), and rejects registered JWT, kit permissions/scopes and JWS header
+names. Additional values must be nonempty control-free UTF-8 up to 2048 bytes;
+total name/value bytes are limited to 8192. The encoded token must also fit the
+maintained verifier's 16 KiB limit before issued-JTI recording. Invalid extras
+produce `ErrSigningStringClaims` without disclosing their names or values.
+
+Each call snapshots its map before signing; do not concurrently mutate the map
+during that initial read. Issuer/audience, key rotation/kid, expiry/JTI, recorder,
+stale/closed behavior remain the same maintained path. These are issuance
+primitives, not user/resource/license authority; consumers check context and
+current authority before and after releasing credentials and validate their own
+claim semantics. No socket protocol or private preference values belong here.
+
 ### JWT Revocation
 
 Use a shared cache backend when a service needs logout / admin-revoke semantics.
