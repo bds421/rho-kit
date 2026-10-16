@@ -11,6 +11,10 @@
 // their own transactions against the pool and do not consult ctx for
 // a tx handle.
 //
+// WithClaimRoutes can restrict a relay store to exact topic/routing-key pairs
+// before batch selection and locking. Deferred recipients stay pending without
+// consuming publish attempts; omission keeps the existing claim-all behavior.
+//
 // Schema lives in [Migrations] and includes both outbox_entries and
 // inbox_entries; apply with the kit migrate helper or embed directly.
 // Integration tests live in the sibling

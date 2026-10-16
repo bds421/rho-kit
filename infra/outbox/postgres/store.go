@@ -29,7 +29,9 @@ import (
 // pending claim, status-guarded UPDATEs on outcome) make a caller-
 // supplied tx the wrong unit of atomicity for those operations.
 type Store struct {
-	pool *pgxpool.Pool
+	pool             *pgxpool.Pool
+	claimTopics      []string
+	claimRoutingKeys []string
 
 	// claimTokens fences outcome updates by claim ownership. FetchPending
 	// stamps a fresh per-row token on each claim (DB column claim_token)
@@ -52,16 +54,24 @@ var (
 	_ outbox.PendingResetter = (*Store)(nil)
 )
 
-// New returns a Store wrapping pool. Panics on a nil pool — fail fast
-// at construction beats a deferred nil-deref on the first Insert.
-func New(pool *pgxpool.Pool) *Store {
+// New returns a Store wrapping pool. It panics on a nil pool or option.
+// Omitting options preserves the existing claim-all behavior; WithClaimRoutes
+// restricts claim selection without changing inserts or the relay contract.
+func New(pool *pgxpool.Pool, opts ...Option) *Store {
 	if pool == nil {
 		panic("outbox/postgres: New pool must not be nil")
 	}
-	return &Store{
+	s := &Store{
 		pool:        pool,
 		claimTokens: make(map[string]string),
 	}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("outbox/postgres: nil option")
+		}
+		opt(s)
+	}
+	return s
 }
 
 // rememberClaim records the token minted for a claimed row. Overwrites any
@@ -180,15 +190,28 @@ func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, er
 	if limit <= 0 {
 		return nil, nil
 	}
+	// Select exact route pairs before LIMIT and row locking. Filtering a claimed
+	// batch afterwards could starve eligible routes and mutate deferred rows.
+	var routePredicate string
+	args := []any{limit}
+	if len(s.claimTopics) != 0 {
+		routePredicate = `
+      AND EXISTS (
+          SELECT 1 FROM unnest($2::text[], $3::text[]) AS route(topic, routing_key)
+          WHERE route.topic = outbox_entries.topic
+            AND route.routing_key = outbox_entries.routing_key
+      )`
+		args = append(args, s.claimTopics, s.claimRoutingKeys)
+	}
 	// claim_token = gen_random_uuid() mints a fresh per-row token on every
 	// claim; it is RETURNed (last column) so the store can remember
 	// id->token and later fence the outcome UPDATEs on claim ownership.
-	const q = `
+	q := `
 WITH locked AS (
     SELECT id, created_at
     FROM outbox_entries
     WHERE status = 'pending'
-      AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+      AND (next_retry_at IS NULL OR next_retry_at <= NOW())` + routePredicate + `
     ORDER BY created_at, id
     LIMIT $1
     FOR UPDATE SKIP LOCKED
@@ -215,7 +238,7 @@ SELECT id, topic, routing_key, message_id, message_type, schema_version, payload
        claim_token
 FROM updated
 ORDER BY ord`
-	rows, err := s.pool.Query(ctx, q, limit)
+	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, redact.WrapError("outbox/postgres: fetch pending", err)
 	}
