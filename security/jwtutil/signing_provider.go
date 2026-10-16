@@ -135,6 +135,7 @@ type SigningProvider struct {
 	allowAnyAudience bool
 	recorder         IssuedJTIRecorder
 	onRefreshErr     func(error)
+	stringClaimNames map[string]struct{}
 
 	current               atomic.Pointer[jwk.Key]
 	lastSuccessfulRefresh atomic.Int64
@@ -487,6 +488,10 @@ func (p *SigningProvider) Sign(claims Claims) (string, error) {
 // and synchronous — so a cancelled context here only short-circuits
 // the recorder hop.
 func (p *SigningProvider) SignContext(ctx context.Context, claims Claims) (string, error) {
+	return p.signContext(ctx, claims, nil)
+}
+
+func (p *SigningProvider) signContext(ctx context.Context, claims Claims, fields map[string]string) (string, error) {
 	if p == nil {
 		return "", ErrSigningKeyUnavailable
 	}
@@ -515,6 +520,10 @@ func (p *SigningProvider) SignContext(ctx context.Context, claims Claims) (strin
 		if p.clock().Sub(time.Unix(0, last)) > p.maxStale {
 			return "", ErrSigningKeyUnavailable
 		}
+	}
+	stringsToIssue, err := p.copySigningStringClaims(fields)
+	if err != nil {
+		return "", err
 	}
 	if claims.Subject == "" {
 		return "", errors.New("jwtutil: Claims.Subject must not be empty")
@@ -575,10 +584,18 @@ func (p *SigningProvider) SignContext(ctx context.Context, claims Claims) (strin
 			return "", fmt.Errorf("jwtutil: set scopes claim: %w", err)
 		}
 	}
+	for name, value := range stringsToIssue {
+		if err := tok.Set(name, value); err != nil {
+			return "", ErrSigningStringClaims
+		}
+	}
 
 	signed, err := jwt.Sign(tok, jwt.WithKey(p.alg, *keyPtr))
 	if err != nil {
 		return "", fmt.Errorf("jwtutil: sign token: %w", err)
+	}
+	if len(stringsToIssue) > 0 && len(signed) > maxJWTLen {
+		return "", ErrSigningStringClaims
 	}
 
 	if p.recorder != nil {
