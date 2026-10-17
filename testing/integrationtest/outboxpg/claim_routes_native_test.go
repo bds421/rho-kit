@@ -168,6 +168,16 @@ CREATE TRIGGER hold_selected_claim BEFORE UPDATE ON outbox_entries FOR EACH ROW 
 	// and keep every excluded whole row unchanged. No publisher is called.
 	cancelEntry := insert("events", "web", 10)
 	cancelForeignBefore := snapshot()
+	// Compare persisted immutable bytes so PostgreSQL's timestamp precision does
+	// not get confused with the original Go value. Only claim state may change.
+	const cancellationRow = `SELECT status, attempts, claim_token,
+    (to_jsonb(e) - 'status' - 'claim_token' - 'updated_at')::text
+FROM outbox_entries AS e WHERE id=$1`
+	var cancelImmutableBefore string
+	require.NoError(t, pool.QueryRow(ctx, cancellationRow, cancelEntry.ID).Scan(&status, &attempts, &token, &cancelImmutableBefore))
+	require.Equal(t, string(outbox.StatusPending), status)
+	require.Zero(t, attempts)
+	require.Nil(t, token)
 	_, err = blocker.Exec(ctx, `SELECT pg_advisory_lock(81314,1)`)
 	require.NoError(t, err)
 	cancelCtx, cancelClaim := context.WithCancel(ctx)
@@ -194,11 +204,44 @@ CREATE TRIGGER hold_selected_claim BEFORE UPDATE ON outbox_entries FOR EACH ROW 
 	require.NoError(t, err)
 	lockTx, err := pool.Begin(ctx)
 	require.NoError(t, err)
-	err = lockTx.QueryRow(ctx, `SELECT id FROM outbox_entries WHERE id=$1 FOR UPDATE NOWAIT`, cancelEntry.ID).Scan(&id)
+	var cancelImmutableAfter string
+	err = lockTx.QueryRow(ctx, cancellationRow+` FOR UPDATE NOWAIT`, cancelEntry.ID).Scan(&status, &attempts, &token, &cancelImmutableAfter)
 	rollbackErr = lockTx.Rollback(ctx)
 	require.NoError(t, err, "canceled statement must release its eligible row lock")
 	require.NoError(t, rollbackErr)
+	require.Equal(t, cancelImmutableBefore, cancelImmutableAfter)
+	require.Zero(t, attempts)
 	require.Equal(t, cancelForeignBefore, snapshot(), "cancellation must not change excluded complete rows")
+	// An autocommit claim can commit before cancellation is observed by the
+	// client. context.Canceled is not rollback proof. Reconcile this same row;
+	// never insert a replacement or infer a publish outcome from that error.
+	switch outbox.Status(status) {
+	case outbox.StatusPending:
+		require.Nil(t, token)
+		t.Log("canceled autocommit claim observed: pending, no token, attempts=0")
+	case outbox.StatusProcessing:
+		require.NotNil(t, token)
+		require.NotEqual(t, uuid.Nil, *token)
+		t.Log("canceled autocommit claim observed: processing, token present, attempts=0")
+		// Age only this observed claim as a fixture action. Recovery itself must
+		// use the real scoped janitor and preserve the original entry identity.
+		aged, err := pool.Exec(ctx, `UPDATE outbox_entries
+SET updated_at=NOW()-interval '2 hours'
+WHERE id=$1 AND status='processing' AND claim_token=$2`, cancelEntry.ID, *token)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, aged.RowsAffected())
+		reset, err := selected.ResetStaleProcessing(ctx, time.Hour)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, reset)
+	default:
+		t.Fatal("canceled claim has an unexpected persisted state")
+	}
+	require.NoError(t, pool.QueryRow(ctx, cancellationRow, cancelEntry.ID).Scan(&status, &attempts, &token, &cancelImmutableAfter))
+	require.Equal(t, string(outbox.StatusPending), status)
+	require.Nil(t, token)
+	require.Zero(t, attempts)
+	require.Equal(t, cancelImmutableBefore, cancelImmutableAfter)
+	require.Equal(t, cancelForeignBefore, snapshot(), "cancellation recovery must not change excluded complete rows")
 	// Claim the same row, stale-reset it, and prove an old token cannot affect the
 	// replacement owner even though the route and entry ID are unchanged.
 	oldOwner := outboxpg.NewWithOptions(pool, routes)
