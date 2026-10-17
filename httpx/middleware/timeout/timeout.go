@@ -67,10 +67,11 @@ func WithWebSocketUpgradeBypass() Option {
 }
 
 // WithMaxBufferSize overrides the per-request response buffer cap (default
-// 1 MiB). Responses exceeding the cap are truncated and the handler sees
-// [ErrResponseTooLarge] from Write. Useful for endpoints that legitimately
-// stream multi-megabyte JSON; pair with a body-size limit on the request
-// path so the same memory budget applies in both directions.
+// 1 MiB). Responses exceeding the cap are discarded and replaced by a 500 JSON
+// error, even if the handler ignores [ErrResponseTooLarge] from Write. Useful
+// for endpoints that legitimately return multi-megabyte JSON; pair with a
+// body-size limit on the request path so the same memory budget applies in both
+// directions.
 //
 // Panics if size <= 0.
 func WithMaxBufferSize(size int) Option {
@@ -171,6 +172,7 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 				h:         make(http.Header),
 				maxBuffer: cfg.maxBuffer,
 				logger:    cfg.logger,
+				head:      r.Method == http.MethodHead,
 			}
 
 			go func() {
@@ -190,7 +192,11 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 				if result.panicValue != nil {
 					panic(panicWithStack{value: result.panicValue, stack: result.panicStack})
 				}
-				tw.writeToReal()
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					tw.writeTimeout()
+				} else {
+					tw.writeToReal()
+				}
 			case <-ctx.Done():
 				// Only emit the TIMEOUT 503 when our deadline fired.
 				// Parent cancellation (client disconnect, server shutdown)

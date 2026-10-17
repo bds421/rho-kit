@@ -195,7 +195,7 @@ func TestTimeout_PanicBeforeDeadlinePropagates(t *testing.T) {
 }
 
 func TestTimeout_InvalidWriteHeaderMapsTo500(t *testing.T) {
-	h := Timeout(50*time.Millisecond)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := Timeout(50 * time.Millisecond)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(42)
 	}))
 	rec := httptest.NewRecorder()
@@ -540,17 +540,17 @@ func TestTimeout_FlushWarningUsesConfiguredLogger(t *testing.T) {
 }
 
 func TestTimeout_BufferOverflow(t *testing.T) {
-	const overLimit = defaultMaxBufferSize + 1<<20 // 2 MiB — 1 MiB over the 1 MiB cap
+	const overLimit = defaultMaxBufferSize + 1
 
 	handler := Timeout(5 * time.Second)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bigPayload := bytes.Repeat([]byte("x"), overLimit)
-		// First write truncates to defaultMaxBufferSize and returns ErrResponseTooLarge.
+		// An overflowing write accepts no partial prefix.
 		n, err := w.Write(bigPayload)
 		if !errors.Is(err, ErrResponseTooLarge) {
 			t.Errorf("first Write: expected ErrResponseTooLarge, got %v", err)
 		}
-		if n != defaultMaxBufferSize {
-			t.Errorf("first Write: expected %d bytes written, got %d", defaultMaxBufferSize, n)
+		if n != 0 {
+			t.Errorf("first Write: expected 0 bytes written, got %d", n)
 		}
 		// Second write hits the full buffer and returns ErrResponseTooLarge.
 		n, err = w.Write([]byte("more"))
@@ -566,16 +566,59 @@ func TestTimeout_BufferOverflow(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
 	}
+	if rec.Body.String() != "{\"error\":\"internal error\",\"code\":\"INTERNAL\"}\n" {
+		t.Errorf("overflow body = %q", rec.Body.String())
+	}
+}
 
-	// The response body must be truncated to at most defaultMaxBufferSize bytes.
-	bodyLen := rec.Body.Len()
-	if bodyLen > defaultMaxBufferSize {
-		t.Errorf("response body exceeds defaultMaxBufferSize: got %d bytes, want <= %d", bodyLen, defaultMaxBufferSize)
-	}
-	if bodyLen == 0 {
-		t.Error("response body is empty; expected truncated content")
+func TestTimeout_OverflowThenDeadlineKeepsTimeoutAndFencesLateWrite(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		t.Run(method, func(t *testing.T) {
+			release := make(chan struct{})
+			exited := make(chan struct{})
+			lateErr := make(chan error, 1)
+			h := Timeout(20*time.Millisecond, WithMaxBufferSize(8), WithHard())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(exited)
+				w.Header().Set("ETag", "partial")
+				_, _ = w.Write([]byte("123456789"))
+				<-r.Context().Done()
+				<-release
+				_, err := w.Write([]byte("late"))
+				lateErr <- err
+			}))
+			rec := httptest.NewRecorder()
+			rec.Header().Set("Content-Length", "9")
+			rec.Header().Set("ETag", "outer")
+			rec.Header().Set("Content-Encoding", "gzip")
+			rec.Header().Set("X-Trace-ID", "kept")
+			h.ServeHTTP(rec, httptest.NewRequest(method, "/", nil))
+			close(release)
+			select {
+			case <-exited:
+			case <-time.After(time.Second):
+				t.Fatal("late handler did not exit")
+			}
+			wantBody := "{\"error\":\"request timeout\",\"code\":\"TIMEOUT\"}\n"
+			if method == http.MethodHead {
+				wantBody = ""
+			}
+			if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != wantBody {
+				t.Fatalf("deadline after overflow = %d, %q", rec.Code, rec.Body.String())
+			}
+			for _, name := range []string{"Content-Length", "ETag", "Content-Encoding"} {
+				if rec.Header().Get(name) != "" {
+					t.Errorf("stale %s survived timeout", name)
+				}
+			}
+			if rec.Header().Get("X-Trace-ID") != "kept" {
+				t.Error("outer tracing header lost")
+			}
+			if err := <-lateErr; !errors.Is(err, http.ErrHandlerTimeout) {
+				t.Errorf("late write = %v", err)
+			}
+		})
 	}
 }

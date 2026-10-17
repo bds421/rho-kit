@@ -4,14 +4,15 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 )
 
 // ErrResponseTooLarge is returned by Write when the buffered response
 // exceeds the maximum buffer size configured for this middleware
 // (default 1 MiB, see [defaultMaxBufferSize]; override with
-// [WithMaxBufferSize]). This prevents silent data loss — callers can
-// detect truncation and stop writing.
+// [WithMaxBufferSize]). The overflowing write accepts no bytes and permanently
+// invalidates the buffered response, which is replaced by a 500 JSON error.
 var ErrResponseTooLarge = errors.New("timeout: response exceeds buffer limit")
 
 // timeoutWriter buffers the handler's response so we can discard it if the
@@ -36,7 +37,8 @@ type timeoutWriter struct {
 	wroteHeader bool
 	written     bool
 	flushWarned bool
-	truncated  bool // body was cut short by bufferCap; drop Content-Length on flush
+	overflowed  bool // response is invalid even if the handler ignores Write errors
+	head        bool // an error response to HEAD must not include a body
 
 	maxBuffer int          // per-instance cap; 0 falls back to defaultMaxBufferSize
 	logger    *slog.Logger // configured logger; nil falls back to slog.Default
@@ -111,6 +113,9 @@ func (tw *timeoutWriter) Write(b []byte) (int, error) {
 	if tw.written {
 		return 0, http.ErrHandlerTimeout
 	}
+	if tw.overflowed {
+		return 0, ErrResponseTooLarge
+	}
 	// Mirror the stdlib: the first Write implies WriteHeader(StatusOK) and
 	// latches the final status, so any later WriteHeader call is a no-op.
 	if !tw.wroteHeader {
@@ -120,14 +125,10 @@ func (tw *timeoutWriter) Write(b []byte) (int, error) {
 		}
 	}
 	remaining := tw.bufferCap() - len(tw.buf)
-	if remaining <= 0 {
-		tw.truncated = true
-		return 0, ErrResponseTooLarge
-	}
 	if len(b) > remaining {
-		tw.buf = append(tw.buf, b[:remaining]...)
-		tw.truncated = true
-		return remaining, ErrResponseTooLarge
+		tw.overflowed = true
+		tw.buf = nil
+		return 0, ErrResponseTooLarge
 	}
 	tw.buf = append(tw.buf, b...)
 	return len(b), nil
@@ -143,6 +144,11 @@ func (tw *timeoutWriter) writeToReal() {
 		return
 	}
 	tw.written = true
+	if tw.overflowed {
+		tw.mu.Unlock()
+		tw.writeBufferError()
+		return
+	}
 
 	// Snapshot headers and buffered data under the lock, then release
 	// before writing to the real writer (which may be slow).
@@ -157,21 +163,47 @@ func (tw *timeoutWriter) writeToReal() {
 		code = http.StatusOK
 	}
 	buf := tw.buf
-	truncated := tw.truncated
 	tw.mu.Unlock()
 
 	for k, v := range hdrs {
 		tw.w.Header()[k] = v
 	}
-	// Handler-set Content-Length is wrong when Write truncated the body.
-	// Drop it so net/http derives length from the bytes actually sent.
-	if truncated {
-		tw.w.Header().Del("Content-Length")
-	}
 	tw.w.WriteHeader(code)
 	if len(buf) > 0 {
 		_, _ = tw.w.Write(buf)
 	}
+}
+
+// writeBufferError discards every handler header by never copying tw.h. Remove
+// any representation metadata already set by outer wrappers, while retaining
+// their unrelated security, tracing and session headers.
+func (tw *timeoutWriter) writeBufferError() {
+	tw.prepareBufferErrorHeaders()
+	tw.w.WriteHeader(http.StatusInternalServerError)
+	if !tw.head {
+		_, _ = tw.w.Write([]byte(`{"error":"internal error","code":"INTERNAL"}` + "\n"))
+	}
+}
+
+func (tw *timeoutWriter) prepareBufferErrorHeaders() {
+	h := tw.w.Header()
+	for key := range h {
+		// Header is a map: outer wrappers may use noncanonical key casing.
+		lower := strings.ToLower(key)
+		switch lower {
+		case "content-type", "cache-control", "content-length", "content-encoding",
+			"content-range", "content-disposition", "content-language", "content-location",
+			"etag", "last-modified", "digest", "content-digest", "repr-digest",
+			"content-md5", "accept-ranges", "trailer", "transfer-encoding":
+			delete(h, key)
+		default:
+			if strings.HasPrefix(lower, strings.ToLower(http.TrailerPrefix)) {
+				delete(h, key)
+			}
+		}
+	}
+	h.Set("Content-Type", "application/json")
+	h.Set("Cache-Control", "no-store")
 }
 
 // Unwrap always returns nil.
@@ -214,7 +246,14 @@ func (tw *timeoutWriter) writeTimeout() {
 	}
 	tw.written = true
 
-	tw.w.Header().Set("Content-Type", "application/json")
+	if tw.overflowed {
+		tw.prepareBufferErrorHeaders()
+	} else {
+		tw.w.Header().Set("Content-Type", "application/json")
+	}
 	tw.w.WriteHeader(http.StatusServiceUnavailable)
+	if tw.overflowed && tw.head {
+		return
+	}
 	_, _ = tw.w.Write([]byte(`{"error":"request timeout","code":"TIMEOUT"}` + "\n"))
 }
