@@ -439,18 +439,22 @@ the maintained store before creating the relay:
 
 ```go
 store := outboxpostgres.NewWithOptions(pool, outboxpostgres.WithClaimRoutes(
-    outboxpostgres.ClaimRoute{Topic: "events", RoutingKey: "active-consumer"},
-    outboxpostgres.ClaimRoute{Topic: "organization-events", RoutingKey: "active-consumer"},
+    outboxpostgres.ClaimRoute{Topic: "events", RoutingKey: "active-consumer", MessageType: "record.changed", SchemaVersion: 1},
+    outboxpostgres.ClaimRoute{Topic: "organization-events", RoutingKey: "active-consumer", MessageType: "organization.changed", SchemaVersion: 1},
 ))
 ```
 
-These are exact pairs, not independent allowlists or wildcard routes. Selection
+These are exact four-field tuples, not independent allowlists or wildcard routes.
+Schema version zero selects only legacy unversioned entries. Selection
 runs before `LIMIT` and `FOR UPDATE SKIP LOCKED`, so older deferred destinations
 cannot fill a batch or consume attempts. Omitting the option claims all routes;
-an explicitly empty, invalid or over-256-pair selection panics at construction.
-This option does not filter inserts, table-wide pending counts or janitor work, and is not
-an authorization boundary. Keep a separate writer store when appropriate. Do
-not return a successful publish merely to defer a row.
+an explicitly empty, invalid or over-256-tuple selection panics at construction.
+The same selection scopes pending counts, stale recovery, and published/failed
+retention, so this relay cannot reset or prune another route. Inserts remain
+unfiltered; outcomes still require the original owned claim token. This is not an
+authorization boundary. Keep a separate writer store or explicit unfiltered
+operator store when table-wide maintenance is intended. Do not return a
+successful publish merely to defer a row.
 The original `New(pool)` constructor and its exact function type remain unchanged.
 
 ## Transactional Inbox

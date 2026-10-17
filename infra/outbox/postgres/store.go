@@ -29,9 +29,11 @@ import (
 // pending claim, status-guarded UPDATEs on outcome) make a caller-
 // supplied tx the wrong unit of atomicity for those operations.
 type Store struct {
-	pool             *pgxpool.Pool
-	claimTopics      []string
-	claimRoutingKeys []string
+	pool                *pgxpool.Pool
+	claimTopics         []string
+	claimRoutingKeys    []string
+	claimMessageTypes   []string
+	claimSchemaVersions []int64
 
 	// claimTokens fences outcome updates by claim ownership. FetchPending
 	// stamps a fresh per-row token on each claim (DB column claim_token)
@@ -62,8 +64,8 @@ func New(pool *pgxpool.Pool) *Store {
 }
 
 // NewWithOptions returns a Store wrapping pool. It panics on a nil pool or
-// option. WithClaimRoutes restricts claim selection without changing inserts or
-// the relay contract; omitting it preserves the existing claim-all behavior.
+// option. WithClaimRoutes restricts relay selection and maintenance without
+// changing inserts or the relay contract; omission preserves claim-all behavior.
 func NewWithOptions(pool *pgxpool.Pool, opts ...Option) *Store {
 	if pool == nil {
 		panic("outbox/postgres: New pool must not be nil")
@@ -197,19 +199,9 @@ func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, er
 	if limit <= 0 {
 		return nil, nil
 	}
-	// Select exact route pairs before LIMIT and row locking. Filtering a claimed
+	// Select exact route tuples before LIMIT and row locking. Filtering a claimed
 	// batch afterwards could starve eligible routes and mutate deferred rows.
-	var routePredicate string
-	args := []any{limit}
-	if len(s.claimTopics) != 0 {
-		routePredicate = `
-      AND EXISTS (
-          SELECT 1 FROM unnest($2::text[], $3::text[]) AS route(topic, routing_key)
-          WHERE route.topic = outbox_entries.topic
-            AND route.routing_key = outbox_entries.routing_key
-      )`
-		args = append(args, s.claimTopics, s.claimRoutingKeys)
-	}
+	routePredicate, args := s.routeSelection([]any{limit})
 	// claim_token = gen_random_uuid() mints a fresh per-row token on every
 	// claim; it is RETURNed (last column) so the store can remember
 	// id->token and later fence the outcome UPDATEs on claim ownership.
@@ -496,13 +488,15 @@ func (s *Store) transition(ctx context.Context, id string, p transitionParams) e
 }
 
 // DeletePublishedBefore prunes published entries older than the cutoff
-// using the partial index on (status='published', published_at).
+// using the partial index on (status='published', published_at). When configured,
+// only entries matching WithClaimRoutes are pruned.
 func (s *Store) DeletePublishedBefore(ctx context.Context, before time.Time) (int64, error) {
 	if s == nil || s.pool == nil {
 		return 0, errors.New("outbox/postgres: store not initialized")
 	}
-	const q = `DELETE FROM outbox_entries WHERE status = 'published' AND published_at < $1`
-	ct, err := s.pool.Exec(ctx, q, before.UTC())
+	predicate, args := s.routeSelection([]any{before.UTC()})
+	q := `DELETE FROM outbox_entries WHERE status = 'published' AND published_at < $1` + predicate
+	ct, err := s.pool.Exec(ctx, q, args...)
 	if err != nil {
 		return 0, redact.WrapError("outbox/postgres: delete published before", err)
 	}
@@ -512,13 +506,14 @@ func (s *Store) DeletePublishedBefore(ctx context.Context, before time.Time) (in
 // DeleteFailedBefore prunes failed entries older than the cutoff. The
 // dead-letter retention sweep prevents the table from growing
 // unboundedly when a downstream stays broken across the max-attempts
-// window.
+// window. WithClaimRoutes restricts pruning to selected tuples.
 func (s *Store) DeleteFailedBefore(ctx context.Context, before time.Time) (int64, error) {
 	if s == nil || s.pool == nil {
 		return 0, errors.New("outbox/postgres: store not initialized")
 	}
-	const q = `DELETE FROM outbox_entries WHERE status = 'failed' AND updated_at < $1`
-	ct, err := s.pool.Exec(ctx, q, before.UTC())
+	predicate, args := s.routeSelection([]any{before.UTC()})
+	q := `DELETE FROM outbox_entries WHERE status = 'failed' AND updated_at < $1` + predicate
+	ct, err := s.pool.Exec(ctx, q, args...)
 	if err != nil {
 		return 0, redact.WrapError("outbox/postgres: delete failed before", err)
 	}
@@ -527,7 +522,8 @@ func (s *Store) DeleteFailedBefore(ctx context.Context, before time.Time) (int64
 
 // ResetStaleProcessing recovers entries left in processing by a
 // crashed relay. The (NOW() - updated_at > staleDuration) guard means
-// a healthy Heartbeat from the live worker prevents the reset.
+// a healthy Heartbeat from the live worker prevents the reset. WithClaimRoutes
+// restricts recovery to selected tuples, including claims from older processes.
 func (s *Store) ResetStaleProcessing(ctx context.Context, staleDuration time.Duration) (int64, error) {
 	if s == nil || s.pool == nil {
 		return 0, errors.New("outbox/postgres: store not initialized")
@@ -543,14 +539,15 @@ func (s *Store) ResetStaleProcessing(ctx context.Context, staleDuration time.Dur
 	// and ResetPending. FetchPending always overwrites the token on the
 	// next claim, but leaving a stale token on pending rows is a trap
 	// for future fences that assume the invariant.
-	const q = `
+	predicate, args := s.routeSelection([]any{staleDuration.Seconds()})
+	q := `
 UPDATE outbox_entries
 SET status = 'pending',
     claim_token = NULL,
     updated_at = NOW()
 WHERE status = 'processing'
-  AND updated_at < NOW() - make_interval(secs => $1)`
-	ct, err := s.pool.Exec(ctx, q, staleDuration.Seconds())
+  AND updated_at < NOW() - make_interval(secs => $1)` + predicate
+	ct, err := s.pool.Exec(ctx, q, args...)
 	if err != nil {
 		return 0, redact.WrapError("outbox/postgres: reset stale processing", err)
 	}
@@ -559,14 +556,15 @@ WHERE status = 'processing'
 
 // CountPending reports the number of pending entries (including those
 // awaiting their next_retry_at). Useful for dashboards and the
-// outbox-depth health check.
+// outbox-depth health check. WithClaimRoutes counts only selected tuples.
 func (s *Store) CountPending(ctx context.Context) (int64, error) {
 	if s == nil || s.pool == nil {
 		return 0, errors.New("outbox/postgres: store not initialized")
 	}
-	const q = `SELECT count(*) FROM outbox_entries WHERE status = 'pending'`
+	predicate, args := s.routeSelection(nil)
+	q := `SELECT count(*) FROM outbox_entries WHERE status = 'pending'` + predicate
 	var n int64
-	if err := s.pool.QueryRow(ctx, q).Scan(&n); err != nil {
+	if err := s.pool.QueryRow(ctx, q, args...).Scan(&n); err != nil {
 		return 0, redact.WrapError("outbox/postgres: count pending", err)
 	}
 	return n, nil
