@@ -12,12 +12,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/core/v2/id"
 	outboxpg "github.com/bds421/rho-kit/infra/outbox/postgres/v2"
 	"github.com/bds421/rho-kit/infra/v2/outbox"
+	"github.com/bds421/rho-kit/infra/v2/sqldb/migrate"
 )
 
 func openAndMigrate(t *testing.T, dsn string) *pgxpool.Pool {
@@ -33,9 +33,7 @@ func openAndMigrate(t *testing.T, dsn string) *pgxpool.Pool {
 
 	sub, err := fs.Sub(outboxpg.Migrations, "migrations")
 	require.NoError(t, err)
-	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, sub)
-	require.NoError(t, err)
-	_, err = provider.Up(ctx)
+	_, err = migrate.Up(ctx, sqlDB, migrate.Config{Dir: sub})
 	require.NoError(t, err)
 	return pool
 }
