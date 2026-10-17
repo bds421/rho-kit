@@ -11,9 +11,11 @@
 // their own transactions against the pool and do not consult ctx for
 // a tx handle.
 //
-// NewWithOptions with WithClaimRoutes restricts a relay store to exact route pairs
+// NewWithOptions with WithClaimRoutes restricts a relay store to exact topic, routing key,
+// message type and schema version tuples
 // before batch selection and locking. Deferred recipients stay pending without
-// consuming publish attempts; omission keeps the existing claim-all behavior.
+// consuming publish attempts. Stale recovery, retention and pending counts use the
+// same selection; Insert stays unfiltered. Omission keeps claim-all behavior.
 //
 // Schema lives in [Migrations] and includes both outbox_entries and
 // inbox_entries; apply with the kit migrate helper or embed directly.
