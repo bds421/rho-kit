@@ -354,3 +354,43 @@ func TestMemorySessionStore_UpdateIsCompareAndSet(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, uint64(4), got.Version)
 }
+
+func TestTokenRefresh_OutageGraceBoundaries(t *testing.T) {
+	unavailable := func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "down", http.StatusBadGateway) }
+	grace := oauth2.WithRefreshOutageGrace(10 * time.Minute)
+
+	f := newRefreshFixture(t, time.Now().Add(-9*time.Minute), unavailable, oauth2.WithTokenRefresh(time.Minute), grace)
+	sess, err := f.session(t)
+	require.NoError(t, err, "a 5xx inside the grace period keeps the session")
+	assert.Equal(t, "access-1", sess.AccessToken.RevealString())
+	_, err = f.sessions.Get(context.Background(), "s1")
+	require.NoError(t, err)
+
+	f = newRefreshFixture(t, time.Now().Add(-10*time.Minute), unavailable, oauth2.WithTokenRefresh(time.Minute), grace)
+	_, err = f.session(t)
+	require.ErrorIs(t, err, oauth2.ErrSessionNotFound, "the grace period ends at expiry+grace")
+
+	// Transport failure (connection refused) is transient as well.
+	f = newRefreshFixture(t, time.Now().Add(-time.Minute), func(w http.ResponseWriter, _ *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		require.True(t, ok)
+		conn, _, err := hj.Hijack()
+		require.NoError(t, err)
+		_ = conn.Close()
+	}, oauth2.WithTokenRefresh(time.Minute), grace)
+	_, err = f.session(t)
+	require.NoError(t, err, "a transport error inside the grace period keeps the session")
+
+	// A 4xx rejection ends the session even within the grace period.
+	f = newRefreshFixture(t, time.Now().Add(-time.Minute), func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}, oauth2.WithTokenRefresh(time.Minute), grace)
+	_, err = f.session(t)
+	require.ErrorIs(t, err, oauth2.ErrSessionNotFound)
+	_, err = f.sessions.Get(context.Background(), "s1")
+	require.ErrorIs(t, err, oauth2.ErrSessionNotFound)
+
+	assert.Panics(t, func() { oauth2.WithRefreshOutageGrace(-time.Second) })
+}

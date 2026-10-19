@@ -45,6 +45,9 @@ type Client struct {
 	refreshEnabled bool
 	refreshLeeway  time.Duration
 	refreshGroup   singleflight.Group
+	// refreshOutageGrace extends transient refresh failures past expiry
+	// (WithRefreshOutageGrace).
+	refreshOutageGrace time.Duration
 
 	// RP-initiated logout (WithRPInitiatedLogout).
 	rpLogout           bool

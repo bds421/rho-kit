@@ -39,7 +39,8 @@ const refreshTimeout = 30 * time.Second
 //     session is deleted and [ErrSessionNotFound] is returned. A transport
 //     failure or 5xx response while the current access token is still
 //     unexpired keeps serving the current session and retries on the next
-//     request; once it has expired the session is treated as expired.
+//     request; once it has expired (plus [WithRefreshOutageGrace]) the
+//     session is treated as expired.
 //   - Sessions without a refresh token or without a known expiry are not
 //     touched.
 //   - The write is a compare-and-set when the store implements
@@ -58,6 +59,25 @@ func WithTokenRefresh(leeway time.Duration) Option {
 		cl.refreshEnabled = true
 		cl.refreshLeeway = leeway
 	}
+}
+
+// WithRefreshOutageGrace keeps a session usable for up to d past its access
+// token's expiry while token refresh fails transiently (a transport error or
+// a 5xx token-endpoint response), so a short provider outage does not log
+// every user out. The returned session then carries the expired access
+// token; callers that forward it to resource servers see those reject it.
+// Each request during the grace period retries the refresh. A provider
+// rejection (4xx) or an invalid refreshed ID token still ends the session
+// immediately, and the absolute lifetime and idle timeout still apply.
+// Default: 0 (the session ends once the access token has expired).
+// Only effective with [WithTokenRefresh].
+//
+// Panics on a negative duration.
+func WithRefreshOutageGrace(d time.Duration) Option {
+	if d < 0 {
+		panic("oauth2: WithRefreshOutageGrace requires a non-negative duration")
+	}
+	return func(cl *Client) { cl.refreshOutageGrace = d }
 }
 
 // needsRefresh reports whether sess should be refreshed at now.
@@ -204,15 +224,16 @@ func sameSecret(a, b *secret.String) bool {
 
 // refreshFailed decides whether a failed refresh expires the session. A
 // permanent failure (provider rejection, invalid ID token) always does; a
-// transient one only once the current access token has expired.
+// transient one only once the current access token has expired and the
+// [WithRefreshOutageGrace] period after that has passed.
 func (c *Client) refreshFailed(ctx context.Context, sessionID string, current Session, cause error, permanent bool) (Session, error) {
 	// A rotating refresh token may already have been redeemed by another
 	// replica, which then persisted the new tokens: use them.
 	if latest, err := c.sessions.Get(ctx, sessionID); err == nil && !c.needsRefresh(latest, time.Now()) {
 		return latest, nil
 	}
-	if !permanent && time.Now().Before(current.Expiry) {
-		c.logger.WarnContext(ctx, "oauth2: token refresh failed; serving unexpired session", redact.Error(cause))
+	if !permanent && time.Now().Before(current.Expiry.Add(c.refreshOutageGrace)) {
+		c.logger.WarnContext(ctx, "oauth2: token refresh failed; serving session within its validity or outage grace", redact.Error(cause))
 		return current, nil
 	}
 	c.logger.WarnContext(ctx, "oauth2: token refresh failed; session expired",
