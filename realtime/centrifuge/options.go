@@ -107,6 +107,8 @@ type config struct {
 	clientQueueMaxSize        int
 	clientChannelLimit        int
 	maxMessagesInFrame        int
+	subscriptionRecovery      func(channel string) SubscriptionRecovery
+	backend                   BackendFactory
 }
 
 // WithSubscriptionReadyObserver observes a successful native subscription after
@@ -363,4 +365,38 @@ func WithLogLevelDebug() Option {
 // noise drowns relevant signal.
 func WithLogLevelError() Option {
 	return func(c *config) { c.logLevel = logLevelError }
+}
+
+// SubscriptionRecovery selects history positioning and recovery for one
+// channel subscription. The zero value leaves both off (the native default).
+//
+// Recovery and positioning only help on channels whose publications are kept
+// in broker history: publish with [cfg.WithHistory] (see [Node.Publish]).
+type SubscriptionRecovery struct {
+	// Recovery lets a resubscribing client recover publications it missed
+	// while disconnected. It implies Positioning.
+	Recovery bool
+	// Positioning makes the client track its stream position so publication
+	// loss is detected even without automatic recovery.
+	Positioning bool
+	// Mode selects the native recovery mode. The zero value is
+	// [cfg.RecoveryModeStream]; [cfg.RecoveryModeCache] recovers only the
+	// latest publication.
+	Mode cfg.RecoveryMode
+}
+
+// WithSubscriptionRecovery selects per-channel history positioning/recovery.
+// fn runs only after channel authorization succeeded, so authorization stays
+// fail-closed and denied subscriptions never reach it; metrics are unchanged.
+// fn receives the channel name and must be fast and safe for concurrent use.
+// Omission keeps recovery and positioning off for every channel.
+//
+// Recovered publications travel inside the subscribe reply, which is outside
+// [WithPublicationWritePolicy]; only enable recovery on channels where every
+// authorized subscriber may see the retained history.
+func WithSubscriptionRecovery(fn func(channel string) SubscriptionRecovery) Option {
+	if fn == nil {
+		panic("realtime/centrifuge: WithSubscriptionRecovery requires a non-nil policy")
+	}
+	return func(c *config) { c.subscriptionRecovery = fn }
 }

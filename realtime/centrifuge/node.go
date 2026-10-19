@@ -46,6 +46,9 @@ type Node struct {
 	subscriptionReadyObserver func(Connection, string)
 	publicationWritePolicy    func(Connection, PublicationWriteEvent) bool
 	maxMessagesInFrame        int
+	subscriptionRecovery      func(channel string) SubscriptionRecovery
+	backend                   BackendFactory
+	backendClose              func()
 
 	// lifecycleMu serialises Start/Stop so check-then-act across the
 	// started/stopped atomics cannot leak a running node that Stop
@@ -138,6 +141,8 @@ func NewNode(opts ...Option) (*Node, error) {
 		subscriptionReadyObserver: c.subscriptionReadyObserver,
 		publicationWritePolicy:    c.publicationWritePolicy,
 		maxMessagesInFrame:        c.maxMessagesInFrame,
+		subscriptionRecovery:      c.subscriptionRecovery,
+		backend:                   c.backend,
 	}
 
 	// Install kit-side callback wiring (connect auth, channel authz,
@@ -197,7 +202,12 @@ func (n *Node) Start(ctx context.Context) error {
 		n.lifecycleMu.Unlock()
 		return errors.New("realtime/centrifuge: Node.Start already invoked")
 	}
+	if err := n.installBackend(); err != nil {
+		n.lifecycleMu.Unlock()
+		return err
+	}
 	if err := n.node.Run(); err != nil {
+		n.closeBackend()
 		n.lifecycleMu.Unlock()
 		return redact.WrapError("realtime/centrifuge: node run", err)
 	}
@@ -239,10 +249,65 @@ func (n *Node) Stop(ctx context.Context) error {
 		// shutdown path.
 		return nil
 	}
-	if err := n.node.Shutdown(ctx); err != nil {
+	err := n.node.Shutdown(ctx)
+	// Release backend connections after the native broker stopped using them.
+	n.closeBackend()
+	if err != nil {
 		return redact.WrapError("realtime/centrifuge: node shutdown", err)
 	}
 	return nil
+}
+
+// installBackend builds and installs the configured [Backend]. Callers hold
+// lifecycleMu.
+func (n *Node) installBackend() error {
+	if n.backend == nil {
+		return nil
+	}
+	b, err := n.backend(n.node)
+	if err != nil {
+		return redact.WrapError("realtime/centrifuge: backend", err)
+	}
+	if b.Broker == nil && b.PresenceManager == nil {
+		if b.Close != nil {
+			b.Close()
+		}
+		return errors.New("realtime/centrifuge: backend factory returned neither broker nor presence manager")
+	}
+	if b.Broker != nil {
+		n.node.SetBroker(b.Broker)
+	}
+	if b.PresenceManager != nil {
+		n.node.SetPresenceManager(b.PresenceManager)
+	}
+	n.backendClose = b.Close
+	return nil
+}
+
+// closeBackend releases backend resources once. Callers hold lifecycleMu.
+func (n *Node) closeBackend() {
+	if n.backendClose != nil {
+		release := n.backendClose
+		n.backendClose = nil
+		release()
+	}
+}
+
+// Publish publishes data to channel through the node's broker (the shared
+// [Backend] when configured, so every replica's subscribers receive it).
+// Pass [cfg.WithHistory] to keep the publication in channel history for
+// subscribers with [WithSubscriptionRecovery]. Server-side publishes bypass
+// [WithPublishAuthorizer], which governs client publishes only; the caller
+// owns the decision to publish. Errors are redacted.
+func (n *Node) Publish(channel string, data []byte, opts ...cfg.PublishOption) (cfg.PublishResult, error) {
+	if channel == "" {
+		return cfg.PublishResult{}, errors.New("realtime/centrifuge: Publish requires a non-empty channel")
+	}
+	res, err := n.node.Publish(channel, data, opts...)
+	if err != nil {
+		return res, redact.WrapError("realtime/centrifuge: publish", err)
+	}
+	return res, nil
 }
 
 // WebsocketHandler returns an http.Handler that upgrades incoming
@@ -354,13 +419,15 @@ func (n *Node) installCallbacks() {
 				cb(cfg.SubscribeReply{}, err)
 				return
 			}
+			reply := cfg.SubscribeReply{Options: n.subscribeOptions(e.Channel)}
 			if n.subscriptionReadyObserver == nil {
-				cb(cfg.SubscribeReply{}, nil)
+				cb(reply, nil)
 				return
 			}
 			ready := make(chan struct{})
 			alreadySubscribed := slices.Contains(client.Channels(), e.Channel)
-			cb(cfg.SubscribeReply{SubscriptionReady: ready}, nil)
+			reply.SubscriptionReady = ready
+			cb(reply, nil)
 			if !alreadySubscribed {
 				n.observeSubscriptionReady(client, e.Channel, ready)
 			}
@@ -388,6 +455,20 @@ func (n *Node) installCallbacks() {
 			n.connectObserver(Connection{client: client})
 		}
 	})
+}
+
+// subscribeOptions maps the [WithSubscriptionRecovery] decision for an
+// already-authorized channel onto native subscribe options.
+func (n *Node) subscribeOptions(channel string) cfg.SubscribeOptions {
+	if n.subscriptionRecovery == nil {
+		return cfg.SubscribeOptions{}
+	}
+	r := n.subscriptionRecovery(channel)
+	return cfg.SubscribeOptions{
+		EnableRecovery:    r.Recovery,
+		EnablePositioning: r.Recovery || r.Positioning,
+		RecoveryMode:      r.Mode,
+	}
 }
 
 // authorizeChannel applies fail-closed channel authorization.

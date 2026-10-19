@@ -103,6 +103,15 @@
 // Frame aggregation is not a queue-count limit. [Node.Ready] reports native Run
 // success through [Node.Start], not application/provider authorization.
 //
+// # History recovery and multiple replicas
+//
+// [WithSubscriptionRecovery] enables native history positioning/recovery per
+// channel once authorization succeeded. [WithBackend] installs a shared
+// broker/presence manager (for example [RedisBackend]) during [Node.Start] so
+// several replicas deliver publications, history and presence to each other.
+// [Node.Publish] publishes server-side; pass centrifuge.WithHistory so
+// recovering subscribers have history to read.
+//
 // # When centrifuge is NOT the right answer
 //
 // Per [httpx/websocket]'s doc, raw WebSocket is preferable when:

@@ -46,6 +46,14 @@ are additive except the timeout overflow fix.
   migration sets, each tracked in its own version table, applied in
   registration order during `Init`. `WithMigrations` is unchanged; a table
   registered twice panics at `Module`.
+- **feat(realtime/centrifuge): history recovery, shared backends, server
+  publish.** `WithSubscriptionRecovery` sets native recovery/positioning per
+  channel after authorization succeeded (denials and metrics unchanged).
+  `WithBackend` + `RedisBackend` install a broker/presence manager in
+  `Start` for multiple replicas and close it after `Stop`; non-loopback
+  Redis needs TLS and a password unless `PlaintextUnsafe`. The Redis
+  implementation is part of the existing centrifuge module, so no new direct
+  dependency. `Node.Publish` wraps the native publish with redacted errors.
 
 ## v2.8.0 — 2026-09-29
 

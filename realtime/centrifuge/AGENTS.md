@@ -22,6 +22,8 @@
 - `WithConnectObserver` / `WithDisconnectObserver` — observe accepted client lifecycle through `Connection` (ID/UserID/Context/Send/Disconnect), which exposes no callback replacement methods. Application policy and current-scope checks still precede private sends.
 - `WithOpenChannelsUnsafe` — deliberate allow-all for demos; name is grep-able like `httpx/websocket.WithAnyOriginUnsafe`.
 - `WithChannelClassifier(fn)` — REQUIRED for production. Maps each channel to a short bounded set of class strings ("user", "room", "system"). Without it, the default classifier returns "default" for everything — no observability.
+- `WithSubscriptionRecovery(fn)` — per-channel history recovery/positioning, applied after authorization succeeds. Publish with `cfg.WithHistory` (`Node.Publish`) so there is history to recover.
+- `WithBackend(factory)` / `RedisBackend(cfg)` — shared broker + presence manager for multiple replicas, built in `Start`, closed after `Stop`. Non-loopback Redis needs TLS + password unless `PlaintextUnsafe`.
 - `Node.WebsocketHandler()` — returns `http.Handler` to mount at the centrifuge client's expected path (`/connection/websocket`).
 - `Node.Underlying()` — escape hatch for RPC handlers, server-side subscriptions, history queries. DO NOT replace `OnConnecting` or `OnConnect`; channel authz is configured via the kit authorizer options.
 

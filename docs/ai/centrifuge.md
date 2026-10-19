@@ -105,3 +105,36 @@ callback is configured. Enabling the publication policy supplies a fixed default
 namespace label and disables namespace caching, so channel names reach the gate
 without becoming metric labels or cached metric keys. Omitted policy retains
 upstream metric configuration. No protocol bytes are decoded to recover channels.
+
+## History recovery and multiple replicas
+
+`WithSubscriptionRecovery(func(channel string) SubscriptionRecovery)` sets native
+`EnableRecovery`/`EnablePositioning`/`RecoveryMode` on the subscribe reply. It runs
+only after channel authorization succeeded; denied subscriptions never reach it
+and metrics are unchanged. Recovery needs broker history, so publish with
+`cfg.WithHistory(size, ttl)` (`Node.Publish` is a thin redacted wrapper over the
+native publish; it bypasses `WithPublishAuthorizer`, which governs client
+publishes). Recovered publications are part of the subscribe reply and are not
+seen by `WithPublicationWritePolicy`.
+
+`WithBackend(BackendFactory)` installs a broker and/or presence manager before
+native Run, inside `Node.Start`; `Backend.Close` runs after shutdown or a failed
+Run. `RedisBackend(RedisBackendConfig{Shards, Prefix, PresenceTTL})` uses the
+native Redis broker and presence manager from the centrifuge module itself (no
+extra direct dependency). Non-loopback shards need TLS and a password unless
+`PlaintextUnsafe` is set. Give each application its own `Prefix` on a shared Redis.
+
+```go
+node, err := centrifuge.NewNode(
+    centrifuge.WithJWTAuth(provider),
+    centrifuge.WithSubscribeAuthorizer(authorize),
+    centrifuge.WithSubscriptionRecovery(func(string) centrifuge.SubscriptionRecovery {
+        return centrifuge.SubscriptionRecovery{Recovery: true}
+    }),
+    centrifuge.WithBackend(centrifuge.RedisBackend(centrifuge.RedisBackendConfig{
+        Shards: []cfg.RedisShardConfig{{Address: addr, TLSConfig: tlsCfg, Password: pw}},
+        Prefix: "my-service",
+    })),
+)
+_, err = node.Publish("orders:42", payload, cfg.WithHistory(100, 10*time.Minute))
+```
