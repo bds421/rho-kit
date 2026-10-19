@@ -60,6 +60,9 @@ func TestAllowedNetworksRejectsWidePrefixes(t *testing.T) {
 }
 
 func TestAllowedIPv6NetworkStaysNarrow(t *testing.T) {
+	if _, err := ResolveAndValidate(context.Background(), "::1", nil, WithAllowedNetworks(netip.MustParsePrefix("::1/128"))); err != nil {
+		t.Errorf("IPv6 loopback when allowed: %v", err)
+	}
 	opt := WithAllowedNetworks(netip.MustParsePrefix("fd12:3456:789a::/48"))
 	for host, ok := range map[string]bool{
 		"fd12:3456:789a::5":      true,

@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.13.1 — 2026-10-19
+
+- **fix(security/netutil): `WithAllowedNetworks` accepts the IPv6 loopback**
+  (`::1/128`); it lies inside the deprecated IPv4-compatible range but carries
+  no IPv4 address.
+
 ## v2.13.0 — 2026-10-19
 
 - **feat(infra/sqldb/pgx): `Config.PrepareConn`.** Runs whenever a connection

@@ -55,6 +55,8 @@ func (o options) allowed(ip net.IP) bool {
 	return false
 }
 
+var ipv6Loopback = netip.MustParsePrefix("::1/128")
+
 var ipv4CarryingRanges = []netip.Prefix{
 	netip.MustParsePrefix("::ffff:0:0/96"),
 	netip.MustParsePrefix("::/96"),
@@ -65,7 +67,7 @@ var ipv4CarryingRanges = []netip.Prefix{
 }
 
 func embedsIPv4(p netip.Prefix) bool {
-	if p.Addr().Is4() {
+	if p.Addr().Is4() || p == ipv6Loopback {
 		return false
 	}
 	for _, r := range ipv4CarryingRanges {
