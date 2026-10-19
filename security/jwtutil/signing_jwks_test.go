@@ -25,7 +25,7 @@ func TestPublicJWKSVerifiesSignedTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer signer.Close()
+	defer func() { _ = signer.Close() }()
 
 	jwks, err := signer.PublicJWKS()
 	if err != nil {

@@ -26,7 +26,9 @@ func validSigningClaimName(name string) bool {
 	}
 	for i := range len(name) {
 		b := name[i]
-		if b != '_' && !(b >= 'a' && b <= 'z') && !(b >= 'A' && b <= 'Z') && !(i > 0 && b >= '0' && b <= '9') {
+		letter := b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+		digit := i > 0 && b >= '0' && b <= '9'
+		if b != '_' && !letter && !digit {
 			return false
 		}
 	}
