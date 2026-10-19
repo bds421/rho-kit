@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.12.0 — 2026-10-19
+
+- **feat(security/netutil): `WithAllowedNetworks`.** The SSRF guard can allow
+  private or reserved addresses inside named networks (no wider than /8 or
+  /16) while every other private range stays blocked; the narrow alternative
+  to `WithAllowPrivateIPs` for internal targets such as an on-premise SIEM.
+
 ## v2.11.0 — 2026-10-19
 
 - **feat(observability/auditlog): `Logger.Tail` for log shipping.** Reads

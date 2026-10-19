@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ type Option func(*options)
 
 type options struct {
 	allowPrivateIPs bool
+	allowedNetworks []netip.Prefix
 	requestTimeout  time.Duration
 	minTLSVersion   uint16
 }
@@ -122,7 +124,7 @@ func ResolveAndValidate(ctx context.Context, host string, resolver DNSResolver, 
 			slog.Warn("ssrf: private IP filtering disabled — do not use in production", redact.String("host", host))
 			return ip.String(), nil
 		}
-		if IsPrivateIP(ip) {
+		if IsPrivateIP(ip) && !cfg.allowed(ip) {
 			return "", fmt.Errorf("ssrf: host is private/reserved")
 		}
 		return ip.String(), nil
@@ -145,7 +147,7 @@ func ResolveAndValidate(ctx context.Context, host string, resolver DNSResolver, 
 	}
 
 	for _, ip := range ips {
-		if IsPrivateIP(ip.IP) {
+		if IsPrivateIP(ip.IP) && !cfg.allowed(ip.IP) {
 			continue
 		}
 		return ip.IP.String(), nil
