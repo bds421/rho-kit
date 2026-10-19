@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.11.0 — 2026-10-19
+
+- **feat(observability/auditlog): `Logger.Tail` for log shipping.** Reads
+  events in append (chain) order after a [`Position`], optionally for one
+  tenant, and returns the position of the last event, so a shipper can
+  forward every event exactly once and resume after a crash. Implemented by
+  the memory and Postgres stores (`seq` column); other stores return
+  `ErrTailUnsupported`.
+
 ## v2.10.1 — 2026-10-19
 
 - **feat(httpx/middleware/stack): `WithWebSocketPaths`.** The stack wraps

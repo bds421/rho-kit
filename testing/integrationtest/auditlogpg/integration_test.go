@@ -403,3 +403,34 @@ func TestPostgres_UnsignedRowAfterMigrationRejected(t *testing.T) {
 	require.NoError(t, err)
 	require.Error(t, logger.VerifyChain(ctx))
 }
+
+func TestPostgres_TailFollowsAppendOrderPerTenant(t *testing.T) {
+	dsn := startPostgres(t)
+	pool := openAndMigrate(t, dsn)
+	logger := newLogger(t, pool)
+	defer func() { _ = logger.Close() }()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for i, tenant := range []string{"a", "b", "a", "a"} {
+		require.NoError(t, logger.LogE(ctx, auditlog.Event{
+			Timestamp: now.Add(-time.Duration(i) * time.Minute), // newer first: tail must not sort by time
+			Actor:     "agent", Tenant: tenant, Action: "x" + strconv.Itoa(i), Resource: "r", Status: auditlog.StatusSuccess,
+		}))
+	}
+	first, pos, err := logger.Tail(ctx, "a", 0, 2)
+	require.NoError(t, err)
+	require.Len(t, first, 2)
+	assert.Equal(t, "x0", first[0].Action)
+	assert.Equal(t, "x2", first[1].Action)
+
+	rest, end, err := logger.Tail(ctx, "a", pos, 10)
+	require.NoError(t, err)
+	require.Len(t, rest, 1)
+	assert.Equal(t, "x3", rest[0].Action)
+
+	none, same, err := logger.Tail(ctx, "a", end, 10)
+	require.NoError(t, err)
+	assert.Empty(t, none)
+	assert.Equal(t, end, same)
+}
