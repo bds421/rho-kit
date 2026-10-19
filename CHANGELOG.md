@@ -1,5 +1,44 @@
 # Changelog
 
+## v2.10.0 — unreleased
+
+Supersedes the v2.9.0 tags of `security`, `realtime/centrifuge`, `infra`,
+`httpx` and `infra/outbox/postgres`. Those tags were created from branches
+that were never merged into `main`; do not depend on v2.9.0. All changes
+are additive except the timeout overflow fix.
+
+- **feat(infra/outbox): `Relay.Wake()`.** Nonblocking, coalescing poll hint
+  for use after commit or from a LISTEN/NOTIFY listener. Periodic polling
+  stays authoritative.
+- **feat(infra/outbox/postgres): `NewWithOptions` + `WithClaimRoutes`.**
+  Restricts claiming, pending counts, stale recovery and retention to exact
+  (topic, routing key, message type, schema version) tuples. `New` is
+  unchanged and still claims everything.
+- **feat(security/jwtutil): `WithSigningStringClaims` +
+  `SigningProvider.SignWithStringClaims`.** Issuer-side counterpart of
+  `WithStringClaims`: a bounded allowlist of extra string claims. `Sign` and
+  `SignContext` are unchanged.
+- **feat(realtime/centrifuge): lifecycle hooks and limits.**
+  `WithVerifiedConnectPolicy`, `WithVerifiedRefreshPolicy` (client-side
+  refresh with re-verification), `WithConnectObserver`,
+  `WithDisconnectObserver`, `WithSubscriptionReadyObserver`,
+  `WithPublicationWritePolicy`, `WithClientQueueMaxSize`,
+  `WithClientChannelLimit`, `WithMaxMessagesInFrame`, `Node.Ready`.
+  `github.com/centrifugal/protocol` becomes a direct dependency.
+- **feat(httpx): native HTTP/2 configuration.** `NewServer` sets
+  `http.Server.HTTP2`/`Protocols` instead of the deprecated
+  `x/net/http2.ConfigureServer`; the TLS stream and frame limits are
+  unchanged and caller HTTP/2 settings are preserved.
+- **fix(httpx/middleware): flush errors survive recorders.**
+  `ResponseRecorder.FlushError` and `SupportsNativeFlush` let
+  `http.ResponseController.Flush` report the underlying error.
+- **fix(httpx/middleware/timeout): oversized buffered responses fail.**
+  Behaviour change: a response over the buffer cap is now replaced by a
+  JSON 500 instead of a truncated 200, even if the handler ignores
+  `ErrResponseTooLarge`.
+- **chore: `golang.org/x/net` v0.60.0 in httpx; workspace toolchain and CI
+  `go-version` go1.27.2.** Minimum `go` directive stays 1.26.8.
+
 ## v2.8.0 — 2026-09-29
 
 Security maintenance: Go toolchain, gRPC and x/crypto, plus a localbackend
