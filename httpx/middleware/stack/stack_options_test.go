@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -313,5 +314,21 @@ func TestWithLogAttrs_AddsToAccessAndRequestLogger(t *testing.T) {
 
 	if got := strings.Count(buf.String(), "key_id=k1"); got != 2 {
 		t.Fatalf("key_id in %d lines, want handler and access log: %s", got, buf.String())
+	}
+}
+
+func TestWithTrustedProxies_LogsTheForwardedClient(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{}))
+	_, proxy, _ := net.ParseCIDR("10.0.0.0/8")
+	stacked := Default(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), logger,
+		WithoutMetrics(), WithoutTracing(), WithoutSecHeaders(), WithoutTimeout(), WithTrustedProxies(proxy),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.1.2.3:4567"
+	req.Header.Set("X-Forwarded-For", "2001:db8::1")
+	stacked.ServeHTTP(httptest.NewRecorder(), req)
+	if !strings.Contains(buf.String(), "2001:db8::1") {
+		t.Fatalf("access log misses the forwarded client: %s", buf.String())
 	}
 }

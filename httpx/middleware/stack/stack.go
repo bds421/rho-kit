@@ -2,6 +2,7 @@ package stack
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -41,6 +42,7 @@ type Config struct {
 	Logger              *slog.Logger
 	QuietPaths          []string
 	LogAttrs            []func(*http.Request) slog.Attr
+	TrustedProxies      []*net.IPNet
 	EnableRecover       bool
 	EnableSecHeaders    bool
 	EnableMetrics       bool
@@ -224,7 +226,11 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		h = timeoutExceptWebSockets(cfg.Timeout, cfg.WebSocketPaths, h)
 	}
 	if cfg.EnableLogging {
-		h = mwlogging.Logger(cfg.Logger, cfg.QuietPaths, extraAttrs...)(h)
+		var logOpts []mwlogging.LoggerOption
+		if len(cfg.TrustedProxies) > 0 {
+			logOpts = append(logOpts, mwlogging.WithTrustedProxies(cfg.TrustedProxies))
+		}
+		h = mwlogging.LoggerWithOptions(cfg.Logger, cfg.QuietPaths, logOpts, extraAttrs...)(h)
 	}
 	if cfg.EnableTracing {
 		h = mwtracing.HTTPMiddleware(h)
@@ -282,6 +288,15 @@ func WithQuietPaths(paths ...string) Option {
 func WithLogAttrs(fns ...func(*http.Request) slog.Attr) Option {
 	copied := append([]func(*http.Request) slog.Attr(nil), fns...)
 	return func(cfg *Config) { cfg.LogAttrs = append(cfg.LogAttrs, copied...) }
+}
+
+// WithTrustedProxies makes the access log record the client address from
+// X-Forwarded-For when the request comes from one of these networks (the
+// reverse proxy in front of the service); otherwise the peer address is
+// logged. Without it, every request behind a proxy logs the proxy.
+func WithTrustedProxies(trusted ...*net.IPNet) Option {
+	copied := append([]*net.IPNet(nil), trusted...)
+	return func(cfg *Config) { cfg.TrustedProxies = copied }
 }
 
 // WithLogger overrides the default logger.

@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.15.0 — 2026-10-19
+
+- **feat(httpx/middleware/stack): `WithTrustedProxies`.** The access log
+  records the client from X-Forwarded-For when the request comes from a
+  trusted reverse proxy, instead of logging the proxy for every request.
+
 ## v2.14.0 — 2026-10-19
 
 - **feat(httpx/middleware/stack): `WithLogAttrs`.** Adds per-request
