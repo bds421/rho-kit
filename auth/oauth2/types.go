@@ -52,6 +52,9 @@ type Session struct {
 	// Claims is the verified ID-token claim set. Includes "sub",
 	// "email", "name", and provider-specific claims.
 	Claims map[string]any
+	// Version is a write generation used for compare-and-set updates (see
+	// [SessionUpdater]). The client sets it; stores persist it unchanged.
+	Version uint64
 }
 
 // SessionStore is the kit's pluggable persistence for [Session].
@@ -62,6 +65,20 @@ type SessionStore interface {
 	Put(ctx context.Context, sessionID string, sess Session, ttl time.Duration) error
 	Get(ctx context.Context, sessionID string) (Session, error)
 	Delete(ctx context.Context, sessionID string) error
+}
+
+// SessionUpdater is optionally implemented by a [SessionStore] that can
+// replace a session atomically. Token refresh ([WithTokenRefresh]) uses it so
+// a logout (Delete) or a concurrent refresh that lands between reading and
+// writing a session cannot be overwritten: the refreshed session is
+// discarded instead of resurrecting a deleted one.
+//
+// Update stores sess under sessionID only when a live entry exists and its
+// Version equals expectedVersion; otherwise it returns false and a nil
+// error. Stores without it fall back to Get-then-Put, which leaves a small
+// window in which a concurrent logout can be undone by a refresh.
+type SessionUpdater interface {
+	Update(ctx context.Context, sessionID string, expectedVersion uint64, sess Session, ttl time.Duration) (bool, error)
 }
 
 // StateStore persists the per-login CSRF state token + OIDC nonce so

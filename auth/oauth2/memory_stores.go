@@ -111,6 +111,7 @@ func cloneSession(s Session) Session {
 		SessionID: s.SessionID,
 		UserID:    s.UserID,
 		Expiry:    s.Expiry,
+		Version:   s.Version,
 	}
 	if s.AccessToken != nil {
 		out.AccessToken = secret.NewFromString(s.AccessToken.RevealString())
@@ -152,6 +153,28 @@ func (m *MemorySessionStore) Delete(_ context.Context, id string) error {
 		delete(m.sessions, id)
 	}
 	return nil
+}
+
+// Update implements [SessionUpdater] atomically under the store mutex.
+func (m *MemorySessionStore) Update(_ context.Context, id string, expectedVersion uint64, sess Session, ttl time.Duration) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	existing, ok := m.sessions[id]
+	if !ok || now.After(existing.expiresAt) || existing.sess.Version != expectedVersion {
+		return false, nil
+	}
+	if existing.sess.AccessToken != nil && existing.sess.AccessToken != sess.AccessToken {
+		existing.sess.AccessToken.Zero()
+	}
+	if existing.sess.RefreshToken != nil && existing.sess.RefreshToken != sess.RefreshToken {
+		existing.sess.RefreshToken.Zero()
+	}
+	if existing.sess.IDToken != nil && existing.sess.IDToken != sess.IDToken {
+		existing.sess.IDToken.Zero()
+	}
+	m.sessions[id] = memorySession{sess: sess, expiresAt: now.Add(ttl)}
+	return true, nil
 }
 
 // sweepExpiredLocked removes up to budget expired sessions. Caller holds mu write lock.

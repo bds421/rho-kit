@@ -291,3 +291,66 @@ func TestLogout_DefaultStays204(t *testing.T) {
 	assert.Empty(t, res.Body.String())
 }
 
+
+// logoutDuring returns a token handler that logs the session out through the
+// real logout route after the refresh read the session and before it writes
+// the result, then answers with fresh tokens.
+func logoutDuring(t *testing.T, f **refreshFixture) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		req := httptest.NewRequest(http.MethodPost, "/oauth/logout", nil)
+		req.AddCookie(&http.Cookie{Name: "kit_oauth_session", Value: "s1"})
+		res := httptest.NewRecorder()
+		(*f).client.Handlers().ServeHTTP(res, req)
+		require.Equal(t, http.StatusNoContent, res.Code)
+		writeTokens(t, w, map[string]any{"access_token": "access-2", "token_type": "Bearer", "refresh_token": "refresh-2", "expires_in": 3600})
+	}
+}
+
+func TestTokenRefresh_LogoutDuringRefreshStaysLoggedOut(t *testing.T) {
+	var f *refreshFixture
+	f = newRefreshFixture(t, time.Now().Add(-time.Minute), logoutDuring(t, &f), oauth2.WithTokenRefresh(time.Minute))
+	_, err := f.session(t)
+	require.ErrorIs(t, err, oauth2.ErrSessionNotFound, "refresh must not authenticate a logged-out session")
+	_, err = f.sessions.Get(context.Background(), "s1")
+	assert.ErrorIs(t, err, oauth2.ErrSessionNotFound, "refresh must not resurrect the deleted session")
+}
+
+// putOnlyStore hides the memory store's Update to exercise the fallback.
+type putOnlyStore struct{ oauth2.SessionStore }
+
+func TestTokenRefresh_FallbackStoreDoesNotRecreateDeletedSession(t *testing.T) {
+	var f *refreshFixture
+	f = newRefreshFixture(t, time.Now().Add(-time.Minute), logoutDuring(t, &f))
+	mem := f.sessions
+	client, err := oauth2.NewClient(context.Background(), oauth2.Config{
+		Issuer: f.issuer.server.URL, ClientID: "test-client", RedirectURL: "https://app/cb",
+	}, oauth2.WithSessionStore(putOnlyStore{mem}), oauth2.WithStateStore(oauth2.NewMemoryStateStore()),
+		oauth2.WithInsecureCookie(), oauth2.WithTokenRefresh(time.Minute))
+	require.NoError(t, err)
+	f.client = client
+	_, err = f.session(t)
+	require.ErrorIs(t, err, oauth2.ErrSessionNotFound)
+	_, err = mem.Get(context.Background(), "s1")
+	assert.ErrorIs(t, err, oauth2.ErrSessionNotFound)
+}
+
+func TestMemorySessionStore_UpdateIsCompareAndSet(t *testing.T) {
+	store := oauth2.NewMemorySessionStore()
+	ctx := context.Background()
+	ok, err := store.Update(ctx, "s1", 0, oauth2.Session{UserID: "u"}, time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "missing entry must not be created")
+	_, err = store.Get(ctx, "s1")
+	require.ErrorIs(t, err, oauth2.ErrSessionNotFound)
+
+	require.NoError(t, store.Put(ctx, "s1", oauth2.Session{UserID: "u", Version: 3}, time.Minute))
+	ok, err = store.Update(ctx, "s1", 2, oauth2.Session{UserID: "u", Version: 4}, time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "stale version must not win")
+	ok, err = store.Update(ctx, "s1", 3, oauth2.Session{UserID: "u", Version: 4}, time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	got, err := store.Get(ctx, "s1")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(4), got.Version)
+}

@@ -41,6 +41,12 @@ const refreshTimeout = 30 * time.Second
 //     request; once it has expired the session is treated as expired.
 //   - Sessions without a refresh token or without a known expiry are not
 //     touched.
+//   - The write is a compare-and-set when the store implements
+//     [SessionUpdater] (the memory and auth/oauth2/redis stores do): a
+//     session deleted by logout, or rewritten, while the refresh was in
+//     flight is not recreated; the refreshed tokens are discarded and the
+//     request is unauthenticated. Other stores re-check existence before
+//     Put, which narrows but does not close that race.
 //
 // Panics on a negative leeway.
 func WithTokenRefresh(leeway time.Duration) Option {
@@ -118,6 +124,37 @@ func (c *Client) refreshSession(ctx context.Context, sessionID string) (Session,
 		}
 		updated.Claims = claims
 		updated.IDToken = secret.NewFromString(rawIDToken)
+	}
+	updated.Version = current.Version + 1
+	return c.storeRefreshed(ctx, sessionID, current.Version, updated)
+}
+
+// storeRefreshed persists a refreshed session. With a [SessionUpdater] the
+// write is a compare-and-set against the version that was refreshed: if the
+// session was deleted (logout) or rewritten meanwhile, the refreshed tokens
+// are discarded so a logout can never be undone. Other stores fall back to
+// re-checking existence before Put (a narrower, documented race).
+func (c *Client) storeRefreshed(ctx context.Context, sessionID string, expectedVersion uint64, updated Session) (Session, error) {
+	if updater, ok := c.sessions.(SessionUpdater); ok {
+		stored, err := updater.Update(ctx, sessionID, expectedVersion, updated, c.sessionTTL)
+		if err != nil {
+			c.logger.WarnContext(ctx, "oauth2: session.Update failed after token refresh", redact.Error(err))
+			return Session{}, err
+		}
+		if stored {
+			return updated, nil
+		}
+		// Lost the race. A concurrent refresh that persisted fresh tokens is
+		// still a valid session; a deleted or otherwise changed one is not.
+		if latest, err := c.sessions.Get(ctx, sessionID); err == nil && latest.Version > expectedVersion && !c.needsRefresh(latest, time.Now()) {
+			return latest, nil
+		}
+		c.logger.WarnContext(ctx, "oauth2: session changed during token refresh; discarding refreshed tokens")
+		return Session{}, ErrSessionNotFound
+	}
+	if _, err := c.sessions.Get(ctx, sessionID); err != nil {
+		// Deleted (logout) or unreadable while refreshing: do not recreate.
+		return Session{}, err
 	}
 	if err := c.sessions.Put(ctx, sessionID, updated, c.sessionTTL); err != nil {
 		c.logger.WarnContext(ctx, "oauth2: session.Put failed after token refresh", redact.Error(err))

@@ -39,6 +39,10 @@ or UserInfo without re-discovering endpoints.
   `LogoutResponse{LogoutURL}` instead of 204)
 - `Session.IDToken` keeps the raw verified ID token for `id_token_hint`;
   `auth/oauth2/redis.WithEncryption` encrypts stored sessions/state
+- `SessionUpdater` (optional store interface, `Update(ctx, id, expectedVersion,
+  sess, ttl) (bool, error)`): compare-and-set used by token refresh so a
+  logout during an in-flight refresh is never undone. Memory and Redis stores
+  implement it; other stores fall back to re-check + Put (narrower race)
 
 ## Security defaults
 

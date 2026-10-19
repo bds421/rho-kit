@@ -80,6 +80,15 @@ are additive except the timeout overflow fix.
   runner-attached components still run. Rate-limit and public-TLS gates
   and `BaseConfig.Server` validation are skipped; `Router` and rate-limit
   modules are rejected. Default behaviour is unchanged.
+- **fix(auth/oauth2): token refresh cannot undo a logout.** Refresh now
+  writes through the optional `SessionUpdater.Update(ctx, id,
+  expectedVersion, sess, ttl)` compare-and-set (new `Session.Version`). If
+  the session was deleted or rewritten while the refresh was in flight, the
+  refreshed tokens are discarded and the request is unauthenticated (a
+  concurrent refresh's result is reused). `MemorySessionStore` implements it
+  under its mutex, `auth/oauth2/redis` with WATCH/MULTI. Third-party stores
+  without it fall back to re-checking existence before Put, which narrows
+  but does not close the race.
 
 ## v2.8.0 — 2026-09-29
 
