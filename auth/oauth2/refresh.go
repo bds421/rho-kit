@@ -191,6 +191,9 @@ func (c *Client) refreshSession(ctx context.Context, sessionID string) (Session,
 		}
 		updated.Claims = claims
 		updated.IDToken = secret.NewFromString(rawIDToken)
+		if sid := stringClaim(claims, "sid"); sid != "" {
+			updated.SID = sid
+		}
 	}
 	updated.Version = current.Version + 1
 	return c.storeRefreshed(ctx, sessionID, current, updated)

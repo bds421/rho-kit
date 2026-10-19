@@ -43,6 +43,10 @@ type fakeIssuer struct {
 	// discoveryExtra, when non-nil, is merged into the discovery document
 	// (for example end_session_endpoint). Set before NewClient.
 	discoveryExtra map[string]any
+
+	// idTokenExtra, when non-nil, is merged into login ID tokens (for
+	// example sid, amr, auth_time). Set before the callback.
+	idTokenExtra map[string]any
 }
 
 type codeRecord struct {
@@ -150,6 +154,9 @@ func (f *fakeIssuer) signIDToken(t *testing.T, nonce string) string {
 		"iat":   time.Now().Unix(),
 		"nonce": nonce,
 		"email": "user@example.com",
+	}
+	for k, v := range f.idTokenExtra {
+		claims[k] = v
 	}
 	raw, err := jwt.Signed(signer).Claims(claims).Serialize()
 	require.NoError(t, err)

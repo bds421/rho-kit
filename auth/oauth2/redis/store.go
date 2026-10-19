@@ -63,12 +63,15 @@ var (
 	_ oauth2.SessionStore   = (*Store)(nil)
 	_ oauth2.SessionUpdater = (*Store)(nil)
 	_ oauth2.RefreshLocker  = (*Store)(nil)
+	_ oauth2.SessionIndex   = (*Store)(nil)
+	_ oauth2.ReplayCache    = (*Store)(nil)
 	_ oauth2.StateStore     = StateStore{}
 )
 
 type sessionWire struct {
 	SessionID    string         `json:"session_id"`
 	UserID       string         `json:"user_id"`
+	SID          string         `json:"sid,omitempty"`
 	AccessToken  string         `json:"access_token"`
 	RefreshToken string         `json:"refresh_token,omitempty"`
 	IDToken      string         `json:"id_token,omitempty"`
@@ -88,7 +91,11 @@ func (s *Store) Put(ctx context.Context, sessionID string, session oauth2.Sessio
 	if err != nil {
 		return err
 	}
-	if err := s.client.Set(ctx, key, b, ttl).Err(); err != nil {
+	if _, err := s.client.TxPipelined(ctx, func(p goredis.Pipeliner) error {
+		p.Set(ctx, key, b, ttl)
+		s.queueIndexAdd(ctx, p, sessionID, session, ttl)
+		return nil
+	}); err != nil {
 		return redact.WrapError("oauth2/redis: store session", err)
 	}
 	return nil
@@ -143,6 +150,10 @@ func (s *Store) Update(ctx context.Context, sessionID string, expectedVersion ui
 		}
 		if _, err := tx.TxPipelined(ctx, func(p goredis.Pipeliner) error {
 			p.Set(ctx, key, b, ttl)
+			if current.SID != session.SID || current.UserID != session.UserID {
+				s.queueIndexRemove(ctx, p, sessionID, current)
+			}
+			s.queueIndexAdd(ctx, p, sessionID, session, ttl)
 			return nil
 		}); err != nil {
 			return err
@@ -161,7 +172,7 @@ func (s *Store) Update(ctx context.Context, sessionID string, expectedVersion ui
 
 func (s *Store) encodeSession(key string, session oauth2.Session) ([]byte, error) {
 	w := sessionWire{
-		SessionID: session.SessionID, UserID: session.UserID, Expiry: session.Expiry, Claims: session.Claims, Version: session.Version,
+		SessionID: session.SessionID, UserID: session.UserID, SID: session.SID, Expiry: session.Expiry, Claims: session.Claims, Version: session.Version,
 		CreatedAt: session.CreatedAt, LastActivity: session.LastActivity,
 	}
 	if session.AccessToken != nil {
@@ -198,7 +209,7 @@ func (s *Store) decodeSession(key string, b []byte) (oauth2.Session, error) {
 		return oauth2.Session{}, errors.New("oauth2/redis: stored session is invalid")
 	}
 	session := oauth2.Session{
-		SessionID: w.SessionID, UserID: w.UserID, Expiry: w.Expiry, Claims: w.Claims, Version: w.Version,
+		SessionID: w.SessionID, UserID: w.UserID, SID: w.SID, Expiry: w.Expiry, Claims: w.Claims, Version: w.Version,
 		CreatedAt: w.CreatedAt, LastActivity: w.LastActivity,
 	}
 	if w.AccessToken != "" {
@@ -217,7 +228,20 @@ func (s *Store) Delete(ctx context.Context, sessionID string) error {
 	if err := validateRead(ctx, sessionID); err != nil {
 		return err
 	}
-	if err := s.client.Del(ctx, s.sessionKey(sessionID)).Err(); err != nil {
+	key := s.sessionKey(sessionID)
+	// Read the session first to find its index entries. An unreadable value
+	// is still deleted; its index entries are pruned by later lookups.
+	var indexed oauth2.Session
+	if raw, err := s.client.Get(ctx, key).Bytes(); err == nil {
+		indexed, _ = s.decodeSession(key, raw)
+	} else if !errors.Is(err, goredis.Nil) {
+		return redact.WrapError("oauth2/redis: delete session", err)
+	}
+	if _, err := s.client.TxPipelined(ctx, func(p goredis.Pipeliner) error {
+		p.Del(ctx, key)
+		s.queueIndexRemove(ctx, p, sessionID, indexed)
+		return nil
+	}); err != nil {
 		return redact.WrapError("oauth2/redis: delete session", err)
 	}
 	return nil

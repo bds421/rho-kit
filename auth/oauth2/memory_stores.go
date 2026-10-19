@@ -18,9 +18,14 @@ import (
 // Put stays O(1) amortized rather than O(n) in the live map size.
 // Concurrent Gets take a shared [sync.RWMutex] read lock and only
 // upgrade to a write lock when an expired entry must be deleted.
+//
+// It implements [SessionUpdater] and [SessionIndex]; the subject and SID
+// indexes are maintained under the same mutex as the sessions.
 type MemorySessionStore struct {
-	mu       sync.RWMutex
-	sessions map[string]memorySession
+	mu        sync.RWMutex
+	sessions  map[string]memorySession
+	bySubject map[string]map[string]struct{}
+	bySID     map[string]map[string]struct{}
 }
 
 type memorySession struct {
@@ -34,7 +39,85 @@ const sweepBudget = 64
 
 // NewMemorySessionStore returns a fresh empty store.
 func NewMemorySessionStore() *MemorySessionStore {
-	return &MemorySessionStore{sessions: make(map[string]memorySession)}
+	return &MemorySessionStore{
+		sessions:  make(map[string]memorySession),
+		bySubject: make(map[string]map[string]struct{}),
+		bySID:     make(map[string]map[string]struct{}),
+	}
+}
+
+var (
+	_ SessionUpdater = (*MemorySessionStore)(nil)
+	_ SessionIndex   = (*MemorySessionStore)(nil)
+)
+
+// setLocked stores entry under id and re-indexes it. Caller holds mu.
+func (m *MemorySessionStore) setLocked(id string, entry memorySession) {
+	if existing, ok := m.sessions[id]; ok {
+		m.unindexLocked(id, existing.sess)
+	}
+	m.sessions[id] = entry
+	addIndex(m.bySubject, entry.sess.UserID, id)
+	addIndex(m.bySID, entry.sess.SID, id)
+}
+
+// removeLocked zeroizes and removes id. Caller holds mu.
+func (m *MemorySessionStore) removeLocked(id string, entry memorySession) {
+	zeroSessionSecrets(entry.sess)
+	m.unindexLocked(id, entry.sess)
+	delete(m.sessions, id)
+}
+
+func (m *MemorySessionStore) unindexLocked(id string, sess Session) {
+	removeIndex(m.bySubject, sess.UserID, id)
+	removeIndex(m.bySID, sess.SID, id)
+}
+
+func addIndex(index map[string]map[string]struct{}, key, id string) {
+	if key == "" {
+		return
+	}
+	ids, ok := index[key]
+	if !ok {
+		ids = make(map[string]struct{})
+		index[key] = ids
+	}
+	ids[id] = struct{}{}
+}
+
+func removeIndex(index map[string]map[string]struct{}, key, id string) {
+	ids, ok := index[key]
+	if !ok {
+		return
+	}
+	delete(ids, id)
+	if len(ids) == 0 {
+		delete(index, key)
+	}
+}
+
+// SessionIDsBySubject implements [SessionIndex]. Expired sessions are
+// omitted.
+func (m *MemorySessionStore) SessionIDsBySubject(_ context.Context, subject string) ([]string, error) {
+	return m.liveIDs(m.bySubject, subject), nil
+}
+
+// SessionIDsBySID implements [SessionIndex]. Expired sessions are omitted.
+func (m *MemorySessionStore) SessionIDsBySID(_ context.Context, sid string) ([]string, error) {
+	return m.liveIDs(m.bySID, sid), nil
+}
+
+func (m *MemorySessionStore) liveIDs(index map[string]map[string]struct{}, key string) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	now := time.Now()
+	var out []string
+	for id := range index[key] {
+		if entry, ok := m.sessions[id]; ok && !now.After(entry.expiresAt) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // Put implements [SessionStore]. Opportunistically sweeps a budgeted
@@ -60,7 +143,7 @@ func (m *MemorySessionStore) Put(_ context.Context, id string, sess Session, ttl
 			existing.sess.IDToken.Zero()
 		}
 	}
-	m.sessions[id] = memorySession{sess: sess, expiresAt: now.Add(ttl)}
+	m.setLocked(id, memorySession{sess: sess, expiresAt: now.Add(ttl)})
 	return nil
 }
 
@@ -99,8 +182,7 @@ func (m *MemorySessionStore) deleteExpired(id string) {
 	if !time.Now().After(entry.expiresAt) {
 		return
 	}
-	zeroSessionSecrets(entry.sess)
-	delete(m.sessions, id)
+	m.removeLocked(id, entry)
 }
 
 // cloneSession returns a Session whose secret pointers and Claims map
@@ -110,6 +192,7 @@ func cloneSession(s Session) Session {
 	out := Session{
 		SessionID:    s.SessionID,
 		UserID:       s.UserID,
+		SID:          s.SID,
 		Expiry:       s.Expiry,
 		CreatedAt:    s.CreatedAt,
 		LastActivity: s.LastActivity,
@@ -151,8 +234,7 @@ func (m *MemorySessionStore) Delete(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if entry, ok := m.sessions[id]; ok {
-		zeroSessionSecrets(entry.sess)
-		delete(m.sessions, id)
+		m.removeLocked(id, entry)
 	}
 	return nil
 }
@@ -175,7 +257,7 @@ func (m *MemorySessionStore) Update(_ context.Context, id string, expectedVersio
 	if existing.sess.IDToken != nil && existing.sess.IDToken != sess.IDToken {
 		existing.sess.IDToken.Zero()
 	}
-	m.sessions[id] = memorySession{sess: sess, expiresAt: now.Add(ttl)}
+	m.setLocked(id, memorySession{sess: sess, expiresAt: now.Add(ttl)})
 	return true, nil
 }
 
@@ -188,8 +270,7 @@ func (m *MemorySessionStore) sweepExpiredLocked(now time.Time, budget int) {
 		}
 		n++
 		if now.After(entry.expiresAt) {
-			zeroSessionSecrets(entry.sess)
-			delete(m.sessions, key)
+			m.removeLocked(key, entry)
 		}
 	}
 }

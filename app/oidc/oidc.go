@@ -15,6 +15,9 @@ import (
 // ModuleName is the stable Builder module name.
 const ModuleName = "oidc"
 
+// backChannelLogoutPath is served when [WithBackChannelLogout] is set.
+const backChannelLogoutPath = "/oauth/backchannel-logout"
+
 // ResourceClientKey publishes the initialized OIDC client in app.Infrastructure.
 const ResourceClientKey = "github.com/bds421/rho-kit/app/oidc.client"
 
@@ -27,6 +30,7 @@ type config struct {
 	profile     identity.MappingProfile
 	clientOpts  []kitoauth.Option
 	allowMemory bool
+	backChannel bool
 }
 
 // WithSessionStore supplies durable browser-session persistence. Multi-replica
@@ -71,8 +75,22 @@ func WithClientOption(opt kitoauth.Option) Option {
 	return func(c *config) { c.clientOpts = append(c.clientOpts, opt) }
 }
 
+// WithBackChannelLogout enables OpenID Connect Back-Channel Logout: the
+// module also serves POST /oauth/backchannel-logout (register it with the
+// provider as backchannel_logout_uri) via auth/oauth2.WithBackChannelLogout.
+// A valid logout token deletes the sessions of its sid or sub. The session
+// store must implement auth/oauth2.SessionIndex (auth/oauth2/redis does);
+// auth/oauth2/redis also serves as the shared jti replay cache. Combine with
+// WithClientOption(auth/oauth2.WithSessionRevocationHook(fn)) to close
+// realtime connections of the subject. The route is called by the provider,
+// so it bypasses the session projection; keep CSRF middleware off it.
+func WithBackChannelLogout() Option {
+	return func(c *config) { c.backChannel = true }
+}
+
 // Module builds an opt-in browser/BFF OIDC composition. It intercepts only
-// /oauth/login, /oauth/callback, and /oauth/logout; all other routes continue
+// /oauth/login, /oauth/callback, and /oauth/logout (plus
+// /oauth/backchannel-logout with [WithBackChannelLogout]); all other routes continue
 // through the service router and gain a canonical principal when a valid
 // session cookie is present.
 func Module(oidcConfig kitoauth.Config, opts ...Option) app.Module {
@@ -129,6 +147,9 @@ func (m *module) Init(ctx context.Context, mc app.ModuleContext) error {
 		kitoauth.WithHTTPClient(httpClientModule.Client()),
 		kitoauth.WithLogger(mc.Logger),
 	)
+	if m.cfg.backChannel {
+		opts = append(opts, kitoauth.WithBackChannelLogout())
+	}
 	opts = append(opts, m.cfg.clientOpts...)
 	client, err := kitoauth.NewClient(ctx, m.oidcConfig, opts...)
 	if err != nil {
@@ -165,6 +186,11 @@ func (m *module) middleware(next http.Handler) http.Handler {
 		case "/oauth/login", "/oauth/callback", "/oauth/logout":
 			handlers.ServeHTTP(w, r)
 			return
+		case backChannelLogoutPath:
+			if m.cfg.backChannel {
+				handlers.ServeHTTP(w, r)
+				return
+			}
 		}
 
 		session, err := m.client.SessionFromRequest(r.Context(), r)

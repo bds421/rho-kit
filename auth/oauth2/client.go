@@ -56,6 +56,11 @@ type Client struct {
 	postLogoutRedirect string
 	endSessionEndpoint string
 
+	// Back-channel logout (WithBackChannelLogout).
+	backChannelLogout bool
+	replayCache       ReplayCache
+	revocationHook    func(ctx context.Context, subject string)
+
 	// Session lifetime limits (WithAbsoluteSessionLifetime, WithIdleTimeout).
 	absoluteLifetime time.Duration
 	idleTimeout      time.Duration
@@ -176,6 +181,18 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 	}
 	if _, atomic := c.sessions.(SessionUpdater); c.idleTimeout > 0 && !atomic {
 		return nil, errors.New("oauth2: WithIdleTimeout requires a session store implementing SessionUpdater")
+	}
+	if c.backChannelLogout {
+		if _, indexed := c.sessions.(SessionIndex); !indexed {
+			return nil, errors.New("oauth2: WithBackChannelLogout requires a session store implementing SessionIndex")
+		}
+		if c.replayCache == nil {
+			if cache, ok := c.sessions.(ReplayCache); ok {
+				c.replayCache = cache
+			} else {
+				c.replayCache = NewMemoryReplayCache()
+			}
+		}
 	}
 	// Fail closed: a public client (no client secret) with PKCE disabled
 	// has neither authorization-code-interception protection — exactly
@@ -301,7 +318,8 @@ func isDoubleSlashPrefix(path string) bool {
 //
 //	mux.Handle("/oauth/", client.Handlers())
 //
-// which exposes /oauth/login, /oauth/callback, /oauth/logout. Mounting
+// which exposes /oauth/login, /oauth/callback, /oauth/logout (and POST
+// /oauth/backchannel-logout with [WithBackChannelLogout]). Mounting
 // under any other prefix silently 404s because StripPrefix only strips
 // "/oauth". Callers that need a different prefix should wire the three
 // handler methods themselves (or wrap the returned handler with their
@@ -311,6 +329,9 @@ func (c *Client) Handlers() Handlers {
 	mux.HandleFunc("GET /login", c.handleLogin)
 	mux.HandleFunc("GET /callback", c.handleCallback)
 	mux.HandleFunc("POST /logout", c.handleLogout)
+	if c.backChannelLogout {
+		mux.HandleFunc("POST /backchannel-logout", c.handleBackChannelLogout)
+	}
 	return http.StripPrefix("/oauth", mux)
 }
 
@@ -476,6 +497,7 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		IDToken:      secret.NewFromString(rawIDToken),
 		Expiry:       token.Expiry,
 		Claims:       claims,
+		SID:          stringClaim(claims, "sid"),
 		CreatedAt:    now,
 		LastActivity: now,
 	}

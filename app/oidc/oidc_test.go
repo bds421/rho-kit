@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,4 +117,36 @@ func TestMiddleware_LeavesUnauthenticatedRoutesToService(t *testing.T) {
 	h := m.PublicMiddleware()[0].Func(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	assert.True(t, called)
+}
+
+func TestMiddleware_BackChannelLogoutRouteIsOptIn(t *testing.T) {
+	newHandler := func(opts ...Option) (http.Handler, *bool) {
+		opts = append([]Option{
+			WithSessionStore(kitoauth.NewMemorySessionStore()), WithStateStore(kitoauth.NewMemoryStateStore()), WithInMemoryStoresForTesting(),
+		}, opts...)
+		m := Module(kitoauth.Config{Issuer: testOIDCIssuer(t), ClientID: "web", RedirectURL: "https://app.example.test/oauth/callback"}, opts...).(*module)
+		initModule(t, m)
+		called := new(bool)
+		return m.PublicMiddleware()[0].Func(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			*called = true
+			w.WriteHeader(http.StatusTeapot)
+		})), called
+	}
+	post := func(h http.Handler) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/oauth/backchannel-logout", strings.NewReader("logout_token="))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		res := httptest.NewRecorder()
+		h.ServeHTTP(res, req)
+		return res
+	}
+
+	h, called := newHandler()
+	assert.Equal(t, http.StatusTeapot, post(h).Code, "without the option the path belongs to the service")
+	assert.True(t, *called)
+
+	h, called = newHandler(WithBackChannelLogout())
+	res := post(h)
+	assert.Equal(t, http.StatusBadRequest, res.Code)
+	assert.JSONEq(t, `{"error":"invalid_request"}`, res.Body.String())
+	assert.False(t, *called)
 }

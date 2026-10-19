@@ -52,6 +52,10 @@ type Session struct {
 	// Claims is the verified ID-token claim set. Includes "sub",
 	// "email", "name", and provider-specific claims.
 	Claims map[string]any
+	// SID is the provider session identifier (the ID token's "sid" claim),
+	// used by back-channel logout ([WithBackChannelLogout]). Empty when the
+	// provider does not issue it.
+	SID string
 	// CreatedAt is when the login callback created the session. It bounds
 	// [WithAbsoluteSessionLifetime]. Zero for sessions stored before it was
 	// recorded.
@@ -101,6 +105,31 @@ type SessionUpdater interface {
 // release frees the lock only while it is still held by this acquisition.
 type RefreshLocker interface {
 	TryLockRefresh(ctx context.Context, sessionID string, ttl time.Duration) (release func(context.Context) error, acquired bool, err error)
+}
+
+// SessionIndex is optionally implemented by a [SessionStore] that indexes
+// sessions by subject (Session.UserID) and provider session (Session.SID).
+// [Client.DeleteSessionsBySubject] and back-channel logout
+// ([WithBackChannelLogout]) require it. The memory and auth/oauth2/redis
+// stores implement it and maintain the index on Put, Update and Delete.
+//
+// The lookups may return IDs of sessions that expired or changed since they
+// were indexed; the client re-reads each session and checks its subject or
+// SID before deleting it.
+type SessionIndex interface {
+	SessionIDsBySubject(ctx context.Context, subject string) ([]string, error)
+	SessionIDsBySID(ctx context.Context, sid string) ([]string, error)
+}
+
+// ReplayCache records one-time identifiers, such as back-channel logout
+// token IDs (jti), for a bounded time. Implementations MUST be safe for
+// concurrent use and atomic across the processes that share them.
+//
+// Remember records key for ttl and reports whether it was not recorded
+// before (first=true). A key seen within its ttl returns first=false and a
+// nil error.
+type ReplayCache interface {
+	Remember(ctx context.Context, key string, ttl time.Duration) (first bool, err error)
 }
 
 // StateStore persists the per-login CSRF state token + OIDC nonce so
@@ -153,6 +182,10 @@ var (
 	// query values are logged server-side rather than reflected to the
 	// caller.
 	ErrProviderError = errors.New("oauth2: provider returned an error")
+	// ErrSessionIndexUnsupported is returned by
+	// [Client.DeleteSessionsBySubject] when the session store does not
+	// implement [SessionIndex].
+	ErrSessionIndexUnsupported = errors.New("oauth2: session store does not implement SessionIndex")
 )
 
 // Handlers is the http.Handler returned by [Client.Handlers]. It serves
