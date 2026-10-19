@@ -17,8 +17,8 @@ module github.com/bds421/rho-kit/auth/oauth2/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.8.0
-	github.com/bds421/rho-kit/observability/v2 v2.8.0
+	github.com/bds421/rho-kit/core/v2 v2.10.0
+	github.com/bds421/rho-kit/observability/v2 v2.10.0
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/prometheus/client_golang v1.24.1
@@ -31,6 +31,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
