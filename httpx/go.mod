@@ -3,11 +3,11 @@ module github.com/bds421/rho-kit/httpx/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/crypto/v2 v2.8.0
-	github.com/bds421/rho-kit/data/v2 v2.8.0
-	github.com/bds421/rho-kit/observability/v2 v2.8.0
-	github.com/bds421/rho-kit/resilience/v2 v2.8.0
-	github.com/bds421/rho-kit/security/v2 v2.8.0
+	github.com/bds421/rho-kit/crypto/v2 v2.10.0
+	github.com/bds421/rho-kit/data/v2 v2.10.0
+	github.com/bds421/rho-kit/observability/v2 v2.10.0
+	github.com/bds421/rho-kit/resilience/v2 v2.10.0
+	github.com/bds421/rho-kit/security/v2 v2.10.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -18,9 +18,9 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
-	go.opentelemetry.io/otel v1.44.0
-	go.opentelemetry.io/otel/sdk v1.44.0
-	go.opentelemetry.io/otel/trace v1.44.0
+	go.opentelemetry.io/otel v1.45.0
+	go.opentelemetry.io/otel/sdk v1.45.0
+	go.opentelemetry.io/otel/trace v1.45.0
 	golang.org/x/net v0.60.0
 )
 
@@ -35,8 +35,8 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/authz/v2 v2.8.0
-	github.com/bds421/rho-kit/core/v2 v2.8.0
+	github.com/bds421/rho-kit/authz/v2 v2.10.0
+	github.com/bds421/rho-kit/core/v2 v2.10.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -61,7 +61,7 @@ require (
 	github.com/sony/gobreaker/v2 v2.4.0 // indirect
 	github.com/valyala/fastjson v1.6.10 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel/metric v1.44.0 // indirect
+	go.opentelemetry.io/otel/metric v1.45.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect

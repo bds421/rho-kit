@@ -4,10 +4,10 @@ go 1.26.8
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.8.0
-	github.com/bds421/rho-kit/observability/v2 v2.8.0
+	github.com/bds421/rho-kit/observability/v2 v2.10.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/stretchr/testify v1.11.1
-	go.opentelemetry.io/otel v1.44.0
+	go.opentelemetry.io/otel v1.45.0
 )
 
 require (
@@ -26,17 +26,17 @@ require (
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.22.0
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
-	github.com/bds421/rho-kit/core/v2 v2.8.0
-	github.com/bds421/rho-kit/infra/v2 v2.8.0
-	github.com/bds421/rho-kit/io/v2 v2.8.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.10.0
+	github.com/bds421/rho-kit/infra/v2 v2.10.0
+	github.com/bds421/rho-kit/io/v2 v2.10.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel/metric v1.44.0 // indirect
-	go.opentelemetry.io/otel/trace v1.44.0 // indirect
+	go.opentelemetry.io/otel/metric v1.45.0 // indirect
+	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
