@@ -346,3 +346,60 @@ func TestPostgres_AppendOnlyRole(t *testing.T) {
 	_, err = pool.Exec(ctx, "DELETE FROM audit_log_events")
 	require.Error(t, err)
 }
+
+// TestPostgres_VerifyWithTenantAndMetadata appends events that carry every
+// optional field the store persists and checks that the chain still verifies
+// after the round trip through PostgreSQL.
+func TestPostgres_VerifyWithTenantAndMetadata(t *testing.T) {
+	dsn := startPostgres(t)
+	pool := openAndMigrate(t, dsn)
+	logger := newLogger(t, pool)
+	defer func() { _ = logger.Close() }()
+	ctx := context.Background()
+
+	require.NoError(t, logger.LogE(ctx, auditlog.Event{
+		ID: "01a1531b-d0aa-7ba4-bbd5-12aacf16ff77", Timestamp: time.Now(),
+		Actor: "client:1", Tenant: "395768980536623109", Action: "CreateWorkspace",
+		Resource: "/api/v1/workspaces", Status: "denied", Metadata: []byte(`{"requestId":"abc"}`),
+	}))
+	require.NoError(t, logger.VerifyChain(ctx))
+}
+
+// TestPostgres_SignedMetadataTamperDetected changes the exact signed metadata
+// bytes and expects verification to fail even though the JSON stays valid.
+func TestPostgres_SignedMetadataTamperDetected(t *testing.T) {
+	dsn := startPostgres(t)
+	pool := openAndMigrate(t, dsn)
+	logger := newLogger(t, pool)
+	defer func() { _ = logger.Close() }()
+	ctx := context.Background()
+
+	require.NoError(t, logger.LogE(ctx, auditlog.Event{
+		Actor: "svc", Action: "export", Resource: "r/1", Status: auditlog.StatusSuccess,
+		Metadata: []byte(`{"count":12345678901234567891}`),
+	}))
+	require.NoError(t, logger.VerifyChain(ctx))
+
+	_, err := pool.Exec(ctx, `UPDATE audit_log_events SET signed_metadata = '{"count":12345678901234567890}'::bytea`)
+	require.NoError(t, err)
+	require.Error(t, logger.VerifyChain(ctx))
+}
+
+// TestPostgres_UnsignedRowAfterMigrationRejected removes the signed bytes of a
+// new row and moves the content into the legacy JSONB column; verification
+// must not fall back to it.
+func TestPostgres_UnsignedRowAfterMigrationRejected(t *testing.T) {
+	dsn := startPostgres(t)
+	pool := openAndMigrate(t, dsn)
+	logger := newLogger(t, pool)
+	defer func() { _ = logger.Close() }()
+	ctx := context.Background()
+
+	require.NoError(t, logger.LogE(ctx, auditlog.Event{
+		Actor: "svc", Action: "export", Resource: "r/1", Status: auditlog.StatusSuccess,
+		Metadata: []byte(`{"count":1}`),
+	}))
+	_, err := pool.Exec(ctx, `UPDATE audit_log_events SET metadata = '{"count":1}'::jsonb, signed_metadata = NULL`)
+	require.NoError(t, err)
+	require.Error(t, logger.VerifyChain(ctx))
+}

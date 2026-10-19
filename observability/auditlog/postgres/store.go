@@ -361,7 +361,7 @@ var (
 )
 
 const selectColumns = `SELECT id, occurred_at, actor, tenant, action, resource, status,
-       ip_address, trace_id, metadata, prev_hmac, hmac`
+       ip_address, trace_id, metadata, signed_metadata, prev_hmac, hmac`
 
 func selectTailHMAC(ctx context.Context, tx pgx.Tx) ([]byte, error) {
 	const q = "SELECT hmac FROM audit_log_events ORDER BY seq DESC LIMIT 1"
@@ -379,22 +379,18 @@ func selectTailHMAC(ctx context.Context, tx pgx.Tx) ([]byte, error) {
 }
 
 func insertEvent(ctx context.Context, tx pgx.Tx, e auditlog.Event) error {
-	var metaRaw []byte
-	if len(e.Metadata) > 0 {
-		metaRaw = e.Metadata
-	}
 	const q = `
 INSERT INTO audit_log_events
 (id, occurred_at, actor, tenant, action, resource, status, ip_address, trace_id,
- metadata, prev_hmac, hmac)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`
+ metadata, signed_metadata, prev_hmac, hmac)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`
 	prev := e.PrevHMAC
 	if prev == nil {
 		prev = []byte{}
 	}
 	if _, err := tx.Exec(ctx, q,
 		e.ID, e.Timestamp.UTC(), e.Actor, e.Tenant, e.Action, e.Resource, e.Status,
-		e.IPAddress, e.TraceID, metaRaw, prev, e.HMAC,
+		e.IPAddress, e.TraceID, nil, signedBytes(e.Metadata), prev, e.HMAC,
 	); err != nil {
 		return fmt.Errorf("auditlog/postgres: insert event: %w", err)
 	}
@@ -409,19 +405,18 @@ func scanEvent(s scannable) (auditlog.Event, error) {
 	var (
 		e        auditlog.Event
 		metaRaw  []byte
+		signed   []byte
 		prevHMAC []byte
 		hmac     []byte
 	)
 	if err := s.Scan(
 		&e.ID, &e.Timestamp, &e.Actor, &e.Tenant, &e.Action, &e.Resource, &e.Status,
-		&e.IPAddress, &e.TraceID, &metaRaw, &prevHMAC, &hmac,
+		&e.IPAddress, &e.TraceID, &metaRaw, &signed, &prevHMAC, &hmac,
 	); err != nil {
 		return auditlog.Event{}, err
 	}
 	e.Timestamp = e.Timestamp.UTC()
-	if len(metaRaw) > 0 {
-		e.Metadata = json.RawMessage(metaRaw)
-	}
+	e.Metadata, e.Format = storedMetadata(signed, metaRaw)
 	if len(prevHMAC) > 0 {
 		e.PrevHMAC = append([]byte(nil), prevHMAC...)
 	}
@@ -484,4 +479,36 @@ func escapeLikePrefix(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// storedMetadata returns the exact signed bytes with the current format.
+// Rows from before signed_metadata existed (NULL) are verified with the legacy
+// encoding, re-encoding their JSONB value the way it was canonicalized when
+// signed; moving a newer event onto that path changes its HMAC input.
+func storedMetadata(signed, jsonbText []byte) (json.RawMessage, uint8) {
+	if signed != nil {
+		if len(signed) == 0 {
+			return nil, auditlog.FormatExactMetadata
+		}
+		return json.RawMessage(append([]byte(nil), signed...)), auditlog.FormatExactMetadata
+	}
+	if len(jsonbText) == 0 {
+		return nil, 0
+	}
+	var v any
+	if err := json.Unmarshal(jsonbText, &v); err != nil {
+		return json.RawMessage(jsonbText), 0
+	}
+	compact, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage(jsonbText), 0
+	}
+	return json.RawMessage(compact), 0
+}
+
+func signedBytes(metadata json.RawMessage) []byte {
+	if metadata == nil {
+		return []byte{}
+	}
+	return metadata
 }

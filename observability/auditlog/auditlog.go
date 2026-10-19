@@ -45,6 +45,10 @@ type Event struct {
 	IPAddress string          `json:"ip_address,omitempty"` // client IP for compliance/security
 	Metadata  json.RawMessage `json:"metadata,omitempty"`   // arbitrary context
 	TraceID   string          `json:"trace_id,omitempty"`   // OpenTelemetry trace correlation
+	// Format is the canonical encoding version. [FormatExactMetadata] binds the
+	// exact metadata bytes and the version itself into the HMAC, so a store
+	// cannot downgrade an event to the legacy (zero) encoding unnoticed.
+	Format uint8 `json:"format,omitempty"`
 
 	// PrevHMAC links this record to the previous chain entry. The first
 	// event in a chain has a nil / all-zero PrevHMAC.
@@ -476,6 +480,7 @@ func (l *Logger) LogE(ctx context.Context, event Event) error {
 		}
 		event.Metadata = canonical
 	}
+	event.Format = FormatExactMetadata
 	if event.TraceID == "" {
 		event.TraceID = extractTraceID(ctx)
 	}
@@ -787,3 +792,6 @@ func isLowerHex(value string) bool {
 	}
 	return true
 }
+
+// FormatExactMetadata is the canonical encoding written by this version.
+const FormatExactMetadata uint8 = 2

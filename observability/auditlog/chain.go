@@ -52,6 +52,11 @@ var ErrChainBroken = errors.New("auditlog: chain integrity check failed")
 // This encoding is part of the on-disk contract: changing it invalidates
 // every existing chain. Add a root CHANGELOG.md entry and document a migration
 // path if the format ever has to change.
+// formatHeader opens every versioned encoding. Legacy encodings start with a
+// 4-byte length (0 or 32), so they can never begin with 0xFF and the two
+// layouts cannot produce the same bytes.
+var formatHeader = []byte{0xFF, 'r', 'a', 'l'}
+
 func canonicalEvent(event Event) []byte {
 	// Estimate the buffer size to avoid reallocs on the hot path. PrevHMAC
 	// is counted twice because it appears in two positions of the encoding.
@@ -60,7 +65,11 @@ func canonicalEvent(event Event) []byte {
 		len(event.Resource) + len(event.Status) + len(event.IPAddress) +
 		len(event.TraceID) + len(event.Metadata) + 2*len(event.PrevHMAC) +
 		11*4 + 8 // length headers + timestamp
-	buf := make([]byte, 0, approx)
+	buf := make([]byte, 0, approx+len(formatHeader)+1)
+	if event.Format != 0 {
+		buf = append(buf, formatHeader...)
+		buf = append(buf, event.Format)
+	}
 	buf = appendLenPrefixed(buf, event.PrevHMAC)
 	buf = appendLenPrefixed(buf, []byte(event.ID))
 	buf = appendUnixNano(buf, event.Timestamp)
@@ -72,10 +81,10 @@ func canonicalEvent(event Event) []byte {
 	buf = appendLenPrefixed(buf, []byte(event.TraceID))
 	buf = appendLenPrefixed(buf, event.Metadata)
 	buf = appendLenPrefixed(buf, event.PrevHMAC)
-	// Tenant was added after the original chain format shipped. Omitting the
-	// suffix for an empty tenant preserves verification of existing records;
-	// non-empty tenant identity is still covered by the event HMAC.
-	if event.Tenant != "" {
+	// Tenant was added after the original chain format shipped. Legacy records
+	// omit the suffix for an empty tenant so they keep verifying; versioned
+	// encodings always write it.
+	if event.Tenant != "" || event.Format != 0 {
 		buf = appendLenPrefixed(buf, []byte(event.Tenant))
 	}
 	return buf

@@ -11,6 +11,14 @@ are additive except the timeout overflow fix.
   retention serialise on the chain advisory lock only; the tail read no longer
   uses `SELECT FOR UPDATE`, so the table can be granted to application roles
   as INSERT/SELECT. Retention now runs inside that lock as well.
+- **fix(observability/auditlog/postgres): verify events with JSON metadata.**
+  The store keeps the exact signed metadata bytes in a new `signed_metadata`
+  column (migration 20261019000001) and returns them for verification and
+  queries, because JSONB normalizes formatting and numbers. Previously the
+  first event carrying metadata failed verification. New events are signed
+  with `FormatExactMetadata`, which binds the exact metadata bytes and the
+  format version into the HMAC, so moving a new event onto the legacy
+  encoding is detected. Rows from before the migration verify as before.
 - **fix(app/tracing, observability): OpenTelemetry OTLP exporters v1.45.0**
   (GO-2026-6505).
 - **feat(security/jwtutil): `SigningProvider.PublicJWKS()`.** Exports the
