@@ -89,6 +89,13 @@ are additive except the timeout overflow fix.
   under its mutex, `auth/oauth2/redis` with WATCH/MULTI. Third-party stores
   without it fall back to re-checking existence before Put, which narrows
   but does not close the race.
+- **feat(infra/sqldb/pgx): transaction in context.** `WithTx`,
+  `TxFromContext`, `Querier` (sqlc pgx/v5 `DBTX` method set),
+  `Pool.Querier(ctx)` and `Pool.InTx(ctx, fn)` (commit on nil, rollback on
+  error or panic, nested calls join). `infra/outbox/postgres`
+  `WithTx`/`TxFromContext`/`RequireTx` now delegate to it with the same
+  context key (API unchanged), so outbox writes inside `InTx` join the
+  transaction.
 
 ## v2.8.0 — 2026-09-29
 

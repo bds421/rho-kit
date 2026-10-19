@@ -4,6 +4,7 @@ go 1.26.8
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.8.0
+	github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.8.0
 	github.com/bds421/rho-kit/infra/v2 v2.8.0
 	github.com/bds421/rho-kit/observability/v2 v2.8.0
 	github.com/google/uuid v1.6.0
@@ -21,7 +22,6 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/kr/text v0.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect

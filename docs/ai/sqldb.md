@@ -155,6 +155,26 @@ defer sqlDB.Close()
 _, err = migrate.Up(ctx, sqlDB, migrate.Config{Dir: migrationsFS})
 ```
 
+## Transactions in context
+
+`pgxbackend.Pool.InTx(ctx, fn)` begins a transaction, passes it to `fn` in the
+context, commits on nil, and rolls back on error or panic (re-panicking). A
+nested `InTx` joins the outer transaction instead of nesting. Repositories call
+`pool.Querier(ctx)` (the context transaction, else the pool); the returned
+`pgxbackend.Querier` has the method set of sqlc's pgx/v5 `DBTX`.
+`infra/outbox/postgres.WithTx`/`TxFromContext`/`RequireTx` share the same
+context key, so an outbox write inside `InTx` is part of the business
+transaction.
+
+```go
+err := pool.InTx(ctx, func(ctx context.Context) error {
+    if err := queries.New(pool.Querier(ctx)).CreateOrder(ctx, params); err != nil {
+        return err
+    }
+    return outboxWriter.Write(ctx, event)
+})
+```
+
 ## LISTEN/NOTIFY
 
 `pgxbackend.Pool.Listen(ctx, channels...)` pins one pgx connection until `ctx`

@@ -23,6 +23,7 @@ import (
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
 	outboxpg "github.com/bds421/rho-kit/infra/outbox/postgres/v2"
 	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
+	kitpgx "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/infra/v2/outbox"
 	kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
@@ -803,3 +804,32 @@ func TestInboxPruneBefore(t *testing.T) {
 }
 
 func tptr(t time.Time) *time.Time { return &t }
+
+// TestStore_InsertJoinsPgxBackendInTx proves an outbox insert inside
+// pgxbackend.Pool.InTx shares the business transaction: a rollback removes
+// the outbox row together with the business write.
+func TestStore_InsertJoinsPgxBackendInTx(t *testing.T) {
+	dsn := startPostgres(t)
+	raw := openAndMigrate(t, dsn)
+	kitPool, err := kitpgx.Connect(context.Background(), kitpgx.Config{DSN: dsn, AllowPlaintextLoopbackForTests: true})
+	require.NoError(t, err)
+	defer kitPool.Close()
+	store := outboxpg.New(raw)
+	ctx := context.Background()
+
+	entry := mustEntry()
+	boom := errors.New("boom")
+	err = kitPool.InTx(ctx, func(ctx context.Context) error {
+		require.NoError(t, store.Insert(ctx, entry))
+		return boom
+	})
+	require.ErrorIs(t, err, boom)
+	var n int
+	require.NoError(t, raw.QueryRow(ctx, "SELECT count(*) FROM outbox_entries WHERE id = $1", entry.ID).Scan(&n))
+	assert.Zero(t, n, "rolled-back InTx must not leave the outbox row")
+
+	entry = mustEntry()
+	require.NoError(t, kitPool.InTx(ctx, func(ctx context.Context) error { return store.Insert(ctx, entry) }))
+	require.NoError(t, raw.QueryRow(ctx, "SELECT count(*) FROM outbox_entries WHERE id = $1", entry.ID).Scan(&n))
+	assert.Equal(t, 1, n)
+}
