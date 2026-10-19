@@ -7,6 +7,9 @@ Supersedes the v2.9.0 tags of `security`, `realtime/centrifuge`, `infra`,
 that were never merged into `main`; do not depend on v2.9.0. All changes
 are additive except the timeout overflow fix.
 
+- **feat(security/jwtutil): `SigningProvider.PublicJWKS()`.** Exports the
+  current public signing key as a JWKS document with the kid that `Sign`
+  stamps, for in-process verifiers or a JWKS endpoint.
 - **feat(infra/outbox): `Relay.Wake()`.** Nonblocking, coalescing poll hint
   for use after commit or from a LISTEN/NOTIFY listener. Periodic polling
   stays authoritative.
