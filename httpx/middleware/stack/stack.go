@@ -40,6 +40,7 @@ import (
 type Config struct {
 	Logger              *slog.Logger
 	QuietPaths          []string
+	LogAttrs            []func(*http.Request) slog.Attr
 	EnableRecover       bool
 	EnableSecHeaders    bool
 	EnableMetrics       bool
@@ -214,8 +215,10 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		})
 	}
 
+	extraAttrs = append(extraAttrs, cfg.LogAttrs...)
+
 	if cfg.EnableReqLogger {
-		h = mwlogging.WithRequestLogger(cfg.Logger)(h)
+		h = mwlogging.WithRequestLogger(cfg.Logger, cfg.LogAttrs...)(h)
 	}
 	if cfg.EnableTimeout && cfg.Timeout > 0 {
 		h = timeoutExceptWebSockets(cfg.Timeout, cfg.WebSocketPaths, h)
@@ -270,6 +273,15 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 func WithQuietPaths(paths ...string) Option {
 	copied := append([]string(nil), paths...)
 	return func(cfg *Config) { cfg.QuietPaths = append([]string(nil), copied...) }
+}
+
+// WithLogAttrs adds attributes to every access log line and to the request
+// logger returned by httpx.Logger, for example the credential a request
+// authenticated with. Each function sees the incoming request; returning
+// an empty attribute omits it.
+func WithLogAttrs(fns ...func(*http.Request) slog.Attr) Option {
+	copied := append([]func(*http.Request) slog.Attr(nil), fns...)
+	return func(cfg *Config) { cfg.LogAttrs = append(cfg.LogAttrs, copied...) }
 }
 
 // WithLogger overrides the default logger.

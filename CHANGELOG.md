@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.14.0 — 2026-10-19
+
+- **feat(httpx/middleware/stack): `WithLogAttrs`.** Adds per-request
+  attributes to the access log and to the request logger, for example the id
+  of the API key a request authenticated with.
+
 ## v2.13.1 — 2026-10-19
 
 - **fix(security/netutil): `WithAllowedNetworks` accepts the IPv6 loopback**

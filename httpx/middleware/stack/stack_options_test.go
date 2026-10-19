@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"bytes"
 	"compress/gzip"
 	"io"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bds421/rho-kit/httpx/v2"
 	mwrecover "github.com/bds421/rho-kit/httpx/v2/middleware/recover"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/secheaders"
 	"github.com/prometheus/client_golang/prometheus"
@@ -285,5 +287,31 @@ func TestDefault_WithoutRecoverMetrics(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("http_panics_total series = %d, want 0 when metrics not wired into stack", count)
+	}
+}
+
+func TestWithLogAttrs_AddsToAccessAndRequestLogger(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{}))
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpx.Logger(r.Context(), logger).Info("in handler")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	keyID := func(r *http.Request) slog.Attr {
+		if id := r.Header.Get("X-Key-ID"); id != "" {
+			return slog.String("key_id", id)
+		}
+		return slog.Attr{}
+	}
+
+	stacked := Default(handler, logger,
+		WithoutMetrics(), WithoutTracing(), WithoutSecHeaders(), WithoutTimeout(), WithLogAttrs(keyID),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Key-ID", "k1")
+	stacked.ServeHTTP(httptest.NewRecorder(), req)
+
+	if got := strings.Count(buf.String(), "key_id=k1"); got != 2 {
+		t.Fatalf("key_id in %d lines, want handler and access log: %s", got, buf.String())
 	}
 }
