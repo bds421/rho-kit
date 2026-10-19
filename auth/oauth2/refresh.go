@@ -20,6 +20,19 @@ import (
 // request cannot fail every caller waiting on the same session.
 const refreshTimeout = 30 * time.Second
 
+// defaultRefreshLockWait is how long a refresh waits for another replica
+// holding the session's refresh lock ([RefreshLocker]) before it treats the
+// refresh as a transient failure.
+const defaultRefreshLockWait = 5 * time.Second
+
+// refreshLockPoll is the interval at which a waiting refresh re-reads the
+// session and retries the lock.
+const refreshLockPoll = 50 * time.Millisecond
+
+// errRefreshLockTimeout reports that another replica held the refresh lock
+// for longer than the configured wait.
+var errRefreshLockTimeout = errors.New("oauth2: timed out waiting for the session refresh lock")
+
 // WithTokenRefresh makes [Client.SessionFromRequest] (and the app/oidc
 // middleware built on it) refresh a session's access token when it expires
 // within leeway and the session holds a refresh token. Default: off, so
@@ -28,7 +41,10 @@ const refreshTimeout = 30 * time.Second
 // Behaviour when enabled:
 //   - Refreshes are single-flight per session within the process; the stored
 //     session is re-read first, so a refresh another replica already
-//     persisted is reused instead of repeated.
+//     persisted is reused instead of repeated. A store implementing
+//     [RefreshLocker] (auth/oauth2/redis) also serializes refreshes across
+//     replicas; a replica that finds the lock taken waits up to
+//     [WithRefreshLockWait] for the other replica's tokens.
 //   - The refreshed tokens replace the stored ones and the session TTL is
 //     reset (sliding while the provider keeps issuing tokens). A refresh
 //     response without a new refresh token keeps the old one.
@@ -80,6 +96,18 @@ func WithRefreshOutageGrace(d time.Duration) Option {
 	return func(cl *Client) { cl.refreshOutageGrace = d }
 }
 
+// WithRefreshLockWait sets how long a token refresh waits while another
+// replica holds the session's refresh lock (see [RefreshLocker]) before it
+// gives up and treats the refresh as a transient failure (default 5s). While
+// waiting it re-reads the session and uses the other replica's refreshed
+// tokens as soon as they are stored. Panics on a non-positive duration.
+func WithRefreshLockWait(d time.Duration) Option {
+	if d <= 0 {
+		panic("oauth2: WithRefreshLockWait requires a positive duration")
+	}
+	return func(cl *Client) { cl.refreshLockWait = d }
+}
+
 // needsRefresh reports whether sess should be refreshed at now.
 func (c *Client) needsRefresh(sess Session, now time.Time) bool {
 	return c.refreshEnabled &&
@@ -117,6 +145,24 @@ func (c *Client) refreshSession(ctx context.Context, sessionID string) (Session,
 		// Refreshed meanwhile (another flight or replica).
 		return current, nil
 	}
+	if locker, ok := c.sessions.(RefreshLocker); ok {
+		latest, release, err := c.lockRefresh(ctx, locker, sessionID)
+		switch {
+		case errors.Is(err, ErrSessionNotFound):
+			return Session{}, err
+		case err != nil:
+			return c.refreshFailed(ctx, sessionID, current, err, false)
+		}
+		if release == nil {
+			// Another replica stored refreshed tokens while we waited.
+			return latest, nil
+		}
+		defer c.releaseRefreshLock(ctx, release)
+		current = latest
+		if !c.needsRefresh(current, time.Now()) {
+			return current, nil
+		}
+	}
 	exchangeCtx := oidc.ClientContext(ctx, c.httpClient)
 	token, err := c.oauth.TokenSource(exchangeCtx, &xoauth2.Token{
 		RefreshToken: current.RefreshToken.RevealString(),
@@ -153,6 +199,56 @@ func (c *Client) refreshSession(ctx context.Context, sessionID string) (Session,
 // maxActivityMergeAttempts bounds how often a refreshed session is re-applied
 // onto a session whose only concurrent change was recorded activity.
 const maxActivityMergeAttempts = 3
+
+// lockRefresh takes the cross-replica refresh lock for sessionID. It returns
+// the session as stored after acquisition plus the release function, or a
+// nil release with the session another replica refreshed while this one
+// waited. ErrSessionNotFound means the session was deleted meanwhile.
+func (c *Client) lockRefresh(ctx context.Context, locker RefreshLocker, sessionID string) (Session, func(context.Context) error, error) {
+	deadline := time.Now().Add(c.refreshLockWait)
+	for {
+		release, acquired, err := locker.TryLockRefresh(ctx, sessionID, refreshTimeout)
+		if err != nil {
+			return Session{}, nil, err
+		}
+		if acquired {
+			// Re-read: the previous holder may have finished just before.
+			latest, err := c.sessions.Get(ctx, sessionID)
+			if err != nil {
+				c.releaseRefreshLock(ctx, release)
+				return Session{}, nil, err
+			}
+			return latest, release, nil
+		}
+		timer := time.NewTimer(refreshLockPoll)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return Session{}, nil, ctx.Err()
+		case <-timer.C:
+		}
+		latest, err := c.sessions.Get(ctx, sessionID)
+		if err != nil {
+			return Session{}, nil, err
+		}
+		if !c.needsRefresh(latest, time.Now()) {
+			return latest, nil, nil
+		}
+		if !time.Now().Before(deadline) {
+			return Session{}, nil, errRefreshLockTimeout
+		}
+	}
+}
+
+// releaseRefreshLock frees a refresh lock, detached from request
+// cancellation; a failure only delays the next refresh until the lock TTL.
+func (c *Client) releaseRefreshLock(ctx context.Context, release func(context.Context) error) {
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := release(releaseCtx); err != nil {
+		c.logger.WarnContext(ctx, "oauth2: releasing the session refresh lock failed", redact.Error(err))
+	}
+}
 
 // storeRefreshed persists a refreshed session. With a [SessionUpdater] the
 // write is a compare-and-set against the version that was refreshed: if the

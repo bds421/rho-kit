@@ -89,6 +89,20 @@ type SessionUpdater interface {
 	Update(ctx context.Context, sessionID string, expectedVersion uint64, sess Session, ttl time.Duration) (bool, error)
 }
 
+// RefreshLocker is optionally implemented by a [SessionStore] shared between
+// replicas. Token refresh ([WithTokenRefresh]) is single-flight per session
+// within one process; with a RefreshLocker it is also serialized across
+// processes, so two replicas do not redeem the same (possibly rotating)
+// refresh token concurrently. auth/oauth2/redis implements it with SET NX
+// PX; the memory store does not need it.
+//
+// TryLockRefresh takes the refresh lock for sessionID for at most ttl. It
+// returns acquired=false and a nil error when another holder owns the lock.
+// release frees the lock only while it is still held by this acquisition.
+type RefreshLocker interface {
+	TryLockRefresh(ctx context.Context, sessionID string, ttl time.Duration) (release func(context.Context) error, acquired bool, err error)
+}
+
 // StateStore persists the per-login CSRF state token + OIDC nonce so
 // the callback can validate the redirect matches a freshly-issued
 // login (i.e. block a CSRF-driven callback from logging the user into

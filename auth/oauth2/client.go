@@ -48,6 +48,8 @@ type Client struct {
 	// refreshOutageGrace extends transient refresh failures past expiry
 	// (WithRefreshOutageGrace).
 	refreshOutageGrace time.Duration
+	// refreshLockWait bounds waiting for another replica's refresh lock.
+	refreshLockWait time.Duration
 
 	// RP-initiated logout (WithRPInitiatedLogout).
 	rpLogout           bool
@@ -158,6 +160,7 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 		cookieName:       "kit_oauth_session",
 		cookieSecure:     true,
 		backgroundHeader: DefaultBackgroundRequestHeader,
+		refreshLockWait:  defaultRefreshLockWait,
 	}
 	for _, opt := range opts {
 		if opt == nil {

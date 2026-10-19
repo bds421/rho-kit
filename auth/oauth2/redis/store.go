@@ -62,6 +62,7 @@ func New(client goredis.UniversalClient, opts ...Option) *Store {
 var (
 	_ oauth2.SessionStore   = (*Store)(nil)
 	_ oauth2.SessionUpdater = (*Store)(nil)
+	_ oauth2.RefreshLocker  = (*Store)(nil)
 	_ oauth2.StateStore     = StateStore{}
 )
 
