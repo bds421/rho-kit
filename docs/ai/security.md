@@ -236,9 +236,9 @@ produce `ErrSigningStringClaims` without disclosing their names or values.
 Each call snapshots its map before signing; do not concurrently mutate the map
 during that initial read. Issuer/audience, key rotation/kid, expiry/JTI, recorder,
 stale/closed behavior remain the same maintained path. These are issuance
-primitives, not user/resource/license authority; consumers check context and
+primitives, not an authorization decision; consumers check context and
 current authority before and after releasing credentials and validate their own
-claim semantics. No socket protocol or private preference values belong here.
+claim semantics. Do not place secrets in claims: JWT payloads are only encoded.
 
 ### JWT Revocation
 

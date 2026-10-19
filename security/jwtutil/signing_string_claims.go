@@ -83,9 +83,9 @@ func (p *SigningProvider) copySigningStringClaims(fields map[string]string) (map
 	if len(fields) == 0 {
 		return nil, nil
 	}
-	copy := maps.Clone(fields)
+	issued := maps.Clone(fields)
 	total := 0
-	for name, value := range copy {
+	for name, value := range issued {
 		if _, allowed := p.stringClaimNames[name]; !allowed || !validSigningClaimName(name) ||
 			value == "" || len(value) > maxSigningClaimValue || !utf8.ValidString(value) || strings.ContainsFunc(value, unicode.IsControl) {
 			return nil, ErrSigningStringClaims
@@ -95,5 +95,5 @@ func (p *SigningProvider) copySigningStringClaims(fields map[string]string) (map
 			return nil, ErrSigningStringClaims
 		}
 	}
-	return copy, nil
+	return issued, nil
 }
