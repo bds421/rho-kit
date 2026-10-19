@@ -174,6 +174,9 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 	if c.state == nil {
 		return nil, errors.New("oauth2: WithStateStore is required")
 	}
+	if _, atomic := c.sessions.(SessionUpdater); c.idleTimeout > 0 && !atomic {
+		return nil, errors.New("oauth2: WithIdleTimeout requires a session store implementing SessionUpdater")
+	}
 	// Fail closed: a public client (no client secret) with PKCE disabled
 	// has neither authorization-code-interception protection — exactly
 	// the configuration RFC 7636 forbids. WithoutPKCE is only valid for

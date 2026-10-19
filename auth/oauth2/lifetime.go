@@ -77,6 +77,11 @@ func WithAbsoluteSessionLifetime(d time.Duration) Option {
 // Sessions without LastActivity fall back to CreatedAt; sessions with
 // neither are treated as expired while the option is set.
 //
+// Activity is written only with an atomic compare-and-set, so a logout
+// between reading and writing a session is never undone: [NewClient] fails
+// when the session store does not implement [SessionUpdater] (the memory
+// and auth/oauth2/redis stores do).
+//
 // Panics on a non-positive duration.
 func WithIdleTimeout(d time.Duration) Option {
 	if d <= 0 {
@@ -171,8 +176,8 @@ func (c *Client) expireSession(ctx context.Context, sessionID, reason string) er
 
 // recordActivity stores now as the session's LastActivity when the idle
 // timeout is enabled and the recorded value is at least
-// activityWriteInterval old. Write failures and lost compare-and-set races
-// are not fatal: the request proceeds and the next one retries.
+// activityWriteInterval old, through [SessionUpdater] only. Write failures
+// and lost compare-and-set races are not fatal: the request proceeds and the next one retries.
 func (c *Client) recordActivity(ctx context.Context, sessionID string, sess Session, now time.Time) Session {
 	if c.idleTimeout <= 0 || now.Sub(lastActivity(sess)) < activityWriteInterval {
 		return sess
@@ -184,22 +189,17 @@ func (c *Client) recordActivity(ctx context.Context, sessionID string, sess Sess
 	if ttl <= 0 {
 		return sess
 	}
-	if updater, ok := c.sessions.(SessionUpdater); ok {
-		stored, err := updater.Update(ctx, sessionID, sess.Version, cloneSession(updated), ttl)
-		if err != nil {
-			c.logger.WarnContext(ctx, "oauth2: recording session activity failed", redact.Error(err))
-			return sess
-		}
-		if !stored {
-			return sess
-		}
-		return updated
-	}
-	if _, err := c.sessions.Get(ctx, sessionID); err != nil {
+	// NewClient guarantees a SessionUpdater when the idle timeout is set: a
+	// non-atomic Get+Put could recreate a session deleted by a concurrent
+	// logout.
+	updater := c.sessions.(SessionUpdater)
+	stored, err := updater.Update(ctx, sessionID, sess.Version, cloneSession(updated), ttl)
+	if err != nil {
+		c.logger.WarnContext(ctx, "oauth2: recording session activity failed", redact.Error(err))
 		return sess
 	}
-	if err := c.sessions.Put(ctx, sessionID, cloneSession(updated), ttl); err != nil {
-		c.logger.WarnContext(ctx, "oauth2: recording session activity failed", redact.Error(err))
+	if !stored {
+		// Deleted (logout) or rewritten meanwhile: never recreate it.
 		return sess
 	}
 	return updated

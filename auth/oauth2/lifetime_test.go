@@ -294,3 +294,48 @@ func TestLifetimeOptions_PanicOnInvalidValues(t *testing.T) {
 	assert.Panics(t, func() { oauth2.WithBackgroundRequestHeader("") })
 	assert.Panics(t, func() { oauth2.WithBackgroundRequestHeader("bad header") })
 }
+
+// nonAtomicStore hides the memory store's SessionUpdater.
+type nonAtomicStore struct{ inner *oauth2.MemorySessionStore }
+
+func (s nonAtomicStore) Put(ctx context.Context, id string, sess oauth2.Session, ttl time.Duration) error {
+	return s.inner.Put(ctx, id, sess, ttl)
+}
+func (s nonAtomicStore) Get(ctx context.Context, id string) (oauth2.Session, error) {
+	return s.inner.Get(ctx, id)
+}
+func (s nonAtomicStore) Delete(ctx context.Context, id string) error { return s.inner.Delete(ctx, id) }
+
+func TestIdleTimeout_RequiresAtomicUpdater(t *testing.T) {
+	issuer := newFakeIssuer(t, "test-client")
+	_, err := oauth2.NewClient(context.Background(), oauth2.Config{
+		Issuer: issuer.server.URL, ClientID: "test-client", RedirectURL: "https://app/cb",
+	}, oauth2.WithSessionStore(nonAtomicStore{inner: oauth2.NewMemorySessionStore()}),
+		oauth2.WithStateStore(oauth2.NewMemoryStateStore()), oauth2.WithIdleTimeout(time.Hour))
+	require.ErrorContains(t, err, "WithIdleTimeout requires a session store implementing SessionUpdater")
+}
+
+// logoutBeforeUpdateStore deletes the session between the request's read
+// and its activity write, as a concurrent logout would.
+type logoutBeforeUpdateStore struct{ *oauth2.MemorySessionStore }
+
+func (s logoutBeforeUpdateStore) Update(ctx context.Context, id string, v uint64, sess oauth2.Session, ttl time.Duration) (bool, error) {
+	if err := s.Delete(ctx, id); err != nil {
+		return false, err
+	}
+	return s.MemorySessionStore.Update(ctx, id, v, sess, ttl)
+}
+
+func TestIdleTimeout_LogoutBetweenReadAndActivityWriteStaysDeleted(t *testing.T) {
+	store := logoutBeforeUpdateStore{MemorySessionStore: oauth2.NewMemorySessionStore()}
+	_, client := newLifetimeClient(t, store, oauth2.WithIdleTimeout(time.Hour))
+	stale := time.Now().Add(-5 * time.Minute)
+	seedSession(t, store, oauth2.Session{CreatedAt: stale, LastActivity: stale})
+
+	_, err := client.SessionFromRequest(context.Background(), sessionRequest("s1"))
+	require.NoError(t, err, "the in-flight request itself was authenticated before the logout")
+	_, err = store.Get(context.Background(), "s1")
+	require.ErrorIs(t, err, oauth2.ErrSessionNotFound, "recording activity must not recreate a logged-out session")
+	_, err = client.SessionFromRequest(context.Background(), sessionRequest("s1"))
+	require.ErrorIs(t, err, oauth2.ErrSessionNotFound)
+}
