@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.16.0 — 2026-10-19
+
+- **feat(auth/oauth2): `WithSignInHook` and `Session.Attributes`.** An
+  application resolves the person in its own directory once per sign-in with
+  the fresh, verified ID token and keeps the result on the session; the hook
+  can refuse the sign-in (`ErrSignInRefused`, 403). The memory and Redis
+  session stores keep the attributes.
+
 ## v2.15.0 — 2026-10-19
 
 - **feat(httpx/middleware/stack): `WithTrustedProxies`.** The access log

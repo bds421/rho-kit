@@ -37,6 +37,10 @@ or UserInfo without re-discovering endpoints.
   `WithTokenRefresh(leeway)` (transparent refresh in `SessionFromRequest`),
   `WithRPInitiatedLogout(postLogoutURI)` (logout answers 200 with a
   `LogoutResponse{LogoutURL}` instead of 204)
+- `WithSignInHook(fn)`: runs after ID-token verification, before the session
+  is stored; returns `Session.Attributes` (kept across refresh). Wrap
+  `ErrSignInRefused` to refuse (403); other errors answer 502; either way no
+  session is created
 - `Session.IDToken` keeps the raw verified ID token for `id_token_hint`;
   `auth/oauth2/redis.WithEncryption` encrypts stored sessions/state
 - `SessionUpdater` (optional store interface, `Update(ctx, id, expectedVersion,

@@ -26,7 +26,7 @@ func newStore(t *testing.T) (*miniredis.Miniredis, *redisoauth.Store) {
 
 func TestSessionRoundTripAndTTL(t *testing.T) {
 	mr, store := newStore(t)
-	session := oauth2.Session{SessionID: "s1", UserID: "user-1", AccessToken: secret.NewFromString("access"), RefreshToken: secret.NewFromString("refresh"), Expiry: time.Now().Add(time.Hour), Claims: map[string]any{"email": "a@example.com"}}
+	session := oauth2.Session{SessionID: "s1", UserID: "user-1", AccessToken: secret.NewFromString("access"), RefreshToken: secret.NewFromString("refresh"), Expiry: time.Now().Add(time.Hour), Claims: map[string]any{"email": "a@example.com"}, Attributes: map[string]string{"directory_user": "u-1"}}
 	require.NoError(t, store.Put(context.Background(), "s1", session, time.Minute))
 	got, err := store.Get(context.Background(), "s1")
 	require.NoError(t, err)
@@ -34,6 +34,7 @@ func TestSessionRoundTripAndTTL(t *testing.T) {
 	assert.Equal(t, "access", got.AccessToken.RevealString())
 	assert.Equal(t, "refresh", got.RefreshToken.RevealString())
 	assert.Equal(t, "a@example.com", got.Claims["email"])
+	assert.Equal(t, "u-1", got.Attributes["directory_user"])
 	mr.FastForward(time.Minute + time.Second)
 	_, err = store.Get(context.Background(), "s1")
 	assert.ErrorIs(t, err, oauth2.ErrSessionNotFound)

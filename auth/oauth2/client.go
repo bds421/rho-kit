@@ -61,6 +61,9 @@ type Client struct {
 	replayCache       ReplayCache
 	revocationHook    func(ctx context.Context, subject string)
 
+	// Sign-in hook (WithSignInHook).
+	signInHook func(ctx context.Context, sess Session) (map[string]string, error)
+
 	// Session lifetime limits (WithAbsoluteSessionLifetime, WithIdleTimeout).
 	absoluteLifetime time.Duration
 	idleTimeout      time.Duration
@@ -526,6 +529,9 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	// Session.RefreshToken contract).
 	if token.RefreshToken != "" {
 		sess.RefreshToken = secret.NewFromString(token.RefreshToken)
+	}
+	if !c.runSignInHook(w, r, &sess) {
+		return
 	}
 	if err := c.sessions.Put(r.Context(), sessionID, sess, c.sessionTTLFor(sess, now)); err != nil {
 		c.logger.WarnContext(r.Context(), "oauth2: session.Put failed", redact.Error(err))

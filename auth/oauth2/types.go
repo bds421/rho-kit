@@ -72,6 +72,10 @@ type Session struct {
 	// recorded for the session (written at most once per minute). It drives
 	// [WithIdleTimeout]. Zero for sessions stored before it was recorded.
 	LastActivity time.Time
+	// Attributes is application data attached at sign-in by [WithSignInHook],
+	// for example the person's identifier in the application's own
+	// directory. It is kept for the session's lifetime, across token refresh.
+	Attributes map[string]string
 	// Version is a write generation used for compare-and-set updates (see
 	// [SessionUpdater]). The client sets it; stores persist it unchanged.
 	Version uint64
