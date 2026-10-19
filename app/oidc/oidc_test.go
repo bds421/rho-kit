@@ -181,3 +181,32 @@ func TestMiddleware_ExposesSessionAuthentication(t *testing.T) {
 	_, _, ok := SessionAuthentication(context.Background())
 	assert.False(t, ok)
 }
+
+func TestMiddleware_ExposesSessionAttributes(t *testing.T) {
+	sessions := kitoauth.NewMemorySessionStore()
+	m := Module(kitoauth.Config{Issuer: testOIDCIssuer(t), ClientID: "web", RedirectURL: "https://app.example.test/oauth/callback"},
+		WithSessionStore(sessions), WithStateStore(kitoauth.NewMemoryStateStore()), WithInMemoryStoresForTesting(),
+	).(*module)
+	initModule(t, m)
+	require.NoError(t, sessions.Put(context.Background(), "session-1", kitoauth.Session{
+		SessionID: "session-1", UserID: "user-1", Attributes: map[string]string{"directory_user": "u-1"},
+	}, time.Minute))
+
+	var seen bool
+	h := m.PublicMiddleware()[0].Func(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		attrs, ok := SessionAttributes(r.Context())
+		require.True(t, ok)
+		assert.Equal(t, "u-1", attrs["directory_user"])
+		attrs["directory_user"] = "mutated"
+		again, _ := SessionAttributes(r.Context())
+		assert.Equal(t, "u-1", again["directory_user"], "callers get a copy")
+		seen = true
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
+	req.AddCookie(&http.Cookie{Name: "kit_oauth_session", Value: "session-1"})
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	assert.True(t, seen)
+
+	_, ok := SessionAttributes(context.Background())
+	assert.False(t, ok)
+}

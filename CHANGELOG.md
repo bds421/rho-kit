@@ -7,6 +7,8 @@
   the fresh, verified ID token and keeps the result on the session; the hook
   can refuse the sign-in (`ErrSignInRefused`, 403). The memory and Redis
   session stores keep the attributes.
+- **feat(app/oidc): `SessionAttributes`.** Reads the attributes of the
+  request's session in handlers, like `SessionClaims`.
 
 ## v2.15.0 — 2026-10-19
 
