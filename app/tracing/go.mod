@@ -3,18 +3,18 @@ module github.com/bds421/rho-kit/app/tracing/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/app/v2 v2.8.0
-	github.com/bds421/rho-kit/core/v2 v2.8.0
-	github.com/bds421/rho-kit/observability/v2 v2.8.0
-	github.com/bds421/rho-kit/runtime/v2 v2.8.0
+	github.com/bds421/rho-kit/app/v2 v2.10.0
+	github.com/bds421/rho-kit/core/v2 v2.10.0
+	github.com/bds421/rho-kit/observability/v2 v2.10.0
+	github.com/bds421/rho-kit/runtime/v2 v2.10.0
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
-	github.com/bds421/rho-kit/httpx/v2 v2.8.0 // indirect
-	github.com/bds421/rho-kit/infra/v2 v2.8.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.8.0 // indirect
-	github.com/bds421/rho-kit/security/v2 v2.8.0 // indirect
+	github.com/bds421/rho-kit/httpx/v2 v2.10.0 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.10.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.10.0 // indirect
+	github.com/bds421/rho-kit/security/v2 v2.10.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -43,7 +43,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
