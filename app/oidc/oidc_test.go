@@ -150,3 +150,34 @@ func TestMiddleware_BackChannelLogoutRouteIsOptIn(t *testing.T) {
 	assert.JSONEq(t, `{"error":"invalid_request"}`, res.Body.String())
 	assert.False(t, *called)
 }
+
+func TestMiddleware_ExposesSessionAuthentication(t *testing.T) {
+	sessions := kitoauth.NewMemorySessionStore()
+	m := Module(kitoauth.Config{Issuer: testOIDCIssuer(t), ClientID: "web", RedirectURL: "https://app.example.test/oauth/callback"},
+		WithSessionStore(sessions), WithStateStore(kitoauth.NewMemoryStateStore()), WithInMemoryStoresForTesting(),
+	).(*module)
+	initModule(t, m)
+	authTime := time.Now().Add(-time.Minute).Truncate(time.Second)
+	require.NoError(t, sessions.Put(context.Background(), "session-1", kitoauth.Session{
+		SessionID: "session-1", UserID: "user-1", AMR: []string{"pwd", "otp"}, AuthTime: authTime,
+	}, time.Minute))
+
+	var seen bool
+	h := m.PublicMiddleware()[0].Func(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		amr, at, ok := SessionAuthentication(r.Context())
+		require.True(t, ok)
+		assert.Equal(t, []string{"pwd", "otp"}, amr)
+		assert.True(t, authTime.Equal(at))
+		amr[0] = "mutated"
+		again, _, _ := SessionAuthentication(r.Context())
+		assert.Equal(t, "pwd", again[0], "callers get a copy")
+		seen = true
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
+	req.AddCookie(&http.Cookie{Name: "kit_oauth_session", Value: "session-1"})
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	assert.True(t, seen)
+
+	_, _, ok := SessionAuthentication(context.Background())
+	assert.False(t, ok)
+}

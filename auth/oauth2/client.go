@@ -339,7 +339,17 @@ func (c *Client) Handlers() Handlers {
 // persists them, and redirects to the issuer's authorization endpoint
 // via golang.org/x/oauth2.AuthCodeURL — which handles encoding,
 // scope joining, and PKCE challenge construction.
+//
+// The optional prompt and max_age query parameters request step-up
+// authentication (for example ?prompt=login&max_age=0). They are validated
+// against an allowlist and forwarded to the authorization request; with
+// max_age the callback requires a fresh enough auth_time.
 func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
+	params, err := parseLoginParams(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	state, err := generateRandomToken()
 	if err != nil {
 		http.Error(w, "oauth2: state generation failed", http.StatusInternalServerError)
@@ -350,7 +360,7 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "oauth2: nonce generation failed", http.StatusInternalServerError)
 		return
 	}
-	entry := StateEntry{Nonce: nonce, CreatedAt: time.Now()}
+	entry := StateEntry{Nonce: nonce, CreatedAt: time.Now(), MaxAge: params.maxAge}
 	// Only persist a post-login deep link when it is an origin-relative
 	// path. Absolute or scheme-relative targets are dropped to prevent
 	// an attacker-controlled redirect_to turning the callback into an
@@ -364,9 +374,9 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	authOpts := []xoauth2.AuthCodeOption{
+	authOpts := append([]xoauth2.AuthCodeOption{
 		oidc.Nonce(nonce),
-	}
+	}, params.authCodeOptions()...)
 	if c.usePKCE {
 		// golang.org/x/oauth2 mints the verifier + paired S256
 		// challenge for us. The verifier rides in the StateStore
@@ -483,6 +493,12 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, ErrIDTokenInvalid.Error(), http.StatusBadGateway)
 		return
 	}
+	amr, authTime := authenticationClaims(claims)
+	if entry.MaxAge != nil && !satisfiesMaxAge(authTime, entry.CreatedAt, *entry.MaxAge) {
+		c.logger.WarnContext(r.Context(), "oauth2: id_token auth_time does not satisfy the requested max_age")
+		http.Error(w, ErrStaleAuthentication.Error(), http.StatusBadRequest)
+		return
+	}
 
 	sessionID, err := generateRandomToken()
 	if err != nil {
@@ -498,6 +514,8 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		Expiry:       token.Expiry,
 		Claims:       claims,
 		SID:          stringClaim(claims, "sid"),
+		AuthTime:     authTime,
+		AMR:          amr,
 		CreatedAt:    now,
 		LastActivity: now,
 	}

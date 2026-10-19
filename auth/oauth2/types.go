@@ -56,6 +56,14 @@ type Session struct {
 	// used by back-channel logout ([WithBackChannelLogout]). Empty when the
 	// provider does not issue it.
 	SID string
+	// AuthTime is when the user last actively authenticated at the provider
+	// (the ID token's "auth_time" claim). Zero when the provider did not
+	// include it. Use it for step-up checks together with AMR.
+	AuthTime time.Time
+	// AMR lists the authentication methods used (the ID token's "amr"
+	// claim, e.g. "pwd", "otp", "hwk"). Nil when the provider did not
+	// include it.
+	AMR []string
 	// CreatedAt is when the login callback created the session. It bounds
 	// [WithAbsoluteSessionLifetime]. Zero for sessions stored before it was
 	// recorded.
@@ -150,6 +158,10 @@ type StateEntry struct {
 	CodeVerifier string
 	RedirectTo   string // optional post-login deep link
 	CreatedAt    time.Time
+	// MaxAge is the max_age (seconds) requested at login, nil when none
+	// was. The callback then requires auth_time no older than MaxAge
+	// before CreatedAt.
+	MaxAge *int `json:",omitempty"`
 }
 
 // Sentinel errors.
@@ -182,6 +194,10 @@ var (
 	// query values are logged server-side rather than reflected to the
 	// caller.
 	ErrProviderError = errors.New("oauth2: provider returned an error")
+	// ErrStaleAuthentication is returned by the callback handler when a
+	// login requested max_age but the ID token's auth_time is missing or
+	// older than allowed.
+	ErrStaleAuthentication = errors.New("oauth2: authentication older than max_age")
 	// ErrSessionIndexUnsupported is returned by
 	// [Client.DeleteSessionsBySubject] when the session store does not
 	// implement [SessionIndex].

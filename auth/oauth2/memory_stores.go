@@ -3,6 +3,7 @@ package oauth2
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -193,6 +194,8 @@ func cloneSession(s Session) Session {
 		SessionID:    s.SessionID,
 		UserID:       s.UserID,
 		SID:          s.SID,
+		AuthTime:     s.AuthTime,
+		AMR:          slices.Clone(s.AMR),
 		Expiry:       s.Expiry,
 		CreatedAt:    s.CreatedAt,
 		LastActivity: s.LastActivity,

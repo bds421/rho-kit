@@ -91,9 +91,13 @@ func TestSessionWire_PersistsLifecycleFields(t *testing.T) {
 	ctx := context.Background()
 	created := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
 	active := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
-	require.NoError(t, store.Put(ctx, "s1", oauth2.Session{UserID: "u1", SID: "sid-a", CreatedAt: created, LastActivity: active}, time.Hour))
+	require.NoError(t, store.Put(ctx, "s1", oauth2.Session{
+		UserID: "u1", SID: "sid-a", CreatedAt: created, LastActivity: active, AuthTime: created, AMR: []string{"pwd", "otp"},
+	}, time.Hour))
 	got, err := store.Get(ctx, "s1")
 	require.NoError(t, err)
+	assert.Equal(t, []string{"pwd", "otp"}, got.AMR)
+	assert.True(t, created.Equal(got.AuthTime))
 	assert.Equal(t, "sid-a", got.SID)
 	assert.True(t, created.Equal(got.CreatedAt))
 	assert.True(t, active.Equal(got.LastActivity))
@@ -154,4 +158,20 @@ func TestDeleteSessionsBySubject_RedisStore(t *testing.T) {
 	_, err = store.Get(ctx, "s3")
 	require.NoError(t, err)
 	assert.Empty(t, lookup(t, store.SessionIDsBySID, "sid-a"))
+}
+
+func TestStateEntry_PersistsMaxAge(t *testing.T) {
+	_, store := newStore(t)
+	ctx := context.Background()
+	zero := 0
+	require.NoError(t, store.States().Put(ctx, "st1", oauth2.StateEntry{Nonce: "n", MaxAge: &zero}, time.Minute))
+	got, err := store.States().Get(ctx, "st1")
+	require.NoError(t, err)
+	require.NotNil(t, got.MaxAge)
+	assert.Equal(t, 0, *got.MaxAge)
+
+	require.NoError(t, store.States().Put(ctx, "st2", oauth2.StateEntry{Nonce: "n"}, time.Minute))
+	got, err = store.States().Get(ctx, "st2")
+	require.NoError(t, err)
+	assert.Nil(t, got.MaxAge)
 }

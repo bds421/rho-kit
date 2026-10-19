@@ -194,6 +194,10 @@ func (c *Client) refreshSession(ctx context.Context, sessionID string) (Session,
 		if sid := stringClaim(claims, "sid"); sid != "" {
 			updated.SID = sid
 		}
+		if amr, authTime := authenticationClaims(claims); !authTime.IsZero() {
+			updated.AuthTime = authTime
+			updated.AMR = amr
+		}
 	}
 	updated.Version = current.Version + 1
 	return c.storeRefreshed(ctx, sessionID, current, updated)

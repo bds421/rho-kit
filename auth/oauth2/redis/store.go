@@ -72,6 +72,8 @@ type sessionWire struct {
 	SessionID    string         `json:"session_id"`
 	UserID       string         `json:"user_id"`
 	SID          string         `json:"sid,omitempty"`
+	AuthTime     time.Time      `json:"auth_time,omitzero"`
+	AMR          []string       `json:"amr,omitempty"`
 	AccessToken  string         `json:"access_token"`
 	RefreshToken string         `json:"refresh_token,omitempty"`
 	IDToken      string         `json:"id_token,omitempty"`
@@ -173,7 +175,7 @@ func (s *Store) Update(ctx context.Context, sessionID string, expectedVersion ui
 func (s *Store) encodeSession(key string, session oauth2.Session) ([]byte, error) {
 	w := sessionWire{
 		SessionID: session.SessionID, UserID: session.UserID, SID: session.SID, Expiry: session.Expiry, Claims: session.Claims, Version: session.Version,
-		CreatedAt: session.CreatedAt, LastActivity: session.LastActivity,
+		CreatedAt: session.CreatedAt, LastActivity: session.LastActivity, AuthTime: session.AuthTime, AMR: session.AMR,
 	}
 	if session.AccessToken != nil {
 		w.AccessToken = session.AccessToken.RevealString()
@@ -210,7 +212,7 @@ func (s *Store) decodeSession(key string, b []byte) (oauth2.Session, error) {
 	}
 	session := oauth2.Session{
 		SessionID: w.SessionID, UserID: w.UserID, SID: w.SID, Expiry: w.Expiry, Claims: w.Claims, Version: w.Version,
-		CreatedAt: w.CreatedAt, LastActivity: w.LastActivity,
+		CreatedAt: w.CreatedAt, LastActivity: w.LastActivity, AuthTime: w.AuthTime, AMR: w.AMR,
 	}
 	if w.AccessToken != "" {
 		session.AccessToken = secret.NewFromString(w.AccessToken)

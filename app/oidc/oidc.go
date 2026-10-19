@@ -210,7 +210,8 @@ func (m *module) middleware(next http.Handler) http.Handler {
 			return
 		}
 		ctx := identity.WithPrincipal(r.Context(), principal)
-		next.ServeHTTP(w, r.WithContext(withSessionClaims(ctx, session.Claims)))
+		ctx = withSessionAuthentication(withSessionClaims(ctx, session.Claims), session.AMR, session.AuthTime)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
