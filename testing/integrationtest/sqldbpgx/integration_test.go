@@ -4,6 +4,7 @@ package sqldbpgx
 
 import (
 	"context"
+	"github.com/jackc/pgx/v5"
 	"net"
 	"net/url"
 	"strconv"
@@ -112,4 +113,36 @@ func TestListenNotify_RoundTrip(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, "first", got[0].Payload)
 	assert.Equal(t, "second", got[1].Payload)
+}
+
+type tenantKey struct{}
+
+func TestPrepareConn_ScopesEveryCheckout(t *testing.T) {
+	dsn := startPostgres(t)
+	pool, err := kitpgx.Connect(context.Background(), kitpgx.Config{
+		DSN: dsn, AllowPlaintextLoopbackForTests: true, MaxConns: 1,
+		PrepareConn: func(ctx context.Context, conn *pgx.Conn) (bool, error) {
+			tenant, _ := ctx.Value(tenantKey{}).(string)
+			_, err := conn.Exec(ctx, "SELECT set_config('app.tenant', $1, false)", tenant)
+			return err == nil, err
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = pool.Close() }()
+
+	read := func(ctx context.Context) string {
+		var v string
+		if err := pool.Pool().QueryRow(ctx, "SELECT current_setting('app.tenant', true)").Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if got := read(context.WithValue(context.Background(), tenantKey{}, "a")); got != "a" {
+		t.Fatalf("first checkout saw %q, want a", got)
+	}
+	if got := read(context.Background()); got != "" {
+		t.Fatalf("next checkout on the same connection kept %q", got)
+	}
 }

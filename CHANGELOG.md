@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.13.0 — 2026-10-19
+
+- **feat(infra/sqldb/pgx): `Config.PrepareConn`.** Runs whenever a connection
+  is taken from the pool, with the caller's context, so per-request session
+  state such as the tenant read by row-level security policies is set on
+  every checkout without touching call sites.
+
 ## v2.12.1 — 2026-10-19
 
 - **fix(security/netutil): narrower `WithAllowedNetworks`.** IPv6 networks

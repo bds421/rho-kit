@@ -58,6 +58,15 @@ type Config struct {
 	// event to force fresh connections.
 	PasswordProvider func(context.Context) (string, error)
 
+	// PrepareConn, when set, runs every time a connection is taken from the
+	// pool, with the context of the call that takes it. Use it to put
+	// per-request session state on the connection, such as the tenant that
+	// row-level security policies read through current_setting. It must set
+	// that state completely on every call, because pooled connections are
+	// reused across requests. Returning false or an error discards the
+	// connection.
+	PrepareConn func(ctx context.Context, conn *pgx.Conn) (bool, error)
+
 	// AllowPlaintextLoopbackForTests opts out of the unconditional
 	// sslmode check, but ONLY when the DSN's host resolves to a
 	// loopback address (127.0.0.0/8 or ::1) — the connection literally
@@ -184,6 +193,9 @@ func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 	}
 	applyPoolDefaults(pcfg, cfg, cfg.DSN)
 	applyPasswordProvider(pcfg, cfg.PasswordProvider)
+	if cfg.PrepareConn != nil {
+		pcfg.PrepareConn = cfg.PrepareConn
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, pcfg)
 	if err != nil {
