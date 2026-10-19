@@ -3,11 +3,11 @@ module github.com/bds421/rho-kit/cmd/kit-migrate/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/data/actionlog/postgres/v2 v2.8.0
-	github.com/bds421/rho-kit/data/approval/postgres/v2 v2.8.0
-	github.com/bds421/rho-kit/data/idempotency/pgstore/v2 v2.8.0
-	github.com/bds421/rho-kit/infra/outbox/postgres/v2 v2.8.0
-	github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.8.0
+	github.com/bds421/rho-kit/data/actionlog/postgres/v2 v2.10.0
+	github.com/bds421/rho-kit/data/approval/postgres/v2 v2.10.0
+	github.com/bds421/rho-kit/data/idempotency/pgstore/v2 v2.10.0
+	github.com/bds421/rho-kit/infra/outbox/postgres/v2 v2.10.0
+	github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.10.0
 )
 
 require (
@@ -19,11 +19,12 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.8.0 // indirect
-	github.com/bds421/rho-kit/data/v2 v2.8.0 // indirect
-	github.com/bds421/rho-kit/infra/v2 v2.8.0 // indirect
-	github.com/bds421/rho-kit/io/v2 v2.8.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.8.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.10.0 // indirect
+	github.com/bds421/rho-kit/data/v2 v2.10.0 // indirect
+	github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.10.0 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.10.0 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.10.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.10.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
@@ -37,9 +38,9 @@ require (
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel v1.44.0 // indirect
-	go.opentelemetry.io/otel/metric v1.44.0 // indirect
-	go.opentelemetry.io/otel/trace v1.44.0 // indirect
+	go.opentelemetry.io/otel v1.45.0 // indirect
+	go.opentelemetry.io/otel/metric v1.45.0 // indirect
+	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
