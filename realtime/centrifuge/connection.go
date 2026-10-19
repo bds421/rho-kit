@@ -140,9 +140,9 @@ func (n *Node) refresh(client *cfg.Client, event cfg.RefreshEvent, cb cfg.Refres
 		cb(cfg.RefreshReply{}, cfg.DisconnectInvalidToken)
 		return
 	}
-	copy := *claims
-	copy.Permissions = slices.Clone(claims.Permissions)
-	policy, err := n.refreshPolicy(client.Context(), Connection{client: client}, event, copy)
+	claimsCopy := *claims
+	claimsCopy.Permissions = slices.Clone(claims.Permissions)
+	policy, err := n.refreshPolicy(client.Context(), Connection{client: client}, event, claimsCopy)
 	if err != nil {
 		cb(cfg.RefreshReply{}, cfg.DisconnectPermissionDenied)
 		return

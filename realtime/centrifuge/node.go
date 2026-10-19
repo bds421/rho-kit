@@ -310,19 +310,22 @@ func (n *Node) installCallbacks() {
 			return cfg.ConnectReply{}, cfg.DisconnectInvalidToken
 		}
 		policy := ConnectionPolicyReply{}
+		// Without a connect policy the token expiry is used unchanged; the
+		// connect request's own deadline must not shorten the connection.
+		expiry := claims.ExpiresAt
 		if n.connectPolicy != nil {
-			copy := *claims
-			copy.Permissions = slices.Clone(claims.Permissions)
-			policy, err = n.connectPolicy(ctx, e, copy)
+			claimsCopy := *claims
+			claimsCopy.Permissions = slices.Clone(claims.Permissions)
+			policy, err = n.connectPolicy(ctx, e, claimsCopy)
 			if err != nil {
 				n.metrics.observeConnect(connectOutcomeRejected)
 				return cfg.ConnectReply{}, cfg.DisconnectPermissionDenied
 			}
-		}
-		expiry, err := boundedPolicyExpiry(ctx, claims.ExpiresAt, policy, time.Now())
-		if err != nil {
-			n.metrics.observeConnect(connectOutcomeRejected)
-			return cfg.ConnectReply{}, cfg.DisconnectExpired
+			expiry, err = boundedPolicyExpiry(ctx, claims.ExpiresAt, policy, time.Now())
+			if err != nil {
+				n.metrics.observeConnect(connectOutcomeRejected)
+				return cfg.ConnectReply{}, cfg.DisconnectExpired
+			}
 		}
 		n.metrics.observeConnect(connectOutcomeAccepted)
 		policyContext := policy.Context
