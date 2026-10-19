@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.10.1 — 2026-10-19
+
+- **feat(httpx/middleware/stack): `WithWebSocketPaths`.** The stack wraps
+  every route in the buffering timeout middleware, so a WebSocket handler
+  behind it (realtime/centrifuge) answered 500 because the connection could
+  not be hijacked. WebSocket upgrades on the named exact paths now bypass
+  the timeout; upgrades elsewhere and plain requests on those paths keep it.
+
 ## v2.10.0 — 2026-10-19
 
 Supersedes the v2.9.0 tags of `security`, `realtime/centrifuge`, `infra`,

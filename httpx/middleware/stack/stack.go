@@ -3,6 +3,8 @@ package stack
 import (
 	"log/slog"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
@@ -48,8 +50,12 @@ type Config struct {
 	EnableTimeout       bool
 	EnableReqLogger     bool
 	Timeout             time.Duration
-	FrameOption         secheaders.FrameOption
-	RecoverMetrics      *mwrecover.Metrics
+	// WebSocketPaths are exact request paths whose WebSocket upgrades skip
+	// the timeout middleware, which buffers responses and cannot hand the
+	// connection over. Set with [WithWebSocketPaths].
+	WebSocketPaths []string
+	FrameOption    secheaders.FrameOption
+	RecoverMetrics *mwrecover.Metrics
 	// SecHeadersOptions forwards arbitrary options to [secheaders.New]
 	// (audit FR-018). Use this to wire trusted-proxy CIDRs, force
 	// HSTS, or any other secheaders option that the stack does not
@@ -212,7 +218,7 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		h = mwlogging.WithRequestLogger(cfg.Logger)(h)
 	}
 	if cfg.EnableTimeout && cfg.Timeout > 0 {
-		h = mwtimeout.Timeout(cfg.Timeout)(h)
+		h = timeoutExceptWebSockets(cfg.Timeout, cfg.WebSocketPaths, h)
 	}
 	if cfg.EnableLogging {
 		h = mwlogging.Logger(cfg.Logger, cfg.QuietPaths, extraAttrs...)(h)
@@ -440,4 +446,38 @@ func WithAuditLog(logger *auditlog.Logger, opts ...mwauditlog.Option) Option {
 		cfg.AuditLogger = logger
 		cfg.AuditLogOptions = append(cfg.AuditLogOptions, copied...)
 	}
+}
+
+// WithWebSocketPaths names the exact request paths that serve WebSocket
+// connections, such as a realtime endpoint. A WebSocket upgrade on one of
+// them bypasses the per-request timeout; every other request on those
+// paths, and upgrades on any other path, keep the timeout, so a client
+// cannot make an arbitrary route run unbounded by sending the header.
+func WithWebSocketPaths(paths ...string) Option {
+	for _, p := range paths {
+		if p == "" || p[0] != '/' {
+			panic("stack: WithWebSocketPaths requires absolute request paths")
+		}
+	}
+	cloned := append([]string(nil), paths...)
+	return func(cfg *Config) { cfg.WebSocketPaths = append(cfg.WebSocketPaths, cloned...) }
+}
+
+func timeoutExceptWebSockets(d time.Duration, paths []string, next http.Handler) http.Handler {
+	limited := mwtimeout.Timeout(d)(next)
+	if len(paths) == 0 {
+		return limited
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isWebSocketUpgrade(r) && slices.Contains(paths, r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		limited.ServeHTTP(w, r)
+	})
+}
+
+func isWebSocketUpgrade(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
 }

@@ -317,7 +317,9 @@ func (n *Node) Publish(channel string, data []byte, opts ...cfg.PublishOption) (
 //
 // The handler composes naturally with the kit's httpx middleware
 // stack — wrap with auth, rate limiting, request IDs, panic
-// recovery exactly like any other http.Handler.
+// recovery exactly like any other http.Handler. Behind httpx
+// middleware/stack, name its path with stack.WithWebSocketPaths: the
+// stack's buffering timeout cannot hand the connection over.
 func (n *Node) WebsocketHandler() http.Handler {
 	wscfg := cfg.WebsocketConfig{}
 	if n.wsMessageSizeLimit > 0 {
