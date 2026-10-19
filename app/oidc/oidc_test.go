@@ -33,6 +33,12 @@ func testOIDCIssuer(t *testing.T) string {
 	t.Helper()
 	var issuer string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			return
+		}
 		if r.URL.Path != "/.well-known/openid-configuration" {
 			http.NotFound(w, r)
 			return

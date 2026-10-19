@@ -33,7 +33,12 @@ or UserInfo without re-discovering endpoints.
   `NewMemorySessionStore()`, `NewMemoryStateStore()`
 - Options: `WithSessionStore`, `WithStateStore`, `WithHTTPClient`,
   `WithLogger`, `WithSessionTTL`, `WithStateTTL`, `WithCookieName`,
-  `WithCookieDomain`, `WithInsecureCookie`, `WithoutPKCE`
+  `WithCookieDomain`, `WithInsecureCookie`, `WithoutPKCE`,
+  `WithTokenRefresh(leeway)` (transparent refresh in `SessionFromRequest`),
+  `WithRPInitiatedLogout(postLogoutURI)` (logout answers 200 with a
+  `LogoutResponse{LogoutURL}` instead of 204)
+- `Session.IDToken` keeps the raw verified ID token for `id_token_hint`;
+  `auth/oauth2/redis.WithEncryption` encrypts stored sessions/state
 
 ## Security defaults
 

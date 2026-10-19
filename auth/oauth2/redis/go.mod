@@ -6,6 +6,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/bds421/rho-kit/auth/oauth2/v2 v2.8.0
 	github.com/bds421/rho-kit/core/v2 v2.8.0
+	github.com/bds421/rho-kit/crypto/v2 v2.8.0
 	github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.8.0
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/redis/go-redis/v9 v9.21.0
@@ -62,6 +63,7 @@ require (
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/testcontainers/testcontainers-go v0.43.0 // indirect
 	github.com/testcontainers/testcontainers-go/modules/redis v0.43.0 // indirect
+	github.com/tink-crypto/tink-go/v2 v2.7.0 // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect

@@ -43,6 +43,10 @@ type Session struct {
 	// RefreshToken is used to obtain new access tokens without a new
 	// user login. Nil if the issuer didn't grant one. Also wrapped.
 	RefreshToken *secret.String
+	// IDToken is the raw verified ID token from the most recent token
+	// response. It is sent as id_token_hint by [WithRPInitiatedLogout]. Nil
+	// for sessions created before it was recorded.
+	IDToken *secret.String
 	// Expiry is the access token's expiration time.
 	Expiry time.Time
 	// Claims is the verified ID-token claim set. Includes "sub",

@@ -314,8 +314,34 @@ app.New("orders", version, base).With(oidcModule).Router(...).Run()
 HTTP and gRPC authentication paths. Build a `MappingProfile` to opt in to
 specific verified provider claims; the zero profile maps only the verified
 subject. It never exposes an unbounded raw claim map or a bearer token to
-business handlers. Keep Redis protected with TLS/authentication and never log
-stored session values.
+business handlers. Set `MappingProfile.AllowMissingClaims` when selected
+claims are optional: absent claims stay empty instead of answering 401, while
+malformed present claims still fail closed. Keep Redis protected with
+TLS/authentication, enable `oauth2redis.WithEncryption(keys...)` (AES-256-GCM,
+first key encrypts, all keys decrypt) and never log stored session values.
+
+Browser-session extras, all opt-in:
+
+- `appoidc.WithClientOption(oauth2.WithTokenRefresh(leeway))` refreshes an
+  access token that expires within `leeway` when the session holds a refresh
+  token (single-flight per session, re-read before refresh, persisted). A
+  provider rejection (4xx) or invalid refreshed ID token deletes the session;
+  a transport/5xx failure keeps serving the session until the access token
+  expires.
+- `appoidc.WithClientOption(oauth2.WithRPInitiatedLogout(postLogoutURI))`
+  makes `POST /oauth/logout` answer `200 {"logout_url": ...}` (the provider
+  `end_session_endpoint` with `client_id`, `id_token_hint`,
+  `post_logout_redirect_uri`) instead of 204. The frontend navigates there.
+- `appoidc.SessionClaims(ctx)` / `appoidc.DecodeSessionClaims(ctx, &dst)` read
+  the verified ID-token claims of the session, including object/array claims
+  that a string-only `Principal` cannot carry.
+
+```go
+var c struct {
+    Roles map[string]map[string]string `json:"urn:zitadel:iam:org:project:roles"`
+}
+if err := appoidc.DecodeSessionClaims(r.Context(), &c); err != nil { ... }
+```
 
 ### Service-to-service OAuth
 

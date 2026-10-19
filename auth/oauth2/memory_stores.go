@@ -56,6 +56,9 @@ func (m *MemorySessionStore) Put(_ context.Context, id string, sess Session, ttl
 		if existing.sess.RefreshToken != nil && existing.sess.RefreshToken != sess.RefreshToken {
 			existing.sess.RefreshToken.Zero()
 		}
+		if existing.sess.IDToken != nil && existing.sess.IDToken != sess.IDToken {
+			existing.sess.IDToken.Zero()
+		}
 	}
 	m.sessions[id] = memorySession{sess: sess, expiresAt: now.Add(ttl)}
 	return nil
@@ -115,6 +118,9 @@ func cloneSession(s Session) Session {
 	if s.RefreshToken != nil && !s.RefreshToken.IsEmpty() {
 		out.RefreshToken = secret.NewFromString(s.RefreshToken.RevealString())
 	}
+	if s.IDToken != nil && !s.IDToken.IsEmpty() {
+		out.IDToken = secret.NewFromString(s.IDToken.RevealString())
+	}
 	if s.Claims != nil {
 		out.Claims = make(map[string]any, len(s.Claims))
 		for k, v := range s.Claims {
@@ -130,6 +136,9 @@ func zeroSessionSecrets(s Session) {
 	}
 	if s.RefreshToken != nil {
 		s.RefreshToken.Zero()
+	}
+	if s.IDToken != nil {
+		s.IDToken.Zero()
 	}
 }
 

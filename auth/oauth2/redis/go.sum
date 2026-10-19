@@ -12,6 +12,8 @@ github.com/bds421/rho-kit/auth/oauth2/v2 v2.8.0 h1:OCrzji9Rb2cN/4oMTSLBcXEvSwFg0
 github.com/bds421/rho-kit/auth/oauth2/v2 v2.8.0/go.mod h1:JFI5qthD7VegyryVbuoycYPw48xUlmgUeyKtFhLhJpQ=
 github.com/bds421/rho-kit/core/v2 v2.8.0 h1:HcG6Poakb4lrO/emFsKiGlbX4wJjl/PjMt78SWYj3Ds=
 github.com/bds421/rho-kit/core/v2 v2.8.0/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
+github.com/bds421/rho-kit/crypto/v2 v2.8.0 h1:O2O/a8Rr/eUthXomL3qPVIj9dR3hdnWnMUZvRa/MgZ8=
+github.com/bds421/rho-kit/crypto/v2 v2.8.0/go.mod h1:vGRvHcoiuEsYlNSKrRMVBGYJXN2IhT67GQg3qWF3+DI=
 github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.8.0 h1:NGjDtwlxzdjz6ZoR8uYh2s0VtR8y2+wwXPEK2QKj5uo=
 github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.8.0/go.mod h1:QLKCDhIOuzWuVKpjhg2eZ74jusSCzZLCrvf2MPSTCq8=
 github.com/bds421/rho-kit/infra/redis/v2 v2.8.0 h1:Sp1H+MP7Wu2fIoRXlQlC83M3Vz/qwfFnijXri+/MD2Q=
@@ -26,6 +28,8 @@ github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=
 github.com/bsm/gomega v1.27.10/go.mod h1:JyEr/xRbxbtgWNi8tIEVPUYZ5Dzef52k01W3YH0H+O0=
+github.com/c2sp/wycheproof v0.0.0-20260105152342-fca0d3ba9f12 h1:C34LW7dhWgjAaAOdNB8z2UCyJsXDjC6UTILljHuqOlI=
+github.com/c2sp/wycheproof v0.0.0-20260105152342-fca0d3ba9f12/go.mod h1:U1QjrC6KepOmtVmJn3QsKOTd9HliGr/da5afPEhLRnk=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
 github.com/cenkalti/backoff/v4 v4.3.0/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
@@ -140,6 +144,8 @@ github.com/testcontainers/testcontainers-go v0.43.0 h1:oEQx5MW2DGd9z3AeEQfB2lPM0
 github.com/testcontainers/testcontainers-go v0.43.0/go.mod h1:+VxkT2NQnKOZPKi6praMuMKYHYyOGXr0XSBSlSMCzFo=
 github.com/testcontainers/testcontainers-go/modules/redis v0.43.0 h1:qzATMhrltLr07KcGl/d674ouqI0AFtf6wnQb3VnqP7M=
 github.com/testcontainers/testcontainers-go/modules/redis v0.43.0/go.mod h1:ygEcEUIZzmIlOKpjBfnPn/lUIRNorr1kPj3XfFPTQXM=
+github.com/tink-crypto/tink-go/v2 v2.7.0 h1:k7QnUXJ1cRDpvoy/5l1FimZqMAArRff8vjUqzi5N04o=
+github.com/tink-crypto/tink-go/v2 v2.7.0/go.mod h1:cWNpQ/yAT/QHzAV0kBGMOSJzzYTKofDZdJaUqOPPWCI=
 github.com/tklauser/go-sysconf v0.4.0 h1:7H0uAN+7RkwWRaxhYXDLqa5V3LPrJeV8wmD9dRUgPQU=
 github.com/tklauser/go-sysconf v0.4.0/go.mod h1:8mTNWyog7H+MpKijp4VmKJAd2bbYQ2zuUwkYRbUArPI=
 github.com/tklauser/numcpus v0.12.0 h1:NR85qdvHA9pFse3x3weVZ0r0ST8R6l5RHbZrlRaqob4=

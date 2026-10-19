@@ -55,3 +55,34 @@ func TestPrincipalContextCopiesMutableFields(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "orders:read", again.Scopes[0])
 }
+
+func TestMappingProfileProject_AllowMissingClaims(t *testing.T) {
+	profile := MappingProfile{
+		TenantClaim:      "org",
+		ActorClaim:       "act",
+		ScopesClaim:      "scope",
+		PermissionsClaim: "permissions",
+		Claims:           map[string]string{"email": "email", "name": "name"},
+	}
+	_, err := profile.Project("user-1", map[string]any{})
+	require.ErrorIs(t, err, ErrInvalidPrincipal, "selected claims are required by default")
+
+	profile.AllowMissingClaims = true
+	p, err := profile.Project("user-1", map[string]any{"name": "Ada", "permissions": nil})
+	require.NoError(t, err)
+	assert.Equal(t, "user-1", p.Actor, "absent actor claim keeps the subject")
+	assert.Empty(t, p.Tenant)
+	assert.Nil(t, p.Scopes)
+	assert.Nil(t, p.Permissions)
+	assert.Equal(t, map[string]string{"name": "Ada"}, p.Claims)
+
+	p, err = profile.Project("user-1", map[string]any{})
+	require.NoError(t, err)
+	assert.Nil(t, p.Claims)
+
+	// Present but malformed still fails closed.
+	_, err = profile.Project("user-1", map[string]any{"org": 42})
+	assert.ErrorIs(t, err, ErrInvalidPrincipal)
+	_, err = profile.Project("user-1", map[string]any{"email": ""})
+	assert.ErrorIs(t, err, ErrInvalidPrincipal)
+}

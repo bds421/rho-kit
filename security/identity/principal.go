@@ -47,6 +47,12 @@ type MappingProfile struct {
 	ScopesClaim      string
 	PermissionsClaim string
 	Claims           map[string]string
+
+	// AllowMissingClaims leaves a selected claim empty when the provider
+	// omits it instead of failing the projection. A present claim with the
+	// wrong shape or an invalid value still fails closed. Default false:
+	// every selected claim is required.
+	AllowMissingClaims bool
 }
 
 // Project maps a verified subject and verified provider claims to a bounded
@@ -61,22 +67,22 @@ func (m MappingProfile) Project(subject string, providerClaims map[string]any) (
 		return Principal{}, ErrInvalidPrincipal
 	}
 	var err error
-	if m.TenantClaim != "" {
+	if m.TenantClaim != "" && !m.skip(providerClaims, m.TenantClaim) {
 		if p.Tenant, err = requiredString(providerClaims, m.TenantClaim); err != nil || !validID(p.Tenant) {
 			return Principal{}, invalidMapping("tenant", err)
 		}
 	}
-	if m.ActorClaim != "" {
+	if m.ActorClaim != "" && !m.skip(providerClaims, m.ActorClaim) {
 		if p.Actor, err = requiredString(providerClaims, m.ActorClaim); err != nil || !validID(p.Actor) {
 			return Principal{}, invalidMapping("actor", err)
 		}
 	}
-	if m.ScopesClaim != "" {
+	if m.ScopesClaim != "" && !m.skip(providerClaims, m.ScopesClaim) {
 		if p.Scopes, err = entitlementList(providerClaims[m.ScopesClaim]); err != nil {
 			return Principal{}, invalidMapping("scopes", err)
 		}
 	}
-	if m.PermissionsClaim != "" {
+	if m.PermissionsClaim != "" && !m.skip(providerClaims, m.PermissionsClaim) {
 		if p.Permissions, err = entitlementList(providerClaims[m.PermissionsClaim]); err != nil {
 			return Principal{}, invalidMapping("permissions", err)
 		}
@@ -90,14 +96,25 @@ func (m MappingProfile) Project(subject string, providerClaims map[string]any) (
 			if !validClaimName(target) || source == "" {
 				return Principal{}, fmt.Errorf("%w: invalid claim mapping", ErrInvalidPrincipal)
 			}
+			if m.skip(providerClaims, source) {
+				continue
+			}
 			value, err := requiredString(providerClaims, source)
 			if err != nil || !validID(value) {
 				return Principal{}, invalidMapping("claim "+target, err)
 			}
 			p.Claims[target] = value
 		}
+		if len(p.Claims) == 0 {
+			p.Claims = nil
+		}
 	}
 	return p.normalized(), nil
+}
+
+// skip reports whether an absent (or null) selected claim may be left empty.
+func (m MappingProfile) skip(claims map[string]any, name string) bool {
+	return m.AllowMissingClaims && claims[name] == nil
 }
 
 // WithPrincipal stores an immutable snapshot of p in ctx. The copied slices

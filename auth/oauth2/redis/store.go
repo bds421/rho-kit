@@ -28,6 +28,7 @@ const (
 type Store struct {
 	client goredis.UniversalClient
 	prefix string
+	sealer *sealer
 }
 
 // Option configures a Store.
@@ -68,6 +69,7 @@ type sessionWire struct {
 	UserID       string         `json:"user_id"`
 	AccessToken  string         `json:"access_token"`
 	RefreshToken string         `json:"refresh_token,omitempty"`
+	IDToken      string         `json:"id_token,omitempty"`
 	Expiry       time.Time      `json:"expiry"`
 	Claims       map[string]any `json:"claims,omitempty"`
 }
@@ -83,6 +85,9 @@ func (s *Store) Put(ctx context.Context, sessionID string, session oauth2.Sessio
 	if session.RefreshToken != nil {
 		w.RefreshToken = session.RefreshToken.RevealString()
 	}
+	if session.IDToken != nil {
+		w.IDToken = session.IDToken.RevealString()
+	}
 	b, err := json.Marshal(w)
 	if err != nil {
 		return redact.WrapError("oauth2/redis: encode session", err)
@@ -90,7 +95,11 @@ func (s *Store) Put(ctx context.Context, sessionID string, session oauth2.Sessio
 	if len(b) > maxValueBytes {
 		return errors.New("oauth2/redis: session exceeds maximum size")
 	}
-	if err := s.client.Set(ctx, s.sessionKey(sessionID), b, ttl).Err(); err != nil {
+	key := s.sessionKey(sessionID)
+	if b, err = s.sealValue(key, b); err != nil {
+		return err
+	}
+	if err := s.client.Set(ctx, key, b, ttl).Err(); err != nil {
 		return redact.WrapError("oauth2/redis: store session", err)
 	}
 	return nil
@@ -100,15 +109,21 @@ func (s *Store) Get(ctx context.Context, sessionID string) (oauth2.Session, erro
 	if err := validateRead(ctx, sessionID); err != nil {
 		return oauth2.Session{}, err
 	}
-	b, err := s.client.Get(ctx, s.sessionKey(sessionID)).Bytes()
+	key := s.sessionKey(sessionID)
+	b, err := s.client.Get(ctx, key).Bytes()
 	if errors.Is(err, goredis.Nil) {
 		return oauth2.Session{}, oauth2.ErrSessionNotFound
 	}
 	if err != nil {
 		return oauth2.Session{}, redact.WrapError("oauth2/redis: load session", err)
 	}
-	if len(b) > maxValueBytes {
+	if len(b) > s.maxStoredBytes() {
 		return oauth2.Session{}, errors.New("oauth2/redis: stored session exceeds maximum size")
+	}
+	if b, err = s.openValue(key, b); errors.Is(err, errNotDecryptable) {
+		return oauth2.Session{}, oauth2.ErrSessionNotFound
+	} else if err != nil {
+		return oauth2.Session{}, err
 	}
 	var w sessionWire
 	if err := json.Unmarshal(b, &w); err != nil {
@@ -120,6 +135,9 @@ func (s *Store) Get(ctx context.Context, sessionID string) (oauth2.Session, erro
 	}
 	if w.RefreshToken != "" {
 		session.RefreshToken = secret.NewFromString(w.RefreshToken)
+	}
+	if w.IDToken != "" {
+		session.IDToken = secret.NewFromString(w.IDToken)
 	}
 	return session, nil
 }
@@ -145,7 +163,11 @@ func (s *Store) PutState(ctx context.Context, state string, entry oauth2.StateEn
 	if len(b) > maxValueBytes {
 		return errors.New("oauth2/redis: state exceeds maximum size")
 	}
-	if err := s.client.Set(ctx, s.stateKey(state), b, ttl).Err(); err != nil {
+	key := s.stateKey(state)
+	if b, err = s.sealValue(key, b); err != nil {
+		return err
+	}
+	if err := s.client.Set(ctx, key, b, ttl).Err(); err != nil {
 		return redact.WrapError("oauth2/redis: store state", err)
 	}
 	return nil
@@ -156,15 +178,21 @@ func (s *Store) GetState(ctx context.Context, state string) (oauth2.StateEntry, 
 	if err := validateRead(ctx, state); err != nil {
 		return oauth2.StateEntry{}, err
 	}
-	b, err := s.client.Get(ctx, s.stateKey(state)).Bytes()
+	key := s.stateKey(state)
+	b, err := s.client.Get(ctx, key).Bytes()
 	if errors.Is(err, goredis.Nil) {
 		return oauth2.StateEntry{}, oauth2.ErrStateNotFound
 	}
 	if err != nil {
 		return oauth2.StateEntry{}, redact.WrapError("oauth2/redis: load state", err)
 	}
-	if len(b) > maxValueBytes {
+	if len(b) > s.maxStoredBytes() {
 		return oauth2.StateEntry{}, errors.New("oauth2/redis: stored state exceeds maximum size")
+	}
+	if b, err = s.openValue(key, b); errors.Is(err, errNotDecryptable) {
+		return oauth2.StateEntry{}, oauth2.ErrStateNotFound
+	} else if err != nil {
+		return oauth2.StateEntry{}, err
 	}
 	var entry oauth2.StateEntry
 	if err := json.Unmarshal(b, &entry); err != nil {
@@ -239,3 +267,26 @@ func validKeyPart(v string) bool {
 func (s *Store) SessionStore() oauth2.SessionStore { return s }
 
 func (s *Store) String() string { return fmt.Sprintf("oauth2/redis store(%s)", s.prefix) }
+
+// sealValue encrypts b for key when [WithEncryption] is configured.
+func (s *Store) sealValue(key string, b []byte) ([]byte, error) {
+	if s.sealer == nil {
+		return b, nil
+	}
+	return s.sealer.seal(key, b)
+}
+
+// openValue decrypts b read from key when [WithEncryption] is configured.
+func (s *Store) openValue(key string, b []byte) ([]byte, error) {
+	if s.sealer == nil {
+		return b, nil
+	}
+	return s.sealer.open(key, b)
+}
+
+func (s *Store) maxStoredBytes() int {
+	if s.sealer == nil {
+		return maxValueBytes
+	}
+	return maxValueBytes + sealOverhead
+}

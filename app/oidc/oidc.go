@@ -183,7 +183,8 @@ func (m *module) middleware(next http.Handler) http.Handler {
 			http.Error(w, "invalid authenticated session", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(identity.WithPrincipal(r.Context(), principal)))
+		ctx := identity.WithPrincipal(r.Context(), principal)
+		next.ServeHTTP(w, r.WithContext(withSessionClaims(ctx, session.Claims)))
 	})
 }
 

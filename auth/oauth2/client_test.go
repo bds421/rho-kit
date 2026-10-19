@@ -39,6 +39,10 @@ type fakeIssuer struct {
 	// body. Tests use it to serve malicious/malformed token responses
 	// without mutating the client's OAuth2Config (which returns a copy).
 	tokenHandler http.HandlerFunc
+
+	// discoveryExtra, when non-nil, is merged into the discovery document
+	// (for example end_session_endpoint). Set before NewClient.
+	discoveryExtra map[string]any
 }
 
 type codeRecord struct {
@@ -63,8 +67,7 @@ func newFakeIssuer(t *testing.T, clientID string) *fakeIssuer {
 	}
 
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		doc := map[string]any{
 			"issuer":                                srv.URL,
 			"authorization_endpoint":                srv.URL + "/authorize",
 			"token_endpoint":                        srv.URL + "/token",
@@ -72,7 +75,12 @@ func newFakeIssuer(t *testing.T, clientID string) *fakeIssuer {
 			"id_token_signing_alg_values_supported": []string{"RS256"},
 			"response_types_supported":              []string{"code"},
 			"subject_types_supported":               []string{"public"},
-		})
+		}
+		for k, v := range f.discoveryExtra {
+			doc[k] = v
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
 		jwks := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{

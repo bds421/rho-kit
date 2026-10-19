@@ -54,6 +54,26 @@ are additive except the timeout overflow fix.
   Redis needs TLS and a password unless `PlaintextUnsafe`. The Redis
   implementation is part of the existing centrifuge module, so no new direct
   dependency. `Node.Publish` wraps the native publish with redacted errors.
+- **feat(auth/oauth2): token refresh and RP-initiated logout.**
+  `WithTokenRefresh(leeway)` refreshes an expiring access token inside
+  `SessionFromRequest` (single-flight per session, persisted, refreshed ID
+  token verified for the same subject). A 4xx refusal or invalid ID token
+  deletes the session and returns `ErrSessionNotFound`; transport/5xx
+  failures keep an unexpired session. `WithRPInitiatedLogout(uri)` makes
+  `POST /oauth/logout` answer 200 with `LogoutResponse{LogoutURL}` built from
+  the discovered `end_session_endpoint`; without it logout stays 204.
+  `Session.IDToken` records the raw verified ID token. `golang.org/x/sync`
+  becomes a direct dependency.
+- **feat(auth/oauth2/redis): `WithEncryption(keys...)`.** AES-256-GCM (via
+  `crypto/encrypt`) for stored sessions and login state, bound to the Redis
+  key; the first key encrypts, all keys decrypt. Off by default,
+  recommended. Unencrypted or retired-key entries read as absent. The store
+  also persists `Session.IDToken`.
+- **feat(app/oidc): `SessionClaims` / `DecodeSessionClaims`.** Verified
+  ID-token claims of the browser session, including object/array claims.
+- **feat(security/identity): `MappingProfile.AllowMissingClaims`.** Absent
+  selected claims stay empty instead of failing; malformed claims still
+  fail. Default unchanged.
 
 ## v2.8.0 — 2026-09-29
 

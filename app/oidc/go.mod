@@ -5,6 +5,7 @@ go 1.26.8
 require (
 	github.com/bds421/rho-kit/app/v2 v2.8.0
 	github.com/bds421/rho-kit/auth/oauth2/v2 v2.8.0
+	github.com/bds421/rho-kit/core/v2 v2.8.0
 	github.com/bds421/rho-kit/observability/v2 v2.8.0
 	github.com/bds421/rho-kit/security/v2 v2.8.0
 	github.com/stretchr/testify v1.11.1
@@ -12,7 +13,6 @@ require (
 
 require (
 	github.com/bds421/rho-kit/authz/v2 v2.8.0 // indirect
-	github.com/bds421/rho-kit/core/v2 v2.8.0 // indirect
 	github.com/bds421/rho-kit/httpx/v2 v2.8.0 // indirect
 	github.com/bds421/rho-kit/infra/v2 v2.8.0 // indirect
 	github.com/bds421/rho-kit/resilience/v2 v2.8.0 // indirect

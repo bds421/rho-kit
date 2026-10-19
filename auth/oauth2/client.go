@@ -16,6 +16,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	xoauth2 "golang.org/x/oauth2"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/core/v2/secret"
@@ -39,6 +40,16 @@ type Client struct {
 	cookieName   string
 	cookieDomain string
 	cookieSecure bool
+
+	// Token refresh (WithTokenRefresh).
+	refreshEnabled bool
+	refreshLeeway  time.Duration
+	refreshGroup   singleflight.Group
+
+	// RP-initiated logout (WithRPInitiatedLogout).
+	rpLogout           bool
+	postLogoutRedirect string
+	endSessionEndpoint string
 }
 
 // Option configures a [Client].
@@ -180,6 +191,13 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 		return nil, fmt.Errorf("%w: %v", ErrIssuerDiscovery, err)
 	}
 	c.provider = provider
+	if c.rpLogout {
+		endpoint, err := discoverEndSession(provider)
+		if err != nil {
+			return nil, err
+		}
+		c.endSessionEndpoint = endpoint
+	}
 
 	scopes := cfg.Scopes
 	if !containsScope(scopes, oidc.ScopeOpenID) {
@@ -439,6 +457,7 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		SessionID:   sessionID,
 		UserID:      idToken.Subject,
 		AccessToken: secret.NewFromString(token.AccessToken),
+		IDToken:     secret.NewFromString(rawIDToken),
 		Expiry:      token.Expiry,
 		Claims:      claims,
 	}
@@ -472,10 +491,16 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("<!doctype html><title>Signed in</title><p>Signed in. You can close this window.</p>"))
 }
 
-// handleLogout drops the session and clears the cookie.
+// handleLogout drops the session and clears the cookie. With
+// [WithRPInitiatedLogout] it answers 200 with the provider logout URL
+// instead of 204.
 func (c *Client) handleLogout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(c.cookieName)
+	var idTokenHint string
 	if err == nil && cookie.Value != "" {
+		if c.rpLogout {
+			idTokenHint = c.logoutIDTokenHint(r.Context(), cookie.Value)
+		}
 		if delErr := c.sessions.Delete(r.Context(), cookie.Value); delErr != nil {
 			// Logout is a security-relevant state change. Cookie is still
 			// cleared client-side so the browser stops sending the id, but
@@ -494,6 +519,10 @@ func (c *Client) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// matched and removed by the browser; otherwise the stale cookie value
 	// would linger client-side.
 	http.SetCookie(w, c.clearSessionCookie())
+	if c.rpLogout {
+		c.writeLogoutURL(w, idTokenHint)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -536,7 +565,8 @@ func (c *Client) takeState(ctx context.Context, state string) (StateEntry, error
 
 // SessionFromRequest loads the session bound to the request's session
 // cookie. Returns ErrSessionNotFound when the cookie is absent/empty or
-// the store has no matching live session.
+// the store has no matching live session. With [WithTokenRefresh] it also
+// refreshes an expired or nearly expired access token first (see there).
 func (c *Client) SessionFromRequest(ctx context.Context, r *http.Request) (Session, error) {
 	if r == nil {
 		return Session{}, ErrSessionNotFound
@@ -545,7 +575,11 @@ func (c *Client) SessionFromRequest(ctx context.Context, r *http.Request) (Sessi
 	if err != nil || cookie.Value == "" {
 		return Session{}, ErrSessionNotFound
 	}
-	return c.sessions.Get(ctx, cookie.Value)
+	sess, err := c.sessions.Get(ctx, cookie.Value)
+	if err != nil {
+		return Session{}, err
+	}
+	return c.refreshIfNeeded(ctx, cookie.Value, sess)
 }
 
 // CookieName returns the session cookie name used by this client.
