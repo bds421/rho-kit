@@ -1,7 +1,7 @@
-github.com/bds421/rho-kit/core/v2 v2.10.1 h1:vZPmQbC9AisbeQV1OoRufmVtuUhqaTolMtFCmYPA4TA=
-github.com/bds421/rho-kit/core/v2 v2.10.1/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
-github.com/bds421/rho-kit/runtime/v2 v2.10.1 h1:5KDpPj2DXxBkITJcdk9Gf6BbhT68/JsYVfMpB/eEN5k=
-github.com/bds421/rho-kit/runtime/v2 v2.10.1/go.mod h1:prUn2hA9NkBJdC5UDdd4ZjFoXOSbqbQK40jSBO+Zz1I=
+github.com/bds421/rho-kit/core/v2 v2.11.0 h1:Zko6f7kr16h6hvc9v8n+CzGozGP9QSBtJCHLJXoQcNM=
+github.com/bds421/rho-kit/core/v2 v2.11.0/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
+github.com/bds421/rho-kit/runtime/v2 v2.11.0 h1:vWOsWHRnmsQajWLEHXfzXRmzsJK28+t8twIJzJ+7i7M=
+github.com/bds421/rho-kit/runtime/v2 v2.11.0/go.mod h1:jCyM4yLXG148izoHt4COXot/67hxQXbbg/Qvk3dpuIc=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
