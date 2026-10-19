@@ -87,3 +87,48 @@ func TestUp_ReturnsZeroOnValidationError(t *testing.T) {
 		t.Fatalf("error = %q, want it to mention nil db", err)
 	}
 }
+
+func validMigrations() fstest.MapFS {
+	return fstest.MapFS{
+		"00001_init.sql": {Data: []byte("-- +goose Up\nSELECT 1;\n-- +goose Down\nSELECT 1;\n")},
+	}
+}
+
+func TestNewProvider_AcceptsTableNames(t *testing.T) {
+	for _, name := range []string{"", "goose_db_version", "billing_schema_version", "app.versions", "_t1"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := newProvider(&sql.DB{}, Config{Dir: validMigrations(), TableName: name}); err != nil {
+				t.Fatalf("newProvider(TableName=%q) error = %v", name, err)
+			}
+		})
+	}
+}
+
+func TestNewProvider_RejectsInvalidTableNames(t *testing.T) {
+	for _, name := range []string{
+		"1table",
+		"bad-name",
+		"a.b.c",
+		".table",
+		"schema.",
+		"t; DROP TABLE users",
+		`"quoted"`,
+		strings.Repeat("a", 64),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Up(context.Background(), &sql.DB{}, Config{Dir: validMigrations(), TableName: name})
+			if err == nil {
+				t.Fatalf("Up(TableName=%q) should return an error", name)
+			}
+			if !strings.Contains(err.Error(), "TableName") {
+				t.Fatalf("error = %q, want it to mention TableName", err)
+			}
+		})
+	}
+}
+
+func TestDefaultTableName(t *testing.T) {
+	if DefaultTableName != "goose_db_version" {
+		t.Fatalf("DefaultTableName = %q, want goose_db_version", DefaultTableName)
+	}
+}

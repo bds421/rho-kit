@@ -41,21 +41,79 @@ const ResourceKey = "github.com/bds421/rho-kit/app/postgres"
 type Option func(*moduleConfig)
 
 type moduleConfig struct {
-	cfg           pgxbackend.Config
-	migrationsDir fs.FS
-	registerer    prometheus.Registerer
-	instance      string
+	cfg        pgxbackend.Config
+	migrations []migrationSet
+	registerer prometheus.Registerer
+	instance   string
 }
 
-// WithMigrations attaches a goose-managed migration tree. Migrations run
-// inside [Module.Init] before the pool is published; a failure aborts startup
-// so the service never serves traffic against a stale schema.
+// migrationSet is one goose migration tree tracked in its own version table.
+// An empty table means the migrate package default ("goose_db_version").
+type migrationSet struct {
+	table string
+	dir   fs.FS
+}
+
+// WithMigrations attaches a goose-managed migration tree tracked in the
+// default goose version table ("goose_db_version"). Migrations run inside
+// [Module.Init] before the pool is published; a failure aborts startup so the
+// service never serves traffic against a stale schema. Calling it again
+// replaces the previous tree.
 func WithMigrations(dir fs.FS) Option {
 	if dir == nil {
 		panic("postgres: WithMigrations requires a non-nil fs.FS")
 	}
 	return func(c *moduleConfig) {
-		c.migrationsDir = dir
+		c.setMigrations(migrationSet{dir: dir})
+	}
+}
+
+// WithMigrationSet attaches an additional goose-managed migration tree whose
+// progress is recorded in its own version table, so independently owned
+// modules can keep separate migration histories in one database. Sets run
+// inside [Module.Init] in registration order (together with the
+// [WithMigrations] tree, in option order); the first failure aborts startup.
+//
+// table must be an unquoted, optionally schema-qualified PostgreSQL
+// identifier (see [migrate.Config.TableName]); it is validated when the
+// migrations run. Panics on an empty table, a nil dir, or, at [Module], a
+// table registered twice (including "goose_db_version" alongside
+// [WithMigrations]).
+func WithMigrationSet(table string, dir fs.FS) Option {
+	if table == "" {
+		panic("postgres: WithMigrationSet requires a non-empty table name")
+	}
+	if dir == nil {
+		panic("postgres: WithMigrationSet requires a non-nil fs.FS")
+	}
+	return func(c *moduleConfig) {
+		c.migrations = append(c.migrations, migrationSet{table: table, dir: dir})
+	}
+}
+
+// setMigrations replaces the default-table set in place, or appends it.
+func (c *moduleConfig) setMigrations(set migrationSet) {
+	for i := range c.migrations {
+		if c.migrations[i].table == "" {
+			c.migrations[i] = set
+			return
+		}
+	}
+	c.migrations = append(c.migrations, set)
+}
+
+// validateMigrationSets panics when two sets share a version table.
+func (c *moduleConfig) validateMigrationSets() {
+	seen := make(map[string]bool, len(c.migrations))
+	for _, set := range c.migrations {
+		table := set.table
+		if table == "" {
+			table = migrate.DefaultTableName
+		}
+		if seen[table] {
+			panic(fmt.Sprintf("postgres: migration table %q registered more than once", table))
+		}
+		seen[table] = true
 	}
 }
 
@@ -99,6 +157,7 @@ func Module(cfg pgxbackend.Config, opts ...Option) app.Module {
 		}
 		opt(&mc)
 	}
+	mc.validateMigrationSets()
 	return &pgxModule{cfg: mc}
 }
 
@@ -156,7 +215,7 @@ func (m *pgxModule) Init(ctx context.Context, mc app.ModuleContext) error {
 		)
 	}
 
-	if m.cfg.migrationsDir != nil {
+	if len(m.cfg.migrations) > 0 {
 		if err := m.runMigrations(ctx); err != nil {
 			if m.sqlDB != nil {
 				_ = m.sqlDB.Close()
@@ -171,12 +230,21 @@ func (m *pgxModule) Init(ctx context.Context, mc app.ModuleContext) error {
 }
 
 func (m *pgxModule) runMigrations(ctx context.Context) error {
-	applied, err := migrate.Up(ctx, m.sqlDB, migrate.Config{Dir: m.cfg.migrationsDir})
-	if err != nil {
-		return fmt.Errorf("postgres module: migrations failed: %w", err)
-	}
-	if applied > 0 {
-		m.log.Info("database migrations applied", "count", applied)
+	for _, set := range m.cfg.migrations {
+		applied, err := migrate.Up(ctx, m.sqlDB, migrate.Config{Dir: set.dir, TableName: set.table})
+		if err != nil {
+			if set.table == "" {
+				return fmt.Errorf("postgres module: migrations failed: %w", err)
+			}
+			return fmt.Errorf("postgres module: migrations for table %q failed: %w", set.table, err)
+		}
+		if applied > 0 {
+			if set.table == "" {
+				m.log.Info("database migrations applied", "count", applied)
+			} else {
+				m.log.Info("database migrations applied", "count", applied, "table", set.table)
+			}
+		}
 	}
 	return nil
 }

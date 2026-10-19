@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"testing/fstest"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
@@ -135,4 +136,68 @@ func TestSQLDB_ReturnsStableHandle(t *testing.T) {
 	first := m.SQLDB()
 	second := m.SQLDB()
 	assert.Same(t, first, second, "SQLDB must return the same cached handle")
+}
+
+func TestWithMigrationSet_PanicsOnInvalidInput(t *testing.T) {
+	assert.Panics(t, func() { _ = WithMigrationSet("", fstest.MapFS{}) })
+	assert.Panics(t, func() { _ = WithMigrationSet("orders_schema_version", nil) })
+}
+
+func TestModule_PanicsOnDuplicateMigrationTable(t *testing.T) {
+	cfg := pgxbackend.Config{DSN: "postgres://u:p@h/db?sslmode=require"}
+	assert.PanicsWithValue(t, `postgres: migration table "orders_schema_version" registered more than once`, func() {
+		_ = Module(cfg,
+			WithMigrationSet("orders_schema_version", fstest.MapFS{}),
+			WithMigrationSet("orders_schema_version", fstest.MapFS{}),
+		)
+	})
+	assert.PanicsWithValue(t, `postgres: migration table "goose_db_version" registered more than once`, func() {
+		_ = Module(cfg,
+			WithMigrations(fstest.MapFS{}),
+			WithMigrationSet("goose_db_version", fstest.MapFS{}),
+		)
+	})
+}
+
+func TestModule_MigrationSetsKeepRegistrationOrder(t *testing.T) {
+	first := fstest.MapFS{"a.sql": {}}
+	second := fstest.MapFS{"b.sql": {}}
+	replaced := fstest.MapFS{"c.sql": {}}
+	third := fstest.MapFS{"d.sql": {}}
+
+	m := Module(pgxbackend.Config{DSN: "postgres://u:p@h/db?sslmode=require"},
+		WithMigrationSet("orders_schema_version", first),
+		WithMigrations(second),
+		WithMigrationSet("billing_schema_version", third),
+		WithMigrations(replaced), // replaces the default set in place
+	).(*pgxModule)
+
+	require.Len(t, m.cfg.migrations, 3)
+	assert.Equal(t, "orders_schema_version", m.cfg.migrations[0].table)
+	assert.Equal(t, "", m.cfg.migrations[1].table)
+	assert.Equal(t, replaced, m.cfg.migrations[1].dir)
+	assert.Equal(t, "billing_schema_version", m.cfg.migrations[2].table)
+}
+
+// TestInit_InvalidMigrationTableAbortsStartup verifies a malformed table name
+// fails Init before any SQL runs and leaves no published pool behind.
+func TestInit_InvalidMigrationTableAbortsStartup(t *testing.T) {
+	m := Module(pgxbackend.Config{
+		DSN:                            "postgres://u:p@127.0.0.1:1/db?sslmode=disable",
+		AllowPlaintextLoopbackForTests: true,
+	}, WithRegisterer(prometheus.NewRegistry()),
+		WithMigrationSet("bad-name", fstest.MapFS{
+			"00001_init.sql": {Data: []byte("-- +goose Up\nSELECT 1;\n")},
+		}),
+	).(*pgxModule)
+
+	mc := app.ModuleContext{
+		Logger: slog.Default(),
+		Runner: lifecycle.NewRunner(slog.Default()),
+	}
+	err := m.Init(context.Background(), mc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `table "bad-name"`)
+	assert.Nil(t, m.pool)
+	assert.False(t, m.SQLDBReady())
 }

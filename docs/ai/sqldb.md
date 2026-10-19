@@ -129,6 +129,19 @@ app.New("my-service", version, cfg.BaseConfig).
     Run()
 ```
 
+Several modules can own independent migration histories in one database.
+`postgres.WithMigrationSet(table, fs)` records each set in its own goose
+version table and runs the sets in registration order; `WithMigrations`
+keeps using `goose_db_version`. Standalone callers set
+`migrate.Config.TableName`.
+
+```go
+postgres.Module(cfg.Postgres,
+    postgres.WithMigrationSet("orders_schema_version", orders.Migrations),
+    postgres.WithMigrationSet("billing_schema_version", billing.Migrations),
+)
+```
+
 For manual wiring, convert the pgx pool to `*sql.DB`:
 
 ```go

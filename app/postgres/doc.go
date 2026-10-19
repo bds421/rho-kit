@@ -21,7 +21,9 @@
 //
 // Migrations are configured via [WithMigrations]; they run inside the module's
 // Init using goose so the schema is up to date before the service serves
-// traffic. Failure to apply migrations aborts startup.
+// traffic. Failure to apply migrations aborts startup. [WithMigrationSet]
+// registers further sets, each tracked in its own goose version table, so
+// independently owned modules can share one database.
 //
 // Failure semantics: Module panics if cfg.DSN is empty; the pgx package's
 // Connect rejects non-loopback DSNs that disable TLS so misconfigured

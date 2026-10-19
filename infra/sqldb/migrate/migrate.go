@@ -16,15 +16,34 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"strings"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/pressly/goose/v3"
 )
 
+// DefaultTableName is the goose version table used when [Config.TableName]
+// is empty.
+const DefaultTableName = goose.DefaultTablename
+
+// maxIdentifierLen is the PostgreSQL identifier length limit (NAMEDATALEN-1).
+const maxIdentifierLen = 63
+
 // Config configures database migrations.
 type Config struct {
 	// Dir is the filesystem containing migration files. Typically an embed.FS.
 	Dir fs.FS
+
+	// TableName is the goose version table that records which migrations of
+	// this set have been applied. Empty means [DefaultTableName]
+	// ("goose_db_version"), which keeps existing databases unchanged.
+	//
+	// Give each independently owned migration set its own table so several
+	// sets can share one database without their version numbers colliding.
+	// The name must be an unquoted PostgreSQL identifier, optionally
+	// schema-qualified ("schema.table"): letters, digits and underscores,
+	// not starting with a digit, at most 63 bytes per part.
+	TableName string
 }
 
 // Up applies all pending migrations against the given *sql.DB. Returns
@@ -88,9 +107,48 @@ func newProvider(db *sql.DB, cfg Config) (*goose.Provider, error) {
 	if cfg.Dir == nil {
 		return nil, fmt.Errorf("migrate: Dir must not be nil")
 	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, cfg.Dir)
+	var opts []goose.ProviderOption
+	if cfg.TableName != "" {
+		if err := validateTableName(cfg.TableName); err != nil {
+			return nil, err
+		}
+		opts = append(opts, goose.WithTableName(cfg.TableName))
+	}
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, cfg.Dir, opts...)
 	if err != nil {
 		return nil, redact.WrapError("migrate: create provider", err)
 	}
 	return provider, nil
+}
+
+// validateTableName rejects anything other than an unquoted, optionally
+// schema-qualified identifier. goose interpolates the table name into its
+// SQL verbatim, so the check is also the injection guard.
+func validateTableName(name string) error {
+	parts := strings.Split(name, ".")
+	if len(parts) > 2 {
+		return fmt.Errorf("migrate: TableName %q has more than one schema qualifier", name)
+	}
+	for _, part := range parts {
+		if !isIdentifier(part) {
+			return fmt.Errorf("migrate: TableName %q is not a valid unquoted identifier", name)
+		}
+	}
+	return nil
+}
+
+func isIdentifier(s string) bool {
+	if s == "" || len(s) > maxIdentifierLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '_', c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }

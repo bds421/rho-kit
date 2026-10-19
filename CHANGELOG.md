@@ -38,6 +38,14 @@ are additive except the timeout overflow fix.
   `ErrResponseTooLarge`.
 - **chore: `golang.org/x/net` v0.60.0 in httpx; workspace toolchain and CI
   `go-version` go1.27.2.** Minimum `go` directive stays 1.26.8.
+- **feat(infra/sqldb/migrate): `Config.TableName`.** Selects the goose
+  version table so several independently owned migration sets can share one
+  database. Empty keeps `goose_db_version` (`migrate.DefaultTableName`).
+  The name must be an unquoted, optionally schema-qualified identifier.
+- **feat(app/postgres): `WithMigrationSet(table, fs)`.** Registers further
+  migration sets, each tracked in its own version table, applied in
+  registration order during `Init`. `WithMigrations` is unchanged; a table
+  registered twice panics at `Module`.
 
 ## v2.8.0 — 2026-09-29
 

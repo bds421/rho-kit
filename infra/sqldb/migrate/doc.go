@@ -28,6 +28,19 @@
 //
 //	applied, err := migrate.Up(ctx, sqlDB, migrate.Config{Dir: migrationsFS})
 //
+// # Multiple Migration Sets
+//
+// Several independently owned migration sets can share one database when
+// each records its progress in its own goose version table via
+// [Config.TableName]. Version numbers only need to be unique within a set.
+// An empty TableName keeps the default "goose_db_version" table.
+//
+//	migrate.Up(ctx, sqlDB, migrate.Config{Dir: billingFS, TableName: "billing_schema_version"})
+//	migrate.Up(ctx, sqlDB, migrate.Config{Dir: ordersFS, TableName: "orders_schema_version"})
+//
+// The sets are applied independently; ordering between sets is the caller's
+// responsibility. With the bridge module, use `postgres.WithMigrationSet`.
+//
 // # Migration File Format
 //
 // SQL migration files follow the goose naming convention. Each file contains
