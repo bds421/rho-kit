@@ -335,6 +335,40 @@ Browser-session extras, all opt-in:
 - `appoidc.SessionClaims(ctx)` / `appoidc.DecodeSessionClaims(ctx, &dst)` read
   the verified ID-token claims of the session, including object/array claims
   that a string-only `Principal` cannot carry.
+- `oauth2.WithAbsoluteSessionLifetime(d)` caps a session at creation+d
+  (refresh and sliding TTL never extend it). `oauth2.WithIdleTimeout(d)` ends
+  sessions without user-initiated requests for d; send
+  `X-Background-Request: 1` (or set `oauth2.WithBackgroundRequest(ctx)` in
+  middleware) on polling and realtime-token renewal so they do not count.
+  Idle timeout requires a store with compare-and-set (memory, redis).
+- `oauth2.WithRefreshOutageGrace(d)` keeps sessions up to d past access-token
+  expiry while refresh fails with transport/5xx errors; 4xx still logs out.
+- With `auth/oauth2/redis`, token refresh is serialized across replicas
+  (per-session SET NX PX lock); a waiting replica reuses the other's tokens.
+- `appoidc.WithBackChannelLogout()` mounts `POST /oauth/backchannel-logout`
+  (register as `backchannel_logout_uri`). Logout tokens are verified
+  (signature, iss, aud, exp, iat window, jti replay, events, sid/sub, no
+  nonce) and the matching sessions deleted. `client.DeleteSessionsBySubject(ctx,
+  sub)` revokes a user's sessions (e.g. membership removal);
+  `oauth2.WithSessionRevocationHook(fn)` lets the app disconnect realtime
+  connections of that subject.
+- Step-up: `appoidc.SessionAuthentication(ctx)` returns `amr` and
+  `auth_time`; redirect to `/oauth/login?prompt=login&max_age=0` for a fresh
+  login. The callback rejects an `auth_time` older than the request allows
+  (`prompt=login` alone is not verifiable; always pair it with `max_age`).
+
+```go
+appoidc.Module(cfg,
+    appoidc.WithSessionStore(redisStore.SessionStore()),
+    appoidc.WithStateStore(redisStore.States()),
+    appoidc.WithBackChannelLogout(),
+    appoidc.WithClientOption(oauth2.WithTokenRefresh(time.Minute)),
+    appoidc.WithClientOption(oauth2.WithAbsoluteSessionLifetime(12*time.Hour)),
+    appoidc.WithClientOption(oauth2.WithIdleTimeout(30*time.Minute)),
+    appoidc.WithClientOption(oauth2.WithRefreshOutageGrace(10*time.Minute)),
+    appoidc.WithClientOption(oauth2.WithSessionRevocationHook(disconnectRealtime)),
+)
+```
 
 ```go
 var c struct {

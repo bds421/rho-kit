@@ -109,6 +109,38 @@ are additive except the timeout overflow fix.
   under its mutex, `auth/oauth2/redis` with WATCH/MULTI. Third-party stores
   without it fall back to re-checking existence before Put, which narrows
   but does not close the race.
+- **feat(auth/oauth2): session security controls.** All opt-in; defaults
+  unchanged.
+  - `WithAbsoluteSessionLifetime(d)`: sessions end at `Session.CreatedAt+d`;
+    refresh, sliding TTL and cookie expiry never go beyond it. Sessions
+    without `CreatedAt` fail closed while it is set.
+  - `WithIdleTimeout(d)`: sessions end after d without user-initiated
+    requests. `Session.LastActivity` is written at most once per minute and
+    only by compare-and-set (`NewClient` fails without a `SessionUpdater`
+    store). `WithBackgroundRequest(ctx)` or the `X-Background-Request: 1`
+    header (`WithBackgroundRequestHeader`) mark background traffic that
+    does not extend the window.
+  - `WithRefreshOutageGrace(d)`: transport/5xx refresh failures keep a
+    session up to d past access-token expiry; 4xx still ends it.
+  - `RefreshLocker` optional store interface + `WithRefreshLockWait(d)`:
+    token refresh is serialized across replicas; a waiting replica reuses
+    the other replica's tokens.
+  - `WithBackChannelLogout()`: `POST /oauth/backchannel-logout` per OpenID
+    Connect Back-Channel Logout 1.0 (signature, iss, aud, exp, iat window,
+    jti replay, events, sid/sub, no nonce). New `SessionIndex` and
+    `ReplayCache` store interfaces, `MemoryReplayCache`,
+    `Client.DeleteSessionsBySubject`, `WithSessionRevocationHook`,
+    `WithReplayCache`, `ErrSessionIndexUnsupported`, `Session.SID`.
+  - Step-up: `Session.AMR`, `Session.AuthTime`; `/oauth/login` accepts
+    allowlisted `prompt` and `max_age`, and the callback enforces max_age
+    against auth_time (`ErrStaleAuthentication`, `StateEntry.MaxAge`).
+- **feat(auth/oauth2/redis): session index, refresh lock, replay cache.**
+  Hashed subject/sid index sets maintained with the session write,
+  `TryLockRefresh` (SET NX PX, token-checked release), `Remember` (SET NX),
+  and persistence of the new session fields.
+- **feat(app/oidc): `WithBackChannelLogout` and `SessionAuthentication`.**
+  Mounts the back-channel logout route; exposes amr/auth_time of the
+  session for step-up checks.
 - **feat(infra/sqldb/pgx): transaction in context.** `WithTx`,
   `TxFromContext`, `Querier` (sqlc pgx/v5 `DBTX` method set),
   `Pool.Querier(ctx)` and `Pool.InTx(ctx, fn)` (commit on nil, rollback on

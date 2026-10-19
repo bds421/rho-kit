@@ -13,11 +13,11 @@
 // guards, PKCE challenge/verifier pairing) come from the audited
 // libraries, NOT the kit.
 //
-// Token refresh and client-credentials (M2M) flows are NOT provided as
-// first-class APIs. Use [Client.OAuth2Config] as the escape hatch to
-// build a refresh TokenSource or credentials grant via
-// golang.org/x/oauth2. [Client.SessionFromRequest] loads the session
-// cookie established by the login/callback handlers.
+// [Client.SessionFromRequest] loads the session cookie established by
+// the login/callback handlers; [WithTokenRefresh] refreshes its access
+// token transparently. [NewClientCredentials] covers outbound
+// client-credentials tokens, and [Client.OAuth2Config] is the escape
+// hatch for other golang.org/x/oauth2 flows.
 //
 // # Use this package when
 //
@@ -34,7 +34,6 @@
 //   - Machine-to-machine token issuance. Prefer service-to-service
 //     mTLS (see [security/mtlsidentity]), or drive the credentials
 //     grant via [Client.OAuth2Config] yourself.
-
 //
 // # Sibling packages
 //
@@ -70,4 +69,22 @@
 // Every Login generates a fresh state and (for OIDC) nonce, persists
 // them via the [StateStore], and re-validates on Callback. Stale state
 // entries are pruned by the store's TTL.
+//
+// # Session security (all opt-in)
+//
+//   - [WithAbsoluteSessionLifetime] caps a session at CreatedAt+d; refresh
+//     and the sliding TTL never extend it.
+//   - [WithIdleTimeout] ends sessions without user-initiated requests;
+//     mark polling and token renewal with [WithBackgroundRequest] or the
+//     [DefaultBackgroundRequestHeader] header so they do not count.
+//   - [WithRefreshOutageGrace] keeps sessions across a short provider
+//     outage (transport/5xx refresh failures only).
+//   - A store implementing [RefreshLocker] serializes token refresh across
+//     replicas ([WithRefreshLockWait]).
+//   - [WithBackChannelLogout] serves POST /oauth/backchannel-logout;
+//     [Client.DeleteSessionsBySubject] and [WithSessionRevocationHook]
+//     revoke a subject's sessions. Both need a [SessionIndex] store.
+//   - Session.AMR / Session.AuthTime expose how the user authenticated;
+//     GET /oauth/login?prompt=login&max_age=0 requests step-up and the
+//     callback enforces max_age against auth_time.
 package oauth2

@@ -9,4 +9,12 @@
 // RP-initiated logout are enabled through [WithClientOption] with
 // auth/oauth2.WithTokenRefresh and auth/oauth2.WithRPInitiatedLogout.
 // identity.MappingProfile.AllowMissingClaims makes selected claims optional.
+//
+// [SessionAuthentication] exposes the session's amr and auth_time for
+// step-up checks; /oauth/login accepts prompt and max_age to request a
+// fresh authentication. [WithBackChannelLogout] mounts
+// /oauth/backchannel-logout. Session lifetime limits
+// (auth/oauth2.WithAbsoluteSessionLifetime, WithIdleTimeout), the refresh
+// outage grace and the revocation hook are passed through
+// [WithClientOption].
 package oidc

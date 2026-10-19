@@ -43,6 +43,35 @@ or UserInfo without re-discovering endpoints.
   sess, ttl) (bool, error)`): compare-and-set used by token refresh so a
   logout during an in-flight refresh is never undone. Memory and Redis stores
   implement it; other stores fall back to re-check + Put (narrower race)
+- Session lifetime: `WithAbsoluteSessionLifetime(d)` (cap at
+  `Session.CreatedAt+d`; refresh/TTL never extend; sessions without
+  CreatedAt fail closed), `WithIdleTimeout(d)` (`Session.LastActivity`,
+  written at most once per minute via `SessionUpdater` only; `NewClient`
+  fails without one). Background requests are marked with
+  `WithBackgroundRequest(ctx)` or the `X-Background-Request: 1` header
+  (`WithBackgroundRequestHeader(name)`); they may refresh but never extend
+  the idle window
+- `WithRefreshOutageGrace(d)`: transport/5xx refresh failures keep the
+  session up to `Expiry+d`; 4xx ends it immediately
+- `RefreshLocker` (optional store interface,
+  `TryLockRefresh(ctx, id, ttl) (release, acquired, err)`): cross-replica
+  refresh serialization; waiting replicas re-read and reuse the other
+  replica's tokens up to `WithRefreshLockWait(d)` (default 5s). Redis
+  implements it (SET NX PX + token-checked release); memory does not need it
+- Back-channel logout: `WithBackChannelLogout()` adds
+  `POST /oauth/backchannel-logout` (OIDC Back-Channel Logout 1.0: go-oidc
+  verifier for signature/iss/aud/exp, iat within 5 min (+1 min skew), jti
+  replay via `ReplayCache`, events claim, sid and/or sub, no nonce).
+  Requires a `SessionIndex` store (`SessionIDsBySubject`,
+  `SessionIDsBySID`; `Session.SID` from the ID token). Replay cache:
+  `WithReplayCache`, else the session store if it implements `ReplayCache`
+  (redis), else `NewMemoryReplayCache()`.
+  `Client.DeleteSessionsBySubject(ctx, sub)` for app use;
+  `WithSessionRevocationHook(fn)` runs once per affected subject
+- Step-up: `Session.AMR`, `Session.AuthTime`; `GET /oauth/login` accepts
+  allowlisted `prompt` (none|login|consent|select_account) and `max_age`
+  (0..1y); with max_age the callback rejects an auth_time older than the
+  login request minus max_age (`ErrStaleAuthentication`)
 
 ## Security defaults
 
@@ -86,6 +115,15 @@ value persisted at login. No transport-only trust shortcut is taken.
 - Unknown-state callback rejected with 400 "state mismatch"
 - Logout clears cookie (MaxAge=-1)
 - MemorySessionStore + MemoryStateStore TTL expiry
+- Absolute lifetime cap (incl. refresh TTL cap), idle timeout with
+  header/context background markers, activity write throttling, logout
+  between read and activity write stays deleted
+- Outage grace boundaries (5xx, transport error, 4xx)
+- Back-channel logout token validation (valid, wrong aud/iss, bad
+  signature, replayed jti, events, nonce, iat window, sid vs sub),
+  `DeleteSessionsBySubject`, memory index consistency
+- Step-up parameter validation, max_age/auth_time enforcement, amr/auth_time
+  exposure; redis lock contention and index tests live in auth/oauth2/redis
 
 ## See also
 
