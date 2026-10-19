@@ -7,7 +7,7 @@ import (
 
 const (
 	minAllowedBitsV4 = 8
-	minAllowedBitsV6 = 16
+	minAllowedBitsV6 = 48
 )
 
 // WithAllowedNetworks lets requests reach private or reserved addresses that
@@ -16,9 +16,11 @@ const (
 // deployments whose legitimate targets live on internal networks, such as
 // an on-premise SIEM in a known subnet.
 //
-// Prefixes must be valid and no wider than /8 (IPv4) or /16 (IPv6), so a
-// typo cannot reopen the whole address space; unspecified addresses
-// (0.0.0.0, ::) are never allowed.
+// Prefixes must be valid and no wider than /8 (IPv4) or /48 (IPv6), so a
+// typo cannot reopen the whole address space. IPv6 ranges that carry IPv4
+// addresses (IPv4-mapped and -compatible, NAT64, Teredo, 6to4) are refused,
+// because they would reach arbitrary IPv4 hosts; list the IPv4 network
+// instead. Unspecified addresses (0.0.0.0, ::) are never allowed.
 func WithAllowedNetworks(prefixes ...netip.Prefix) Option {
 	for _, p := range prefixes {
 		minBits := minAllowedBitsV6
@@ -26,7 +28,10 @@ func WithAllowedNetworks(prefixes ...netip.Prefix) Option {
 			minBits = minAllowedBitsV4
 		}
 		if !p.IsValid() || p.Bits() < minBits {
-			panic("ssrf: WithAllowedNetworks requires valid prefixes no wider than /8 (IPv4) or /16 (IPv6)")
+			panic("ssrf: WithAllowedNetworks requires valid prefixes no wider than /8 (IPv4) or /48 (IPv6)")
+		}
+		if embedsIPv4(p) {
+			panic("ssrf: WithAllowedNetworks refuses IPv6 ranges that embed IPv4 addresses; list the IPv4 network instead")
 		}
 	}
 	cloned := append([]netip.Prefix(nil), prefixes...)
@@ -44,6 +49,27 @@ func (o options) allowed(ip net.IP) bool {
 	addr = addr.Unmap()
 	for _, p := range o.allowedNetworks {
 		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+var ipv4CarryingRanges = []netip.Prefix{
+	netip.MustParsePrefix("::ffff:0:0/96"),
+	netip.MustParsePrefix("::/96"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/32"),
+	netip.MustParsePrefix("2002::/16"),
+}
+
+func embedsIPv4(p netip.Prefix) bool {
+	if p.Addr().Is4() {
+		return false
+	}
+	for _, r := range ipv4CarryingRanges {
+		if r.Overlaps(p) {
 			return true
 		}
 	}

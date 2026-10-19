@@ -44,7 +44,10 @@ func TestAllowedNetworksOpenOnlyTheirOwnRange(t *testing.T) {
 }
 
 func TestAllowedNetworksRejectsWidePrefixes(t *testing.T) {
-	for _, p := range []string{"0.0.0.0/0", "10.0.0.0/7", "::/0", "fc00::/7"} {
+	for _, p := range []string{
+		"0.0.0.0/0", "10.0.0.0/7", "::/0", "fc00::/7", "fd00::/16",
+		"2002:a9fe::/48", "64:ff9b::a9fe:a9fe/128", "::ffff:169.254.169.254/128", "2001:0:a9fe::/48",
+	} {
 		func() {
 			defer func() {
 				if recover() == nil {
@@ -53,5 +56,19 @@ func TestAllowedNetworksRejectsWidePrefixes(t *testing.T) {
 			}()
 			WithAllowedNetworks(netip.MustParsePrefix(p))
 		}()
+	}
+}
+
+func TestAllowedIPv6NetworkStaysNarrow(t *testing.T) {
+	opt := WithAllowedNetworks(netip.MustParsePrefix("fd12:3456:789a::/48"))
+	for host, ok := range map[string]bool{
+		"fd12:3456:789a::5":      true,
+		"fd12:3456:789b::5":      false,
+		"2002:a9fe:a9fe::1":      false,
+		"::ffff:169.254.169.254": false,
+	} {
+		if _, err := ResolveAndValidate(context.Background(), host, nil, opt); (err == nil) != ok {
+			t.Errorf("%s: %v, want ok=%v", host, err, ok)
+		}
 	}
 }

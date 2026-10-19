@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.12.1 — 2026-10-19
+
+- **fix(security/netutil): narrower `WithAllowedNetworks`.** IPv6 networks
+  must be /48 or narrower, and ranges that carry IPv4 addresses
+  (IPv4-mapped and -compatible, NAT64, Teredo, 6to4) are refused; in v2.12.0
+  a wide IPv6 network could reach arbitrary IPv4 hosts through them. Do not
+  use `WithAllowedNetworks` from v2.12.0.
+
 ## v2.12.0 — 2026-10-19
 
 - **feat(security/netutil): `WithAllowedNetworks`.** The SSRF guard can allow
