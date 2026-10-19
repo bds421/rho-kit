@@ -55,7 +55,8 @@ const (
 //
 // The route is called by the provider, not the browser: exempt it from CSRF
 // and session middleware. [NewClient] fails unless the session store
-// implements [SessionIndex].
+// implements [SessionIndex] and [SessionUpdater]; without atomic updates a
+// concurrent refresh could write back a session the logout just deleted.
 func WithBackChannelLogout() Option {
 	return func(cl *Client) { cl.backChannelLogout = true }
 }

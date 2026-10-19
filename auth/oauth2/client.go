@@ -186,6 +186,9 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 		if _, indexed := c.sessions.(SessionIndex); !indexed {
 			return nil, errors.New("oauth2: WithBackChannelLogout requires a session store implementing SessionIndex")
 		}
+		if _, atomic := c.sessions.(SessionUpdater); !atomic {
+			return nil, errors.New("oauth2: WithBackChannelLogout requires a session store implementing SessionUpdater")
+		}
 		if c.replayCache == nil {
 			if cache, ok := c.sessions.(ReplayCache); ok {
 				c.replayCache = cache

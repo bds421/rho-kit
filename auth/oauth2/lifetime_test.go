@@ -315,6 +315,24 @@ func TestIdleTimeout_RequiresAtomicUpdater(t *testing.T) {
 	require.ErrorContains(t, err, "WithIdleTimeout requires a session store implementing SessionUpdater")
 }
 
+func TestBackChannelLogout_RequiresAtomicUpdater(t *testing.T) {
+	issuer := newFakeIssuer(t, "test-client")
+	_, err := oauth2.NewClient(context.Background(), oauth2.Config{
+		Issuer: issuer.server.URL, ClientID: "test-client", RedirectURL: "https://app/cb",
+	}, oauth2.WithSessionStore(indexedNonAtomicStore{nonAtomicStore{inner: oauth2.NewMemorySessionStore()}}),
+		oauth2.WithStateStore(oauth2.NewMemoryStateStore()), oauth2.WithBackChannelLogout())
+	require.ErrorContains(t, err, "WithBackChannelLogout requires a session store implementing SessionUpdater")
+}
+
+type indexedNonAtomicStore struct{ nonAtomicStore }
+
+func (indexedNonAtomicStore) SessionIDsBySubject(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (indexedNonAtomicStore) SessionIDsBySID(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
 // logoutBeforeUpdateStore deletes the session between the request's read
 // and its activity write, as a concurrent logout would.
 type logoutBeforeUpdateStore struct{ *oauth2.MemorySessionStore }
