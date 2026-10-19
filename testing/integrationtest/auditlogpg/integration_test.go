@@ -308,3 +308,41 @@ func TestPostgres_FilterByActorActionResource(t *testing.T) {
 		assert.Len(t, got, 2)
 	})
 }
+
+// TestPostgres_AppendOnlyRole confirms that an application role holding only
+// SELECT and INSERT on the table can append and verify, and cannot rewrite or
+// delete history.
+func TestPostgres_AppendOnlyRole(t *testing.T) {
+	dsn := startPostgres(t)
+	admin := openAndMigrate(t, dsn)
+	ctx := context.Background()
+	for _, stmt := range []string{
+		"CREATE ROLE audit_appender LOGIN PASSWORD 'appender'",
+		"GRANT SELECT, INSERT ON audit_log_events TO audit_appender",
+		"GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO audit_appender",
+	} {
+		_, err := admin.Exec(ctx, stmt)
+		require.NoError(t, err)
+	}
+
+	u, err := url.Parse(dsn)
+	require.NoError(t, err)
+	u.User = url.UserPassword("audit_appender", "appender")
+	pool, err := pgxpool.New(ctx, u.String())
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	logger := newLogger(t, pool)
+	defer func() { _ = logger.Close() }()
+	for i := 0; i < 3; i++ {
+		require.NoError(t, logger.LogE(ctx, auditlog.Event{
+			Actor: "svc", Action: "grant.create", Resource: "org/1", Status: auditlog.StatusSuccess,
+		}))
+	}
+	require.NoError(t, logger.VerifyChain(ctx))
+
+	_, err = pool.Exec(ctx, "UPDATE audit_log_events SET actor = 'mallory'")
+	require.Error(t, err)
+	_, err = pool.Exec(ctx, "DELETE FROM audit_log_events")
+	require.Error(t, err)
+}

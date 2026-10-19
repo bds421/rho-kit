@@ -7,6 +7,12 @@ Supersedes the v2.9.0 tags of `security`, `realtime/centrifuge`, `infra`,
 that were never merged into `main`; do not depend on v2.9.0. All changes
 are additive except the timeout overflow fix.
 
+- **fix(observability/auditlog/postgres): append-only roles.** Appends and
+  retention serialise on the chain advisory lock only; the tail read no longer
+  uses `SELECT FOR UPDATE`, so the table can be granted to application roles
+  as INSERT/SELECT. Retention now runs inside that lock as well.
+- **fix(app/tracing, observability): OpenTelemetry OTLP exporters v1.45.0**
+  (GO-2026-6505).
 - **feat(security/jwtutil): `SigningProvider.PublicJWKS()`.** Exports the
   current public signing key as a JWKS document with the kid that `Sign`
   stamps, for in-process verifiers or a JWKS endpoint.

@@ -61,10 +61,9 @@ func New(pool *pgxpool.Pool) *Store {
 }
 
 // AppendChained runs build inside a transaction that holds the
-// audit-chain advisory lock plus SELECT FOR UPDATE on the tail row.
-// The combination serialises concurrent appenders even on an empty
-// table — SELECT FOR UPDATE has nothing to lock until the first row
-// exists, so the advisory lock carries the serialization until then.
+// audit-chain advisory lock. Every chain writer (append and retention)
+// takes the same lock, so the tail read needs no row lock and the table
+// can be granted to application roles as INSERT/SELECT only.
 func (s *Store) AppendChained(ctx context.Context, build func(prev []byte) (auditlog.Event, error)) error {
 	if s == nil || s.pool == nil {
 		return errors.New("auditlog/postgres: store not initialized")
@@ -86,7 +85,7 @@ func (s *Store) AppendChained(ctx context.Context, build func(prev []byte) (audi
 		return fmt.Errorf("auditlog/postgres: advisory lock: %w", err)
 	}
 
-	prev, err := selectTailHMACForUpdate(ctx, tx)
+	prev, err := selectTailHMAC(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -293,10 +292,19 @@ func (s *Store) DeleteBefore(ctx context.Context, before time.Time) (int64, []by
 	}
 	cutoff := before.UTC()
 
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, nil, fmt.Errorf("auditlog/postgres: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", chainLockKey); err != nil {
+		return 0, nil, fmt.Errorf("auditlog/postgres: advisory lock: %w", err)
+	}
+
 	// first_keep is the lowest seq that must survive (occurred_at >= cutoff).
 	// NULL means every row is older than cutoff (or the table is empty).
 	var firstKeep *int64
-	if err := s.pool.QueryRow(ctx,
+	if err := tx.QueryRow(ctx,
 		`SELECT MIN(seq) FROM audit_log_events WHERE occurred_at >= $1`, cutoff,
 	).Scan(&firstKeep); err != nil {
 		return 0, nil, fmt.Errorf("auditlog/postgres: delete before bound: %w", err)
@@ -306,11 +314,11 @@ func (s *Store) DeleteBefore(ctx context.Context, before time.Time) (int64, []by
 	var watermark []byte
 	var werr error
 	if firstKeep == nil {
-		werr = s.pool.QueryRow(ctx,
+		werr = tx.QueryRow(ctx,
 			`SELECT hmac FROM audit_log_events ORDER BY seq DESC LIMIT 1`,
 		).Scan(&watermark)
 	} else {
-		werr = s.pool.QueryRow(ctx,
+		werr = tx.QueryRow(ctx,
 			`SELECT hmac FROM audit_log_events WHERE seq < $1 ORDER BY seq DESC LIMIT 1`,
 			*firstKeep,
 		).Scan(&watermark)
@@ -324,17 +332,20 @@ func (s *Store) DeleteBefore(ctx context.Context, before time.Time) (int64, []by
 
 	var n int64
 	if firstKeep == nil {
-		tag, err := s.pool.Exec(ctx, `DELETE FROM audit_log_events`)
+		tag, err := tx.Exec(ctx, `DELETE FROM audit_log_events`)
 		if err != nil {
 			return 0, nil, fmt.Errorf("auditlog/postgres: delete before: %w", err)
 		}
 		n = tag.RowsAffected()
 	} else {
-		tag, err := s.pool.Exec(ctx, `DELETE FROM audit_log_events WHERE seq < $1`, *firstKeep)
+		tag, err := tx.Exec(ctx, `DELETE FROM audit_log_events WHERE seq < $1`, *firstKeep)
 		if err != nil {
 			return 0, nil, fmt.Errorf("auditlog/postgres: delete before: %w", err)
 		}
 		n = tag.RowsAffected()
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, nil, fmt.Errorf("auditlog/postgres: commit: %w", err)
 	}
 	if n == 0 {
 		return 0, nil, nil
@@ -352,8 +363,8 @@ var (
 const selectColumns = `SELECT id, occurred_at, actor, tenant, action, resource, status,
        ip_address, trace_id, metadata, prev_hmac, hmac`
 
-func selectTailHMACForUpdate(ctx context.Context, tx pgx.Tx) ([]byte, error) {
-	const q = "SELECT hmac FROM audit_log_events ORDER BY seq DESC LIMIT 1 FOR UPDATE"
+func selectTailHMAC(ctx context.Context, tx pgx.Tx) ([]byte, error) {
+	const q = "SELECT hmac FROM audit_log_events ORDER BY seq DESC LIMIT 1"
 	var hmac []byte
 	if err := tx.QueryRow(ctx, q).Scan(&hmac); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
