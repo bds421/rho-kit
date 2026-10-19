@@ -21,6 +21,9 @@ are additive except the timeout overflow fix.
   encoding is detected. Rows from before the migration verify as before.
 - **fix(app/tracing, observability): OpenTelemetry OTLP exporters v1.45.0**
   (GO-2026-6505).
+- **test(infra/storage/storagetest): MinIO conformance tests are opt-in.**
+  The pinned MinIO images are no longer published, so they run only with
+  `-tags "integration minio"` against an image you provide.
 - **feat(security/jwtutil): `SigningProvider.PublicJWKS()`.** Exports the
   current public signing key as a JWKS document with the kid that `Sign`
   stamps, for in-process verifiers or a JWKS endpoint.
