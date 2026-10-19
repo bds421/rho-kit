@@ -4,6 +4,7 @@ package app
 import (
 	"fmt"
 
+	"github.com/bds421/rho-kit/core/v2/config"
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
@@ -28,7 +29,11 @@ func (b *Builder) Validate() error {
 		return fmt.Errorf("builder is nil")
 	}
 
-	if err := b.cfg.ValidateBase(); err != nil {
+	if b.noPublicServer {
+		if err := b.validateWorker(); err != nil {
+			return err
+		}
+	} else if err := b.cfg.ValidateBase(); err != nil {
 		return err
 	}
 
@@ -75,7 +80,7 @@ func (b *Builder) validateProductionSafety() error {
 	// to plaintext HTTP (see netutil.TLSConfig.Enabled). Operators who
 	// terminate TLS at an external proxy must opt in explicitly via
 	// http.WithoutTLS().
-	if !b.cfg.TLS.Enabled() && !httpCfg.allowPlaintext {
+	if !b.noPublicServer && !b.cfg.TLS.Enabled() && !httpCfg.allowPlaintext {
 		return fmt.Errorf("TLS must be configured (TLS_CA_CERT, TLS_CERT, TLS_KEY) or call http.WithoutTLS() for services fronted by an external TLS terminator — partial configuration silently falls back to plaintext HTTP")
 	}
 
@@ -87,7 +92,7 @@ func (b *Builder) validateProductionSafety() error {
 	// Pin the affirmative-declaration contract here: callers must pick
 	// WithIPRateLimit, WithKeyedRateLimit, or the explicit
 	// WithoutRateLimit opt-out for traffic-bounded services.
-	if !b.hasRateLimitDeclaration() && !b.allowNoRateLimit {
+	if !b.noPublicServer && !b.hasRateLimitDeclaration() && !b.allowNoRateLimit {
 		return fmt.Errorf("rate limiting must be declared explicitly: register ratelimit.IP from app/ratelimit (mux-wide), or call WithoutRateLimit for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker). Note: ratelimit.Keyed alone does not satisfy this gate — it installs no public-mux middleware")
 	}
 
@@ -112,5 +117,24 @@ func (b *Builder) validateProductionSafety() error {
 	// constructor. The Builder no longer holds tracing config directly,
 	// so the always-on rate cap is enforced at adapter construction time.
 
+	return nil
+}
+
+// validateWorker checks a [Builder.WithoutPublicServer] configuration: only
+// the internal listener and TLS files are validated, and public-only
+// wiring is rejected instead of being silently ignored.
+func (b *Builder) validateWorker() error {
+	if err := config.ValidatePort("internal", b.cfg.Internal.Port); err != nil {
+		return err
+	}
+	if err := b.cfg.TLS.Validate(); err != nil {
+		return err
+	}
+	if b.routerFn != nil {
+		return fmt.Errorf("Router is not allowed with WithoutPublicServer: there is no public HTTP listener")
+	}
+	if b.hasRateLimitDeclaration() {
+		return fmt.Errorf("rate-limit modules are not allowed with WithoutPublicServer: there is no public HTTP listener to protect")
+	}
 	return nil
 }

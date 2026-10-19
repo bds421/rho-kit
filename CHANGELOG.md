@@ -74,6 +74,12 @@ are additive except the timeout overflow fix.
 - **feat(security/identity): `MappingProfile.AllowMissingClaims`.** Absent
   selected claims stay empty instead of failing; malformed claims still
   fail. Default unchanged.
+- **feat(app): `Builder.WithoutPublicServer()`.** Worker roles run without a
+  public HTTP listener, router or public middleware; the internal
+  health/readiness/metrics server, modules, background goroutines and
+  runner-attached components still run. Rate-limit and public-TLS gates
+  and `BaseConfig.Server` validation are skipped; `Router` and rate-limit
+  modules are rejected. Default behaviour is unchanged.
 
 ## v2.8.0 — 2026-09-29
 

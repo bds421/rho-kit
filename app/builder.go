@@ -76,6 +76,11 @@ type Builder struct {
 	// deployments.
 	allowNoRateLimit bool
 
+	// noPublicServer is set by [Builder.WithoutPublicServer]: no public
+	// HTTP listener, router or public middleware chain; the internal
+	// health/readiness/metrics server still runs.
+	noPublicServer bool
+
 	// Health checks
 	healthChecks []health.DependencyCheck
 
@@ -144,6 +149,23 @@ func New(name, version string, cfg BaseConfig) *Builder {
 // has the same affirmative declaration shape.
 func (b *Builder) WithoutRateLimit() *Builder {
 	b.allowNoRateLimit = true
+	return b
+}
+
+// WithoutPublicServer runs the service without a public HTTP listener, for
+// worker roles (queue consumers, schedulers, relays) that serve no inbound
+// HTTP traffic. The internal server (readiness, health, metrics) and every
+// module, background goroutine and runner-attached component (for example a
+// public gRPC server from app/grpc) still run.
+//
+// In this mode [Builder.Router] is rejected by [Builder.Validate], module
+// public middleware is not installed, and the public-listener requirements
+// do not apply: no rate-limit declaration and no public TLS configuration
+// are required, and BaseConfig.Server is not validated. Registering a
+// rate-limit module is rejected because it would protect nothing. The
+// internal-host loopback check and TLS file validation still apply.
+func (b *Builder) WithoutPublicServer() *Builder {
+	b.noPublicServer = true
 	return b
 }
 
@@ -561,10 +583,15 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		m.Populate(&infra)
 	}
 
+	// Worker roles (WithoutPublicServer) skip the router, the public
+	// middleware chain and the public listener entirely.
 	var httpHandler http.Handler
-	if b.routerFn != nil {
+	switch {
+	case b.noPublicServer:
+		// No public handler; Validate rejected a Router.
+	case b.routerFn != nil:
 		httpHandler = b.routerFn(infra)
-	} else {
+	default:
 		httpHandler = http.NotFoundHandler()
 	}
 	// Compose the inbound middleware chain. Bridge modules in app/*
@@ -579,8 +606,10 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	// Tenant + budget are now MiddlewareInstaller modules; their
 	// PhaseTenant / PhaseBudget contributions flow through
 	// applyPhasedMiddleware alongside every other bridge.
-	httpHandler = applyPhasedMiddleware(httpHandler, allModules)
-	if !httpCfg.disableDefaultStack {
+	if !b.noPublicServer {
+		httpHandler = applyPhasedMiddleware(httpHandler, allModules)
+	}
+	if !b.noPublicServer && !httpCfg.disableDefaultStack {
 		// FR-009 [MED]: pass the resolved logger so the request stack uses
 		// the same logger as infrastructure setup. Pre-fix this hardcoded
 		// slog.Default(), so [Builder.Logger] silently failed to take
@@ -708,6 +737,12 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		if attacher, ok := m.(RunnerAttacher); ok {
 			attacher.AttachToRunner(runner)
 		}
+	}
+
+	if b.noPublicServer {
+		logger.Info("public server disabled (WithoutPublicServer)")
+		closeReloadingTLS = nil
+		return runner.Run(ctx)
 	}
 
 	// 14. Public server — added last so it is stopped first (reverse order).
