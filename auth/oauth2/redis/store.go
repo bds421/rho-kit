@@ -74,6 +74,8 @@ type sessionWire struct {
 	Expiry       time.Time      `json:"expiry"`
 	Claims       map[string]any `json:"claims,omitempty"`
 	Version      uint64         `json:"version,omitempty"`
+	CreatedAt    time.Time      `json:"created_at,omitzero"`
+	LastActivity time.Time      `json:"last_activity,omitzero"`
 }
 
 func (s *Store) Put(ctx context.Context, sessionID string, session oauth2.Session, ttl time.Duration) error {
@@ -157,7 +159,10 @@ func (s *Store) Update(ctx context.Context, sessionID string, expectedVersion ui
 }
 
 func (s *Store) encodeSession(key string, session oauth2.Session) ([]byte, error) {
-	w := sessionWire{SessionID: session.SessionID, UserID: session.UserID, Expiry: session.Expiry, Claims: session.Claims, Version: session.Version}
+	w := sessionWire{
+		SessionID: session.SessionID, UserID: session.UserID, Expiry: session.Expiry, Claims: session.Claims, Version: session.Version,
+		CreatedAt: session.CreatedAt, LastActivity: session.LastActivity,
+	}
 	if session.AccessToken != nil {
 		w.AccessToken = session.AccessToken.RevealString()
 	}
@@ -191,7 +196,10 @@ func (s *Store) decodeSession(key string, b []byte) (oauth2.Session, error) {
 	if err := json.Unmarshal(b, &w); err != nil {
 		return oauth2.Session{}, errors.New("oauth2/redis: stored session is invalid")
 	}
-	session := oauth2.Session{SessionID: w.SessionID, UserID: w.UserID, Expiry: w.Expiry, Claims: w.Claims, Version: w.Version}
+	session := oauth2.Session{
+		SessionID: w.SessionID, UserID: w.UserID, Expiry: w.Expiry, Claims: w.Claims, Version: w.Version,
+		CreatedAt: w.CreatedAt, LastActivity: w.LastActivity,
+	}
 	if w.AccessToken != "" {
 		session.AccessToken = secret.NewFromString(w.AccessToken)
 	}

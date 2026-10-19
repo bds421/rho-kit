@@ -108,10 +108,12 @@ func (m *MemorySessionStore) deleteExpired(id string) {
 // corrupt a concurrent caller's snapshot.
 func cloneSession(s Session) Session {
 	out := Session{
-		SessionID: s.SessionID,
-		UserID:    s.UserID,
-		Expiry:    s.Expiry,
-		Version:   s.Version,
+		SessionID:    s.SessionID,
+		UserID:       s.UserID,
+		Expiry:       s.Expiry,
+		CreatedAt:    s.CreatedAt,
+		LastActivity: s.LastActivity,
+		Version:      s.Version,
 	}
 	if s.AccessToken != nil {
 		out.AccessToken = secret.NewFromString(s.AccessToken.RevealString())

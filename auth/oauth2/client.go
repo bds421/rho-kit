@@ -50,6 +50,11 @@ type Client struct {
 	rpLogout           bool
 	postLogoutRedirect string
 	endSessionEndpoint string
+
+	// Session lifetime limits (WithAbsoluteSessionLifetime, WithIdleTimeout).
+	absoluteLifetime time.Duration
+	idleTimeout      time.Duration
+	backgroundHeader string
 }
 
 // Option configures a [Client].
@@ -144,11 +149,12 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 		return nil, errors.New("oauth2: Config.RedirectURL is required")
 	}
 	c := &Client{
-		usePKCE:      true,
-		sessionTTL:   24 * time.Hour,
-		stateTTL:     10 * time.Minute,
-		cookieName:   "kit_oauth_session",
-		cookieSecure: true,
+		usePKCE:          true,
+		sessionTTL:       24 * time.Hour,
+		stateTTL:         10 * time.Minute,
+		cookieName:       "kit_oauth_session",
+		cookieSecure:     true,
+		backgroundHeader: DefaultBackgroundRequestHeader,
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -453,25 +459,28 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "oauth2: session id generation failed", http.StatusInternalServerError)
 		return
 	}
+	now := time.Now()
 	sess := Session{
-		SessionID:   sessionID,
-		UserID:      idToken.Subject,
-		AccessToken: secret.NewFromString(token.AccessToken),
-		IDToken:     secret.NewFromString(rawIDToken),
-		Expiry:      token.Expiry,
-		Claims:      claims,
+		SessionID:    sessionID,
+		UserID:       idToken.Subject,
+		AccessToken:  secret.NewFromString(token.AccessToken),
+		IDToken:      secret.NewFromString(rawIDToken),
+		Expiry:       token.Expiry,
+		Claims:       claims,
+		CreatedAt:    now,
+		LastActivity: now,
 	}
 	// Nil when the issuer did not grant a refresh token (documented
 	// Session.RefreshToken contract).
 	if token.RefreshToken != "" {
 		sess.RefreshToken = secret.NewFromString(token.RefreshToken)
 	}
-	if err := c.sessions.Put(r.Context(), sessionID, sess, c.sessionTTL); err != nil {
+	if err := c.sessions.Put(r.Context(), sessionID, sess, c.sessionTTLFor(sess, now)); err != nil {
 		c.logger.WarnContext(r.Context(), "oauth2: session.Put failed", redact.Error(err))
 		http.Error(w, "oauth2: session persistence failed", http.StatusInternalServerError)
 		return
 	}
-	http.SetCookie(w, c.sessionCookie(sessionID))
+	http.SetCookie(w, c.sessionCookie(sessionID, now))
 	// Defence in depth: re-validate the persisted deep link before
 	// emitting it in a Location header. handleLogin already screens
 	// redirect_to, but a hostile StateStore implementation could return
@@ -567,6 +576,9 @@ func (c *Client) takeState(ctx context.Context, state string) (StateEntry, error
 // cookie. Returns ErrSessionNotFound when the cookie is absent/empty or
 // the store has no matching live session. With [WithTokenRefresh] it also
 // refreshes an expired or nearly expired access token first (see there).
+// With [WithAbsoluteSessionLifetime] or [WithIdleTimeout] a session past
+// its limit is deleted and reported as [ErrSessionNotFound]; with
+// [WithIdleTimeout] a user-initiated request also records activity.
 func (c *Client) SessionFromRequest(ctx context.Context, r *http.Request) (Session, error) {
 	if r == nil {
 		return Session{}, ErrSessionNotFound
@@ -575,17 +587,35 @@ func (c *Client) SessionFromRequest(ctx context.Context, r *http.Request) (Sessi
 	if err != nil || cookie.Value == "" {
 		return Session{}, ErrSessionNotFound
 	}
-	sess, err := c.sessions.Get(ctx, cookie.Value)
+	sessionID := cookie.Value
+	sess, err := c.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return Session{}, err
 	}
-	return c.refreshIfNeeded(ctx, cookie.Value, sess)
+	if reason, exceeded := c.lifetimeExceeded(sess, time.Now()); exceeded {
+		return Session{}, c.expireSession(ctx, sessionID, reason)
+	}
+	sess, err = c.refreshIfNeeded(ctx, sessionID, sess)
+	if err != nil {
+		return Session{}, err
+	}
+	if !c.isBackground(ctx, r) {
+		sess = c.recordActivity(ctx, sessionID, sess, time.Now())
+	}
+	return sess, nil
 }
 
 // CookieName returns the session cookie name used by this client.
 func (c *Client) CookieName() string { return c.cookieName }
 
-func (c *Client) sessionCookie(sessionID string) *http.Cookie {
+// sessionCookie returns the session cookie for a session created at
+// createdAt. It expires with the session TTL, or earlier at the absolute
+// lifetime cap.
+func (c *Client) sessionCookie(sessionID string, createdAt time.Time) *http.Cookie {
+	lifetime := c.sessionTTL
+	if c.absoluteLifetime > 0 {
+		lifetime = min(lifetime, c.absoluteLifetime)
+	}
 	return &http.Cookie{
 		Name:     c.cookieName,
 		Value:    sessionID,
@@ -594,7 +624,7 @@ func (c *Client) sessionCookie(sessionID string) *http.Cookie {
 		HttpOnly: true,
 		Secure:   c.cookieSecure,
 		SameSite: http.SameSiteLaxMode,
-		Expires:  time.Now().Add(c.sessionTTL),
+		Expires:  createdAt.Add(lifetime),
 	}
 }
 

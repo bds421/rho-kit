@@ -52,6 +52,14 @@ type Session struct {
 	// Claims is the verified ID-token claim set. Includes "sub",
 	// "email", "name", and provider-specific claims.
 	Claims map[string]any
+	// CreatedAt is when the login callback created the session. It bounds
+	// [WithAbsoluteSessionLifetime]. Zero for sessions stored before it was
+	// recorded.
+	CreatedAt time.Time
+	// LastActivity is the time of the most recent user-initiated request
+	// recorded for the session (written at most once per minute). It drives
+	// [WithIdleTimeout]. Zero for sessions stored before it was recorded.
+	LastActivity time.Time
 	// Version is a write generation used for compare-and-set updates (see
 	// [SessionUpdater]). The client sets it; stores persist it unchanged.
 	Version uint64

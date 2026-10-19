@@ -2,6 +2,7 @@ package oauth2
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -126,28 +127,52 @@ func (c *Client) refreshSession(ctx context.Context, sessionID string) (Session,
 		updated.IDToken = secret.NewFromString(rawIDToken)
 	}
 	updated.Version = current.Version + 1
-	return c.storeRefreshed(ctx, sessionID, current.Version, updated)
+	return c.storeRefreshed(ctx, sessionID, current, updated)
 }
+
+// maxActivityMergeAttempts bounds how often a refreshed session is re-applied
+// onto a session whose only concurrent change was recorded activity.
+const maxActivityMergeAttempts = 3
 
 // storeRefreshed persists a refreshed session. With a [SessionUpdater] the
 // write is a compare-and-set against the version that was refreshed: if the
 // session was deleted (logout) or rewritten meanwhile, the refreshed tokens
-// are discarded so a logout can never be undone. Other stores fall back to
-// re-checking existence before Put (a narrower, documented race).
-func (c *Client) storeRefreshed(ctx context.Context, sessionID string, expectedVersion uint64, updated Session) (Session, error) {
+// are discarded so a logout can never be undone. A concurrent write that
+// only recorded activity ([WithIdleTimeout]) still holds the refresh token
+// that was redeemed; the refreshed tokens are then re-applied onto it. Other
+// stores fall back to re-checking existence before Put (a narrower,
+// documented race).
+func (c *Client) storeRefreshed(ctx context.Context, sessionID string, current, updated Session) (Session, error) {
+	ttl := c.sessionTTLFor(updated, time.Now())
+	if ttl <= 0 {
+		return Session{}, c.expireSession(ctx, sessionID, "lifetime reached during token refresh")
+	}
 	if updater, ok := c.sessions.(SessionUpdater); ok {
-		stored, err := updater.Update(ctx, sessionID, expectedVersion, updated, c.sessionTTL)
-		if err != nil {
-			c.logger.WarnContext(ctx, "oauth2: session.Update failed after token refresh", redact.Error(err))
-			return Session{}, err
-		}
-		if stored {
-			return updated, nil
-		}
-		// Lost the race. A concurrent refresh that persisted fresh tokens is
-		// still a valid session; a deleted or otherwise changed one is not.
-		if latest, err := c.sessions.Get(ctx, sessionID); err == nil && latest.Version > expectedVersion && !c.needsRefresh(latest, time.Now()) {
-			return latest, nil
+		expectedVersion := current.Version
+		for attempt := 0; ; attempt++ {
+			stored, err := updater.Update(ctx, sessionID, expectedVersion, updated, ttl)
+			if err != nil {
+				c.logger.WarnContext(ctx, "oauth2: session.Update failed after token refresh", redact.Error(err))
+				return Session{}, err
+			}
+			if stored {
+				return updated, nil
+			}
+			// Lost the race. A concurrent refresh that persisted fresh tokens
+			// is still a valid session; a deleted or otherwise changed one is
+			// not.
+			latest, err := c.sessions.Get(ctx, sessionID)
+			if err == nil && latest.Version > expectedVersion && !c.needsRefresh(latest, time.Now()) {
+				return latest, nil
+			}
+			if err != nil || attempt+1 >= maxActivityMergeAttempts || !onlyActivityChanged(current, latest) {
+				break
+			}
+			if latest.LastActivity.After(updated.LastActivity) {
+				updated.LastActivity = latest.LastActivity
+			}
+			expectedVersion = latest.Version
+			updated.Version = latest.Version + 1
 		}
 		c.logger.WarnContext(ctx, "oauth2: session changed during token refresh; discarding refreshed tokens")
 		return Session{}, ErrSessionNotFound
@@ -156,11 +181,25 @@ func (c *Client) storeRefreshed(ctx context.Context, sessionID string, expectedV
 		// Deleted (logout) or unreadable while refreshing: do not recreate.
 		return Session{}, err
 	}
-	if err := c.sessions.Put(ctx, sessionID, updated, c.sessionTTL); err != nil {
+	if err := c.sessions.Put(ctx, sessionID, updated, ttl); err != nil {
 		c.logger.WarnContext(ctx, "oauth2: session.Put failed after token refresh", redact.Error(err))
 		return Session{}, err
 	}
 	return updated, nil
+}
+
+// onlyActivityChanged reports whether latest is the refreshed session as it
+// was read (same subject and refresh token), i.e. a concurrent write did not
+// rotate its tokens.
+func onlyActivityChanged(refreshed, latest Session) bool {
+	return latest.UserID == refreshed.UserID && sameSecret(latest.RefreshToken, refreshed.RefreshToken)
+}
+
+func sameSecret(a, b *secret.String) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return subtle.ConstantTimeCompare([]byte(a.RevealString()), []byte(b.RevealString())) == 1
 }
 
 // refreshFailed decides whether a failed refresh expires the session. A
