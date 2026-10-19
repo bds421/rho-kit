@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.10.0 — unreleased
+## v2.10.0 — 2026-10-19
 
 Supersedes the v2.9.0 tags of `security`, `realtime/centrifuge`, `infra`,
 `httpx` and `infra/outbox/postgres`. Those tags were created from branches

@@ -34,3 +34,5 @@ require (
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+retract v2.9.0 // Tagged from branches that were never merged; use v2.10.0.
