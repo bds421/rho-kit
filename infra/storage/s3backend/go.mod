@@ -32,10 +32,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.33.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.45.3 // indirect
-	github.com/bds421/rho-kit/core/v2 v2.16.2
-	github.com/bds421/rho-kit/infra/v2 v2.16.2
-	github.com/bds421/rho-kit/io/v2 v2.16.2 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.16.2
+	github.com/bds421/rho-kit/core/v2 v2.16.3
+	github.com/bds421/rho-kit/infra/v2 v2.16.3
+	github.com/bds421/rho-kit/io/v2 v2.16.3 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.16.3
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
