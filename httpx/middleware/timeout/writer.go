@@ -178,6 +178,8 @@ func (tw *timeoutWriter) writeToReal() {
 // any representation metadata already set by outer wrappers, while retaining
 // their unrelated security, tracing and session headers.
 func (tw *timeoutWriter) writeBufferError() {
+	tw.warnLogger().Error("timeout middleware: response exceeds the buffer limit, answered 500; raise it with WithMaxBufferSize or keep responses smaller",
+		"limit_bytes", tw.bufferCap())
 	tw.prepareBufferErrorHeaders()
 	tw.w.WriteHeader(http.StatusInternalServerError)
 	if !tw.head {

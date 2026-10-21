@@ -1,9 +1,12 @@
 package timeout
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -170,5 +173,21 @@ func TestTimeout_OverflowHEADDiscardsRepresentation(t *testing.T) {
 		if rec.Header().Get(name) != "" || len(rec.Header()[name]) != 0 {
 			t.Errorf("HEAD stale %s survived", name)
 		}
+	}
+}
+
+func TestOverflowLogsItsCause(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	h := Timeout(time.Second, WithMaxBufferSize(4), WithLogger(logger))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("too large"))
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(logs.String(), `"level":"ERROR"`) || !strings.Contains(logs.String(), `"limit_bytes":4`) {
+		t.Errorf("overflow not logged: %s", logs.String())
 	}
 }
