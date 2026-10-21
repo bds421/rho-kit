@@ -7,6 +7,8 @@
   response is larger than its buffer (1 MiB unless `WithMaxBufferSize`); it
   now logs that at error level with the limit, on the configured logger or
   `slog.Default`. Before, the 500 carried no cause in the logs.
+- **build: Go 1.27.3** (GO-2026-6809, crypto/x509 distrusts compromised
+  intermediates).
 
 ## v2.16.2 — 2026-10-21
 
