@@ -108,8 +108,8 @@ func TestCursorRejectsMalformed(t *testing.T) {
 	}
 }
 
-func TestEscapeLikePrefix(t *testing.T) {
-	assert.Equal(t, "plain", escapeLikePrefix("plain"))
-	assert.Equal(t, `50\%\_off`, escapeLikePrefix("50%_off"))
-	assert.Equal(t, `path\\thing`, escapeLikePrefix(`path\thing`))
+func TestEscapeLike(t *testing.T) {
+	assert.Equal(t, "plain", escapeLike("plain"))
+	assert.Equal(t, `50\%\_off`, escapeLike("50%_off"))
+	assert.Equal(t, `path\\thing`, escapeLike(`path\thing`))
 }

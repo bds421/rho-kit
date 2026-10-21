@@ -258,6 +258,10 @@ type Filter struct {
 	Since     time.Time
 	Until     time.Time
 	IPAddress string
+	// Search keeps events whose [SearchText] contains it, ignoring case
+	// (actor, action, resource, metadata values). At most
+	// [MaxSearchBytes]; empty keeps every event.
+	Search string
 }
 
 // Logger wraps a Store with convenience methods and automatic field
@@ -614,6 +618,9 @@ func (l *Logger) List(ctx context.Context, filter Filter, cursor string, limit i
 	}
 	if limit > MaxPageLimit {
 		return nil, "", ErrLimitTooLarge
+	}
+	if len(filter.Search) > MaxSearchBytes {
+		return nil, "", ErrSearchTooLong
 	}
 	rawCursor, err := l.cursors.decodeCursor(cursor)
 	if err != nil {

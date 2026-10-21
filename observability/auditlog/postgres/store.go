@@ -156,7 +156,11 @@ func (s *Store) Query(ctx context.Context, filter auditlog.Filter, cursor string
 		// MemoryStore's matchesFilter uses strings.HasPrefix; mirror that
 		// for cross-Store consistency. text_pattern_ops index on resource
 		// keeps the plan O(log n) for narrow prefixes.
-		add("resource LIKE $%d", escapeLikePrefix(filter.Resource)+"%")
+		add("resource LIKE $%d", escapeLike(filter.Resource)+"%")
+	}
+	if filter.Search != "" {
+		// pg_trgm GIN index on search_text (migration 20261022000001).
+		add("search_text ILIKE $%d", "%"+escapeLike(filter.Search)+"%")
 	}
 	if filter.IPAddress != "" {
 		add("ip_address = $%d", filter.IPAddress)
@@ -382,8 +386,8 @@ func insertEvent(ctx context.Context, tx pgx.Tx, e auditlog.Event) error {
 	const q = `
 INSERT INTO audit_log_events
 (id, occurred_at, actor, tenant, action, resource, status, ip_address, trace_id,
- metadata, signed_metadata, prev_hmac, hmac)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`
+ metadata, signed_metadata, prev_hmac, hmac, search_text)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
 	prev := e.PrevHMAC
 	if prev == nil {
 		prev = []byte{}
@@ -391,6 +395,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`
 	if _, err := tx.Exec(ctx, q,
 		e.ID, e.Timestamp.UTC(), e.Actor, e.Tenant, e.Action, e.Resource, e.Status,
 		e.IPAddress, e.TraceID, nil, signedBytes(e.Metadata), prev, e.HMAC,
+		auditlog.SearchText(e),
 	); err != nil {
 		return fmt.Errorf("auditlog/postgres: insert event: %w", err)
 	}
@@ -461,11 +466,11 @@ func decodeCursor(cursor string) (time.Time, string, error) {
 	return time.Unix(0, nanos).UTC(), id, nil
 }
 
-// escapeLikePrefix escapes the LIKE metacharacters in a prefix so
-// `'foo%bar' + '%'` does not become a wildcard within the prefix.
+// escapeLike escapes the LIKE metacharacters in a literal so
+// `'foo%bar' + '%'` does not become a wildcard within it.
 // Postgres' default LIKE escape is '\\'; the kit never alters that
 // session default so escaping the four literals is sufficient.
-func escapeLikePrefix(s string) string {
+func escapeLike(s string) string {
 	if !strings.ContainsAny(s, "%_\\") {
 		return s
 	}

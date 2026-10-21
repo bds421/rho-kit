@@ -255,5 +255,5 @@ func matchesFilter(e Event, f Filter) bool {
 	if !f.Until.IsZero() && e.Timestamp.After(f.Until) {
 		return false
 	}
-	return true
+	return MatchesSearch(e, f.Search)
 }

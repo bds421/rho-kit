@@ -118,7 +118,11 @@ services use `observability/auditlog/postgres`, which implements the full Store
 contract (advisory-lock-serialised `AppendChained`, append-order `RangeChain`
 for `Logger.VerifyChain`, signed-cursor `Query` pagination, `LastHMAC` for
 operator tooling). Apply its schema with `kit-migrate publish --to=./migrations
-auditlog`. Use `LogE` when the originating action must fail if the audit
+auditlog`. `Filter.Search` matches actor, action, resource and metadata values
+as a case-insensitive substring (`auditlog.SearchText`); the Postgres store
+keeps that text in `search_text` with a pg_trgm GIN index, so its migrations
+need a role that may create the trusted `pg_trgm` extension (or the extension
+already installed on the search_path). Use `LogE` when the originating action must fail if the audit
 append fails. `Log` is best-effort and reports drops through logs,
 `WithDroppedCounter`, and `WithOnDrop`.
 
