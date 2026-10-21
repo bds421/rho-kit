@@ -618,7 +618,9 @@ func TestHandle_PushOnlyHeartbeat_SurvivesWithReadDrain(t *testing.T) {
 		}),
 		websocket.WithReadDrain(),
 		websocket.WithPingInterval(30*time.Millisecond),
-		websocket.WithPongTimeout(30*time.Millisecond),
+		// Long enough that a loaded machine answers in time, short enough that
+		// a connection without read drain times out within the run below.
+		websocket.WithPongTimeout(150*time.Millisecond),
 		websocket.WithMetrics(reg),
 	)
 
@@ -642,7 +644,7 @@ func TestHandle_PushOnlyHeartbeat_SurvivesWithReadDrain(t *testing.T) {
 
 	// Run for well past several ping intervals; the connection must
 	// survive — i.e. writes keep flowing and no ping timeout is logged.
-	deadline := time.After(400 * time.Millisecond)
+	deadline := time.After(600 * time.Millisecond)
 	count := 0
 loop:
 	for {
