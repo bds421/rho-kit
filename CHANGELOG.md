@@ -9,6 +9,9 @@
   `slog.Default`. Before, the 500 carried no cause in the logs.
 - **build: Go 1.27.3** (GO-2026-6809, crypto/x509 distrusts compromised
   intermediates).
+- **deps: github.com/rabbitmq/amqp091-go v1.14.0** (GO-2026-6700, frame
+  limit before negotiation) in `app/amqp`, `infra/messaging/amqpbackend` and
+  the test kits.
 
 ## v2.16.2 — 2026-10-21
 
