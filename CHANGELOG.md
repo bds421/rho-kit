@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.16.3 — 2026-10-21
+
+- **fix(httpx/timeout): a response replaced by 500 for exceeding the
+  buffer is logged.** The timeout middleware answers 500 when a handler's
+  response is larger than its buffer (1 MiB unless `WithMaxBufferSize`); it
+  now logs that at error level with the limit, on the configured logger or
+  `slog.Default`. Before, the 500 carried no cause in the logs.
+
 ## v2.16.2 — 2026-10-21
 
 - **fix(app): the public listener defaults to every interface with IPv6 and
