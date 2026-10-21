@@ -19,6 +19,8 @@
   reviewed shared namespace for role-isolated workers.
 - `Enqueue(ctx, queue, msg kitqueue.Message)` — adapts to river's `Insert`. The `Message.ID`, if non-empty, drives river's `UniqueOpts{ByArgs, ByQueue}` for deduplication.
 - `WithoutUniqueByID()` — opt out of FR-059 dedup if you genuinely want every Enqueue to deliver.
+- `EnqueueAt(ctx, queue, msg, at)` / `EnqueueTxAt(ctx, tx, queue, msg, at)` — a job that runs no earlier than `at` (River `ScheduledAt`); dedupe by `Message.ID` covers scheduled jobs.
+- `Pending(ctx, queue, id)` / `PendingTx` — whether a job with that `Message.ID` still waits, is scheduled, runs or retries; finds work River gave up on.
 
 ## Common mistakes
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.17.0 — 2026-10-21
+
+- **feat(data/queue/riverqueue): scheduled jobs and a pending check.**
+  `Publisher.EnqueueAt` and `EnqueueTxAt` insert a job that runs no earlier
+  than the given time (River `ScheduledAt`), inside the caller's
+  transaction for the Tx variant; dedupe by `Message.ID` covers scheduled
+  jobs. `Publisher.Pending` and `PendingTx` report whether a job with a
+  message ID still waits, is scheduled, runs or retries, so a caller can find
+  work River discarded and enqueue it again.
+
 ## v2.16.3 — 2026-10-21
 
 - **fix(httpx/timeout): a response replaced by 500 for exceeding the

@@ -303,3 +303,85 @@ func TestIntegration_RiverPublisher_DistinctIDsAllDelivered(t *testing.T) {
 	}
 	assert.Equal(t, int32(3), delivered.Load())
 }
+
+// A scheduled job waits until its time and is pending while it waits; a
+// rolled back EnqueueTxAt leaves nothing; a finished job is no longer
+// pending.
+func TestIntegration_RiverPublisher_ScheduledJobsWaitAndArePending(t *testing.T) {
+	dsn := startPostgres(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	migrateRiver(t, pool)
+
+	ran := make(chan time.Time, 4)
+	workers := river.NewWorkers()
+	river.AddWorker(workers, riverqueue.NewEnvelopeWorker(func(_ context.Context, _ kitqueue.Message) error {
+		ran <- time.Now()
+		return nil
+	}))
+	const queueName = "kit-scheduled"
+	client, err := river.NewClient(riverqueue.DriverFromPool(pool), &river.Config{
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		Queues:  map[string]river.QueueConfig{queueName: {MaxWorkers: 2}},
+		Workers: workers,
+	})
+	require.NoError(t, err)
+	completed, cancelSub := client.Subscribe(river.EventKindJobCompleted)
+	defer cancelSub()
+	require.NoError(t, client.Start(ctx))
+	t.Cleanup(func() {
+		shutdown, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelShutdown()
+		_ = client.Stop(shutdown)
+	})
+
+	pub := riverqueue.NewPublisher(client)
+	msg := func(id string) kitqueue.Message {
+		return kitqueue.Message{ID: id, Type: "reminder", Payload: json.RawMessage(`{}`)}
+	}
+
+	tx, err := pool.Begin(ctx)
+	require.NoError(t, err)
+	require.NoError(t, pub.EnqueueTxAt(ctx, tx, queueName, msg("rolled-back"), time.Now()))
+	pending, err := pub.PendingTx(ctx, tx, queueName, "rolled-back")
+	require.NoError(t, err)
+	assert.True(t, pending, "the transaction sees its own job")
+	require.NoError(t, tx.Rollback(ctx))
+	pending, err = pub.Pending(ctx, queueName, "rolled-back")
+	require.NoError(t, err)
+	assert.False(t, pending, "a rolled back job is not pending")
+
+	at := time.Now().Add(3 * time.Second)
+	tx, err = pool.Begin(ctx)
+	require.NoError(t, err)
+	require.NoError(t, pub.EnqueueTxAt(ctx, tx, queueName, msg("later"), at))
+	require.NoError(t, tx.Commit(ctx))
+	require.NoError(t, pub.EnqueueAt(ctx, queueName, msg("later"), time.Now()), "a repeated ID is deduplicated")
+	pending, err = pub.Pending(ctx, queueName, "later")
+	require.NoError(t, err)
+	assert.True(t, pending, "a scheduled job is pending")
+
+	select {
+	case when := <-ran:
+		assert.False(t, when.Before(at), "job ran at %v, before its time %v", when, at)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the scheduled job did not run")
+	}
+	select {
+	case <-completed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the scheduled job did not complete")
+	}
+	pending, err = pub.Pending(ctx, queueName, "later")
+	require.NoError(t, err)
+	assert.False(t, pending, "a completed job is not pending")
+	select {
+	case <-ran:
+		t.Fatal("the deduplicated enqueue ran a second job")
+	case <-time.After(time.Second):
+	}
+}

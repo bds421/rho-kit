@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -221,3 +222,34 @@ var _ = river.JobArgs(nil)
 // Coverage is exercised by the integration test suite that runs
 // against a Postgres testcontainer; the unit suite verifies API
 // shape (compile-time guards above) and validation panics.
+
+// EnqueueAt, EnqueueTxAt and Pending run the same guards as Enqueue
+// before River or the tx is touched.
+
+func TestPublisherScheduled_RejectsInvalidInputBeforeInsert(t *testing.T) {
+	pub := riverqueue.NewPublisher(new(river.Client[pgx.Tx]))
+	at := time.Now().Add(time.Hour)
+	msg := kitqueue.Message{ID: "msg-1", Type: "user.created", Payload: json.RawMessage(`{"id":42}`)}
+
+	assert.ErrorIs(t, pub.EnqueueAt(context.Background(), "bad\nqueue", msg, at), kitqueue.ErrInvalidName)
+	assert.ErrorIs(t, pub.EnqueueTxAt(context.Background(), nil, "bad\nqueue", msg, at), kitqueue.ErrInvalidName)
+	assert.ErrorIs(t, pub.EnqueueAt(context.Background(), "jobs", kitqueue.Message{ID: "msg-1"}, at), kitqueue.ErrInvalidMessage)
+	assert.ErrorIs(t, pub.EnqueueTxAt(context.Background(), nil, "jobs", kitqueue.Message{ID: "msg-1"}, at), kitqueue.ErrInvalidMessage)
+
+	var nilPub *riverqueue.Publisher
+	assert.ErrorIs(t, nilPub.EnqueueAt(context.Background(), "jobs", msg, at), kitqueue.ErrInvalidQueue)
+	assert.ErrorIs(t, nilPub.EnqueueTxAt(context.Background(), nil, "jobs", msg, at), kitqueue.ErrInvalidQueue)
+}
+
+func TestPublisherPending_RejectsInvalidInputBeforeQuery(t *testing.T) {
+	pub := riverqueue.NewPublisher(new(river.Client[pgx.Tx]))
+
+	_, err := pub.Pending(context.Background(), "bad\nqueue", "msg-1")
+	assert.ErrorIs(t, err, kitqueue.ErrInvalidName)
+	_, err = pub.PendingTx(context.Background(), nil, "jobs", "")
+	assert.ErrorIs(t, err, kitqueue.ErrInvalidMessage)
+
+	var nilPub *riverqueue.Publisher
+	_, err = nilPub.Pending(context.Background(), "jobs", "msg-1")
+	assert.ErrorIs(t, err, kitqueue.ErrInvalidQueue)
+}

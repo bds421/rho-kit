@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -127,6 +128,90 @@ func (p *Publisher) EnqueueTx(ctx context.Context, tx pgx.Tx, queue string, msg 
 		return redact.WrapError("riverqueue: insert", err)
 	}
 	return nil
+}
+
+// EnqueueAt is [Publisher.Enqueue] for a job that runs no earlier than at,
+// such as a reminder or the end of a waiting period. River keeps it in
+// the scheduled state until then; a zero or past time runs it at once.
+// Dedupe by Message.ID covers scheduled jobs too.
+func (p *Publisher) EnqueueAt(ctx context.Context, queue string, msg kitqueue.Message, at time.Time) error {
+	job, opts, err := p.prepareInsert(queue, msg)
+	if err != nil {
+		return err
+	}
+	opts.ScheduledAt = at
+	if _, err := p.client.Insert(ctx, job, opts); err != nil {
+		return redact.WrapError("riverqueue: insert", err)
+	}
+	return nil
+}
+
+// EnqueueTxAt is the transactional variant of [Publisher.EnqueueAt]: the
+// scheduled job exists iff tx commits.
+func (p *Publisher) EnqueueTxAt(ctx context.Context, tx pgx.Tx, queue string, msg kitqueue.Message, at time.Time) error {
+	job, opts, err := p.prepareInsert(queue, msg)
+	if err != nil {
+		return err
+	}
+	opts.ScheduledAt = at
+	if _, err := p.client.InsertTx(ctx, tx, job, opts); err != nil {
+		return redact.WrapError("riverqueue: insert", err)
+	}
+	return nil
+}
+
+// Pending reports whether a job with the message ID still waits, is
+// scheduled, runs or retries on queue. A job that completed, was cancelled
+// or was discarded after its last attempt is not pending, so a caller can
+// find work River gave up on and enqueue it again under a new ID.
+func (p *Publisher) Pending(ctx context.Context, queue, id string) (bool, error) {
+	params, err := p.pendingParams(queue, id)
+	if err != nil {
+		return false, err
+	}
+	res, err := p.client.JobList(ctx, params)
+	if err != nil {
+		return false, redact.WrapError("riverqueue: list", err)
+	}
+	return len(res.Jobs) > 0, nil
+}
+
+// PendingTx is [Publisher.Pending] on tx, so it sees jobs the transaction
+// enqueued.
+func (p *Publisher) PendingTx(ctx context.Context, tx pgx.Tx, queue, id string) (bool, error) {
+	params, err := p.pendingParams(queue, id)
+	if err != nil {
+		return false, err
+	}
+	res, err := p.client.JobListTx(ctx, tx, params)
+	if err != nil {
+		return false, redact.WrapError("riverqueue: list", err)
+	}
+	return len(res.Jobs) > 0, nil
+}
+
+func (p *Publisher) pendingParams(queue, id string) (*river.JobListParams, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
+	if err := kitqueue.ValidateName(queue, "queue"); err != nil {
+		return nil, redact.WrapError("riverqueue", err)
+	}
+	if id == "" {
+		return nil, redact.WrapError("riverqueue", kitqueue.ErrInvalidMessage)
+	}
+	return river.NewJobListParams().
+		Kinds(envelopeArgs{}.Kind()).
+		Queues(queue).
+		States(pendingStates...).
+		Where("args ->> 'id' = @id", river.NamedArgs{"id": id}).
+		First(1), nil
+}
+
+// pendingStates are the states of a job River will still work.
+var pendingStates = []rivertype.JobState{
+	rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRetryable,
+	rivertype.JobStateRunning, rivertype.JobStateScheduled,
 }
 
 // prepareInsert validates the queue and message and builds the River
