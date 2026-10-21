@@ -54,8 +54,18 @@ func newFromSource(src http.RoundTripper, tlsConfig *tls.Config, idleConnTimeout
 // "trust any certificate" toggle into a production transport. Diagnostic
 // tooling that genuinely needs the bypass should call tlsclone directly
 // with the [tlsclone.WithAllowInsecureSkipVerify] opt-in.
+//
+// The one accepted form is a config that replaces stdlib verification with
+// [tls.Config.VerifyConnection], as the hot-rotation config from
+// security/netutil.ReloadingClientTLS does: it verifies the peer chain and
+// hostname against the freshest CA pool on every handshake. The messaging
+// backends (natsbackend, amqpbackend) accept the same form.
 func CloneTLSConfigWithFloor(cfg *tls.Config, label string) *tls.Config {
-	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, MinimumTLSVersion)
+	var opts []tlsclone.Option
+	if cfg != nil && cfg.InsecureSkipVerify && cfg.VerifyConnection != nil {
+		opts = append(opts, tlsclone.WithAllowInsecureSkipVerify())
+	}
+	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, MinimumTLSVersion, opts...)
 	if err != nil {
 		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
 			panic("transportdefaults: CloneTLSConfigWithFloor [" + label + "] TLS InsecureSkipVerify=true is not permitted — see tlsclone.WithAllowInsecureSkipVerify for the explicit opt-in")

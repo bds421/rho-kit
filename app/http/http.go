@@ -107,9 +107,10 @@ func WithInternalNonLoopback() Option {
 }
 
 // WithReloadingTLS enables hot rotation of the TLS material configured
-// in [BaseConfig.TLS]. The kit polls the certificate / key / CA
-// files for inode changes and rebuilds the TLS config in place,
-// so cert rotation no longer requires a restart.
+// in [BaseConfig.TLS]. The server and the kit's default HTTP client
+// read certificate, key and CA from one reloading source on every
+// handshake, so cert rotation no longer requires a restart. Pass
+// [netutil.WithReloadInterval] to re-read the files periodically.
 //
 // Pair with [WithTLSReloadOnSignal] to also reload on a signal (the
 // poller and signal handler trip the same Reload() entry point so

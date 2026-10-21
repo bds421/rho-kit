@@ -168,3 +168,17 @@ func TestNew_UsesFallbackWhenDefaultTransportReplaced(t *testing.T) {
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestCloneTLSConfigWithFloor_AcceptsVerifyConnectionReplacement(t *testing.T) {
+	cfg := &tls.Config{
+		InsecureSkipVerify: true,
+		VerifyConnection:   func(tls.ConnectionState) error { return nil },
+	}
+	cloned := CloneTLSConfigWithFloor(cfg, "test")
+	if cloned.VerifyConnection == nil {
+		t.Fatal("VerifyConnection must survive the clone; it is the only verification left")
+	}
+	if !cloned.InsecureSkipVerify {
+		t.Error("InsecureSkipVerify must stay set so VerifyConnection checks against the live CA pool")
+	}
+}

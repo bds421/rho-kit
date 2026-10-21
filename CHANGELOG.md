@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.16.1 — 2026-10-21
+
+- **fix(httpx, app/http): `WithReloadingTLS` no longer panics in the default
+  HTTP client module.** The kit transport accepted no `InsecureSkipVerify`,
+  also not the reloading client config from `netutil.ReloadingClientTLS`,
+  which verifies chain and hostname against the live CA pool in
+  `VerifyConnection`. Kit HTTP clients now accept that form, like the NATS
+  and AMQP backends; `InsecureSkipVerify` without `VerifyConnection` still
+  panics.
+
 ## v2.16.0 — 2026-10-19
 
 - **feat(auth/oauth2): `WithSignInHook` and `Session.Attributes`.** An

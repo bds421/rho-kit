@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"log/slog"
+	"net/http"
 	"os"
 	"testing"
 
@@ -141,3 +144,33 @@ func testModuleContext(t *testing.T) ModuleContext {
 
 // Re-export to silence unused import in this file.
 var _ = health.StatusHealthy
+
+type stubCertificateSource struct{}
+
+func (stubCertificateSource) ServerCertificate() (*tls.Certificate, error) { return &tls.Certificate{}, nil }
+func (stubCertificateSource) ClientCertificate() (*tls.Certificate, error) { return &tls.Certificate{}, nil }
+func (stubCertificateSource) CAs() (*x509.CertPool, error)                 { return x509.NewCertPool(), nil }
+
+// TestHTTPClientModule_InitWithReloadingTLS pins the WithReloadingTLS path:
+// the reloading client config verifies through VerifyConnection, and the
+// default client must accept it instead of panicking on InsecureSkipVerify.
+func TestHTTPClientModule_InitWithReloadingTLS(t *testing.T) {
+	for _, tracing := range []bool{false, true} {
+		m := newHTTPClientModule(tracing, 0)
+		mc := testModuleContext(t)
+		mc.TLSCertSource = stubCertificateSource{}
+		if tracing {
+			mc.modules = map[string]Module{"tracing": &stubTracingProvider{BaseModule: NewBaseModule("tracing"), active: true}}
+		}
+
+		require.NotPanics(t, func() {
+			require.NoError(t, m.Init(context.Background(), mc))
+		})
+		tr, ok := m.Client().Transport.(*http.Transport)
+		if !tracing {
+			require.True(t, ok)
+			require.NotNil(t, tr.TLSClientConfig.VerifyConnection)
+			require.NotNil(t, tr.TLSClientConfig.GetClientCertificate)
+		}
+	}
+}
