@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.18.0 — 2026-10-21
+
+- **feat(httpx/webapp): serve a built single-page web app.** `webapp.New`
+  serves an `fs.FS` (usually `go:embed`): files by path and `index.html` for
+  every other path; precompressed `.br`/`.gz` siblings by `Accept-Encoding`
+  (br wins a tie) with `Content-Encoding` and `Vary`; a strong ETag per
+  coding; `WithImmutable` prefixes cached for a year, where a missing file is
+  404 instead of the app. GET and HEAD only.
+- **feat(httpx/stack): `WithStaticPaths`.** GET and HEAD requests under the
+  named path prefixes skip the timeout middleware, so large built files
+  stream instead of going through its 1 MiB buffer (which answers 500 above
+  it).
+- **fix(httpx/compress): equal weights pick the registered encoder.** Among
+  codings the client accepts with the same q, the encoder registered first
+  wins, as `WithEncoder` documents; before, the client's order did, so
+  `gzip, deflate, br` got gzip with brotli registered first. The negotiation
+  moved to `httpx/internal/acceptencoding`, shared with `webapp`.
+
 ## v2.17.0 — 2026-10-21
 
 - **feat(data/queue/riverqueue): scheduled jobs and a pending check.**
