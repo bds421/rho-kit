@@ -57,6 +57,10 @@ type Config struct {
 	// the timeout middleware, which buffers responses and cannot hand the
 	// connection over. Set with [WithWebSocketPaths].
 	WebSocketPaths []string
+	// StaticPaths are request path prefixes whose GET and HEAD requests
+	// skip the timeout middleware, so built files of any size stream
+	// instead of going through its 1 MiB buffer. Set with [WithStaticPaths].
+	StaticPaths    []string
 	FrameOption    secheaders.FrameOption
 	RecoverMetrics *mwrecover.Metrics
 	// SecHeadersOptions forwards arbitrary options to [secheaders.New]
@@ -223,7 +227,7 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		h = mwlogging.WithRequestLogger(cfg.Logger, cfg.LogAttrs...)(h)
 	}
 	if cfg.EnableTimeout && cfg.Timeout > 0 {
-		h = timeoutExceptWebSockets(cfg.Timeout, cfg.WebSocketPaths, h)
+		h = timeoutExcept(cfg.Timeout, cfg.WebSocketPaths, cfg.StaticPaths, h)
 	}
 	if cfg.EnableLogging {
 		var logOpts []mwlogging.LoggerOption
@@ -490,18 +494,51 @@ func WithWebSocketPaths(paths ...string) Option {
 	return func(cfg *Config) { cfg.WebSocketPaths = append(cfg.WebSocketPaths, cloned...) }
 }
 
-func timeoutExceptWebSockets(d time.Duration, paths []string, next http.Handler) http.Handler {
+// WithStaticPaths names request path prefixes that serve fixed files, such
+// as a web app's hashed assets ("/assets/"). GET and HEAD requests under them
+// bypass the per-request timeout, which buffers each response and answers 500
+// for one above its 1 MiB limit; the files stream to the client instead. Only
+// mount handlers there that read from memory or disk: the server's write
+// timeout still bounds a slow client, but nothing bounds a slow handler.
+func WithStaticPaths(prefixes ...string) Option {
+	for _, p := range prefixes {
+		if len(p) < 2 || p[0] != '/' {
+			panic("stack: WithStaticPaths requires absolute path prefixes other than /")
+		}
+	}
+	cloned := append([]string(nil), prefixes...)
+	return func(cfg *Config) { cfg.StaticPaths = append(cfg.StaticPaths, cloned...) }
+}
+
+func timeoutExcept(d time.Duration, webSocketPaths, staticPaths []string, next http.Handler) http.Handler {
 	limited := mwtimeout.Timeout(d)(next)
-	if len(paths) == 0 {
+	if len(webSocketPaths) == 0 && len(staticPaths) == 0 {
 		return limited
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isWebSocketUpgrade(r) && slices.Contains(paths, r.URL.Path) {
+		if isWebSocketUpgrade(r) && slices.Contains(webSocketPaths, r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if isRead(r) && hasAnyPrefix(r.URL.Path, staticPaths) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		limited.ServeHTTP(w, r)
 	})
+}
+
+func isRead(r *http.Request) bool {
+	return r.Method == http.MethodGet || r.Method == http.MethodHead
+}
+
+func hasAnyPrefix(path string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func isWebSocketUpgrade(r *http.Request) bool {

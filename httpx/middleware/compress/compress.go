@@ -5,9 +5,9 @@ import (
 	"compress/gzip"
 	"log/slog"
 	"net/http"
-	"sort"
-	"strconv"
 	"strings"
+
+	"github.com/bds421/rho-kit/httpx/v2/internal/acceptencoding"
 )
 
 // DefaultMinSize is the body-size threshold (in bytes) below which the
@@ -201,80 +201,20 @@ func eligibleRequest(r *http.Request) bool {
 	return true
 }
 
-// selectEncoder parses the Accept-Encoding header (RFC 9110 §12.5.3)
-// and returns the highest-preference encoder both client and server
-// support, or nil for identity / no match.
+// selectEncoder returns the highest-preference encoder both client and
+// server support, or nil for identity / no match.
 func selectEncoder(acceptEncoding string, encoders []Encoder) Encoder {
-	if acceptEncoding == "" || len(encoders) == 0 {
-		return nil
+	names := make([]string, len(encoders))
+	for i, e := range encoders {
+		names[i] = e.ContentEncoding()
 	}
-	type pref struct {
-		token string
-		q     float64
-	}
-	var prefs []pref
-	// refused records tokens the client explicitly excluded with q=0 (RFC 9110
-	// §12.5.3). The wildcard ('*') must match only codings NOT explicitly
-	// mentioned, so a refused token must never be selected via the wildcard.
-	refused := make(map[string]bool)
-	for _, raw := range strings.Split(acceptEncoding, ",") {
-		token, q := parseAcceptEncodingEntry(raw)
-		if token == "" {
-			continue
-		}
-		// RFC 9110 §12.5.3: q=0 means "not acceptable". Negative q is
-		// non-conformant; treat it as refused rather than as a high
-		// preference (ParseFloat would otherwise keep q=-0.5 above zero
-		// tokens when sorting descending).
-		if q <= 0 {
-			refused[strings.ToLower(token)] = true
-			continue
-		}
-		prefs = append(prefs, pref{token: token, q: q})
-	}
-	if len(prefs) == 0 {
-		return nil
-	}
-	sort.SliceStable(prefs, func(i, j int) bool {
-		return prefs[i].q > prefs[j].q
-	})
-	for _, p := range prefs {
-		if p.token == "*" {
-			// Wildcard matches codings not explicitly mentioned: pick the
-			// first registered encoder the client did not refuse with q=0.
-			for _, e := range encoders {
-				if !refused[strings.ToLower(e.ContentEncoding())] {
-					return e
-				}
-			}
-			continue
-		}
-		for _, e := range encoders {
-			if strings.EqualFold(e.ContentEncoding(), p.token) {
-				return e
-			}
+	chosen := acceptencoding.Select(acceptEncoding, names)
+	for _, e := range encoders {
+		if chosen != "" && e.ContentEncoding() == chosen {
+			return e
 		}
 	}
 	return nil
-}
-
-func parseAcceptEncodingEntry(raw string) (string, float64) {
-	parts := strings.Split(strings.TrimSpace(raw), ";")
-	token := strings.ToLower(strings.TrimSpace(parts[0]))
-	if token == "" {
-		return "", 0
-	}
-	q := 1.0
-	for _, p := range parts[1:] {
-		p = strings.TrimSpace(p)
-		if strings.HasPrefix(p, "q=") {
-			parsed, err := strconv.ParseFloat(strings.TrimPrefix(p, "q="), 64)
-			if err == nil {
-				q = parsed
-			}
-		}
-	}
-	return token, q
 }
 
 func addVary(h http.Header, value string) {

@@ -1,6 +1,6 @@
 # HTTP — Server, Middleware, JSON Helpers
 
-Packages: `httpx`, `httpx/middleware/stack`, `httpx/middleware/auth`, `httpx/middleware/csrf`, `httpx/middleware/cors`, `httpx/middleware/ratelimit`, `httpx/middleware/budget`, `httpx/budget`, `httpx/middleware/logging`, `httpx/middleware/metrics`, `httpx/middleware/requestid`, `httpx/middleware/timeout`, `httpx/middleware/clientip`, `httpx/middleware/maxbody`, `httpx/middleware/idempotency`
+Packages: `httpx`, `httpx/middleware/stack`, `httpx/middleware/auth`, `httpx/middleware/csrf`, `httpx/middleware/cors`, `httpx/middleware/ratelimit`, `httpx/middleware/budget`, `httpx/budget`, `httpx/middleware/logging`, `httpx/middleware/metrics`, `httpx/middleware/requestid`, `httpx/middleware/timeout`, `httpx/middleware/clientip`, `httpx/middleware/maxbody`, `httpx/middleware/idempotency`, `httpx/webapp`
 
 Snippet status: Go blocks in this recipe are illustrative fragments unless
 explicitly introduced as generated or executable code. Buildable golden-path
@@ -375,6 +375,24 @@ cors.New(cors.WithAllowedOrigins("https://app.example.com"))
 
 // Client IP (proxy-aware, for rate limiting):
 ip := clientip.ClientIP(r) // trusts X-Real-IP, X-Forwarded-For from loopback peers only
+```
+
+## Web App
+
+`webapp.New` serves a built single-page app (for example a Vite build
+embedded with `go:embed`): files by path, `index.html` for every other path,
+precompressed `.br`/`.gz` siblings by `Accept-Encoding`, ETags, and a year of
+immutable caching under the hashed prefix. Mount it behind
+`stack.WithStaticPaths` so large files stream instead of going through the
+timeout middleware's 1 MiB buffer:
+
+```go
+app, err := webapp.New(dist, webapp.WithImmutable("assets/"))
+if err != nil {
+    return err
+}
+mux.Handle("/", app)
+handler := stack.Default(mux, logger, stack.WithStaticPaths("/assets/"))
 ```
 
 ## Typed Handlers (Reduce Boilerplate)
