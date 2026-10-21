@@ -8,10 +8,10 @@ github.com/aws/aws-sdk-go-v2/service/kms v1.55.3 h1:qS073F+cSl7QKstrm3Jb8D/XkKBW
 github.com/aws/aws-sdk-go-v2/service/kms v1.55.3/go.mod h1:l1gMRJ4UawrC6rpVWRz39pZxlyHID0VIS/YEEiLi4E8=
 github.com/aws/smithy-go v1.27.6 h1:0zjT8jgK3jbrTT7JJ3EE6JsMhX8JTrZ+f1sEndYDXrA=
 github.com/aws/smithy-go v1.27.6/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
-github.com/bds421/rho-kit/core/v2 v2.16.1 h1:9oKMMuM8ojGDgMc18ueq/BlOyZ6DSNLjppKYktHvh3g=
-github.com/bds421/rho-kit/core/v2 v2.16.1/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
-github.com/bds421/rho-kit/crypto/v2 v2.16.1 h1:eHWJ++BDeyvaCz5h/gaCcYGRt+3dRoUTicSettxDKA8=
-github.com/bds421/rho-kit/crypto/v2 v2.16.1/go.mod h1:UviJxA30xEiFikhwvn7AjEzS4DUP8c2AxcK+P8hLaLk=
+github.com/bds421/rho-kit/core/v2 v2.16.2 h1:JBl9iKqP1E03NWzdQe2FtQ55qQhRt0BZzF8l2uGy19M=
+github.com/bds421/rho-kit/core/v2 v2.16.2/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
+github.com/bds421/rho-kit/crypto/v2 v2.16.2 h1:9Zey0Ci+90ze0945Q96XJoFMQHwvNuxjX9vacF9bugQ=
+github.com/bds421/rho-kit/crypto/v2 v2.16.2/go.mod h1:oPUlW3oz80Btbnx3tFuKvkpes7DZIddwnvaRQZN4k6E=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/c2sp/wycheproof v0.0.0-20260105152342-fca0d3ba9f12 h1:C34LW7dhWgjAaAOdNB8z2UCyJsXDjC6UTILljHuqOlI=
