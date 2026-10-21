@@ -6,8 +6,8 @@ module github.com/bds421/rho-kit/data/saga/pgstore/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.17.0
-	github.com/bds421/rho-kit/runtime/v2 v2.17.0
+	github.com/bds421/rho-kit/core/v2 v2.18.0
+	github.com/bds421/rho-kit/runtime/v2 v2.18.0
 	github.com/stretchr/testify v1.11.1
 )
 
