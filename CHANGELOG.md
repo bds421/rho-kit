@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.16.2 — 2026-10-21
+
+- **fix(app): the public listener defaults to every interface with IPv6 and
+  IPv4.** `SERVER_HOST` defaults to empty (`:PORT`, one dual-stack socket)
+  instead of `0.0.0.0`. `ServerConfig.Addr` and `InternalConfig.Addr`
+  bracket IPv6 literals (`::1` gives `[::1]:PORT`; bracketed hosts are taken
+  as is); before, `SERVER_HOST=::1` produced an address that did not parse.
+
 ## v2.16.1 — 2026-10-21
 
 - **fix(httpx, app/http): `WithReloadingTLS` no longer panics in the default

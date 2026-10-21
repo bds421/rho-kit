@@ -1,8 +1,10 @@
 package app
 
 import (
-	"fmt"
 	"log/slog"
+	"net"
+	"strconv"
+	"strings"
 
 	"github.com/bds421/rho-kit/core/v2/config"
 	"github.com/bds421/rho-kit/security/v2/netutil"
@@ -10,18 +12,22 @@ import (
 
 // ServerConfig holds HTTP server settings.
 type ServerConfig struct {
+	// Host is the bind address. Empty (the default) listens on every
+	// interface with IPv6 and IPv4 (one dual-stack socket); an IPv6
+	// literal may be given with or without brackets.
 	Host string
 	Port int
 }
 
-// Addr returns the host:port string for the HTTP server.
+// Addr returns the host:port string for the HTTP server. An empty Host
+// yields ":PORT", every interface with IPv6 and IPv4.
 func (c ServerConfig) Addr() string {
-	return fmt.Sprintf("%s:%d", c.Host, c.Port)
+	return joinHostPort(c.Host, c.Port)
 }
 
 // InternalConfig holds settings for the internal ops HTTP server (health, ready, metrics).
 type InternalConfig struct {
-	Host string // bind address; defaults to "127.0.0.1" — set to "0.0.0.0" only when the network is strictly isolated.
+	Host string // bind address; defaults to "127.0.0.1" — set to "::" (IPv6 and IPv4) only when the network is strictly isolated.
 	Port int
 }
 
@@ -40,7 +46,14 @@ func (c InternalConfig) Addr() string {
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("%s:%d", host, c.Port)
+	return joinHostPort(host, c.Port)
+}
+
+// joinHostPort brackets an IPv6 host; a host given already bracketed is
+// taken as is.
+func joinHostPort(host string, port int) string {
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 // BaseConfig holds the universal configuration fields shared by every service:
@@ -83,7 +96,7 @@ func LoadBaseConfig(defaultServerPort int) (BaseConfig, error) {
 
 	return BaseConfig{
 		Server: ServerConfig{
-			Host: config.Get("SERVER_HOST", "0.0.0.0"),
+			Host: config.Get("SERVER_HOST", ""),
 			Port: serverPort,
 		},
 		Internal: InternalConfig{
