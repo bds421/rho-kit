@@ -1,11 +1,11 @@
 github.com/alicebob/miniredis/v2 v2.38.0 h1:nZAzCR+Lj+Vxk4ZXzm2NuKq2O33RXj1XxJ2e2uP9jiw=
 github.com/alicebob/miniredis/v2 v2.38.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
-github.com/bds421/rho-kit/core/v2 v2.16.2 h1:JBl9iKqP1E03NWzdQe2FtQ55qQhRt0BZzF8l2uGy19M=
-github.com/bds421/rho-kit/core/v2 v2.16.2/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
-github.com/bds421/rho-kit/observability/v2 v2.16.2 h1:jssR+XZHqSyMBTpIQfnp5ghhUYQmiKwMKmIQlje0szQ=
-github.com/bds421/rho-kit/observability/v2 v2.16.2/go.mod h1:6MvTWXs9DfTrEsK8GVJNEnbJE+LYYXHYiDqOXzUvVhw=
-github.com/bds421/rho-kit/resilience/v2 v2.16.2 h1:jrBppwyhnsxIWYAJAcXFwZb4lKbXoYa/wgr+jU7tBoo=
-github.com/bds421/rho-kit/resilience/v2 v2.16.2/go.mod h1:JnAoTwrgGc5NC6NcsPwBaTSkgKG8tBGCKYvp8lWby7E=
+github.com/bds421/rho-kit/core/v2 v2.16.3 h1:Qhh4Rvj/KWFwj7LWs24kyJqTuu0IvaJUFWc7yMWk2qY=
+github.com/bds421/rho-kit/core/v2 v2.16.3/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
+github.com/bds421/rho-kit/observability/v2 v2.16.3 h1:ahS226QbLk6nmXMu/0+vRz0QFjHFCOlH48z4KlFGbWE=
+github.com/bds421/rho-kit/observability/v2 v2.16.3/go.mod h1:JHQ5ksQ6dzje/8vYVVKi+nSuthcjziO1LxTZXsrZFLU=
+github.com/bds421/rho-kit/resilience/v2 v2.16.3 h1:x/yx1G4v+VRkYvIryUQARhPwJmFrUZWFrxqEk1sxPU8=
+github.com/bds421/rho-kit/resilience/v2 v2.16.3/go.mod h1:7e3jcwyCRg8BYT/oYrgPKBD9Uf0t2sddxg2CPtGIluE=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
