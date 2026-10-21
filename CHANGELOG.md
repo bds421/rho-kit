@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.19.0 — 2026-10-22
+
+- **feat(observability/auditlog): free-text search.** `Filter.Search` keeps
+  events whose actor, action, resource or metadata values (not keys) contain
+  the term, ignoring case; `auditlog.SearchText` and `MatchesSearch` define
+  the match for every store. `Logger.List` rejects terms over
+  `MaxSearchBytes` (256) with `ErrSearchTooLong`. Keyset paging is unchanged:
+  the term is one more condition beside the cursor.
+- **feat(observability/auditlog/postgres): `search_text` with a trigram
+  index.** Migration 20261022000001 creates `pg_trgm` if missing (a trusted
+  extension: the migrating role needs CREATE on the database, or the
+  extension must already be on the search_path), adds `search_text`, fills it
+  for existing rows and indexes it with GIN `gin_trgm_ops`; `Query` matches
+  it with `ILIKE`. The store writes the column on append, so apply the
+  migration before deploying this version. `search_text` is derived for
+  search and not part of the HMAC chain.
+
 ## v2.18.0 — 2026-10-21
 
 - **feat(httpx/webapp): serve a built single-page web app.** `webapp.New`
