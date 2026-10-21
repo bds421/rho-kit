@@ -3,16 +3,16 @@ module github.com/bds421/rho-kit/infra/inbox/postgres/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/infra/outbox/postgres/v2 v2.16.1
+	github.com/bds421/rho-kit/infra/outbox/postgres/v2 v2.16.2
 	github.com/jackc/pgx/v5 v5.10.0
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.16.1 // indirect
-	github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.16.1 // indirect
-	github.com/bds421/rho-kit/infra/v2 v2.16.1 // indirect
-	github.com/bds421/rho-kit/io/v2 v2.16.1 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.16.1 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.16.2 // indirect
+	github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.16.2 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.16.2 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.16.2 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.16.2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
