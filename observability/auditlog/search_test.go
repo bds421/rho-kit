@@ -87,3 +87,20 @@ func TestSearchTextConsistent(t *testing.T) {
 	assert.False(t, SearchTextConsistent(e, SearchText(e)+"\nextra"))
 	assert.False(t, SearchTextConsistent(e, "user:b\nrole.granted\norg:1\n42.5\nAuditor"))
 }
+
+func TestSearchTextConsistentComparesExactNumbers(t *testing.T) {
+	withValue := func(v string) Event {
+		return Event{Actor: "a", Action: "b", Resource: "c", Metadata: json.RawMessage(`{"v":` + v + `}`)}
+	}
+	base := func(line string) string { return "a\nb\nc\n" + line }
+
+	assert.True(t, SearchTextConsistent(withValue("2.5"), base("2.50")))
+	assert.True(t, SearchTextConsistent(withValue("100"), base("1e2")))
+	assert.False(t, SearchTextConsistent(withValue("9007199254740993"), base("9007199254740992")),
+		"integers beyond float64 precision differ")
+	assert.False(t, SearchTextConsistent(withValue("16"), base("0x10")))
+	assert.False(t, SearchTextConsistent(withValue(`"Inf"`), base("+Inf")))
+	assert.False(t, SearchTextConsistent(withValue(`"NaN"`), base("nan")))
+	assert.False(t, SearchTextConsistent(withValue("0.1"), base("0.10000000000000001")))
+	assert.False(t, SearchTextConsistent(withValue("1"), base("1e99999")))
+}
