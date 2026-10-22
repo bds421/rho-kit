@@ -167,3 +167,25 @@ func gooseProvider(t *testing.T, pool *pgxpool.Pool) *goose.Provider {
 	require.NoError(t, err)
 	return provider
 }
+
+func TestPostgres_SearchIndexUsesPgTrgmInAnotherSchema(t *testing.T) {
+	dsn := startPostgres(t)
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	_, err = pool.Exec(ctx, `CREATE SCHEMA assets; CREATE EXTENSION pg_trgm WITH SCHEMA assets`)
+	require.NoError(t, err)
+
+	_, err = gooseProvider(t, pool).Up(ctx)
+	require.NoError(t, err)
+
+	var valid bool
+	require.NoError(t, pool.QueryRow(ctx, `
+SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+ WHERE c.relname = 'idx_audit_log_events_search'`).Scan(&valid))
+	assert.True(t, valid)
+	var path string
+	require.NoError(t, pool.QueryRow(ctx, `SHOW search_path`).Scan(&path))
+	assert.NotContains(t, path, "assets", "the migration leaves the session's search_path as it was")
+}

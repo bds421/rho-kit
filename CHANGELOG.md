@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.20.1 — 2026-10-22
+
+- **fix(observability/auditlog/postgres): the search index finds `pg_trgm`
+  in any schema.** Where an application created the extension `WITH SCHEMA`
+  of its own, migration 20261022000003 failed with `operator class
+  "gin_trgm_ops" does not exist`. It now adds the extension's schema to the
+  search_path for the index build and resets it afterwards.
+
 ## v2.20.0 — 2026-10-22
 
 - **fix(observability/auditlog/postgres): the search migration no longer
