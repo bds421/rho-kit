@@ -179,8 +179,9 @@ var (
 	// ErrIssuerDiscovery wraps any failure to fetch / parse the
 	// issuer's well-known OIDC discovery document.
 	ErrIssuerDiscovery = errors.New("oauth2: issuer discovery failed")
-	// ErrStateMismatch is returned by the callback handler when the
-	// state in the query string doesn't match the one we issued.
+	// ErrStateMismatch names a callback whose state does not match one
+	// issued to this browser. The callback no longer answers with it: it
+	// restarts the sign-in instead (see the package documentation).
 	ErrStateMismatch = errors.New("oauth2: state mismatch")
 	// ErrNonceMismatch is returned when the ID token's nonce claim
 	// doesn't match the one we issued.

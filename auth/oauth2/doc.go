@@ -67,8 +67,14 @@
 // # State / nonce CSRF guards
 //
 // Every Login generates a fresh state and (for OIDC) nonce, persists
-// them via the [StateStore], and re-validates on Callback. Stale state
-// entries are pruned by the store's TTL.
+// them via the [StateStore], and binds the state to the browser with a
+// cookie keyed by the state, so several tabs can sign in at once (at most
+// five pending per browser). The callback exchanges a code only for a state
+// bound to this browser, unexpired ([WithStateTTL]) and unused. Any other
+// callback exchanges nothing: a browser with a valid session goes to the
+// return URL, otherwise the sign-in restarts once with the same return URL.
+// What still fails renders a translated page with "Sign in again"
+// ([WithErrorPageBrand]), never error text.
 //
 // # Session security (all opt-in)
 //

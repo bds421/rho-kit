@@ -85,7 +85,11 @@ func runBrowserReplicaContinuity(t *testing.T, store *redisoauth.Store) {
 
 	replay := httptest.NewRecorder()
 	third.Handlers().ServeHTTP(replay, callback)
-	assert.Equal(t, http.StatusBadRequest, replay.Code, "callback state must be single-use across replicas")
+	assert.Equal(t, http.StatusFound, replay.Code, "callback state must be single-use across replicas")
+	assert.Equal(t, "/oauth/login?redirect_to=%2F", replay.Header().Get("Location"), "a replayed callback only restarts the sign-in")
+	for _, cookie := range replay.Result().Cookies() {
+		assert.NotEqual(t, "kit_oauth_session", cookie.Name, "a replayed callback must not create a session")
+	}
 }
 
 type replicaIssuer struct {
