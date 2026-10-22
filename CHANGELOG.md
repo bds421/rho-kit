@@ -15,7 +15,7 @@
 - **fix(observability/auditlog): `search_text` is checked by
   `VerifyChain`.** The Postgres `RangeChain` compares each row's
   `search_text` with the event's content (`auditlog.SearchTextConsistent`:
-  same lines, any order and number spelling) and returns `ErrChainBroken`
+  the same lines in any order, numbers compared by exact decimal value) and returns `ErrChainBroken`
   for a row edited to hide from search.
 - **fix(httpx/webapp): no dotfiles, no sniffing, no app shell for file
   paths.** Files under dot-named segments (`.env`, `.git/`) are not served,

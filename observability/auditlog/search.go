@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math/big"
+	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -41,9 +42,10 @@ func MatchesSearch(e Event, search string) bool {
 }
 
 // SearchTextConsistent reports whether stored, a store's persisted search
-// text, holds the same lines as [SearchText] for the event. Order and
-// number spelling may differ (a SQL backfill walks JSONB in its own key
-// order and prints numbers its own way); a missing, added or altered value
+// text, holds the same lines as [SearchText] for the event. Order may
+// differ, and a JSON number may be spelled differently if its exact decimal
+// value is the same (a SQL backfill walks JSONB in its own key order and
+// prints numbers its own way); a missing, added or altered value
 // does not. Stores that persist search text check it while streaming the
 // chain, so a row edited to hide from search fails [Logger.VerifyChain].
 func SearchTextConsistent(e Event, stored string) bool {
@@ -66,12 +68,27 @@ func searchLines(text string) map[string]int {
 		if line == "" {
 			continue
 		}
-		if f, err := strconv.ParseFloat(line, 64); err == nil {
-			line = strconv.FormatFloat(f, 'g', -1, 64)
-		}
-		lines[line]++
+		lines[exactNumber(line)]++
 	}
 	return lines
+}
+
+// jsonNumber is JSON number syntax with an exponent of at most four digits,
+// so the exact value stays small.
+var jsonNumber = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]{1,4})?$`)
+
+// exactNumber spells a JSON number by its exact value, so "2.50" and "2.5"
+// agree and no two different values do. Other lines are returned as they
+// are.
+func exactNumber(line string) string {
+	if !jsonNumber.MatchString(line) {
+		return line
+	}
+	r, ok := new(big.Rat).SetString(line)
+	if !ok {
+		return line
+	}
+	return "\x00" + r.RatString()
 }
 
 func appendMetadataValues(parts []string, metadata json.RawMessage) []string {
