@@ -1,7 +1,7 @@
-github.com/bds421/rho-kit/core/v2 v2.19.0 h1:F+NZaVYhY63S03dxS1jjckWN4L2SS3pv2iszGlFVNSw=
-github.com/bds421/rho-kit/core/v2 v2.19.0/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
-github.com/bds421/rho-kit/observability/v2 v2.19.0 h1:FoovIIK7CTKdMppS7g8OtWdKe+AZKrhYT5lPrUOyxXw=
-github.com/bds421/rho-kit/observability/v2 v2.19.0/go.mod h1:G2NgV48dpHRQTeP5xazQJbG2PQYeNlycb1eckDnbby8=
+github.com/bds421/rho-kit/core/v2 v2.20.0 h1:GfsoRVX7nqphDV56eAQmS8XNxlghdBnl+EYx2byp8+8=
+github.com/bds421/rho-kit/core/v2 v2.20.0/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
+github.com/bds421/rho-kit/observability/v2 v2.20.0 h1:8dXJShA8lEtBSYrcD3ZfJXdeCUqVtUDOaXbIyENlJnk=
+github.com/bds421/rho-kit/observability/v2 v2.20.0/go.mod h1:Rfyf6AAvXLErMDJCr+Fdx2UkODqaAgt8RkBhRR7VQkM=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

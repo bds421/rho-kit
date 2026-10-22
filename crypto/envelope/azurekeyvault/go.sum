@@ -10,10 +10,10 @@ github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0 h1:nCYfg
 github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0/go.mod h1:ucUjca2JtSZboY8IoUqyQyuuXvwbMBVwFOm0vdQPNhA=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.7.2 h1:RHK7bS+HQMslb1sZpAokUt+zTVmue0hKSs2C791hhzU=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.7.2/go.mod h1:HKpQxkWaGLJ+D/5H8QRpyQXA1eKjxkFlOMwck5+33Jk=
-github.com/bds421/rho-kit/core/v2 v2.19.0 h1:F+NZaVYhY63S03dxS1jjckWN4L2SS3pv2iszGlFVNSw=
-github.com/bds421/rho-kit/core/v2 v2.19.0/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
-github.com/bds421/rho-kit/crypto/v2 v2.19.0 h1:J/rhIm4jyiXYSL5Ihl/qZJVimRikNrQ0BAofqY+GcFo=
-github.com/bds421/rho-kit/crypto/v2 v2.19.0/go.mod h1:NGJQwvfJgXpPniTlBBp8FhcojuBFRgxy0WPA7o7kRnI=
+github.com/bds421/rho-kit/core/v2 v2.20.0 h1:GfsoRVX7nqphDV56eAQmS8XNxlghdBnl+EYx2byp8+8=
+github.com/bds421/rho-kit/core/v2 v2.20.0/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
+github.com/bds421/rho-kit/crypto/v2 v2.20.0 h1:exDDyWE69hzI+K9GprXqXMP8tknAjt2bCUPMOvjHCMY=
+github.com/bds421/rho-kit/crypto/v2 v2.20.0/go.mod h1:wo6chLqo5Z1lKZsA3YY81MGrojBpfeAlGiYjgXexedo=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/c2sp/wycheproof v0.0.0-20260105152342-fca0d3ba9f12 h1:C34LW7dhWgjAaAOdNB8z2UCyJsXDjC6UTILljHuqOlI=
