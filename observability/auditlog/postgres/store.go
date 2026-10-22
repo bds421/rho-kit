@@ -159,7 +159,7 @@ func (s *Store) Query(ctx context.Context, filter auditlog.Filter, cursor string
 		add("resource LIKE $%d", escapeLike(filter.Resource)+"%")
 	}
 	if filter.Search != "" {
-		// pg_trgm GIN index on search_text (migration 20261022000001).
+		// pg_trgm GIN index on search_text (migration 20261022000003).
 		add("search_text ILIKE $%d", "%"+escapeLike(filter.Search)+"%")
 	}
 	if filter.IPAddress != "" {
@@ -228,7 +228,7 @@ func (s *Store) RangeChain(ctx context.Context, fn func(auditlog.Event) error) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	const q = selectColumns + " FROM audit_log_events ORDER BY seq ASC"
+	const q = selectColumns + ", search_text FROM audit_log_events ORDER BY seq ASC"
 	rows, err := s.pool.Query(ctx, q)
 	if err != nil {
 		return fmt.Errorf("auditlog/postgres: range chain: %w", err)
@@ -236,9 +236,13 @@ func (s *Store) RangeChain(ctx context.Context, fn func(auditlog.Event) error) e
 	defer rows.Close()
 
 	for rows.Next() {
-		event, scanErr := scanEvent(rows)
+		var searchText string
+		event, scanErr := scanEvent(rows, &searchText)
 		if scanErr != nil {
 			return fmt.Errorf("auditlog/postgres: range chain scan: %w", scanErr)
+		}
+		if !auditlog.SearchTextConsistent(event, searchText) {
+			return fmt.Errorf("%w: event %s search_text does not match its content", auditlog.ErrChainBroken, event.ID)
 		}
 		if err := fn(event); err != nil {
 			return err
@@ -406,7 +410,7 @@ type scannable interface {
 	Scan(dest ...any) error
 }
 
-func scanEvent(s scannable) (auditlog.Event, error) {
+func scanEvent(s scannable, extra ...any) (auditlog.Event, error) {
 	var (
 		e        auditlog.Event
 		metaRaw  []byte
@@ -414,10 +418,11 @@ func scanEvent(s scannable) (auditlog.Event, error) {
 		prevHMAC []byte
 		hmac     []byte
 	)
-	if err := s.Scan(
+	dest := append([]any{
 		&e.ID, &e.Timestamp, &e.Actor, &e.Tenant, &e.Action, &e.Resource, &e.Status,
 		&e.IPAddress, &e.TraceID, &metaRaw, &signed, &prevHMAC, &hmac,
-	); err != nil {
+	}, extra...)
+	if err := s.Scan(dest...); err != nil {
 		return auditlog.Event{}, err
 	}
 	e.Timestamp = e.Timestamp.UTC()

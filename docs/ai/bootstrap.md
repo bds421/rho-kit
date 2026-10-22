@@ -208,7 +208,7 @@ Migrations are goose SQL migrations. They run whenever `postgres.Module` is cons
 | Variable | Default | Purpose |
 |---|---|---|
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `SERVER_HOST` | empty: every interface, IPv6 and IPv4 | Public server bind address; IPv6 literals with or without brackets |
+| `SERVER_HOST` | empty: every interface, IPv6 and IPv4 | Public server bind address; IPv6 literals with or without brackets. Since v2.16.2 the default listens on IPv6 too: a host that filters IPv4 (iptables) needs the same rules for IPv6 (ip6tables), or set `0.0.0.0` |
 | `SERVER_PORT` | service-specific | Public server port |
 | `INTERNAL_HOST` | loopback | Internal health/metrics/gRPC-health bind address |
 | `INTERNAL_PORT` | `9090` | Internal health/metrics/gRPC-health port |

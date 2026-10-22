@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.20.0 — 2026-10-22
+
+- **fix(observability/auditlog/postgres): the search migration no longer
+  stalls appends.** 20261022000001 now only adds `search_text` (no table
+  rewrite); 20261022000002 fills existing rows in committed batches of 5000;
+  20261022000003 runs outside a transaction and builds the trigram index with
+  `CREATE INDEX CONCURRENTLY`. Databases that applied the v2.19.0 migration
+  run the two new steps as no-ops. **Privilege:** 20261022000003 creates
+  `pg_trgm` if missing, which needs CREATE on the database; for a migrating
+  role without it, have the database owner run `CREATE EXTENSION pg_trgm`
+  first. An interrupted concurrent build leaves an INVALID
+  `idx_audit_log_events_search`: drop it and migrate again.
+- **fix(observability/auditlog): `search_text` is checked by
+  `VerifyChain`.** The Postgres `RangeChain` compares each row's
+  `search_text` with the event's content (`auditlog.SearchTextConsistent`:
+  same lines, any order and number spelling) and returns `ErrChainBroken`
+  for a row edited to hide from search.
+- **fix(httpx/webapp): no dotfiles, no sniffing, no app shell for file
+  paths.** Files under dot-named segments (`.env`, `.git/`) are not served,
+  except `.well-known/` and paths allowed with the new `WithDotPaths`. A file
+  whose extension has no known type is sent as `application/octet-stream`.
+  A path that names a file (extension in the last segment or a dot segment)
+  and is not in the build answers 404 instead of `index.html`.
+- **docs(app): the public listener's IPv6 default** (since v2.16.2) needs
+  ip6tables rules where hosts filter IPv4 with iptables.
+
 ## v2.19.0 — 2026-10-22
 
 - **feat(observability/auditlog): free-text search.** `Filter.Search` keeps

@@ -122,7 +122,10 @@ auditlog`. `Filter.Search` matches actor, action, resource and metadata values
 as a case-insensitive substring (`auditlog.SearchText`); the Postgres store
 keeps that text in `search_text` with a pg_trgm GIN index, so its migrations
 need a role that may create the trusted `pg_trgm` extension (or the extension
-already installed on the search_path). Use `LogE` when the originating action must fail if the audit
+already installed on the search_path). The index migration runs outside a
+transaction (`CREATE INDEX CONCURRENTLY`) and the backfill commits in batches,
+so appends keep running. `search_text` is not in the HMAC input; `RangeChain`
+compares it with the event's content, so an edited row fails `VerifyChain`. Use `LogE` when the originating action must fail if the audit
 append fails. `Log` is best-effort and reports drops through logs,
 `WithDroppedCounter`, and `WithOnDrop`.
 

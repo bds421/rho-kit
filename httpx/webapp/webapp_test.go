@@ -103,8 +103,8 @@ func TestMissingHashedFileIsNotFound(t *testing.T) {
 			t.Errorf("%s: status %d, want 404", p, rec.Code)
 		}
 	}
-	if rec := serve(t, h, http.MethodGet, "/index.html.br", nil); rec.Body.String() != "app" {
-		t.Errorf("a sibling outside the hashed files is served as %q, want the app", rec.Body.String())
+	if rec := serve(t, h, http.MethodGet, "/index.html.br", nil); rec.Code != http.StatusNotFound {
+		t.Errorf("a sibling outside the hashed files answers %d %q, want 404", rec.Code, rec.Body.String())
 	}
 }
 
@@ -146,5 +146,56 @@ func TestRefusesPathsOutsideTheBuild(t *testing.T) {
 func TestRequiresAnIndex(t *testing.T) {
 	if _, err := New(fstest.MapFS{"assets/app.js": {Data: []byte("js")}}); err == nil {
 		t.Error("a build without index.html was accepted")
+	}
+}
+
+func TestServesDotFilesOnlyWhenAllowed(t *testing.T) {
+	files := build()
+	files[".env"] = &fstest.MapFile{Data: []byte("SECRET=1")}
+	files[".git/config"] = &fstest.MapFile{Data: []byte("[core]")}
+	files["assets/.DS_Store"] = &fstest.MapFile{Data: []byte("x")}
+	files[".well-known/apple-developer-merchantid-domain-association"] = &fstest.MapFile{Data: []byte("apple")}
+	files[".hidden/allowed.txt"] = &fstest.MapFile{Data: []byte("ok")}
+	h, err := New(files, WithImmutable("assets/"), WithDotPaths(".hidden/allowed.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/.env", "/.git/config", "/assets/.DS_Store", "/.hidden/other.txt"} {
+		if rec := serve(t, h, http.MethodGet, p, nil); rec.Code != http.StatusNotFound {
+			t.Errorf("%s: %d %q, want 404", p, rec.Code, rec.Body.String())
+		}
+	}
+	for p, body := range map[string]string{
+		"/.well-known/apple-developer-merchantid-domain-association": "apple",
+		"/.hidden/allowed.txt": "ok",
+	} {
+		if rec := serve(t, h, http.MethodGet, p, nil); rec.Code != http.StatusOK || rec.Body.String() != body {
+			t.Errorf("%s: %d %q, want %q", p, rec.Code, rec.Body.String(), body)
+		}
+	}
+}
+
+func TestUnknownTypesAreNotSniffed(t *testing.T) {
+	files := build()
+	files["assets/x.unknown"] = &fstest.MapFile{Data: []byte("<script>alert(1)</script>")}
+	h, err := New(files, WithImmutable("assets/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := serve(t, h, http.MethodGet, "/assets/x.unknown", nil)
+	if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Errorf("Content-Type %q, want application/octet-stream", got)
+	}
+}
+
+func TestPathsNamingFilesAreNotTheApp(t *testing.T) {
+	h := newHandler(t)
+	for _, p := range []string{"/robots.txt", "/.git/config", "/.well-known/openid-configuration", "/o/1/x.js"} {
+		if rec := serve(t, h, http.MethodGet, p, nil); rec.Code != http.StatusNotFound {
+			t.Errorf("%s: %d, want 404", p, rec.Code)
+		}
+	}
+	if rec := serve(t, h, http.MethodGet, "/o/1/members", nil); rec.Code != http.StatusOK || rec.Body.String() != "app" {
+		t.Errorf("app route: %d %q", rec.Code, rec.Body.String())
 	}
 }
