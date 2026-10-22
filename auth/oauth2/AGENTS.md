@@ -41,6 +41,9 @@ or UserInfo without re-discovering endpoints.
   is stored; returns `Session.Attributes` (kept across refresh). Wrap
   `ErrSignInRefused` to refuse (403); other errors answer 502; either way no
   session is created
+- `WithErrorPageBrand(ErrorPageBrand{Name, LogoSVG, Accent})`: brands the
+  page shown when a sign-in cannot complete (English/German/Spanish from
+  Accept-Language, link "Sign in again" with the original return URL)
 - `Session.IDToken` keeps the raw verified ID token for `id_token_hint`;
   `auth/oauth2/redis.WithEncryption` encrypts stored sessions/state
 - `SessionUpdater` (optional store interface, `Update(ctx, id, expectedVersion,
@@ -83,9 +86,14 @@ or UserInfo without re-discovering endpoints.
   the default keeps confidential clients honest too. `WithoutPKCE()`
   is opt-out for providers that don't support it.
 - **State + nonce CSRF guards.** Every login generates fresh state +
-  nonce, persists them, and re-validates on callback. Single-use:
-  state is deleted before code exchange so a replay can't succeed
-  even on a slow exchange.
+  nonce, persists them, and binds the state to the browser with a cookie
+  keyed by the state (`<cookie>_state_<hash prefix>`, path `/oauth/`, at
+  most five per browser). Single-use: state is deleted before code
+  exchange so a replay can't succeed even on a slow exchange. A callback
+  whose state is unbound, unknown or older than `WithStateTTL` exchanges
+  nothing: with a valid session it redirects to the return URL, otherwise
+  it restarts the sign-in once (`<cookie>_retry`, 2 min) and then shows the
+  error page.
 - **Cookie defaults:** HttpOnly, Secure, SameSite=Lax. Override Secure
   via `WithInsecureCookie()` only for local-dev over HTTP.
 - **Issuer match.** Discovery rejects when the well-known doc's
@@ -116,7 +124,9 @@ value persisted at login. No transport-only trust shortcut is taken.
 - Login handler issues 302 with state + nonce + code_challenge=S256
 - End-to-end browser flow: login → /authorize redirect → callback →
   session cookie set + persisted Session with userID + access token
-- Unknown-state callback rejected with 400 "state mismatch"
+- Sign-in recovery: two tabs at once, expired state, stale tab after a
+  session timeout, restart loop guard, foreign (CSRF) callback never
+  exchanged, pending bound, branded translated error page
 - Logout clears cookie (MaxAge=-1)
 - MemorySessionStore + MemoryStateStore TTL expiry
 - Absolute lifetime cap (incl. refresh TTL cap), idle timeout with

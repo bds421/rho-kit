@@ -84,7 +84,7 @@ func TestCallback_MaxAgeRequiresFreshAuthTime(t *testing.T) {
 				return
 			}
 			assert.Equal(t, http.StatusBadRequest, resp.Code)
-			assert.Contains(t, resp.Body.String(), oauth2.ErrStaleAuthentication.Error())
+			assertErrorPage(t, resp)
 			for _, ck := range resp.Result().Cookies() {
 				assert.NotEqual(t, "kit_oauth_session", ck.Name, "no session for a stale step-up")
 			}

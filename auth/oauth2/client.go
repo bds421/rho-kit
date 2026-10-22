@@ -2,9 +2,6 @@ package oauth2
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -64,6 +61,9 @@ type Client struct {
 	// Sign-in hook (WithSignInHook).
 	signInHook func(ctx context.Context, sess Session) (map[string]string, error)
 
+	// Sign-in error page (WithErrorPageBrand).
+	errorBrand ErrorPageBrand
+
 	// Session lifetime limits (WithAbsoluteSessionLifetime, WithIdleTimeout).
 	absoluteLifetime time.Duration
 	idleTimeout      time.Duration
@@ -121,7 +121,8 @@ func WithSessionTTL(d time.Duration) Option {
 	return func(cl *Client) { cl.sessionTTL = d }
 }
 
-// WithStateTTL overrides the in-flight state TTL (default 10m).
+// WithStateTTL overrides how long a started sign-in may take (default 10m).
+// A callback arriving later restarts the sign-in with the same return URL.
 func WithStateTTL(d time.Duration) Option {
 	if d <= 0 {
 		panic("oauth2: WithStateTTL requires positive duration")
@@ -353,17 +354,18 @@ func (c *Client) Handlers() Handlers {
 func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 	params, err := parseLoginParams(r.URL.Query())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		c.logger.InfoContext(r.Context(), "oauth2: invalid login parameters", redact.Error(err))
+		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, "/")
 		return
 	}
 	state, err := generateRandomToken()
 	if err != nil {
-		http.Error(w, "oauth2: state generation failed", http.StatusInternalServerError)
+		c.renderFailure(w, r, http.StatusInternalServerError, failureUnavailable, "/")
 		return
 	}
 	nonce, err := generateRandomToken()
 	if err != nil {
-		http.Error(w, "oauth2: nonce generation failed", http.StatusInternalServerError)
+		c.renderFailure(w, r, http.StatusInternalServerError, failureUnavailable, "/")
 		return
 	}
 	entry := StateEntry{Nonce: nonce, CreatedAt: time.Now(), MaxAge: params.maxAge}
@@ -392,18 +394,12 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 		authOpts = append(authOpts, xoauth2.S256ChallengeOption(verifier))
 	}
 
-	if err := c.state.Put(r.Context(), state, entry, c.stateTTL); err != nil {
-		c.logger.WarnContext(r.Context(), "oauth2: state.Put failed", slog.String("error", err.Error()))
-		http.Error(w, "oauth2: state persistence failed", http.StatusInternalServerError)
+	if err := c.state.Put(r.Context(), state, entry, c.pendingLifetime()); err != nil {
+		c.logger.WarnContext(r.Context(), "oauth2: state.Put failed", redact.Error(err))
+		c.renderFailure(w, r, http.StatusServiceUnavailable, failureUnavailable, entry.RedirectTo)
 		return
 	}
-	// Bind the CSRF state to the initiating browser. Server-side
-	// single-use storage alone only prevents replay; without a
-	// browser-bound cookie an attacker can complete login as
-	// themselves and lure the victim into consuming the callback
-	// (login CSRF / session swap). The cookie carries a hash of the
-	// state so the raw state is not double-exposed.
-	http.SetCookie(w, c.stateCookie(stateBindingValue(state)))
+	c.startPending(w, r, state, entry.CreatedAt)
 	http.Redirect(w, r, c.oauth.AuthCodeURL(state, authOpts...), http.StatusFound)
 }
 
@@ -412,55 +408,48 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 // double-checks the nonce, persists the session, and sets the cookie.
 func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	if errParam := q.Get("error"); errParam != "" {
-		// The issuer may redirect back with attacker-influenced `error` /
-		// `error_description` values. Log them (redacted) server-side and
-		// return only the opaque sentinel across the trust boundary so the
-		// caller can't surface arbitrary reflected content.
-		c.logger.WarnContext(r.Context(), "oauth2: provider returned an error",
-			slog.String("error", redact.StringValue(errParam)),
-			slog.String("error_description", redact.StringValue(q.Get("error_description"))))
-		http.Error(w, ErrProviderError.Error(), http.StatusBadRequest)
-		return
-	}
 	stateToken := q.Get("state")
-	code := q.Get("code")
-	if stateToken == "" || code == "" {
-		http.Error(w, "oauth2: missing state or code", http.StatusBadRequest)
+	if !c.isBound(r, stateToken) {
+		returnTo := ""
+		if stateToken != "" {
+			if entry, err := c.takeState(r.Context(), stateToken); err == nil {
+				returnTo = entry.RedirectTo
+			}
+		}
+		c.recoverSignIn(w, r, returnTo, "state not bound to this browser")
 		return
 	}
-	// Browser binding: the state cookie set at /login must match this
-	// callback's state. Presence in StateStore alone is not enough —
-	// that would accept a state minted for a different browser
-	// (login CSRF / session swap).
-	stateCookie, err := r.Cookie(c.stateCookieName())
-	if err != nil || stateCookie.Value == "" {
-		c.logger.WarnContext(r.Context(), "oauth2: callback missing state cookie")
-		http.Error(w, ErrStateMismatch.Error(), http.StatusBadRequest)
-		return
-	}
-	expected := stateBindingValue(stateToken)
-	if subtle.ConstantTimeCompare([]byte(stateCookie.Value), []byte(expected)) != 1 {
-		c.logger.WarnContext(r.Context(), "oauth2: callback state cookie mismatch")
-		http.Error(w, ErrStateMismatch.Error(), http.StatusBadRequest)
-		return
-	}
-	// Clear the one-shot binding cookie whether the rest of the flow
-	// succeeds or fails.
-	http.SetCookie(w, c.clearStateCookie())
-
+	c.clearPending(w, stateToken)
 	entry, err := c.takeState(r.Context(), stateToken)
 	if err != nil {
 		if errors.Is(err, ErrStateNotFound) {
-			c.logger.WarnContext(r.Context(), "oauth2: callback state mismatch", redact.Error(err))
-			http.Error(w, ErrStateMismatch.Error(), http.StatusBadRequest)
+			c.recoverSignIn(w, r, "", "state unknown")
 			return
 		}
 		// Infrastructure failures (Redis down, timeouts) must not be
-		// reported as "state mismatch" — that misleads operators and
+		// reported as a state problem: that misleads operators and
 		// confuses attack-signal dashboards with availability faults.
 		c.logger.WarnContext(r.Context(), "oauth2: callback state store failed", redact.Error(err))
-		http.Error(w, "oauth2: state store unavailable", http.StatusServiceUnavailable)
+		c.renderFailure(w, r, http.StatusServiceUnavailable, failureUnavailable, "")
+		return
+	}
+	if errParam := q.Get("error"); errParam != "" {
+		// The issuer may redirect back with attacker-influenced `error` /
+		// `error_description` values. Log them (redacted) server-side and
+		// never reflect them to the browser.
+		c.logger.WarnContext(r.Context(), "oauth2: provider returned an error",
+			slog.String("error", redact.StringValue(errParam)),
+			slog.String("error_description", redact.StringValue(q.Get("error_description"))))
+		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, entry.RedirectTo)
+		return
+	}
+	if time.Since(entry.CreatedAt) > c.stateTTL {
+		c.recoverSignIn(w, r, entry.RedirectTo, "state expired")
+		return
+	}
+	code := q.Get("code")
+	if code == "" {
+		c.recoverSignIn(w, r, entry.RedirectTo, "missing code")
 		return
 	}
 
@@ -472,12 +461,13 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	token, err := c.oauth.Exchange(exchangeCtx, code, exchangeOpts...)
 	if err != nil {
 		c.logger.WarnContext(r.Context(), "oauth2: code exchange failed", redact.Error(err))
-		http.Error(w, ErrCodeExchange.Error(), http.StatusBadGateway)
+		c.renderFailure(w, r, http.StatusBadGateway, failureSignIn, entry.RedirectTo)
 		return
 	}
 	rawIDToken, ok := token.Extra("id_token").(string)
 	if !ok || rawIDToken == "" {
-		http.Error(w, "oauth2: token response missing id_token", http.StatusBadGateway)
+		c.logger.WarnContext(r.Context(), "oauth2: token response missing id_token")
+		c.renderFailure(w, r, http.StatusBadGateway, failureSignIn, entry.RedirectTo)
 		return
 	}
 	idToken, err := c.verifier.Verify(exchangeCtx, rawIDToken)
@@ -486,29 +476,30 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		// or the issuer's raw endpoint body. Log it redacted and return
 		// only the opaque sentinel across the trust boundary.
 		c.logger.WarnContext(r.Context(), "oauth2: id_token verify failed", redact.Error(err))
-		http.Error(w, ErrIDTokenInvalid.Error(), http.StatusBadRequest)
+		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, entry.RedirectTo)
 		return
 	}
 	if idToken.Nonce != entry.Nonce {
-		http.Error(w, ErrNonceMismatch.Error(), http.StatusBadRequest)
+		c.logger.WarnContext(r.Context(), "oauth2: id_token nonce mismatch")
+		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, entry.RedirectTo)
 		return
 	}
 	var claims map[string]any
 	if err := idToken.Claims(&claims); err != nil {
 		c.logger.WarnContext(r.Context(), "oauth2: id_token claims decode failed", redact.Error(err))
-		http.Error(w, ErrIDTokenInvalid.Error(), http.StatusBadGateway)
+		c.renderFailure(w, r, http.StatusBadGateway, failureSignIn, entry.RedirectTo)
 		return
 	}
 	amr, authTime := authenticationClaims(claims)
 	if entry.MaxAge != nil && !satisfiesMaxAge(authTime, entry.CreatedAt, *entry.MaxAge) {
 		c.logger.WarnContext(r.Context(), "oauth2: id_token auth_time does not satisfy the requested max_age")
-		http.Error(w, ErrStaleAuthentication.Error(), http.StatusBadRequest)
+		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, entry.RedirectTo)
 		return
 	}
 
 	sessionID, err := generateRandomToken()
 	if err != nil {
-		http.Error(w, "oauth2: session id generation failed", http.StatusInternalServerError)
+		c.renderFailure(w, r, http.StatusInternalServerError, failureUnavailable, entry.RedirectTo)
 		return
 	}
 	now := time.Now()
@@ -530,15 +521,16 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	if token.RefreshToken != "" {
 		sess.RefreshToken = secret.NewFromString(token.RefreshToken)
 	}
-	if !c.runSignInHook(w, r, &sess) {
+	if !c.runSignInHook(w, r, &sess, entry.RedirectTo) {
 		return
 	}
 	if err := c.sessions.Put(r.Context(), sessionID, sess, c.sessionTTLFor(sess, now)); err != nil {
 		c.logger.WarnContext(r.Context(), "oauth2: session.Put failed", redact.Error(err))
-		http.Error(w, "oauth2: session persistence failed", http.StatusInternalServerError)
+		c.renderFailure(w, r, http.StatusServiceUnavailable, failureUnavailable, entry.RedirectTo)
 		return
 	}
 	http.SetCookie(w, c.sessionCookie(sessionID, now))
+	http.SetCookie(w, c.expiredCookie(c.retryCookieName(), "/oauth/"))
 	// Defence in depth: re-validate the persisted deep link before
 	// emitting it in a Location header. handleLogin already screens
 	// redirect_to, but a hostile StateStore implementation could return
@@ -683,52 +675,6 @@ func (c *Client) sessionCookie(sessionID string, createdAt time.Time) *http.Cook
 		Secure:   c.cookieSecure,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  createdAt.Add(lifetime),
-	}
-}
-
-// stateCookieName is the browser-bound CSRF state cookie. Derived from
-// the session cookie name so WithCookieName stays a single control.
-func (c *Client) stateCookieName() string {
-	return c.cookieName + "_state"
-}
-
-// stateBindingValue returns the cookie value for a login state token.
-// We store a hash rather than the raw state so a leaked cookie alone
-// does not give an attacker the full state parameter without also
-// controlling the redirect query.
-func stateBindingValue(state string) string {
-	sum := sha256.Sum256([]byte(state))
-	return base64.RawURLEncoding.EncodeToString(sum[:])
-}
-
-func (c *Client) stateCookie(value string) *http.Cookie {
-	return &http.Cookie{
-		Name:     c.stateCookieName(),
-		Value:    value,
-		Path:     "/",
-		Domain:   c.cookieDomain,
-		HttpOnly: true,
-		Secure:   c.cookieSecure,
-		// Lax so the cookie is sent on the top-level IdP redirect back
-		// to /callback (SameSite=Strict would drop it on that hop).
-		SameSite: http.SameSiteLaxMode,
-		// MaxAge mirrors stateTTL; Expires is belt-and-braces for older
-		// clients that ignore MaxAge.
-		MaxAge:  int(c.stateTTL.Seconds()),
-		Expires: time.Now().Add(c.stateTTL),
-	}
-}
-
-func (c *Client) clearStateCookie() *http.Cookie {
-	return &http.Cookie{
-		Name:     c.stateCookieName(),
-		Value:    "",
-		Path:     "/",
-		Domain:   c.cookieDomain,
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   c.cookieSecure,
-		SameSite: http.SameSiteLaxMode,
 	}
 }
 

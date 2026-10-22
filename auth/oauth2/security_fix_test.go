@@ -166,16 +166,17 @@ func TestHandlers_CallbackProviderErrorNotReflected(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/oauth/", client.Handlers())
 
+	state, cookies := runLoginAndAuthorize(t, mux, "/oauth/login")
 	const marker = "PWNED-REFLECTED-MARKER-9zX"
 	cbReq := httptest.NewRequest(http.MethodGet,
-		"/oauth/callback?error=access_denied&error_description="+url.QueryEscape("attacker text "+marker), nil)
+		"/oauth/callback?state="+state+"&error=access_denied&error_description="+url.QueryEscape("attacker text "+marker), nil)
+	addCookies(cbReq, cookies)
 	cbResp := httptest.NewRecorder()
 	mux.ServeHTTP(cbResp, cbReq)
 
 	require.Equal(t, http.StatusBadRequest, cbResp.Code)
+	assertErrorPage(t, cbResp)
 	body := cbResp.Body.String()
-	require.Contains(t, body, oauth2.ErrProviderError.Error(),
-		"callback must return the opaque provider-error sentinel")
 	require.NotContains(t, body, marker,
 		"attacker-controlled error_description reflected into response body")
 	require.NotContains(t, body, "access_denied",
@@ -275,8 +276,8 @@ func TestHandlers_CallbackVerifyErrorNotLeaked(t *testing.T) {
 	mux.ServeHTTP(cbResp, cbReq)
 
 	require.Equal(t, http.StatusBadRequest, cbResp.Code)
+	assertErrorPage(t, cbResp)
 	body := cbResp.Body.String()
-	require.Contains(t, body, oauth2.ErrIDTokenInvalid.Error())
 	// The raw verifier error mentions signature / verification details;
 	// none of that should cross the trust boundary into the body.
 	lower := strings.ToLower(body)

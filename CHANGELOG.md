@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.21.0 — 2026-10-22
+
+- **feat(auth/oauth2): sign-in no longer ends on "oauth2: state mismatch".**
+  The CSRF state cookie is keyed by the state, so several tabs can sign in
+  at once (at most five pending per browser, path `/oauth/`). A callback
+  whose state is unbound, unknown or older than `WithStateTTL` exchanges no
+  code: with a valid session it redirects to the return URL, otherwise it
+  restarts the sign-in once with the same return URL (pending sign-ins are
+  remembered an hour past `WithStateTTL` for that). Remaining failures
+  render a translated page (en/de/es) with "Sign in again" instead of plain
+  text; `WithErrorPageBrand` adds name, logo and accent color. State entries
+  are now stored for `WithStateTTL` + 1h.
+
 ## v2.20.1 — 2026-10-22
 
 - **fix(observability/auditlog/postgres): the search index finds `pg_trgm`

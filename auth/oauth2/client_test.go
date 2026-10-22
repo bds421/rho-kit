@@ -4,14 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -336,8 +333,7 @@ func TestHandlers_CallbackRejectsUnknownState(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=c&state=unknown", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.True(t, strings.Contains(rec.Body.String(), "state mismatch"), "body: %s", rec.Body.String())
+	assertRestart(t, rec, "/")
 }
 
 func TestHandlers_LogoutClearsCookie(t *testing.T) {
@@ -457,18 +453,12 @@ func TestHandlers_CallbackCtxCancelDuringExchange(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, stateStore.Put(context.Background(), "s1",
-		oauth2.StateEntry{Nonce: "n1", CodeVerifier: "v1"}, time.Minute))
+		oauth2.StateEntry{Nonce: "n1", CodeVerifier: "v1", CreatedAt: time.Now()}, time.Minute))
 
 	handler := client.Handlers()
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=c1&state=s1", nil).WithContext(ctx)
-	// Browser-bound CSRF cookie required alongside server-side state.
-	// Hash must match production stateBindingValue (sha256 of state, raw URL-base64).
-	sum := sha256.Sum256([]byte("s1"))
-	req.AddCookie(&http.Cookie{
-		Name:  "kit_oauth_session_state",
-		Value: base64.RawURLEncoding.EncodeToString(sum[:]),
-	})
+	req.AddCookie(pendingCookie("s1"))
 	rec := httptest.NewRecorder()
 
 	done := make(chan struct{})
@@ -552,8 +542,7 @@ func TestHandlers_CallbackRejectsMissingStateCookie(t *testing.T) {
 	// Intentionally no state cookie.
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.True(t, strings.Contains(rec.Body.String(), "state mismatch"), "body: %s", rec.Body.String())
+	assertRestart(t, rec, "/")
 }
 
 // TestHandlers_CallbackRejectsWrongStateCookie pins cookie/query
@@ -587,12 +576,13 @@ func TestHandlers_CallbackRejectsWrongStateCookie(t *testing.T) {
 	state := authURL.Query().Get("state")
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=c&state="+state, nil)
-	// Present a cookie, but bind it to the wrong state value.
-	req.AddCookie(&http.Cookie{Name: "kit_oauth_session_state", Value: "not-the-binding-hash"})
+	// Present the state's cookie, but with a binding for another state.
+	forged := pendingCookie("another-state")
+	forged.Name = pendingCookie(state).Name
+	req.AddCookie(forged)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.True(t, strings.Contains(rec.Body.String(), "state mismatch"), "body: %s", rec.Body.String())
+	assertRestart(t, rec, "/")
 }
 
 // failingStateStore returns a non-NotFound error from Get so the
@@ -650,7 +640,7 @@ func TestHandlers_CallbackStateStoreInfraErrorReturns503(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "body: %s", rec.Body.String())
-	require.True(t, strings.Contains(rec.Body.String(), "state store unavailable"), "body: %s", rec.Body.String())
+	require.Contains(t, rec.Body.String(), "temporarily unavailable")
 }
 
 func TestOAuth2Config_ReturnsCopy(t *testing.T) {
