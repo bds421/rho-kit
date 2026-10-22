@@ -232,7 +232,9 @@ type Store interface {
 	// appended via [Store.AppendChained]. Postgres-backed stores
 	// typically scan by a monotonic SERIAL column; the bundled
 	// [MemoryStore] iterates its append slice. Returning fn's error
-	// stops iteration immediately.
+	// stops iteration immediately. A store that persists derived search
+	// text returns [ErrChainBroken] for a row whose text fails
+	// [SearchTextConsistent].
 	RangeChain(ctx context.Context, fn func(Event) error) error
 
 	// LastHMAC returns the HMAC of the most recently appended event, or an

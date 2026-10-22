@@ -2,7 +2,12 @@
 // embedded with go:embed.
 //
 // A request for a file of the build gets that file; every other path gets
-// index.html, so links into the app work. Files with a precompressed sibling
+// index.html, so links into the app work, except a path that names a file
+// (its last segment has an extension, or a segment starts with a dot), which
+// answers 404. Files and directories whose names start with a dot are not
+// served unless allowed: ".well-known/" always is, more with [WithDotPaths].
+// A file whose extension has no known type is sent as
+// application/octet-stream, never sniffed. Files with a precompressed sibling
 // (app.js.br, app.js.gz) are sent in the coding the client accepts, with
 // Content-Encoding and Vary set. Paths under an immutable prefix
 // ([WithImmutable]) carry a content hash in their names: they are cached for
@@ -50,6 +55,26 @@ type Option func(*config)
 
 type config struct {
 	immutable []string
+	dotPaths  []string
+}
+
+// wellKnown is public by definition (RFC 8615).
+const wellKnown = ".well-known/"
+
+// WithDotPaths allows files under names that start with a dot. Each entry is
+// a file name (".well-known/apple-app-site-association") or a directory
+// prefix ending in "/". ".well-known/" is always allowed.
+func WithDotPaths(paths ...string) Option {
+	for _, p := range paths {
+		if strings.Trim(p, "/") == "" {
+			panic("webapp: WithDotPaths requires a non-empty path")
+		}
+	}
+	return func(c *config) {
+		for _, p := range paths {
+			c.dotPaths = append(c.dotPaths, strings.TrimPrefix(p, "/"))
+		}
+	}
 }
 
 // WithImmutable names path prefixes (such as "assets/") whose file names
@@ -97,7 +122,7 @@ func New(files fs.FS, opts ...Option) (http.Handler, error) {
 		opt(&cfg)
 	}
 	h := &handler{files: files, byName: make(map[string]*file), immutable: cfg.immutable}
-	names, err := regularFiles(files)
+	names, err := regularFiles(files, append(cfg.dotPaths, wellKnown))
 	if err != nil {
 		return nil, err
 	}
@@ -118,13 +143,13 @@ func New(files fs.FS, opts ...Option) (http.Handler, error) {
 	return h, nil
 }
 
-func regularFiles(files fs.FS) (map[string]bool, error) {
+func regularFiles(files fs.FS, dotPaths []string) (map[string]bool, error) {
 	names := make(map[string]bool)
 	err := fs.WalkDir(files, ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.Type().IsRegular() {
+		if d.Type().IsRegular() && (!hasDotSegment(name) || allowed(name, dotPaths)) {
 			names[name] = true
 		}
 		return nil
@@ -133,6 +158,28 @@ func regularFiles(files fs.FS) (map[string]bool, error) {
 		return nil, fmt.Errorf("webapp: read build: %w", err)
 	}
 	return names, nil
+}
+
+func allowed(name string, dotPaths []string) bool {
+	for _, p := range dotPaths {
+		if name == p || (strings.HasSuffix(p, "/") && strings.HasPrefix(name, p)) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDotSegment(name string) bool {
+	for segment := range strings.SplitSeq(name, "/") {
+		if strings.HasPrefix(segment, ".") {
+			return true
+		}
+	}
+	return false
+}
+
+func namesFile(name string) bool {
+	return hasDotSegment(name) || path.Ext(name) != ""
 }
 
 func isSibling(name string, names map[string]bool) bool {
@@ -160,7 +207,7 @@ func index(files fs.FS, name string, names map[string]bool) (*file, error) {
 		return nil, err
 	}
 	f.variants = append(f.variants, plain)
-	if f.contentType == "" && len(f.variants) > 1 {
+	if f.contentType == "" {
 		f.contentType = "application/octet-stream"
 	}
 	return f, nil
@@ -193,7 +240,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serve(w, r, f, immutableCache)
 	case found && name != indexFile:
 		h.serve(w, r, f, revalidate)
-	case immutable:
+	case immutable, name != indexFile && namesFile(name):
 		http.NotFound(w, r)
 	default:
 		h.serve(w, r, h.index, revalidate)
@@ -225,9 +272,7 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request, f *file, cacheCo
 	if len(f.variants) > 1 {
 		header.Add("Vary", "Accept-Encoding")
 	}
-	if f.contentType != "" {
-		header.Set("Content-Type", f.contentType)
-	}
+	header.Set("Content-Type", f.contentType)
 	if v.coding != "" {
 		header.Set("Content-Encoding", v.coding)
 	}

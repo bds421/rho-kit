@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -37,6 +38,40 @@ func MatchesSearch(e Event, search string) bool {
 		return true
 	}
 	return strings.Contains(strings.ToLower(SearchText(e)), strings.ToLower(search))
+}
+
+// SearchTextConsistent reports whether stored, a store's persisted search
+// text, holds the same lines as [SearchText] for the event. Order and
+// number spelling may differ (a SQL backfill walks JSONB in its own key
+// order and prints numbers its own way); a missing, added or altered value
+// does not. Stores that persist search text check it while streaming the
+// chain, so a row edited to hide from search fails [Logger.VerifyChain].
+func SearchTextConsistent(e Event, stored string) bool {
+	want := searchLines(SearchText(e))
+	got := searchLines(stored)
+	if len(want) != len(got) {
+		return false
+	}
+	for line, n := range want {
+		if got[line] != n {
+			return false
+		}
+	}
+	return true
+}
+
+func searchLines(text string) map[string]int {
+	lines := map[string]int{}
+	for line := range strings.SplitSeq(text, "\n") {
+		if line == "" {
+			continue
+		}
+		if f, err := strconv.ParseFloat(line, 64); err == nil {
+			line = strconv.FormatFloat(f, 'g', -1, 64)
+		}
+		lines[line]++
+	}
+	return lines
 }
 
 func appendMetadataValues(parts []string, metadata json.RawMessage) []string {

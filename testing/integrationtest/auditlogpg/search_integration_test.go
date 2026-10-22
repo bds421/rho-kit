@@ -102,7 +102,7 @@ func TestPostgres_SearchMigrationBackfillsAndIndexes(t *testing.T) {
 
 	_, err = pool.Exec(ctx, `
 INSERT INTO audit_log_events (id, occurred_at, actor, action, resource, status, metadata, signed_metadata, hmac) VALUES
- ('signed', now(), 'user:dora', 'role.granted', 'org:1/role:7', 'success', NULL, convert_to('{"details":{"role":"Auditor"},"n":42}', 'UTF8'), '\x01'),
+ ('signed', now(), 'user:dora', 'role.granted', 'org:1/role:7', 'success', NULL, convert_to('{"details":{"role":"Auditor","tags":["a",["b",2.50]]},"n":42}', 'UTF8'), '\x01'),
  ('empty', now(), 'user:erin', 'org.closed', 'org:1', 'success', NULL, '\x', '\x02'),
  ('legacy', now(), 'svc', 'export', 'org:1', 'success', '{"format":"csv"}', NULL, '\x03'),
  ('broken', now(), 'svc', 'import', 'org:1', 'success', NULL, '\xff00', '\x04')`)
@@ -121,16 +121,40 @@ INSERT INTO audit_log_events (id, occurred_at, actor, action, resource, status, 
 	}
 	require.NoError(t, rows.Err())
 	assert.Equal(t, map[string]string{
-		"signed": "user:dora\nrole.granted\norg:1/role:7\n42\nAuditor",
+		"signed": "user:dora\nrole.granted\norg:1/role:7\n42\nAuditor\na\nb\n2.50",
 		"empty":  "user:erin\norg.closed\norg:1",
 		"legacy": "svc\nexport\norg:1\ncsv",
 		"broken": "svc\nimport\norg:1",
 	}, texts)
 
 	var index string
-	require.NoError(t, pool.QueryRow(ctx,
-		`SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_audit_log_events_search'`).Scan(&index))
+	var valid bool
+	require.NoError(t, pool.QueryRow(ctx, `
+SELECT pg_get_indexdef(i.indexrelid), i.indisvalid
+  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+ WHERE c.relname = 'idx_audit_log_events_search'`).Scan(&index, &valid))
 	assert.Contains(t, index, "gin_trgm_ops")
+	assert.True(t, valid)
+
+	require.NoError(t, postgresstore.New(pool).RangeChain(ctx, func(auditlog.Event) error { return nil }),
+		"the SQL backfill agrees with auditlog.SearchText")
+}
+
+func TestPostgres_VerifyChainDetectsEditedSearchText(t *testing.T) {
+	pool := openAndMigrate(t, startPostgres(t))
+	logger := newLogger(t, pool)
+	defer func() { _ = logger.Close() }()
+	ctx := context.Background()
+
+	require.NoError(t, logger.LogE(ctx, auditlog.Event{
+		Actor: "user:mallory", Action: "role.granted", Resource: "org:1",
+		Status: auditlog.StatusSuccess, Metadata: []byte(`{"role":"Owner"}`),
+	}))
+	require.NoError(t, logger.VerifyChain(ctx))
+
+	_, err := pool.Exec(ctx, `UPDATE audit_log_events SET search_text = 'role.granted'`)
+	require.NoError(t, err)
+	assert.ErrorIs(t, logger.VerifyChain(ctx), auditlog.ErrChainBroken)
 }
 
 func gooseProvider(t *testing.T, pool *pgxpool.Pool) *goose.Provider {

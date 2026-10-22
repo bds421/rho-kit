@@ -74,3 +74,16 @@ func TestLogger_List_RejectsLongSearch(t *testing.T) {
 	_, _, err := l.List(context.Background(), Filter{Search: strings.Repeat("a", MaxSearchBytes+1)}, "", 10)
 	assert.ErrorIs(t, err, ErrSearchTooLong)
 }
+
+func TestSearchTextConsistent(t *testing.T) {
+	e := Event{Actor: "user:a", Action: "role.granted", Resource: "org:1",
+		Metadata: json.RawMessage(`{"details":{"role":"Auditor"},"n":42.5}`)}
+
+	assert.True(t, SearchTextConsistent(e, SearchText(e)))
+	assert.True(t, SearchTextConsistent(e, "user:a\nrole.granted\norg:1\n42.50\nAuditor"),
+		"order and number spelling may differ")
+	assert.False(t, SearchTextConsistent(e, ""))
+	assert.False(t, SearchTextConsistent(e, "user:a\nrole.granted\norg:1\n42.5"))
+	assert.False(t, SearchTextConsistent(e, SearchText(e)+"\nextra"))
+	assert.False(t, SearchTextConsistent(e, "user:b\nrole.granted\norg:1\n42.5\nAuditor"))
+}
