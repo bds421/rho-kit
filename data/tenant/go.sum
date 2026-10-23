@@ -1,5 +1,5 @@
-github.com/bds421/rho-kit/core/v2 v2.21.0 h1:2zGCilqS1srpGBA6TDONH1HZRftZx34HU2Al89yPmvc=
-github.com/bds421/rho-kit/core/v2 v2.21.0/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
+github.com/bds421/rho-kit/core/v2 v2.22.0 h1:6zoe4ot760Tqu1StnoCP+n9Ky319yCvLDNXt4O7pvJg=
+github.com/bds421/rho-kit/core/v2 v2.22.0/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
