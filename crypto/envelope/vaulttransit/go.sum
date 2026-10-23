@@ -1,7 +1,7 @@
-github.com/bds421/rho-kit/core/v2 v2.22.0 h1:6zoe4ot760Tqu1StnoCP+n9Ky319yCvLDNXt4O7pvJg=
-github.com/bds421/rho-kit/core/v2 v2.22.0/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
-github.com/bds421/rho-kit/crypto/v2 v2.22.0 h1:o7F68jWKdUZoQkKoFPkBVU2TPN/yBG1bYw2TrtctHTs=
-github.com/bds421/rho-kit/crypto/v2 v2.22.0/go.mod h1:rbtUMO2F4Br0PMhveO/u4fMDet6YGmzM/kReaj9Dv3Y=
+github.com/bds421/rho-kit/core/v2 v2.22.1 h1:1pU/6caVRWRmbVh4xD66bUlAzcg7RZspU67ZOyyngYg=
+github.com/bds421/rho-kit/core/v2 v2.22.1/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
+github.com/bds421/rho-kit/crypto/v2 v2.22.1 h1:iFFuEaDeEBRzCq+PwG6ijvTAnWKGORBDsvhveFSegC4=
+github.com/bds421/rho-kit/crypto/v2 v2.22.1/go.mod h1:YLlY9WaScvEnWwmbUyQkWbVdywpyT6rp3Yi6f9ZZ0us=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/c2sp/wycheproof v0.0.0-20260105152342-fca0d3ba9f12 h1:C34LW7dhWgjAaAOdNB8z2UCyJsXDjC6UTILljHuqOlI=
