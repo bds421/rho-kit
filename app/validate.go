@@ -29,11 +29,12 @@ func (b *Builder) Validate() error {
 		return fmt.Errorf("builder is nil")
 	}
 
+	listeners := resolveHTTPConfig(b.modules)
 	if b.noPublicServer {
-		if err := b.validateWorker(); err != nil {
+		if err := b.validateWorker(listeners.internalListener != nil); err != nil {
 			return err
 		}
-	} else if err := b.cfg.ValidateBase(); err != nil {
+	} else if err := b.validateBase(listeners); err != nil {
 		return err
 	}
 
@@ -103,7 +104,7 @@ func (b *Builder) validateProductionSafety() error {
 	// routable interface, etc.) silently passed. Now the default
 	// requires loopback; non-loopback binds — wildcard, private,
 	// public — all need explicit AllowInternalNonLoopback.
-	if !isLoopbackHost(b.cfg.Internal.Host) && !httpCfg.allowInternalNonLoopback {
+	if httpCfg.internalListener == nil && !isLoopbackHost(b.cfg.Internal.Host) && !httpCfg.allowInternalNonLoopback {
 		return fmt.Errorf("Internal.Host is not loopback — exposes unauthenticated /metrics on a routable interface; bind to 127.0.0.1 / localhost / ::1, or call http.WithInternalNonLoopback() when network isolation is enforced")
 	}
 
@@ -120,12 +121,30 @@ func (b *Builder) validateProductionSafety() error {
 	return nil
 }
 
+// validateBase is [BaseConfig.ValidateBase] without the port of a server
+// that serves on a given listener.
+func (b *Builder) validateBase(h resolvedHTTPConfig) error {
+	if h.publicListener == nil {
+		if err := config.ValidatePort("server", b.cfg.Server.Port); err != nil {
+			return err
+		}
+	}
+	if h.internalListener == nil {
+		if err := config.ValidatePort("internal", b.cfg.Internal.Port); err != nil {
+			return err
+		}
+	}
+	return b.cfg.TLS.Validate()
+}
+
 // validateWorker checks a [Builder.WithoutPublicServer] configuration: only
 // the internal listener and TLS files are validated, and public-only
 // wiring is rejected instead of being silently ignored.
-func (b *Builder) validateWorker() error {
-	if err := config.ValidatePort("internal", b.cfg.Internal.Port); err != nil {
-		return err
+func (b *Builder) validateWorker(internalListener bool) error {
+	if !internalListener {
+		if err := config.ValidatePort("internal", b.cfg.Internal.Port); err != nil {
+			return err
+		}
 	}
 	if err := b.cfg.TLS.Validate(); err != nil {
 		return err

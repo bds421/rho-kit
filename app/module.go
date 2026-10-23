@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 
@@ -295,6 +296,17 @@ type HTTPConfigProvider interface {
 	StackOptions() []stack.Option
 	ServerOptions() []httpx.ServerOption
 	CustomReadiness() http.Handler
+}
+
+// ListenerProvider is optionally implemented by the [HTTPConfigProvider]:
+// listeners the public and the internal server serve on instead of binding
+// their configured addresses, such as a Unix socket or a socket inherited
+// from the parent process. Either may be nil, which keeps the address.
+// A server given a listener needs no port, and the internal one no
+// loopback host: who may connect is up to whoever made the listener.
+type ListenerProvider interface {
+	PublicListener() net.Listener
+	InternalListener() net.Listener
 }
 
 // BaseModule provides no-op defaults for optional Module methods. Embed it in
