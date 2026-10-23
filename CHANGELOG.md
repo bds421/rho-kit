@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.23.0 — 2026-10-23
+
+- **feat(auth/oauth2): `__Host-` session cookie names.** With a session
+  cookie name that starts with `__Host-`, the sign-in flow's cookies (pending
+  sign-ins, the restart marker) use Path `/` so browsers accept the prefix,
+  and `NewClient` refuses `WithCookieDomain` and `WithInsecureCookie`. Lets
+  applications on one host but different ports keep cookies that no other
+  host can set for them.
+
 ## v2.22.1 — 2026-10-23
 
 - **fix(infra/redis): reconnect callbacks remain serialized after timeout.**

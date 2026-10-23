@@ -24,13 +24,13 @@ func (c *Client) recoverSignIn(w http.ResponseWriter, r *http.Request, returnTo,
 	if _, err := c.SessionFromRequest(r.Context(), r); err == nil {
 		c.logger.InfoContext(r.Context(), "oauth2: callback without pending sign-in, session already valid",
 			slog.String("reason", reason))
-		http.SetCookie(w, c.expiredCookie(c.retryCookieName(), c.pathPrefix+"/"))
+		http.SetCookie(w, c.expiredCookie(c.retryCookieName(), c.flowCookiePath()))
 		http.Redirect(w, r, returnTo, http.StatusFound)
 		return
 	}
 	if retry, err := r.Cookie(c.retryCookieName()); err == nil && retry.Value != "" {
 		c.logger.WarnContext(r.Context(), "oauth2: sign-in restart failed again", slog.String("reason", reason))
-		http.SetCookie(w, c.expiredCookie(c.retryCookieName(), c.pathPrefix+"/"))
+		http.SetCookie(w, c.expiredCookie(c.retryCookieName(), c.flowCookiePath()))
 		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, returnTo)
 		return
 	}
@@ -38,7 +38,7 @@ func (c *Client) recoverSignIn(w http.ResponseWriter, r *http.Request, returnTo,
 	http.SetCookie(w, &http.Cookie{
 		Name:     c.retryCookieName(),
 		Value:    "1",
-		Path:     c.pathPrefix + "/",
+		Path:     c.flowCookiePath(),
 		Domain:   c.cookieDomain,
 		MaxAge:   retryWindow,
 		HttpOnly: true,
