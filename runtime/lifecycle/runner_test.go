@@ -756,3 +756,29 @@ func TestFuncComponent_StartCancelsDerivedContextOnReturn(t *testing.T) {
 	require.Eventually(t, sawDone.Load, time.Second, 5*time.Millisecond,
 		"derived context must be cancelled when startFn returns early")
 }
+
+// lateStart reaches its FuncComponent's Start only after the Runner stopped
+// it, as when a service is told to stop while its components still start.
+type lateStart struct {
+	fc   *FuncComponent
+	gate chan struct{}
+}
+
+func (l *lateStart) Start(ctx context.Context) error {
+	<-l.gate
+	return l.fc.Start(ctx)
+}
+
+func (l *lateStart) Stop(ctx context.Context) error {
+	err := l.fc.Stop(ctx)
+	close(l.gate)
+	return err
+}
+
+func TestRunner_AComponentStoppedBeforeItStartedEndsCleanly(t *testing.T) {
+	r := NewRunner(slog.New(slog.DiscardHandler))
+	r.Add("late", &lateStart{fc: NewFuncComponent(func(ctx context.Context) error { <-ctx.Done(); return nil }), gate: make(chan struct{})})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.NoError(t, r.Run(ctx))
+}

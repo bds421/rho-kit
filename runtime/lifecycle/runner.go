@@ -234,8 +234,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			recordComponentResult(span, err)
 			span.End()
 
-			// http.ErrServerClosed is expected during shutdown.
-			if errors.Is(err, http.ErrServerClosed) {
+			// http.ErrServerClosed is expected during shutdown, and so is a
+			// component the shutdown stopped before it started.
+			if errors.Is(err, http.ErrServerClosed) || errors.Is(err, ErrStoppedBeforeStart) {
 				return nil
 			}
 			return err
