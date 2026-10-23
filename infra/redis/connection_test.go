@@ -6,7 +6,9 @@ import (
 	"crypto/tls"
 	"errors"
 	"log/slog"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
@@ -384,54 +386,38 @@ func TestFireOnReconnect_ErrorLogRedactsCallbackError(t *testing.T) {
 }
 
 func TestFireOnReconnect_TimeoutSuppressesOverlappingCallbacks(t *testing.T) {
-	started := make(chan struct{}, 2)
-	release := make(chan struct{})
-	c := &Connection{
-		closed:             make(chan struct{}),
-		logger:             slog.Default(),
-		onReconnectTimeout: 10 * time.Millisecond,
-		onReconnect: func(context.Context, *Connection) error {
-			started <- struct{}{}
-			<-release
-			return nil
-		},
-	}
-	defer close(c.closed)
+	synctest.Test(t, func(t *testing.T) {
+		started := 0
+		release := make(chan struct{})
+		unblock := sync.OnceFunc(func() { close(release) })
+		defer unblock()
+		c := &Connection{
+			closed:             make(chan struct{}),
+			logger:             slog.Default(),
+			onReconnectTimeout: 10 * time.Millisecond,
+			onReconnect: func(context.Context, *Connection) error {
+				started++
+				<-release
+				return nil
+			},
+		}
+		defer close(c.closed)
 
-	c.fireOnReconnect()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for first reconnect callback")
-	}
+		c.fireOnReconnect()
+		synctest.Wait()
+		require.Equal(t, 1, started)
+		time.Sleep(50 * time.Millisecond)
+		synctest.Wait()
+		c.fireOnReconnect()
+		synctest.Wait()
+		require.Equal(t, 1, started, "callbacks must not overlap after a timeout")
 
-	require.Eventually(t, func() bool {
-		c.mu.RLock()
-		defer c.mu.RUnlock()
-		return c.reconnecting
-	}, time.Second, 10*time.Millisecond)
-
-	time.Sleep(50 * time.Millisecond)
-	c.fireOnReconnect()
-	select {
-	case <-started:
-		t.Fatal("second reconnect callback started while the first callback was still running")
-	default:
-	}
-
-	close(release)
-	require.Eventually(t, func() bool {
-		c.mu.RLock()
-		defer c.mu.RUnlock()
-		return !c.reconnecting
-	}, time.Second, 10*time.Millisecond)
-
-	c.fireOnReconnect()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for reconnect callback after first callback returned")
-	}
+		unblock()
+		synctest.Wait()
+		c.fireOnReconnect()
+		synctest.Wait()
+		require.Equal(t, 2, started, "callback must restart after the first returns")
+	})
 }
 
 func TestFireOnReconnect_PanicClearsInProgress(t *testing.T) {

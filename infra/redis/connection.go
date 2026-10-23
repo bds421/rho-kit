@@ -128,6 +128,7 @@ func WithOnReconnect(fn func(ctx context.Context, conn *Connection) error) ConnO
 
 // WithOnReconnectTimeout bounds each onReconnect callback. The timeout
 // context is cancelled when d elapses or the connection closes.
+// A running callback prevents another until it returns, even after cancellation.
 func WithOnReconnectTimeout(d time.Duration) ConnOption {
 	if d <= 0 {
 		panic("redis: WithOnReconnectTimeout requires a positive duration")
@@ -611,9 +612,6 @@ func (c *Connection) fireOnReconnect() {
 				c.logger.Error("redis onReconnect callback timed out",
 					"timeout", c.onReconnectTimeout)
 				cancel()
-				c.mu.Lock()
-				c.reconnecting = false
-				c.mu.Unlock()
 			case <-done:
 			}
 		}()

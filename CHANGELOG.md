@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.22.1 — 2026-10-23
+
+- **fix(infra/redis): reconnect callbacks remain serialized after timeout.**
+  Cancelling a callback's context no longer clears its running flag before
+  the callback returns. This prevents overlapping callbacks when a callback
+  ignores cancellation. The regression test uses virtual time and waits
+  for goroutines to block, so it detects the overlap deterministically.
+- Includes the configurable OAuth and web app mount paths from v2.22.0.
+
+No breaking changes. v2.22.0's final CI exposed this pre-existing Redis bug;
+v2.22.1 is the corrected release.
+
 ## v2.22.0 — 2026-10-23
 
 - **feat(auth/oauth2, app/oidc): configurable OAuth route prefix.**
