@@ -56,7 +56,7 @@ func (c *Client) renderFailure(w http.ResponseWriter, r *http.Request, status in
 		Title:   text.title,
 		Message: text.messages[f],
 		Action:  text.action,
-		Retry:   loginURL(safeReturnTo(returnTo)),
+		Retry:   c.loginURL(safeReturnTo(returnTo)),
 		Name:    c.errorBrand.Name,
 		Accent:  c.errorBrand.Accent,
 	}

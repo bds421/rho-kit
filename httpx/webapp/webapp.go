@@ -26,10 +26,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"mime"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -56,6 +58,17 @@ type Option func(*config)
 type config struct {
 	immutable []string
 	dotPaths  []string
+	basePath  string
+}
+
+// WithBasePath sets the base element of a build containing <base href="/">.
+// Build assets with relative URLs and strip the mount prefix before this handler.
+func WithBasePath(prefix string) Option {
+	u, err := url.ParseRequestURI(prefix)
+	if err != nil || u.Path != prefix || u.EscapedPath() != prefix || path.Clean(prefix) != prefix || strings.HasPrefix(prefix, "//") || strings.ContainsAny(prefix, "?#\\") {
+		panic("webapp: WithBasePath requires a canonical absolute path")
+	}
+	return func(c *config) { c.basePath = strings.TrimSuffix(prefix, "/") + "/" }
 }
 
 // wellKnown is public by definition (RFC 8615).
@@ -97,6 +110,7 @@ type variant struct {
 	file   string
 	coding string
 	etag   string
+	data   []byte
 }
 
 type file struct {
@@ -139,6 +153,18 @@ func New(files fs.FS, opts ...Option) (http.Handler, error) {
 	h.index = h.byName[indexFile]
 	if h.index == nil {
 		return nil, errors.New("webapp: the build has no index.html")
+	}
+	if cfg.basePath != "" && cfg.basePath != "/" {
+		data, err := fs.ReadFile(files, indexFile)
+		if err != nil {
+			return nil, err
+		}
+		if !bytes.Contains(data, []byte(`<base href="/"`)) {
+			return nil, errors.New("webapp: WithBasePath requires <base href=\"/\"> in index.html")
+		}
+		data = bytes.Replace(data, []byte(`<base href="/"`), []byte(`<base href="`+html.EscapeString(cfg.basePath)+`"`), 1)
+		sum := sha256.Sum256(data)
+		h.index.variants = []variant{{data: data, etag: `"` + hex.EncodeToString(sum[:16]) + `"`}}
 	}
 	return h, nil
 }
@@ -258,7 +284,13 @@ func (h *handler) isImmutable(name string) bool {
 
 func (h *handler) serve(w http.ResponseWriter, r *http.Request, f *file, cacheControl string) {
 	v := f.choose(strings.Join(r.Header.Values("Accept-Encoding"), ","))
-	content, err := h.open(v.file)
+	var content io.ReadSeeker
+	var err error
+	if v.data != nil {
+		content = bytes.NewReader(v.data)
+	} else {
+		content, err = h.open(v.file)
+	}
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return

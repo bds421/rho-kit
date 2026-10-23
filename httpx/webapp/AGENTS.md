@@ -15,6 +15,11 @@ files by path, `index.html` for every other path, precompressed siblings by
 - `WithDotPaths(paths ...string)` — files or `dir/` prefixes under
   dot-named segments that may be served; `.well-known/` always is.
 
+- `WithBasePath(prefix)` — changes the build's `<base href="/">` for runtime
+  mounting. Build with relative asset URLs and strip the prefix before the
+  handler. The rewritten index has its own ETag and is served uncompressed;
+  hashed assets retain their precompressed variants.
+
 ## Behaviour
 
 - `x.br` / `x.gz` next to `x` are sent with `Content-Encoding` and

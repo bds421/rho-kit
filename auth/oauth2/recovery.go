@@ -24,13 +24,13 @@ func (c *Client) recoverSignIn(w http.ResponseWriter, r *http.Request, returnTo,
 	if _, err := c.SessionFromRequest(r.Context(), r); err == nil {
 		c.logger.InfoContext(r.Context(), "oauth2: callback without pending sign-in, session already valid",
 			slog.String("reason", reason))
-		http.SetCookie(w, c.expiredCookie(c.retryCookieName(), "/oauth/"))
+		http.SetCookie(w, c.expiredCookie(c.retryCookieName(), c.pathPrefix+"/"))
 		http.Redirect(w, r, returnTo, http.StatusFound)
 		return
 	}
 	if retry, err := r.Cookie(c.retryCookieName()); err == nil && retry.Value != "" {
 		c.logger.WarnContext(r.Context(), "oauth2: sign-in restart failed again", slog.String("reason", reason))
-		http.SetCookie(w, c.expiredCookie(c.retryCookieName(), "/oauth/"))
+		http.SetCookie(w, c.expiredCookie(c.retryCookieName(), c.pathPrefix+"/"))
 		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, returnTo)
 		return
 	}
@@ -38,14 +38,14 @@ func (c *Client) recoverSignIn(w http.ResponseWriter, r *http.Request, returnTo,
 	http.SetCookie(w, &http.Cookie{
 		Name:     c.retryCookieName(),
 		Value:    "1",
-		Path:     "/oauth/",
+		Path:     c.pathPrefix + "/",
 		Domain:   c.cookieDomain,
 		MaxAge:   retryWindow,
 		HttpOnly: true,
 		Secure:   c.cookieSecure,
 		SameSite: http.SameSiteLaxMode,
 	})
-	http.Redirect(w, r, loginURL(returnTo), http.StatusFound)
+	http.Redirect(w, r, c.loginURL(returnTo), http.StatusFound)
 }
 
 func safeReturnTo(target string) string {
@@ -55,6 +55,6 @@ func safeReturnTo(target string) string {
 	return "/"
 }
 
-func loginURL(returnTo string) string {
-	return "/oauth/login?" + url.Values{"redirect_to": {returnTo}}.Encode()
+func (c *Client) loginURL(returnTo string) string {
+	return c.pathPrefix + "/login?" + url.Values{"redirect_to": {returnTo}}.Encode()
 }

@@ -15,9 +15,6 @@ import (
 // ModuleName is the stable Builder module name.
 const ModuleName = "oidc"
 
-// backChannelLogoutPath is served when [WithBackChannelLogout] is set.
-const backChannelLogoutPath = "/oauth/backchannel-logout"
-
 // ResourceClientKey publishes the initialized OIDC client in app.Infrastructure.
 const ResourceClientKey = "github.com/bds421/rho-kit/app/oidc.client"
 
@@ -88,11 +85,12 @@ func WithBackChannelLogout() Option {
 	return func(c *config) { c.backChannel = true }
 }
 
-// Module builds an opt-in browser/BFF OIDC composition. It intercepts only
+// Module builds an opt-in browser/BFF OIDC composition. By default it intercepts only
 // /oauth/login, /oauth/callback, and /oauth/logout (plus
 // /oauth/backchannel-logout with [WithBackChannelLogout]); all other routes continue
 // through the service router and gain a canonical principal when a valid
-// session cookie is present.
+// session cookie is present. WithClientOption(auth/oauth2.WithPathPrefix)
+// changes the route prefix for all four handlers.
 func Module(oidcConfig kitoauth.Config, opts ...Option) app.Module {
 	cfg := config{}
 	for _, opt := range opts {
@@ -169,7 +167,7 @@ func (m *module) Populate(infra *app.Infrastructure) {
 func (m *module) Stop(context.Context) error             { return nil }
 func (m *module) HealthChecks() []health.DependencyCheck { return nil }
 
-// PublicMiddleware owns the fixed OIDC route set and projects a valid session
+// PublicMiddleware owns the configured OIDC route set and projects a valid session
 // for downstream routes. It is empty before Init, so a manually-driven module
 // cannot accidentally expose an uninitialized login surface.
 func (m *module) PublicMiddleware() []app.PhasedMiddleware {
@@ -182,11 +180,12 @@ func (m *module) PublicMiddleware() []app.PhasedMiddleware {
 func (m *module) middleware(next http.Handler) http.Handler {
 	handlers := m.client.Handlers()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		prefix := m.client.PathPrefix()
 		switch r.URL.Path {
-		case "/oauth/login", "/oauth/callback", "/oauth/logout":
+		case prefix + "/login", prefix + "/callback", prefix + "/logout":
 			handlers.ServeHTTP(w, r)
 			return
-		case backChannelLogoutPath:
+		case prefix + "/backchannel-logout":
 			if m.cfg.backChannel {
 				handlers.ServeHTTP(w, r)
 				return

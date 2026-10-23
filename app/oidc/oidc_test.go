@@ -210,3 +210,26 @@ func TestMiddleware_ExposesSessionAttributes(t *testing.T) {
 	_, ok := SessionAttributes(context.Background())
 	assert.False(t, ok)
 }
+
+func TestMiddleware_CustomOAuthPrefix(t *testing.T) {
+	m := Module(kitoauth.Config{Issuer: testOIDCIssuer(t), ClientID: "web", RedirectURL: "https://app/accounts/oauth/callback"},
+		WithSessionStore(kitoauth.NewMemorySessionStore()), WithStateStore(kitoauth.NewMemoryStateStore()), WithInMemoryStoresForTesting(),
+		WithClientOption(kitoauth.WithPathPrefix("/accounts/oauth")), WithBackChannelLogout()).(*module)
+	initModule(t, m)
+	h := m.middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }))
+	for _, tc := range []struct {
+		method, path string
+		status       int
+	}{
+		{"GET", "/accounts/oauth/login", http.StatusFound},
+		{"POST", "/accounts/oauth/backchannel-logout", http.StatusBadRequest},
+		{"GET", "/oauth/login", http.StatusTeapot},
+		{"GET", "/login", http.StatusTeapot},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+			assert.Equal(t, tc.status, rec.Code)
+		})
+	}
+}

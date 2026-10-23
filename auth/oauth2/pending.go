@@ -48,7 +48,7 @@ func (c *Client) pendingCookie(state string, now time.Time) *http.Cookie {
 	return &http.Cookie{
 		Name:     c.pendingCookieName(state),
 		Value:    strconv.FormatInt(now.UnixNano(), 10) + "." + stateBindingValue(state),
-		Path:     "/oauth/",
+		Path:     c.pathPrefix + "/",
 		Domain:   c.cookieDomain,
 		HttpOnly: true,
 		Secure:   c.cookieSecure,
@@ -90,7 +90,7 @@ func (c *Client) isBound(r *http.Request, state string) bool {
 
 func (c *Client) clearPending(w http.ResponseWriter, state string) {
 	if state != "" {
-		http.SetCookie(w, c.expiredCookie(c.pendingCookieName(state), "/oauth/"))
+		http.SetCookie(w, c.expiredCookie(c.pendingCookieName(state), c.pathPrefix+"/"))
 	}
 }
 
@@ -116,7 +116,7 @@ func (c *Client) startPending(w http.ResponseWriter, r *http.Request, state stri
 	}
 	slices.SortFunc(open, func(a, b pending) int { return cmp.Compare(a.started, b.started) })
 	for len(open) >= maxPendingSignIns {
-		http.SetCookie(w, c.expiredCookie(open[0].name, "/oauth/"))
+		http.SetCookie(w, c.expiredCookie(open[0].name, c.pathPrefix+"/"))
 		open = open[1:]
 	}
 	http.SetCookie(w, c.pendingCookie(state, now))

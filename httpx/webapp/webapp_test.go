@@ -3,6 +3,7 @@ package webapp
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -197,5 +198,27 @@ func TestPathsNamingFilesAreNotTheApp(t *testing.T) {
 	}
 	if rec := serve(t, h, http.MethodGet, "/o/1/members", nil); rec.Code != http.StatusOK || rec.Body.String() != "app" {
 		t.Errorf("app route: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBasePathKeepsDeepLinksAndCompressedAssets(t *testing.T) {
+	files := build()
+	files["index.html"].Data = []byte(`<head><base href="/"><script src="./assets/app.js"></script></head>`)
+	h, err := New(files, WithBasePath("/accounts"), WithImmutable("assets/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mounted := http.StripPrefix("/accounts", h)
+	rec := serve(t, mounted, "GET", "/accounts/o/org/settings", http.Header{"Accept-Encoding": {"br"}})
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `<base href="/accounts/">`) || rec.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("wrong index: %d %v %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	cached := serve(t, mounted, "GET", "/accounts/", http.Header{"If-None-Match": {rec.Header().Get("ETag")}})
+	if cached.Code != http.StatusNotModified {
+		t.Fatalf("ETag: %d", cached.Code)
+	}
+	asset := serve(t, mounted, "GET", "/accounts/assets/app.js", http.Header{"Accept-Encoding": {"br"}})
+	if asset.Body.String() != "js-br" || asset.Header().Get("Content-Encoding") != "br" {
+		t.Fatalf("asset: %v %s", asset.Header(), asset.Body.String())
 	}
 }

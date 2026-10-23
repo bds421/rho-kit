@@ -395,6 +395,11 @@ mux.Handle("/", app)
 handler := stack.Default(mux, logger, stack.WithStaticPaths("/assets/"))
 ```
 
+To mount the same build below a path, build assets with relative URLs, include
+`<base href="/">` in its index, and pass `webapp.WithBasePath("/accounts")`.
+Strip that prefix before the handler and use `/accounts/assets/` for the stack's
+static paths. The option rewrites the index once; precompressed assets are kept.
+
 ## Typed Handlers (Reduce Boilerplate)
 
 Generic handlers that auto-decode JSON, validate, call your function, and encode the response:

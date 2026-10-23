@@ -215,7 +215,8 @@ var (
 //
 //	mux.Handle("/oauth/", oauthClient.Handlers())
 //
-// which exposes /oauth/login, /oauth/callback, /oauth/logout.
+// which exposes /oauth/login, /oauth/callback, /oauth/logout by default.
+// WithPathPrefix changes this mount prefix.
 //
 // The concrete type is an opaque http.Handler (typically StripPrefix +
 // ServeMux). Callers should depend only on the [http.Handler] methods.

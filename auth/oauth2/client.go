@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 	"unicode"
@@ -37,6 +38,7 @@ type Client struct {
 	cookieName   string
 	cookieDomain string
 	cookieSecure bool
+	pathPrefix   string
 
 	// Token refresh (WithTokenRefresh).
 	refreshEnabled bool
@@ -138,6 +140,18 @@ func WithCookieName(name string) Option {
 	return func(cl *Client) { cl.cookieName = name }
 }
 
+// WithPathPrefix changes the OAuth handler and pending-cookie prefix from /oauth.
+func WithPathPrefix(prefix string) Option {
+	u, err := url.ParseRequestURI(prefix)
+	if err != nil || u.Host != "" || u.Path != prefix || u.EscapedPath() != prefix || u.RawQuery != "" || path.Clean(prefix) != prefix || prefix == "/" || strings.ContainsAny(prefix, "?#\\;\r\n") {
+		panic("oauth2: WithPathPrefix requires a canonical absolute path without a trailing slash")
+	}
+	return func(c *Client) { c.pathPrefix = prefix }
+}
+
+// PathPrefix returns the mount path used by Handlers.
+func (c *Client) PathPrefix() string { return c.pathPrefix }
+
 // WithCookieDomain restricts the cookie to a domain.
 func WithCookieDomain(d string) Option {
 	return func(cl *Client) { cl.cookieDomain = d }
@@ -168,6 +182,7 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 		stateTTL:         10 * time.Minute,
 		cookieName:       "kit_oauth_session",
 		cookieSecure:     true,
+		pathPrefix:       "/oauth",
 		backgroundHeader: DefaultBackgroundRequestHeader,
 		refreshLockWait:  defaultRefreshLockWait,
 	}
@@ -320,17 +335,7 @@ func isDoubleSlashPrefix(path string) bool {
 	return len(path) >= 2 && isSlash(path[0]) && isSlash(path[1])
 }
 
-// Handlers returns the http.Handler that serves /login, /callback,
-// /logout under the fixed mount prefix "/oauth". Mount exactly as:
-//
-//	mux.Handle("/oauth/", client.Handlers())
-//
-// which exposes /oauth/login, /oauth/callback, /oauth/logout (and POST
-// /oauth/backchannel-logout with [WithBackChannelLogout]). Mounting
-// under any other prefix silently 404s because StripPrefix only strips
-// "/oauth". Callers that need a different prefix should wire the three
-// handler methods themselves (or wrap the returned handler with their
-// own StripPrefix after forking this shape).
+// Handlers serves login, callback and logout beneath PathPrefix (default /oauth).
 func (c *Client) Handlers() Handlers {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", c.handleLogin)
@@ -339,7 +344,7 @@ func (c *Client) Handlers() Handlers {
 	if c.backChannelLogout {
 		mux.HandleFunc("POST /backchannel-logout", c.handleBackChannelLogout)
 	}
-	return http.StripPrefix("/oauth", mux)
+	return http.StripPrefix(c.pathPrefix, mux)
 }
 
 // handleLogin generates state + nonce (+ PKCE verifier when enabled),
@@ -530,7 +535,7 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, c.sessionCookie(sessionID, now))
-	http.SetCookie(w, c.expiredCookie(c.retryCookieName(), "/oauth/"))
+	http.SetCookie(w, c.expiredCookie(c.retryCookieName(), c.pathPrefix+"/"))
 	// Defence in depth: re-validate the persisted deep link before
 	// emitting it in a Location header. handleLogin already screens
 	// redirect_to, but a hostile StateStore implementation could return

@@ -34,6 +34,7 @@ or UserInfo without re-discovering endpoints.
 - Options: `WithSessionStore`, `WithStateStore`, `WithHTTPClient`,
   `WithLogger`, `WithSessionTTL`, `WithStateTTL`, `WithCookieName`,
   `WithCookieDomain`, `WithInsecureCookie`, `WithoutPKCE`,
+  `WithPathPrefix` (default `/oauth`, including pending cookies and retry links),
   `WithTokenRefresh(leeway)` (transparent refresh in `SessionFromRequest`),
   `WithRPInitiatedLogout(postLogoutURI)` (logout answers 200 with a
   `LogoutResponse{LogoutURL}` instead of 204)

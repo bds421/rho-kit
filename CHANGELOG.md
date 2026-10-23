@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.22.0 — 2026-10-23
+
+- **feat(auth/oauth2, app/oidc): configurable OAuth route prefix.**
+  `WithPathPrefix` mounts login, callback, logout and optional back-channel
+  logout below a chosen path. Pending and retry cookies and recovery links
+  use the same prefix; `app/oidc` respects it through `WithClientOption`.
+  The default remains `/oauth`.
+- **feat(httpx/webapp): runtime base path for an existing SPA build.**
+  `WithBasePath` rewrites the index's `<base href="/">` once at startup.
+  Build assets with relative URLs and strip the mount prefix before the
+  handler. The rewritten index has its own ETag; precompressed assets
+  remain unchanged.
+
+No breaking changes.
+
 ## v2.21.0 — 2026-10-22
 
 - **feat(auth/oauth2): sign-in no longer ends on "oauth2: state mismatch".**
