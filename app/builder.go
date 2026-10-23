@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -681,7 +682,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	if serverTLS != nil {
 		internalSrvOpts = append(internalSrvOpts, httpx.WithTLSConfig(serverTLS))
 	}
-	internalSrv := httpx.NewServer(b.cfg.Internal.Addr(), internalHandler, internalSrvOpts...)
+	internalSrv := httpx.NewServer(listenAddr(b.cfg.Internal.Addr(), httpCfg.internalListener), internalHandler, internalSrvOpts...)
 	// Adapter modules may mutate the internal server post-construction
 	// (e.g., app/grpc enables HTTP/2 or h2c, according to whether the
 	// resolved kit-level TLS configuration is active, so the gRPC health
@@ -692,7 +693,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 			cfg.ConfigureInternalServer(internalSrv)
 		}
 	}
-	internalServerComponent := lifecycle.NewHTTPServer(internalSrv)
+	internalServerComponent := serverComponent(internalSrv, httpCfg.internalListener)
 	internalErrCh := make(chan error, 1)
 	go func() {
 		if srvErr := internalServerComponent.Start(ctx); srvErr != nil && !errors.Is(srvErr, http.ErrServerClosed) {
@@ -713,7 +714,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		return fmt.Errorf("internal server failed to start: %w", srvErr)
 	case <-time.After(50 * time.Millisecond):
 	}
-	logger.Info("internal server started", slog.String("addr", b.cfg.Internal.Addr()))
+	logger.Info("internal server started", slog.String("addr", listenAddr(b.cfg.Internal.Addr(), httpCfg.internalListener)))
 
 	// Monitor internal server for post-startup failures (e.g., accept loop errors).
 	// If the internal server dies, the entire service shuts down — running without
@@ -756,11 +757,27 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	if serverTLS != nil {
 		srvOpts = append(srvOpts, httpx.WithTLSConfig(serverTLS))
 	}
-	srv := httpx.NewServer(b.cfg.Server.Addr(), httpHandler, srvOpts...)
-	runner.Add("public-server", lifecycle.NewHTTPServer(srv))
+	srv := httpx.NewServer(listenAddr(b.cfg.Server.Addr(), httpCfg.publicListener), httpHandler, srvOpts...)
+	runner.Add("public-server", serverComponent(srv, httpCfg.publicListener))
 
 	// 15. Run — signal handling, component lifecycle, graceful shutdown.
 	// Hand off reloading TLS ownership to the shutdown hook path.
 	closeReloadingTLS = nil
 	return runner.Run(ctx)
+}
+
+// serverComponent serves srv on l when the HTTP module gave one, otherwise
+// on srv.Addr.
+func serverComponent(srv *http.Server, l net.Listener) lifecycle.Component {
+	if l != nil {
+		return lifecycle.NewHTTPServerOn(srv, l)
+	}
+	return lifecycle.NewHTTPServer(srv)
+}
+
+func listenAddr(addr string, l net.Listener) string {
+	if l != nil {
+		return l.Addr().String()
+	}
+	return addr
 }

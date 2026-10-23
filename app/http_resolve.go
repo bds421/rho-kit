@@ -1,6 +1,7 @@
 package app
 
 import (
+	"net"
 	"net/http"
 	"os"
 
@@ -28,6 +29,8 @@ type resolvedHTTPConfig struct {
 	stackOpts                []stack.Option
 	serverOpts               []httpx.ServerOption
 	customReadiness          http.Handler
+	publicListener           net.Listener
+	internalListener         net.Listener
 }
 
 // resolveHTTPConfig walks the module list looking for the single
@@ -64,7 +67,13 @@ func resolveHTTPConfig(modules []Module) resolvedHTTPConfig {
 		return resolvedHTTPConfig{}
 	}
 	reloadOpts, reloadActive := provider.ReloadingTLSOptions()
+	var public, internal net.Listener
+	if lp, ok := provider.(ListenerProvider); ok {
+		public, internal = lp.PublicListener(), lp.InternalListener()
+	}
 	return resolvedHTTPConfig{
+		publicListener:           public,
+		internalListener:         internal,
 		allowPlaintext:           provider.AllowPlaintext(),
 		optionalClientCerts:      provider.OptionalClientCerts(),
 		allowInternalNonLoopback: provider.AllowInternalNonLoopback(),

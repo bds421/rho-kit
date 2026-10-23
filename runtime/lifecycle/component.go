@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 
@@ -20,7 +21,8 @@ type Component interface {
 
 // httpServerComponent adapts an *http.Server to the Component interface.
 type httpServerComponent struct {
-	srv *http.Server
+	srv      *http.Server
+	listener net.Listener
 }
 
 // NewHTTPServer adapts an *http.Server to a Component.
@@ -52,8 +54,37 @@ func NewHTTPServer(srv *http.Server) Component {
 	return &httpServerComponent{srv: srv}
 }
 
+// NewHTTPServerOn adapts an *http.Server that serves on l, a listener the
+// caller made (a Unix socket, or one inherited from the parent process for
+// socket activation), instead of binding srv.Addr; srv.Addr may be empty.
+// Start serves TLS on l when srv.TLSConfig is set. Stop closes l with the
+// server.
+//
+// Panics if srv or l is nil, srv.Handler is nil, or srv.ReadHeaderTimeout
+// is zero.
+func NewHTTPServerOn(srv *http.Server, l net.Listener) Component {
+	if srv == nil {
+		panic("lifecycle: NewHTTPServerOn requires a non-nil *http.Server")
+	}
+	if l == nil {
+		panic("lifecycle: NewHTTPServerOn requires a non-nil net.Listener")
+	}
+	if srv.Handler == nil {
+		panic("lifecycle: NewHTTPServerOn requires a non-nil Handler")
+	}
+	if srv.ReadHeaderTimeout <= 0 {
+		panic("lifecycle: NewHTTPServerOn requires ReadHeaderTimeout > 0")
+	}
+	return &httpServerComponent{srv: srv, listener: l}
+}
+
 func (h *httpServerComponent) Start(_ context.Context) error {
-	if h.srv.TLSConfig != nil {
+	switch {
+	case h.listener != nil && h.srv.TLSConfig != nil:
+		return h.srv.ServeTLS(h.listener, "", "")
+	case h.listener != nil:
+		return h.srv.Serve(h.listener)
+	case h.srv.TLSConfig != nil:
 		return h.srv.ListenAndServeTLS("", "")
 	}
 	return h.srv.ListenAndServe()

@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.24.0 — 2026-10-23
+
+- **feat(app/http, runtime/lifecycle): serve on a given listener.**
+  `http.WithListener` and `http.WithInternalListener` serve the public and
+  the internal server on a `net.Listener` the service made (a Unix socket, a
+  socket inherited from the parent process) instead of binding the
+  configured address; such a server needs no port, and the internal one no
+  loopback host. `lifecycle.NewHTTPServerOn` serves an `*http.Server` on a
+  listener. The app reads the listeners through the optional
+  `app.ListenerProvider`, so other `HTTPConfigProvider` implementations are
+  unaffected.
+
 ## v2.23.0 — 2026-10-23
 
 - **feat(auth/oauth2): `__Host-` session cookie names.** With a session

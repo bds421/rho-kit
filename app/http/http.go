@@ -20,6 +20,8 @@
 //	        http.WithoutDefaultStack(),
 //	        http.WithInternalNonLoopback(),             // bind /metrics publicly
 //	        http.WithCustomReadiness(myHandler),
+//	        http.WithListener(publicListener),          // Unix socket / inherited
+//	        http.WithInternalListener(opsListener),
 //	    )).
 //	    Router(routerFn).
 //	    Run()
@@ -29,6 +31,7 @@ package http
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"os"
 
@@ -59,6 +62,9 @@ type config struct {
 	serverOpts          []kithttpx.ServerOption
 
 	customReadiness http.Handler
+
+	publicListener   net.Listener
+	internalListener net.Listener
 }
 
 // WithoutTLS acknowledges that the public HTTP server will run
@@ -193,6 +199,33 @@ func WithCustomReadiness(h http.Handler) Option {
 	return func(c *config) { c.customReadiness = h }
 }
 
+// WithListener serves the public HTTP server on l instead of binding
+// [app.BaseConfig.Server]: a Unix socket, or a socket the parent process
+// handed over (socket activation). The server port then needs no value.
+// TLS and the stack apply as on a bound address; who may connect at all is
+// decided by whoever made l (for a Unix socket, its file permissions).
+//
+// Panics if l is nil.
+func WithListener(l net.Listener) Option {
+	if l == nil {
+		panic("app/http: WithListener requires a non-nil listener")
+	}
+	return func(c *config) { c.publicListener = l }
+}
+
+// WithInternalListener serves the internal ops server (/health, /ready,
+// /metrics) on l instead of binding [app.BaseConfig.Internal]. The
+// internal port then needs no value and the loopback check does not apply:
+// a listener the service was given is reachable only as its maker allows.
+//
+// Panics if l is nil.
+func WithInternalListener(l net.Listener) Option {
+	if l == nil {
+		panic("app/http: WithInternalListener requires a non-nil listener")
+	}
+	return func(c *config) { c.internalListener = l }
+}
+
 // Module returns an [app.Module] carrying the HTTP server
 // configuration. The Builder reads the configuration via the
 // [app.HTTPConfigProvider] capability and applies it to the
@@ -215,11 +248,11 @@ type httpModule struct {
 	cfg config
 }
 
-func (m *httpModule) Name() string                                  { return ModuleName }
+func (m *httpModule) Name() string                                      { return ModuleName }
 func (m *httpModule) Init(_ context.Context, _ app.ModuleContext) error { return nil }
-func (m *httpModule) Populate(_ *app.Infrastructure)                {}
-func (m *httpModule) Stop(_ context.Context) error                  { return nil }
-func (m *httpModule) HealthChecks() []health.DependencyCheck        { return nil }
+func (m *httpModule) Populate(_ *app.Infrastructure)                    {}
+func (m *httpModule) Stop(_ context.Context) error                      { return nil }
+func (m *httpModule) HealthChecks() []health.DependencyCheck            { return nil }
 
 // HTTPConfigProvider implementation — the Builder reads the
 // resolved configuration through these methods.
@@ -239,3 +272,7 @@ func (m *httpModule) ServerOptions() []kithttpx.ServerOption {
 	return m.cfg.serverOpts
 }
 func (m *httpModule) CustomReadiness() http.Handler { return m.cfg.customReadiness }
+
+// ListenerProvider implementation.
+func (m *httpModule) PublicListener() net.Listener   { return m.cfg.publicListener }
+func (m *httpModule) InternalListener() net.Listener { return m.cfg.internalListener }
