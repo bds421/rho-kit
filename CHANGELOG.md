@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.24.1 — 2026-10-23
+
+- **fix(runtime/lifecycle): a component stopped before it started ends
+  cleanly.** A service told to stop while its components were still starting
+  could fail with "FuncComponent already stopped": the Runner stopped a
+  `FuncComponent` before its Start ran and reported Start's refusal as an
+  error. Start now returns `lifecycle.ErrStoppedBeforeStart`, which the
+  Runner takes as a clean end, like `http.ErrServerClosed`.
+
 ## v2.24.0 — 2026-10-23
 
 - **feat(app/http, runtime/lifecycle): serve on a given listener.**
