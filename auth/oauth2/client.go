@@ -132,7 +132,11 @@ func WithStateTTL(d time.Duration) Option {
 	return func(cl *Client) { cl.stateTTL = d }
 }
 
-// WithCookieName overrides "kit_oauth_session".
+// WithCookieName overrides "kit_oauth_session". A name with the __Host-
+// prefix makes browsers refuse the cookie unless it is Secure, host-only and
+// set for Path "/", so the sign-in flow's cookies (pending sign-ins, the
+// restart marker) then use Path "/" as well, and NewClient refuses
+// WithCookieDomain and insecure cookies.
 func WithCookieName(name string) Option {
 	if name == "" {
 		panic("oauth2: WithCookieName requires non-empty name")
@@ -147,6 +151,17 @@ func WithPathPrefix(prefix string) Option {
 		panic("oauth2: WithPathPrefix requires a canonical absolute path without a trailing slash")
 	}
 	return func(c *Client) { c.pathPrefix = prefix }
+}
+
+func (c *Client) hostPrefixed() bool { return strings.HasPrefix(c.cookieName, "__Host-") }
+
+// flowCookiePath scopes the sign-in flow's cookies to the OAuth routes,
+// except for __Host- names, which browsers accept only with Path "/".
+func (c *Client) flowCookiePath() string {
+	if c.hostPrefixed() {
+		return "/"
+	}
+	return c.pathPrefix + "/"
 }
 
 // PathPrefix returns the mount path used by Handlers.
@@ -191,6 +206,9 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 			return nil, errors.New("oauth2: option must not be nil")
 		}
 		opt(c)
+	}
+	if c.hostPrefixed() && (c.cookieDomain != "" || !c.cookieSecure) {
+		return nil, errors.New("oauth2: a __Host- cookie name requires Secure cookies without a Domain")
 	}
 	if c.sessions == nil {
 		return nil, errors.New("oauth2: WithSessionStore is required")
@@ -535,7 +553,7 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, c.sessionCookie(sessionID, now))
-	http.SetCookie(w, c.expiredCookie(c.retryCookieName(), c.pathPrefix+"/"))
+	http.SetCookie(w, c.expiredCookie(c.retryCookieName(), c.flowCookiePath()))
 	// Defence in depth: re-validate the persisted deep link before
 	// emitting it in a Location header. handleLogin already screens
 	// redirect_to, but a hostile StateStore implementation could return

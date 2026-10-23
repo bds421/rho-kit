@@ -96,7 +96,9 @@ or UserInfo without re-discovering endpoints.
   it restarts the sign-in once (`<cookie>_retry`, 2 min) and then shows the
   error page.
 - **Cookie defaults:** HttpOnly, Secure, SameSite=Lax. Override Secure
-  via `WithInsecureCookie()` only for local-dev over HTTP.
+  via `WithInsecureCookie()` only for local-dev over HTTP. A `__Host-`
+  cookie name moves the flow's cookies to Path `/` and refuses a Domain or
+  insecure cookies.
 - **Issuer match.** Discovery rejects when the well-known doc's
   `issuer` field doesn't equal the configured Issuer (RFC 8414 §3.3).
 - **Audited libraries.** Built on `golang.org/x/oauth2` (OAuth2 dance +
