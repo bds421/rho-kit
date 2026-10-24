@@ -38,7 +38,7 @@ func GetSecret(key, fallback string) (string, error) {
 	if filePath := os.Getenv(key + "_FILE"); filePath != "" {
 		b, err := readSecretFile(filePath)
 		if err != nil {
-			return "", fmt.Errorf("config: secret file for %s_FILE is unreadable: %w", key, err)
+			return "", redact.WrapSafe(fmt.Sprintf("config: secret file for %s_FILE is unreadable", key), err)
 		}
 		// Copy into a string and zero the originating buffer so the
 		// raw bytes don't linger on the heap longer than necessary.
@@ -71,7 +71,7 @@ func GetInt(key string, fallback int) (int, error) {
 	}
 	i, err := strconv.Atoi(v)
 	if err != nil {
-		return 0, fmt.Errorf("invalid integer for %s", key)
+		return 0, redact.Safef("invalid integer for %s", key)
 	}
 	return i, nil
 }
@@ -85,7 +85,7 @@ func GetBool(key string, fallback bool) (bool, error) {
 	}
 	b, err := strconv.ParseBool(v)
 	if err != nil {
-		return false, fmt.Errorf("invalid boolean for %s", key)
+		return false, redact.Safef("invalid boolean for %s", key)
 	}
 	return b, nil
 }
@@ -99,7 +99,7 @@ func GetFloat64(key string, fallback float64) (float64, error) {
 	}
 	f, err := strconv.ParseFloat(v, 64)
 	if err != nil {
-		return 0, fmt.Errorf("invalid float for %s", key)
+		return 0, redact.Safef("invalid float for %s", key)
 	}
 	return f, nil
 }

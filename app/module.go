@@ -404,11 +404,11 @@ func TestModuleContext(modules ...Module) (ModuleContext, error) {
 	moduleMap := make(map[string]Module, len(modules))
 	for _, m := range modules {
 		if m == nil {
-			return ModuleContext{}, fmt.Errorf("app: TestModuleContext: nil module")
+			return ModuleContext{}, redact.Safe("app: TestModuleContext: nil module")
 		}
 		name := m.Name()
 		if name == "" {
-			return ModuleContext{}, fmt.Errorf("app: TestModuleContext: module with empty name")
+			return ModuleContext{}, redact.Safe("app: TestModuleContext: module with empty name")
 		}
 		if _, dup := moduleMap[name]; dup {
 			return ModuleContext{}, fmt.Errorf("app: TestModuleContext: duplicate module name %q", name)
@@ -509,7 +509,7 @@ func initModules(
 		if err := initOneModule(ctx, m, mc); err != nil {
 			// Close already-initialized modules in reverse order.
 			closeModules(ctx, initialized, logger)
-			return nil, fmt.Errorf("module init failed: %w", err)
+			return nil, redact.WrapSafe("module init failed", err)
 		}
 		initialized = append(initialized, m)
 	}
@@ -537,7 +537,7 @@ func initOneModule(ctx context.Context, m Module, mc ModuleContext) error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				done <- fmt.Errorf("panic during init: %s", redact.PanicValue(r))
+				done <- redact.Safef("panic during init: %s", redact.PanicValue(r))
 			}
 		}()
 		done <- m.Init(ctx, mc)

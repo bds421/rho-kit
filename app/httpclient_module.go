@@ -3,10 +3,10 @@ package app
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
@@ -68,7 +68,7 @@ func (m *httpClientModule) Init(_ context.Context, mc ModuleContext) error {
 	} else {
 		cTLS, err = mc.Config.TLS.ClientTLS()
 		if err != nil {
-			return fmt.Errorf("httpclient module: build client TLS: %w", err)
+			return redact.WrapSafe("httpclient module: build client TLS", err)
 		}
 	}
 
@@ -83,7 +83,7 @@ func (m *httpClientModule) Init(_ context.Context, mc ModuleContext) error {
 				continue
 			}
 			if found != nil {
-				return fmt.Errorf("httpclient module: multiple TracingProvider modules registered; only one is allowed")
+				return redact.Safe("httpclient module: multiple TracingProvider modules registered; only one is allowed")
 			}
 			found = tp
 		}

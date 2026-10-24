@@ -19,11 +19,12 @@ import (
 //
 // Fatal-startup error logging: emits the redacted message (kit
 // convention — error strings can carry SDK URLs, broker credentials,
-// DSN fragments, or validator output) PLUS the unwrap chain of concrete
-// Go types (kit-controlled / SDK-controlled identifiers, no
-// caller-supplied content). Operators get enough triage information to
-// identify the failing subsystem ("config.LoadError → os.PathError")
-// without leaking the underlying message.
+// DSN fragments, or validator output), the unwrap chain of concrete Go
+// types, and the messages of the frames marked safe with
+// [redact.Safe], [redact.Safef], [redact.WrapSafe] or [redact.WrapError]
+// (configuration and builder errors such as "config: required
+// environment variable NATS_URL is not set"). Frames not marked safe stay
+// redacted.
 func Main(name, version string, runFn func(logger *slog.Logger) error) {
 	if len(os.Args) > 1 && os.Args[1] == "--health" {
 		health.RunHealthCheck(resolveHealthCheckPort())
@@ -39,12 +40,17 @@ func Main(name, version string, runFn func(logger *slog.Logger) error) {
 	logger.Info("starting service")
 
 	if err := runFn(logger); err != nil {
-		logger.Error("application error",
-			redact.Error(err),
-			redact.ErrorChain(err),
-		)
+		logApplicationError(logger, err)
 		os.Exit(1)
 	}
+}
+
+func logApplicationError(logger *slog.Logger, err error) {
+	logger.Error("application error",
+		redact.Error(err),
+		redact.ErrorChain(err),
+		redact.ErrorMessage(err),
+	)
 }
 
 // defaultInternalPort is the fallback port for the internal ops server

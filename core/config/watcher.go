@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -197,12 +196,12 @@ func (fw *FileWatcher[T]) Watchable() *Watchable[T] {
 // watcher.Add) leave started=false so a lifecycle runner can retry.
 func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 	if ctx == nil {
-		return errors.New("config: FileWatcher.Start requires a non-nil context")
+		return redact.Safe("config: FileWatcher.Start requires a non-nil context")
 	}
 	fw.startMu.Lock()
 	if fw.started {
 		fw.startMu.Unlock()
-		return errors.New("config: FileWatcher already started")
+		return redact.Safe("config: FileWatcher already started")
 	}
 	// Mark started only after fallible init succeeds so a transient
 	// NewWatcher/Add failure leaves the watcher retryable (lifecycle
@@ -233,7 +232,7 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 	if fw.started {
 		// Lost a race with another Start after init — close and reject.
 		fw.startMu.Unlock()
-		return errors.New("config: FileWatcher already started")
+		return redact.Safe("config: FileWatcher already started")
 	}
 	fw.started = true
 	fw.startMu.Unlock()
@@ -307,7 +306,7 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 
 		case event, ok := <-watcher.Events:
 			if !ok {
-				return errors.New("config: fsnotify Events channel closed unexpectedly")
+				return redact.Safe("config: fsnotify Events channel closed unexpectedly")
 			}
 			if !isRelevantEvent(event) {
 				continue
@@ -330,7 +329,7 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 
 		case watchErr, ok := <-watcher.Errors:
 			if !ok {
-				return errors.New("config: fsnotify Errors channel closed unexpectedly")
+				return redact.Safe("config: fsnotify Errors channel closed unexpectedly")
 			}
 			fw.cfg.logger.Warn("file watcher error", redact.Error(watchErr))
 
@@ -397,12 +396,12 @@ func NewEnvReloader[T any](w *Watchable[T], opts ...WatcherOption) *EnvReloader[
 // reset started — the signal loop still runs.
 func (r *EnvReloader[T]) Start(ctx context.Context) error {
 	if ctx == nil {
-		return errors.New("config: EnvReloader.Start requires a non-nil context")
+		return redact.Safe("config: EnvReloader.Start requires a non-nil context")
 	}
 	r.startMu.Lock()
 	if r.started {
 		r.startMu.Unlock()
-		return errors.New("config: EnvReloader already started")
+		return redact.Safe("config: EnvReloader already started")
 	}
 	r.started = true
 	r.startMu.Unlock()

@@ -4,11 +4,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 
 	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // TLS material load errors are intentionally path-free: TLS file paths often
@@ -77,7 +77,7 @@ func (c TLSConfig) Validate() error {
 		return nil
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("netutil: partial TLS configuration — set fields %v but missing %v; either set all of TLS_CA_CERT, TLS_CERT, TLS_KEY or none", set, missing)
+		return redact.Safef("netutil: partial TLS configuration — set fields %v but missing %v; either set all of TLS_CA_CERT, TLS_CERT, TLS_KEY or none", set, missing)
 	}
 	for _, entry := range []struct{ name, path string }{
 		{"TLS_CA_CERT", c.CACert},
@@ -86,7 +86,7 @@ func (c TLSConfig) Validate() error {
 	} {
 		f, err := os.Open(entry.path)
 		if err != nil {
-			return fmt.Errorf("%s: file not accessible", entry.name)
+			return redact.Safef("%s: file not accessible", entry.name)
 		}
 		_ = f.Close()
 	}
@@ -160,7 +160,7 @@ func (c TLSConfig) ServerTLS(opts ...ServerTLSOption) (*tls.Config, error) {
 		return nil, nil
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("netutil: partial TLS configuration — set fields %v but missing %v; either set all of TLS_CA_CERT, TLS_CERT, TLS_KEY or none", set, missing)
+		return nil, redact.Safef("netutil: partial TLS configuration — set fields %v but missing %v; either set all of TLS_CA_CERT, TLS_CERT, TLS_KEY or none", set, missing)
 	}
 
 	cert, caPool, err := c.loadCertAndCA()
@@ -192,7 +192,7 @@ func (c TLSConfig) ClientTLS() (*tls.Config, error) {
 		return nil, nil
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("netutil: partial TLS configuration — set fields %v but missing %v; either set all of TLS_CA_CERT, TLS_CERT, TLS_KEY or none", set, missing)
+		return nil, redact.Safef("netutil: partial TLS configuration — set fields %v but missing %v; either set all of TLS_CA_CERT, TLS_CERT, TLS_KEY or none", set, missing)
 	}
 
 	cert, caPool, err := c.loadCertAndCA()

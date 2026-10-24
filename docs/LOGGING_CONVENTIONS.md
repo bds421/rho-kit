@@ -16,6 +16,8 @@ to keep field names typo-free and queryable.
 | Field          | Emitted by                                  | Cardinality | Example value                  | Why it exists                                                     |
 |----------------|---------------------------------------------|-------------|--------------------------------|-------------------------------------------------------------------|
 | `error`        | every error log line                        | high        | `redacted error: *url.Error`   | Redacted error chain; safe to surface in logs/exports.            |
+| `error_chain`  | fatal-startup and listen-failure logs       | low         | `[*fmt.wrapError *url.Error]`  | Concrete Go types of the unwrap chain; names the failing subsystem.|
+| `error_message`| fatal-startup and listen-failure logs       | low         | `config: required environment variable NATS_URL is not set` | Messages of the chain frames marked safe (`redact.Safe`, `Safef`, `WrapSafe`, `WrapError` prefixes); omitted when none. |
 | `component`    | every lifecycle-managed component           | low         | `outbox-relay`, `centrifuge`   | Routes alerts and correlates "which subsystem panicked."          |
 | `request_id`   | every HTTP/gRPC handler under kit middleware| high        | `01HXYZ…`                       | Cross-service correlation; matches `X-Request-ID` header.         |
 | `trace_id`     | every log line under an active span        | high        | `0af7651916cd…`                 | OTel correlation — drop into the tracing UI from a log line.     |
