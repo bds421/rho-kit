@@ -1,6 +1,10 @@
 package app
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,4 +44,21 @@ func TestResolveHealthCheckPort(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestLogApplicationErrorShowsSafeMessagesOnly(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	b := New("svc", "v1", BaseConfig{})
+
+	err := fmt.Errorf("start: %w", errors.Join(
+		b.Validate(),
+		fmt.Errorf("dial: %w", errors.New("nats://user:hunter2@broker")),
+	))
+	logApplicationError(logger, err)
+
+	out := buf.String()
+	assert.Contains(t, out, `error_message="invalid server port"`)
+	assert.NotContains(t, out, "hunter2")
+	assert.NotContains(t, out, "start:")
 }

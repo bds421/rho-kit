@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.25.0 — 2026-10-24
+
+- **feat(core/redact, app): safe error messages on startup failures.**
+  `redact.Safe`, `redact.Safef` and `redact.WrapSafe` mark error messages
+  that are safe to log (constant text and non-secret values such as
+  environment variable names); `redact.SafeMessager` is the interface
+  behind them. `redact.SafeMessages` / `redact.ErrorMessage` collect those
+  messages from an error chain; every other frame stays redacted. The
+  `app.Main` "application error" log and the gRPC listen-failure log now
+  add `error_message`, so a service that refuses to start says why
+  ("rate limiting must be declared explicitly: …", "config: required
+  environment variable NATS_URL is not set").
+- `core/config` loading and validation errors, `netutil.TLSConfig.Validate`
+  and the `app.Builder` gates and wrappers are marked safe. A secret-file
+  failure names the `_FILE` variable and the fs reason (for example
+  "open failed: file does not exist"), never the path. The `WrapError`
+  prefix counts as safe, because `Error()` already renders it verbatim.
+
+No breaking changes; `Error()` texts are unchanged except that
+`config.Load`'s secret-file error now names `<VAR>_FILE` instead of `<VAR>`.
+
 ## v2.24.1 — 2026-10-23
 
 - **fix(runtime/lifecycle): a component stopped before it started ends

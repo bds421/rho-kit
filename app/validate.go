@@ -2,9 +2,8 @@
 package app
 
 import (
-	"fmt"
-
 	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
@@ -26,7 +25,7 @@ func isLoopbackHost(host string) bool {
 // they are not gated on KIT_ENV.
 func (b *Builder) Validate() error {
 	if b == nil {
-		return fmt.Errorf("builder is nil")
+		return redact.Safe("builder is nil")
 	}
 
 	listeners := resolveHTTPConfig(b.modules)
@@ -50,7 +49,7 @@ func (b *Builder) Validate() error {
 	// config as Run.
 	tlsHTTPCfg := resolveHTTPConfig(b.modules)
 	if len(tlsHTTPCfg.tlsReloadSignals) > 0 && !tlsHTTPCfg.reloadingTLSActive {
-		return fmt.Errorf("TLSReloadOnSignal requires ReloadingTLS")
+		return redact.Safe("TLSReloadOnSignal requires ReloadingTLS")
 	}
 
 	// H-4 / R3-H: TenantBudget-vs-MultiTenant cross-checks moved to
@@ -82,7 +81,7 @@ func (b *Builder) validateProductionSafety() error {
 	// terminate TLS at an external proxy must opt in explicitly via
 	// http.WithoutTLS().
 	if !b.noPublicServer && !b.cfg.TLS.Enabled() && !httpCfg.allowPlaintext {
-		return fmt.Errorf("TLS must be configured (TLS_CA_CERT, TLS_CERT, TLS_KEY) or call http.WithoutTLS() for services fronted by an external TLS terminator — partial configuration silently falls back to plaintext HTTP")
+		return redact.Safe("TLS must be configured (TLS_CA_CERT, TLS_CERT, TLS_KEY) or call http.WithoutTLS() for services fronted by an external TLS terminator — partial configuration silently falls back to plaintext HTTP")
 	}
 
 	// Lens F A.5: a Builder.Run() call that declares no rate limiter at
@@ -94,7 +93,7 @@ func (b *Builder) validateProductionSafety() error {
 	// WithIPRateLimit, WithKeyedRateLimit, or the explicit
 	// WithoutRateLimit opt-out for traffic-bounded services.
 	if !b.noPublicServer && !b.hasRateLimitDeclaration() && !b.allowNoRateLimit {
-		return fmt.Errorf("rate limiting must be declared explicitly: register ratelimit.IP from app/ratelimit (mux-wide), or call WithoutRateLimit for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker). Note: ratelimit.Keyed alone does not satisfy this gate — it installs no public-mux middleware")
+		return redact.Safe("rate limiting must be declared explicitly: register ratelimit.IP from app/ratelimit (mux-wide), or call WithoutRateLimit for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker). Note: ratelimit.Keyed alone does not satisfy this gate — it installs no public-mux middleware")
 	}
 
 	// C-1 + FR-010 [HIGH]: the internal ops port exposes /metrics,
@@ -105,7 +104,7 @@ func (b *Builder) validateProductionSafety() error {
 	// requires loopback; non-loopback binds — wildcard, private,
 	// public — all need explicit AllowInternalNonLoopback.
 	if httpCfg.internalListener == nil && !isLoopbackHost(b.cfg.Internal.Host) && !httpCfg.allowInternalNonLoopback {
-		return fmt.Errorf("Internal.Host is not loopback — exposes unauthenticated /metrics on a routable interface; bind to 127.0.0.1 / localhost / ::1, or call http.WithInternalNonLoopback() when network isolation is enforced")
+		return redact.Safe("Internal.Host is not loopback — exposes unauthenticated /metrics on a routable interface; bind to 127.0.0.1 / localhost / ::1, or call http.WithInternalNonLoopback() when network isolation is enforced")
 	}
 
 	// Postgres TLS validation lives inside the pgx package's Connect — by
@@ -150,10 +149,10 @@ func (b *Builder) validateWorker(internalListener bool) error {
 		return err
 	}
 	if b.routerFn != nil {
-		return fmt.Errorf("Router is not allowed with WithoutPublicServer: there is no public HTTP listener")
+		return redact.Safe("Router is not allowed with WithoutPublicServer: there is no public HTTP listener")
 	}
 	if b.hasRateLimitDeclaration() {
-		return fmt.Errorf("rate-limit modules are not allowed with WithoutPublicServer: there is no public HTTP listener to protect")
+		return redact.Safe("rate-limit modules are not allowed with WithoutPublicServer: there is no public HTTP listener to protect")
 	}
 	return nil
 }

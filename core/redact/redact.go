@@ -151,19 +151,27 @@ func ErrorChainTypes(err error) []string {
 		return nil
 	}
 	out := make([]string, 0, 4)
-	// Bounded depth-first walk. Both unwrap forms are handled so
-	// multi-error wrappers (errors.Join, fmt.Errorf with multiple %w,
-	// WrapSentinel) contribute their branch types instead of stopping
-	// the chain at the wrapper. maxErrorFrames caps the total number of
-	// frames emitted so a pathological wrap-loop cannot exhaust memory.
+	walkChain(err, func(cur error) {
+		out = append(out, fmt.Sprintf("%T", cur))
+	})
+	return out
+}
+
+// walkChain visits err and its unwrap chain depth-first, outermost first.
+// Both unwrap forms are handled so multi-error wrappers (errors.Join,
+// fmt.Errorf with multiple %w, WrapSentinel) contribute every branch.
+// maxErrorFrames caps the visits so a pathological wrap-loop cannot
+// exhaust memory.
+func walkChain(err error, visit func(error)) {
 	stack := []error{err}
-	for len(stack) > 0 && len(out) < maxErrorFrames {
+	for visited := 0; len(stack) > 0 && visited < maxErrorFrames; {
 		cur := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		if cur == nil {
 			continue
 		}
-		out = append(out, fmt.Sprintf("%T", cur))
+		visit(cur)
+		visited++
 		switch x := cur.(type) {
 		case interface{ Unwrap() error }:
 			if next := x.Unwrap(); next != nil {
@@ -179,7 +187,6 @@ func ErrorChainTypes(err error) []string {
 			}
 		}
 	}
-	return out
 }
 
 // ErrorChain returns a slog.Attr listing the concrete Go types in
@@ -226,7 +233,9 @@ func Panic(v any) slog.Attr {
 // WrapError preserves the unwrap chain (errors.Is/As against the
 // returned value still finds err and its ancestors) but renders
 // Error() as `<prefix>: <redacted error: T>` where T is the deepest
-// cause's concrete type. Returns nil when err is nil.
+// cause's concrete type. The prefix is rendered verbatim and reported by
+// [SafeMessages], so it must be constant text or non-secret values.
+// Returns nil when err is nil.
 func WrapError(prefix string, err error) error {
 	if err == nil {
 		return nil
@@ -244,6 +253,10 @@ func (w *wrappedError) Error() string {
 }
 
 func (w *wrappedError) Unwrap() error { return w.inner }
+
+// SafeMessage reports the prefix as safe: WrapError already renders it
+// verbatim across trust boundaries, so it must not carry secrets.
+func (w *wrappedError) SafeMessage() string { return w.prefix }
 
 // WrapSentinel returns an error that joins sentinel with cause so
 // errors.Is matches either, while Error() prints

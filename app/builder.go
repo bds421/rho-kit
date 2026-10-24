@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -328,7 +327,7 @@ func (b *Builder) Run() error {
 // and embedded services control the app without process-global signals.
 func (b *Builder) RunContext(ctx context.Context) error {
 	if ctx == nil {
-		return errors.New("app: Builder.RunContext requires a non-nil context")
+		return redact.Safe("app: Builder.RunContext requires a non-nil context")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -401,7 +400,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	if httpCfg.reloadingTLSActive {
 		src, srcErr := b.cfg.TLS.Reloading(httpCfg.reloadingTLSOpts...)
 		if srcErr != nil {
-			return fmt.Errorf("build reloading TLS source: %w", srcErr)
+			return redact.WrapSafe("build reloading TLS source", srcErr)
 		}
 		// Own Close on early-return paths until runner.Run hands off.
 		closeReloadingTLS = func() { _ = src.Close() }
@@ -421,7 +420,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	} else {
 		serverTLS, tlsErr = b.cfg.TLS.ServerTLS(b.serverTLSOptions()...)
 		if tlsErr != nil {
-			return fmt.Errorf("build server TLS config: %w", tlsErr)
+			return redact.WrapSafe("build server TLS config", tlsErr)
 		}
 	}
 
@@ -528,7 +527,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 			checks := m.HealthChecks()
 			for _, check := range checks {
 				if err := health.ValidateDependencyCheck(check); err != nil {
-					return fmt.Errorf("module health check invalid: %w", err)
+					return redact.WrapSafe("module health check invalid", err)
 				}
 			}
 			b.healthChecks = append(b.healthChecks, checks...)
@@ -711,7 +710,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	// Brief pause to detect early bind failures (port conflict, permission denied).
 	select {
 	case srvErr := <-internalErrCh:
-		return fmt.Errorf("internal server failed to start: %w", srvErr)
+		return redact.WrapSafe("internal server failed to start", srvErr)
 	case <-time.After(50 * time.Millisecond):
 	}
 	logger.Info("internal server started", slog.String("addr", listenAddr(b.cfg.Internal.Addr(), httpCfg.internalListener)))
@@ -722,7 +721,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	runner.AddFunc("internal-server-monitor", func(ctx context.Context) error {
 		select {
 		case srvErr := <-internalErrCh:
-			return fmt.Errorf("internal server failed: %w", srvErr)
+			return redact.WrapSafe("internal server failed", srvErr)
 		case <-ctx.Done():
 			return nil
 		}

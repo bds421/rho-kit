@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // maxSecretFileSize caps the bytes read from a _FILE secret source
@@ -46,13 +48,13 @@ func Load[T any]() (T, error) {
 	// panic on .NumField() during nested-struct traversal. A typed
 	// error makes the caller-facing failure mode obvious.
 	if v.Kind() == reflect.Pointer {
-		return cfg, fmt.Errorf("config: Load[T] requires T to be a struct type, not a pointer")
+		return cfg, redact.Safe("config: Load[T] requires T to be a struct type, not a pointer")
 	}
 	if v.Kind() != reflect.Struct {
-		return cfg, fmt.Errorf("config: Load[T] requires T to be a struct type")
+		return cfg, redact.Safe("config: Load[T] requires T to be a struct type")
 	}
 	if !hasEnvTags(v.Type()) {
-		return cfg, fmt.Errorf("config: type has no env struct tags — fields will be zero-valued")
+		return cfg, redact.Safe("config: type has no env struct tags — fields will be zero-valued")
 	}
 	if err := load(v); err != nil {
 		return cfg, err
@@ -82,7 +84,7 @@ func load(v reflect.Value) error {
 // ErrConfigCycle is returned by [Load] when the config type T (or a nested
 // type) refers back to itself through a struct or pointer-to-struct field.
 // Such a type cannot be loaded because recursion would never terminate.
-var ErrConfigCycle = errors.New("config: type contains a recursive (self-referential) struct field")
+var ErrConfigCycle = redact.Safe("config: type contains a recursive (self-referential) struct field")
 
 // hasEnvTags checks whether a struct type (or any nested struct within it)
 // has at least one field with an "env" struct tag. This prevents silent
@@ -174,7 +176,7 @@ func loadWithEnvTracking(v reflect.Value, visited map[reflect.Type]struct{}) (en
 				fv.Set(tmp)
 				envRead = true
 			} else if field.Tag.Get("required") == "true" {
-				return false, fmt.Errorf("config: required struct %s has no environment variables set", field.Name)
+				return false, redact.Safef("config: required struct %s has no environment variables set", field.Name)
 			}
 			continue
 		}
@@ -206,7 +208,7 @@ func loadWithEnvTracking(v reflect.Value, visited map[reflect.Type]struct{}) (en
 			if valBytes != nil {
 				zeroBytes(valBytes)
 			}
-			return false, fmt.Errorf("config: required environment variable %s is set but empty", envName)
+			return false, redact.Safef("config: required environment variable %s is set but empty", envName)
 		}
 		if val == "" {
 			val = defaultVal
@@ -215,7 +217,7 @@ func loadWithEnvTracking(v reflect.Value, visited map[reflect.Type]struct{}) (en
 			if valBytes != nil {
 				zeroBytes(valBytes)
 			}
-			return false, fmt.Errorf("config: required environment variable %s is not set", envName)
+			return false, redact.Safef("config: required environment variable %s is not set", envName)
 		}
 		if val == "" {
 			if valBytes != nil {
@@ -248,7 +250,7 @@ func parseEnvTag(tag string) (envName string, required bool, _ error) {
 	parts := strings.Split(tag, ",")
 	envName = strings.TrimSpace(parts[0])
 	if envName == "" {
-		return "", false, fmt.Errorf("config: field env tag must name an environment variable")
+		return "", false, redact.Safe("config: field env tag must name an environment variable")
 	}
 	for _, rawOpt := range parts[1:] {
 		opt := strings.TrimSpace(rawOpt)
@@ -256,7 +258,7 @@ func parseEnvTag(tag string) (envName string, required bool, _ error) {
 		case "required":
 			required = true
 		default:
-			return "", false, fmt.Errorf("config: field env tag has unknown option")
+			return "", false, redact.Safe("config: field env tag has unknown option")
 		}
 	}
 	return envName, required, nil
@@ -287,7 +289,7 @@ func resolveWithSource(envName string, isSecret bool) (val string, valBytes []by
 		if filePath != "" {
 			b, err := readSecretFile(filePath)
 			if err != nil {
-				return "", nil, false, fmt.Errorf("config: failed to read secret file for %s: %w", envName, err)
+				return "", nil, false, redact.WrapSafe(fmt.Sprintf("config: failed to read secret file for %s_FILE", envName), err)
 			}
 			return string(b), b, true, nil
 		}
@@ -343,7 +345,7 @@ func readSecretFile(filePath string) ([]byte, error) {
 		// Zero the over-large buffer before returning — operators
 		// expect secret material in the file even if it's mis-sized.
 		zeroBytes(data)
-		return nil, fmt.Errorf("exceeds maximum size: %w", fs.ErrInvalid)
+		return nil, &secretFileError{op: "exceeds maximum size", kind: fs.ErrInvalid}
 	}
 	// Trim only trailing line terminators that secret-mounting tools add
 	// (Docker, Kubernetes, Vault all append a single \n). strings.TrimSpace
@@ -369,21 +371,32 @@ func trimTrailingLineEndings(b []byte) []byte {
 	return b[:end]
 }
 
+// secretFileError names a secret-file failure by its fs sentinel alone. The
+// path never reaches it, so the whole message is safe to log.
+type secretFileError struct {
+	op   string
+	kind error
+}
+
+func (e *secretFileError) Error() string       { return e.op + ": " + e.kind.Error() }
+func (e *secretFileError) SafeMessage() string { return e.Error() }
+func (e *secretFileError) Unwrap() error       { return e.kind }
+
 // classifyOpenError maps os.Open errors into a wrapped form that
 // preserves errors.Is against the standard fs sentinels while keeping
 // the file path REDACTED.
 func classifyOpenError(err error) error {
 	switch {
 	case errors.Is(err, fs.ErrPermission):
-		return fmt.Errorf("open failed: %w", fs.ErrPermission)
+		return &secretFileError{op: "open failed", kind: fs.ErrPermission}
 	case errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("open failed: %w", fs.ErrNotExist)
+		return &secretFileError{op: "open failed", kind: fs.ErrNotExist}
 	case errors.Is(err, fs.ErrInvalid):
-		return fmt.Errorf("open failed: %w", fs.ErrInvalid)
+		return &secretFileError{op: "open failed", kind: fs.ErrInvalid}
 	default:
 		// Unknown causes are flattened to a generic message; the path
 		// must never leak into the surfaced error.
-		return errors.New("open failed")
+		return redact.Safe("open failed")
 	}
 }
 
@@ -395,16 +408,16 @@ func classifyOpenError(err error) error {
 func classifyReadError(err error) error {
 	switch {
 	case errors.Is(err, fs.ErrPermission):
-		return fmt.Errorf("read failed: %w", fs.ErrPermission)
+		return &secretFileError{op: "read failed", kind: fs.ErrPermission}
 	case errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("read failed: %w", fs.ErrNotExist)
+		return &secretFileError{op: "read failed", kind: fs.ErrNotExist}
 	case errors.Is(err, fs.ErrInvalid), errors.Is(err, syscall.EISDIR):
-		return fmt.Errorf("read failed: %w", fs.ErrInvalid)
+		return &secretFileError{op: "read failed", kind: fs.ErrInvalid}
 	default:
 		// Generic read error — strip the path / unwrapped cause so
 		// neither the operator's filesystem layout nor any internal
 		// errno detail rides along.
-		return errors.New("read failed")
+		return redact.Safe("read failed")
 	}
 }
 
@@ -417,10 +430,10 @@ func setField(fv reflect.Value, val, envName string, isSecret bool) error {
 	if fv.Type() == reflect.TypeOf((*url.URL)(nil)) {
 		u, err := url.Parse(val)
 		if err != nil {
-			return fmt.Errorf("config: %s: invalid URL syntax", envName)
+			return redact.Safef("config: %s: invalid URL syntax", envName)
 		}
 		if u.Scheme == "" || u.Host == "" {
-			return fmt.Errorf("config: %s: invalid URL: must include scheme and host", envName)
+			return redact.Safef("config: %s: invalid URL: must include scheme and host", envName)
 		}
 		fv.Set(reflect.ValueOf(u))
 		return nil
@@ -473,30 +486,30 @@ func setField(fv reflect.Value, val, envName string, isSecret bool) error {
 			for i, p := range parts {
 				s := strings.TrimSpace(p)
 				if s == "" {
-					return fmt.Errorf("config: %s: empty list item at position %d", envName, i+1)
+					return redact.Safef("config: %s: empty list item at position %d", envName, i+1)
 				}
 				items = append(items, s)
 			}
 			fv.Set(reflect.ValueOf(items))
 		} else {
-			return fmt.Errorf("config: %s: unsupported slice type %s", envName, fv.Type())
+			return redact.Safef("config: %s: unsupported slice type %s", envName, fv.Type())
 		}
 
 	case reflect.Map:
-		return fmt.Errorf("config: %s: map fields are not supported (use a struct or []string instead)", envName)
+		return redact.Safef("config: %s: map fields are not supported (use a struct or []string instead)", envName)
 
 	case reflect.Interface:
-		return fmt.Errorf("config: %s: interface fields are not supported", envName)
+		return redact.Safef("config: %s: interface fields are not supported", envName)
 
 	default:
-		return fmt.Errorf("config: %s: unsupported type %s", envName, fv.Type())
+		return redact.Safef("config: %s: unsupported type %s", envName, fv.Type())
 	}
 	return nil
 }
 
 func invalidParseError(envName, kind, _ string, isSecret bool, _ error) error {
 	if isSecret {
-		return fmt.Errorf("config: %s: invalid %s [REDACTED]", envName, kind)
+		return redact.Safef("config: %s: invalid %s [REDACTED]", envName, kind)
 	}
-	return fmt.Errorf("config: %s: invalid %s", envName, kind)
+	return redact.Safef("config: %s: invalid %s", envName, kind)
 }
