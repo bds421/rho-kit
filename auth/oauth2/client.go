@@ -39,6 +39,7 @@ type Client struct {
 	cookieDomain string
 	cookieSecure bool
 	pathPrefix   string
+	homePath     string
 
 	// Token refresh (WithTokenRefresh).
 	refreshEnabled bool
@@ -164,6 +165,16 @@ func (c *Client) flowCookiePath() string {
 	return c.pathPrefix + "/"
 }
 
+// WithHomePath sets where failure pages and a recovered sign-in send the
+// browser when no return path is known (default "/"), for an application
+// served under a base path on a shared origin.
+func WithHomePath(p string) Option {
+	if safe, ok := safeRelativeRedirect(p); !ok || safe != p || !strings.HasPrefix(p, "/") {
+		panic("oauth2: WithHomePath requires an origin-relative absolute path")
+	}
+	return func(c *Client) { c.homePath = p }
+}
+
 // PathPrefix returns the mount path used by Handlers.
 func (c *Client) PathPrefix() string { return c.pathPrefix }
 
@@ -198,6 +209,7 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 		cookieName:       "kit_oauth_session",
 		cookieSecure:     true,
 		pathPrefix:       "/oauth",
+		homePath:         "/",
 		backgroundHeader: DefaultBackgroundRequestHeader,
 		refreshLockWait:  defaultRefreshLockWait,
 	}
@@ -380,17 +392,17 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 	params, err := parseLoginParams(r.URL.Query())
 	if err != nil {
 		c.logger.InfoContext(r.Context(), "oauth2: invalid login parameters", redact.Error(err))
-		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, "/")
+		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, c.homePath)
 		return
 	}
 	state, err := generateRandomToken()
 	if err != nil {
-		c.renderFailure(w, r, http.StatusInternalServerError, failureUnavailable, "/")
+		c.renderFailure(w, r, http.StatusInternalServerError, failureUnavailable, c.homePath)
 		return
 	}
 	nonce, err := generateRandomToken()
 	if err != nil {
-		c.renderFailure(w, r, http.StatusInternalServerError, failureUnavailable, "/")
+		c.renderFailure(w, r, http.StatusInternalServerError, failureUnavailable, c.homePath)
 		return
 	}
 	params.loginHint = c.stepUpHint(r, params)

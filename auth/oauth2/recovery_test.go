@@ -223,3 +223,23 @@ func TestSignIn_ErrorPageIsBrandedAndTranslated(t *testing.T) {
 	assert.Contains(t, body, `href="/oauth/login?redirect_to=%2Fcases"`)
 	assert.Contains(t, res.Header().Get("Content-Security-Policy"), "default-src 'none'")
 }
+
+func TestSignIn_HomePathReplacesTheRootWithoutReturnURL(t *testing.T) {
+	rig := newSignInRig(t, oauth2.WithHomePath("/accounts/"))
+	b := rig.browser()
+
+	assertRestart(t, b.get("/oauth/callback?code=c&state=unknown"), "/accounts/")
+	res := b.get("/oauth/callback?code=c&state=still-unknown")
+	require.Equal(t, http.StatusBadRequest, res.Code)
+	assert.Contains(t, res.Body.String(), `href="/oauth/login?redirect_to=%2Faccounts%2F"`)
+
+	res = b.get("/oauth/login?prompt=admin")
+	require.Equal(t, http.StatusBadRequest, res.Code)
+	assert.Contains(t, res.Body.String(), `href="/oauth/login?redirect_to=%2Faccounts%2F"`)
+}
+
+func TestWithHomePath_RefusesPathsLeavingTheOrigin(t *testing.T) {
+	for _, p := range []string{"", "accounts", "//evil", "https://evil/", "/a\\b", " /a"} {
+		assert.Panics(t, func() { oauth2.WithHomePath(p) }, p)
+	}
+}

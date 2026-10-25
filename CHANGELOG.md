@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.29.0 — 2026-10-25
+
+- **feat(auth/oauth2): `WithHomePath`.** Failure pages and a recovered
+  sign-in without a return path send the browser to this path instead of
+  "/", for an application served under a base path on an origin it shares
+  with others (such as `/accounts/` next to a product at the root).
+
+No breaking changes.
+
 ## v2.28.0 — 2026-10-25
 
 - **feat(security/netutil): `ValidateAllowedNetwork`.** Says why a network
