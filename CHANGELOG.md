@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **feat(security/netutil): `ValidateAllowedNetwork`.** Says why a network
+  cannot be passed to `WithAllowedNetworks` (too wide, an IPv4 network
+  written as IPv6, an IPv6 range carrying IPv4 addresses) as a log-safe
+  error, so services report a configuration error instead of panicking.
+- **feat(security/netutil): NAT64 (RFC 6052).** `NAT64Prefix`
+  (`ParseNAT64Prefix`, `NewNAT64Prefix`, `WellKnownNAT64`) embeds and
+  extracts IPv4 addresses at every prefix length (/32, /40, /48, /56, /64,
+  /96, u octet zero). `WithNAT64(prefix)` makes the SSRF guard check an
+  address in the prefix as the IPv4 address it carries.
+
+No breaking changes.
+
 ## v2.27.0 — 2026-10-25
 
 - **feat(codec/zstd): bounded zstd decoding.** A new module decodes zstd

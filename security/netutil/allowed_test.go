@@ -4,7 +4,10 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 type fixedResolver []string
@@ -73,5 +76,35 @@ func TestAllowedIPv6NetworkStaysNarrow(t *testing.T) {
 		if _, err := ResolveAndValidate(context.Background(), host, nil, opt); (err == nil) != ok {
 			t.Errorf("%s: %v, want ok=%v", host, err, ok)
 		}
+	}
+}
+
+func TestValidateAllowedNetworkSaysWhatIsAccepted(t *testing.T) {
+	for _, ok := range []string{"10.20.0.0/16", "192.168.7.0/24", "fd12:3456:789a::/48", "::1/128", "2a01:4f8::/64"} {
+		if err := ValidateAllowedNetwork(netip.MustParsePrefix(ok)); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	cases := map[string]string{
+		"0.0.0.0/0":                  "wider than /8",
+		"fd00::/16":                  "wider than /8 (IPv4) or /48 (IPv6)",
+		"::ffff:10.20.0.0/112":       "list it as 10.20.0.0/16",
+		"::ffff:169.254.169.254/128": "list it as 169.254.169.254/32",
+		"64:ff9b::/96":               "carries IPv4 addresses",
+		"64:ff9b::a9fe:a9fe/128":     "carries IPv4 addresses",
+		"2002:a9fe::/48":             "carries IPv4 addresses",
+		"2001:0:a9fe::/48":           "carries IPv4 addresses",
+	}
+	for p, want := range cases {
+		err := ValidateAllowedNetwork(netip.MustParsePrefix(p))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v, want it to say %q", p, err, want)
+		}
+		if redact.SafeMessages(err) != err.Error() {
+			t.Errorf("%s: the message is not safe to log", p)
+		}
+	}
+	if err := ValidateAllowedNetwork(netip.Prefix{}); err == nil {
+		t.Error("the zero prefix accepted")
 	}
 }
