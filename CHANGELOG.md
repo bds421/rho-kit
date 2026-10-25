@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.26.0 — 2026-10-25
 
 - **feat(auth/oauth2): login_hint on GET /oauth/login.** An explicit
   `login_hint` (a login name or a domain such as `@example.com`, at most
