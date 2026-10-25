@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.29.1 — 2026-10-25
+
+- **fix(deps): moby/go-archive v0.3.0, moby/sys/user v0.4.1** in the
+  testcontainers helper modules (`infra/sqldb/dbtest`,
+  `infra/redis/redistest`, `infra/storage/storagetest`, `testing/kittest`,
+  `testing/integrationtest`) and `auth/oauth2/redis`'s tests:
+  GHSA-hfg8-hc9c-6c3h (tar extraction outside the target directory) and
+  GHSA-mjcv-p78q-w5fw (unbounded user and group file parsing).
+
+No breaking changes.
+
 ## v2.29.0 — 2026-10-25
 
 - **feat(auth/oauth2): `WithHomePath`.** Failure pages and a recovered
