@@ -112,3 +112,6 @@ github.com/testcontainers/testcontainers-go/modules/nats
 github.com/testcontainers/testcontainers-go/modules/postgres
 github.com/testcontainers/testcontainers-go/modules/rabbitmq
 github.com/testcontainers/testcontainers-go/modules/redis
+
+# Bounded zstd decoding of untrusted payloads (codec/zstd only).
+github.com/klauspost/compress

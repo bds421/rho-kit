@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.27.0 — 2026-10-25
+
+- **feat(codec/zstd): bounded zstd decoding.** A new module decodes zstd
+  from untrusted senders within limits: `zstd.Limits{MaxSize, MaxRatio,
+  RequireSize, MultiFrame, Concurrency}`. A frame declaring a larger size
+  is refused before anything is allocated, the decoder itself stops at the
+  bound (also across frames), data must be one frame with nothing after it
+  unless `MultiFrame` allows more (`zstd.ErrFrames`), and at most
+  `Concurrency` decodes hold memory at once, allocating only once they
+  hold a slot; `zstd.ErrTooLarge` names a refusal. It owns the
+  `klauspost/compress` dependency.
+- **feat(crypto/envelope): Box.** `envelope.NewBox(kek, purpose)` seals
+  values for one purpose, bound to what they belong to: the caller AAD is
+  `purpose/binding...`, so a value copied to another record, tenant or
+  purpose fails to open. `SealJSON` and `OpenJSON` seal typed values as
+  JSON. Values sealed by an `Encryptor` with the same AAD open in a Box.
+
+No breaking changes.
+
 ## v2.26.0 — 2026-10-25
 
 - **feat(auth/oauth2): login_hint on GET /oauth/login.** An explicit
