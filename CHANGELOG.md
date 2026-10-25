@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **feat(auth/oauth2): login_hint on GET /oauth/login.** An explicit
+  `login_hint` (a login name or a domain such as `@example.com`, at most
+  254 bytes, no spaces or control characters) is validated and forwarded
+  to the authorization request. A step-up login (`prompt` or `max_age`)
+  with a signed-in session names that person by their
+  `preferred_username` claim, so the provider asks them to confirm rather
+  than to choose again.
+
 ## v2.25.0 — 2026-10-24
 
 - **feat(core/redact, app): safe error messages on startup failures.**
