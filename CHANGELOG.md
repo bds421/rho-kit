@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.28.0 — 2026-10-25
 
 - **feat(security/netutil): `ValidateAllowedNetwork`.** Says why a network
   cannot be passed to `WithAllowedNetworks` (too wide, an IPv4 network
