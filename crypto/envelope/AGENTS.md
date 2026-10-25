@@ -18,6 +18,7 @@
 - `(*Encryptor).Decrypt(ctx, blob, aad)` — parses the blob, unwraps the DEK, verifies AAD, and decrypts.
 - `(*Encryptor).Rewrap(ctx, blob)` — re-wraps the embedded DEK under the current KEK version for online rotation without touching the plaintext (no AAD needed).
 - `KEK` interface — implemented by the KMS-specific sub-packages.
+- `envelope.NewBox(kek, purpose)` — seals values for one purpose, each bound to what it belongs to (`Seal(ctx, plain, binding...)`, `Open`); the AAD is `purpose/binding...`. `SealJSON` / `OpenJSON` seal a typed value as JSON.
 
 ## KMS adapters
 
