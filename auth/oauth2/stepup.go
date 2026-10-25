@@ -2,10 +2,13 @@ package oauth2
 
 import (
 	"errors"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	xoauth2 "golang.org/x/oauth2"
 )
@@ -24,12 +27,13 @@ var allowedPrompts = map[string]bool{"none": true, "login": true, "consent": tru
 
 // loginParams are the validated step-up parameters of a login request.
 type loginParams struct {
-	prompt string
-	maxAge *int
+	prompt    string
+	maxAge    *int
+	loginHint string
 }
 
-// parseLoginParams validates the optional prompt and max_age query
-// parameters. prompt is a space-separated subset of none, login, consent and
+// parseLoginParams validates the optional prompt, max_age and login_hint
+// query parameters. prompt is a space-separated subset of none, login, consent and
 // select_account ("none" only alone); max_age is a decimal integer from 0 to
 // one year in seconds.
 func parseLoginParams(q url.Values) (loginParams, error) {
@@ -56,6 +60,13 @@ func parseLoginParams(q url.Values) (loginParams, error) {
 		}
 		p.maxAge = &n
 	}
+	if q.Has("login_hint") {
+		hint := q.Get("login_hint")
+		if !validLoginHint(hint) {
+			return loginParams{}, errors.New("oauth2: invalid login_hint")
+		}
+		p.loginHint = hint
+	}
 	return p, nil
 }
 
@@ -67,6 +78,9 @@ func (p loginParams) authCodeOptions() []xoauth2.AuthCodeOption {
 	}
 	if p.maxAge != nil {
 		opts = append(opts, xoauth2.SetAuthURLParam("max_age", strconv.Itoa(*p.maxAge)))
+	}
+	if p.loginHint != "" {
+		opts = append(opts, xoauth2.SetAuthURLParam("login_hint", p.loginHint))
 	}
 	return opts
 }
@@ -98,4 +112,38 @@ func authenticationClaims(claims map[string]any) ([]string, time.Time) {
 		authTime = time.Unix(int64(v), 0)
 	}
 	return amr, authTime
+}
+
+// maxLoginHint bounds login_hint to the longest email address.
+const maxLoginHint = 254
+
+// validLoginHint: a login name, an address or a provider's domain hint
+// ("@example.com"), without spaces or control characters.
+func validLoginHint(hint string) bool {
+	if hint == "" || len(hint) > maxLoginHint || !utf8.ValidString(hint) {
+		return false
+	}
+	return !strings.ContainsFunc(hint, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+}
+
+// stepUpHint names the signed-in person to the provider when a login
+// re-authenticates them (prompt or max_age), so they confirm who they are
+// instead of choosing again: their preferred_username claim.
+func (c *Client) stepUpHint(r *http.Request, p loginParams) string {
+	if p.loginHint != "" || (p.prompt == "" && p.maxAge == nil) {
+		return p.loginHint
+	}
+	cookie, err := r.Cookie(c.cookieName)
+	if err != nil || cookie.Value == "" {
+		return ""
+	}
+	sess, err := c.sessions.Get(r.Context(), cookie.Value)
+	if err != nil {
+		return ""
+	}
+	name, _ := sess.Claims["preferred_username"].(string)
+	if !validLoginHint(name) {
+		return ""
+	}
+	return name
 }

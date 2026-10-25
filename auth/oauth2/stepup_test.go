@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,4 +106,38 @@ func TestTokenRefresh_UpdatesAuthenticationClaims(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"hwk"}, sess.AMR)
 	assert.True(t, authTime.Equal(sess.AuthTime))
+}
+
+func loginLocation(t *testing.T, client *oauth2.Client, query, session string) *url.URL {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/oauth/login"+query, nil)
+	if session != "" {
+		req.AddCookie(&http.Cookie{Name: "kit_oauth_session", Value: session})
+	}
+	res := httptest.NewRecorder()
+	client.Handlers().ServeHTTP(res, req)
+	require.Equal(t, http.StatusFound, res.Code)
+	u, err := url.Parse(res.Header().Get("Location"))
+	require.NoError(t, err)
+	return u
+}
+
+func TestLogin_ForwardsAValidatedLoginHint(t *testing.T) {
+	_, client := newLifetimeClient(t, oauth2.NewMemorySessionStore())
+	assert.Equal(t, "@example.com", loginLocation(t, client, "?login_hint=%40example.com", "").Query().Get("login_hint"))
+	for _, q := range []string{"login_hint=", "login_hint=a+b", "login_hint=a%0db", "login_hint=" + strings.Repeat("a", 255)} {
+		res := httptest.NewRecorder()
+		client.Handlers().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/oauth/login?"+q, nil))
+		assert.Equal(t, http.StatusBadRequest, res.Code, q)
+	}
+}
+
+func TestLogin_AStepUpNamesTheSignedInPerson(t *testing.T) {
+	store := oauth2.NewMemorySessionStore()
+	_, client := newLifetimeClient(t, store)
+	seedSession(t, store, oauth2.Session{SessionID: "s1", Claims: map[string]any{"preferred_username": "jdoe@corp.example"}})
+	assert.Equal(t, "jdoe@corp.example", loginLocation(t, client, "?prompt=login&max_age=0", "s1").Query().Get("login_hint"))
+	assert.False(t, loginLocation(t, client, "", "s1").Query().Has("login_hint"), "a plain login names no one")
+	assert.False(t, loginLocation(t, client, "?prompt=login", "").Query().Has("login_hint"), "without a session no one is named")
+	assert.Equal(t, "@corp.example", loginLocation(t, client, "?prompt=login&login_hint=%40corp.example", "s1").Query().Get("login_hint"))
 }

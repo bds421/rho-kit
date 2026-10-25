@@ -373,7 +373,9 @@ func (c *Client) Handlers() Handlers {
 // The optional prompt and max_age query parameters request step-up
 // authentication (for example ?prompt=login&max_age=0). They are validated
 // against an allowlist and forwarded to the authorization request; with
-// max_age the callback requires a fresh enough auth_time.
+// max_age the callback requires a fresh enough auth_time. A step-up names
+// the signed-in person as login_hint; an explicit login_hint (a login name
+// or a domain, "@example.com") is validated and forwarded as given.
 func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 	params, err := parseLoginParams(r.URL.Query())
 	if err != nil {
@@ -391,6 +393,7 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 		c.renderFailure(w, r, http.StatusInternalServerError, failureUnavailable, "/")
 		return
 	}
+	params.loginHint = c.stepUpHint(r, params)
 	entry := StateEntry{Nonce: nonce, CreatedAt: time.Now(), MaxAge: params.maxAge}
 	// Only persist a post-login deep link when it is an origin-relative
 	// path. Absolute or scheme-relative targets are dropped to prevent
