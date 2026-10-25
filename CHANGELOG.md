@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.29.2 — 2026-10-25
+
+- **fix(deps): mimetype v1.4.16** in `infra` (storage), `app/storage`, the
+  storage backends, `uploadsec/clamav`, `storagetest` and `kittest`: v1.4.15
+  is retracted by its author (quadratic time on crafted CDF files), and the
+  storage layer sniffs uploaded content with it.
+
+No breaking changes.
+
 ## v2.29.1 — 2026-10-25
 
 - **fix(deps): moby/go-archive v0.3.0, moby/sys/user v0.4.1** in the
