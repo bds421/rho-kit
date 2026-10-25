@@ -20,7 +20,7 @@ func (c *Client) retryCookieName() string {
 // exchanged. A browser that already holds a valid session goes to returnTo;
 // otherwise the sign-in restarts once with the same return URL.
 func (c *Client) recoverSignIn(w http.ResponseWriter, r *http.Request, returnTo, reason string) {
-	returnTo = safeReturnTo(returnTo)
+	returnTo = c.safeReturnTo(returnTo)
 	if _, err := c.SessionFromRequest(r.Context(), r); err == nil {
 		c.logger.InfoContext(r.Context(), "oauth2: callback without pending sign-in, session already valid",
 			slog.String("reason", reason))
@@ -48,11 +48,11 @@ func (c *Client) recoverSignIn(w http.ResponseWriter, r *http.Request, returnTo,
 	http.Redirect(w, r, c.loginURL(returnTo), http.StatusFound)
 }
 
-func safeReturnTo(target string) string {
+func (c *Client) safeReturnTo(target string) string {
 	if safe, ok := safeRelativeRedirect(target); ok {
 		return safe
 	}
-	return "/"
+	return c.homePath
 }
 
 func (c *Client) loginURL(returnTo string) string {
