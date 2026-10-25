@@ -529,6 +529,21 @@ Use `SSRFSafeClientFollowRedirects(maxHops, ...)` only when redirects are part
 of the upstream contract. It validates the initial request URL and every
 redirect hop, then re-resolves each dial through the SSRF guard.
 
+### Internal networks and NAT64
+
+`WithAllowedNetworks(prefixes...)` opens only the listed private networks.
+Validate configured networks with `ValidateAllowedNetwork(p)` first: it
+returns a log-safe error saying what is accepted (no wider than /8 or /48,
+no IPv6 ranges that carry IPv4 addresses), where `WithAllowedNetworks`
+panics.
+
+On IPv6-only networks, `WithNAT64(prefix)` checks an address in the NAT64
+prefix (DNS64 answers, or `prefix.Embed(v4)` for IPv4 literals) as the IPv4
+address it carries: public IPv4 passes, private, loopback, link-local,
+CGNAT, documentation and multicast do not. `ParseNAT64Prefix` accepts the
+RFC 6052 lengths /32, /40, /48, /56, /64 and /96; `WellKnownNAT64` is
+64:ff9b::/96.
+
 ### Dev Mode (localhost / private IPs)
 
 During local development, services often talk to each other over localhost or
