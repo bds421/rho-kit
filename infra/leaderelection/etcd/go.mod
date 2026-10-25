@@ -3,9 +3,9 @@ module github.com/bds421/rho-kit/infra/leaderelection/etcd/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.26.0
-	github.com/bds421/rho-kit/infra/v2 v2.26.0
-	github.com/bds421/rho-kit/observability/v2 v2.26.0
+	github.com/bds421/rho-kit/core/v2 v2.27.0
+	github.com/bds421/rho-kit/infra/v2 v2.27.0
+	github.com/bds421/rho-kit/observability/v2 v2.27.0
 	github.com/prometheus/client_golang v1.24.1
 	go.etcd.io/etcd/client/v3 v3.7.1
 )
