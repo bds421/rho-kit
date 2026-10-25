@@ -6,8 +6,11 @@
   from untrusted senders within limits: `zstd.Limits{MaxSize, MaxRatio,
   RequireSize, Concurrency}`. A frame declaring a larger size is refused
   before anything is allocated, an undeclared one decodes within the
-  decoder's memory bound, and at most `Concurrency` decodes hold memory at
-  once; `zstd.ErrTooLarge` names a refusal. It owns the
+  decoder's memory bound (the decoder itself stops at the bound, also
+  across frames), and at most `Concurrency` decodes hold memory at once,
+  allocating only once they hold a slot; `zstd.ErrTooLarge` names a
+  refusal. Data must be one frame with nothing after it unless
+  `MultiFrame` allows several (`zstd.ErrFrames`). It owns the
   `klauspost/compress` dependency.
 
 No breaking changes.
