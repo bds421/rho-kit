@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.26.0 — 2026-10-25
+
+- **feat(codec/zstd): bounded zstd decoding.** A new module decodes zstd
+  from untrusted senders within limits: `zstd.Limits{MaxSize, MaxRatio,
+  RequireSize, Concurrency}`. A frame declaring a larger size is refused
+  before anything is allocated, an undeclared one decodes within the
+  decoder's memory bound, and at most `Concurrency` decodes hold memory at
+  once; `zstd.ErrTooLarge` names a refusal. It owns the
+  `klauspost/compress` dependency.
+
+No breaking changes.
+
 ## v2.25.0 — 2026-10-24
 
 - **feat(core/redact, app): safe error messages on startup failures.**

@@ -100,6 +100,7 @@ use (
 	./infra/storage/sftpbackend
 	./infra/storage/storagehttp/uploadsec/clamav
 	./infra/storage/storagetest
+	./codec/zstd
 	./io
 	./observability
 	./observability/auditlog/postgres
