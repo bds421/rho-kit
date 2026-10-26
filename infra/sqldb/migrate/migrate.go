@@ -13,6 +13,7 @@ package migrate
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -68,6 +69,24 @@ func Down(ctx context.Context, db *sql.DB, cfg Config) error {
 	}
 	if _, err := provider.Down(ctx); err != nil {
 		return redact.WrapError("migrate: down", err)
+	}
+	return nil
+}
+
+// DownTo rolls back every applied migration newer than version, leaving
+// the schema as it was right after version (0 rolls back everything).
+// Unlike repeated Down calls, migrations added later cannot change where
+// it ends.
+func DownTo(ctx context.Context, db *sql.DB, cfg Config, version int64) error {
+	if version < 0 {
+		return errors.New("migrate: down to a negative version")
+	}
+	provider, err := newProvider(db, cfg)
+	if err != nil {
+		return err
+	}
+	if _, err := provider.DownTo(ctx, version); err != nil {
+		return redact.WrapError("migrate: down to", err)
 	}
 	return nil
 }

@@ -1,6 +1,14 @@
 # Changelog
 
-## v2.30.0 — unreleased
+## v2.31.0 — 2026-10-26
+
+- **feat(sqldb/migrate): `DownTo`.** Rolls back to an explicit version, so
+  a test or tool that needs the schema from before a migration keeps
+  reaching it when later migrations are added (repeated `Down` calls do not).
+
+No breaking changes.
+
+## v2.30.0 — 2026-10-26
 
 - **feat(httpx/webapp): `WithCSPNonce`.** index.html carries the request's
   nonce from `middleware/cspnonce` as `<meta property="csp-nonce" nonce="…">`,
