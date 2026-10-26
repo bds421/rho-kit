@@ -19,6 +19,6 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.31.0
-	github.com/bds421/rho-kit/data/v2 v2.31.0
+	github.com/bds421/rho-kit/core/v2 v2.31.1
+	github.com/bds421/rho-kit/data/v2 v2.31.1
 )

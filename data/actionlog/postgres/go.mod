@@ -10,8 +10,8 @@ require (
 require go.yaml.in/yaml/v3 v3.0.5 // indirect
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.31.0
-	github.com/bds421/rho-kit/data/v2 v2.31.0
+	github.com/bds421/rho-kit/core/v2 v2.31.1
+	github.com/bds421/rho-kit/data/v2 v2.31.1
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect

@@ -1,7 +1,7 @@
-github.com/bds421/rho-kit/core/v2 v2.31.0 h1:wgqmmU+38UAofkpHT3AwUsuUFLXDUefFBfhwwf2QZBM=
-github.com/bds421/rho-kit/core/v2 v2.31.0/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
-github.com/bds421/rho-kit/data/v2 v2.31.0 h1:l1XVMs8HgD9UK6Ofzezr3oZvtlNESCxS+AEEnmx0l4Q=
-github.com/bds421/rho-kit/data/v2 v2.31.0/go.mod h1:LY6M4H3IIMLAX9HS/Loft8HbaJmtYX7sZVzL8NePAqo=
+github.com/bds421/rho-kit/core/v2 v2.31.1 h1:FQ3dbmBFCMAiHPRtV66N4Sbe4gdcua+IY/vSYfA29L0=
+github.com/bds421/rho-kit/core/v2 v2.31.1/go.mod h1:JmwYR5uUk6q6kaA5g9p/aw1gXk+iquaYNYxywxceZ5A=
+github.com/bds421/rho-kit/data/v2 v2.31.1 h1:AvWz2WzBjpfT8oJioMtgR40Q/mMRxl+oc5quA/GqDbQ=
+github.com/bds421/rho-kit/data/v2 v2.31.1/go.mod h1:ZeOfnChOawUAwl1fv2Sa040/lYpJYZ1MF6vu0oIJdMQ=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/go-logr/logr v1.2.2/go.mod h1:jdQByPbusPIv2/zmleS9BjJVeZ6kBagPoEUsqbVz/1A=
