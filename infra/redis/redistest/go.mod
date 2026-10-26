@@ -5,7 +5,7 @@ module github.com/bds421/rho-kit/infra/redis/redistest/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/infra/redis/v2 v2.31.1
+	github.com/bds421/rho-kit/infra/redis/v2 v2.32.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
@@ -15,9 +15,9 @@ require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4 // indirect
 	github.com/Microsoft/go-winio v0.6.3 // indirect
-	github.com/bds421/rho-kit/core/v2 v2.31.1 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.31.1 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.32.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.32.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.32.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

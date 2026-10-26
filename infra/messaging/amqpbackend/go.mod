@@ -25,11 +25,11 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.31.1
-	github.com/bds421/rho-kit/infra/v2 v2.31.1
-	github.com/bds421/rho-kit/io/v2 v2.31.1 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.31.1
-	github.com/bds421/rho-kit/resilience/v2 v2.31.1
+	github.com/bds421/rho-kit/core/v2 v2.32.0
+	github.com/bds421/rho-kit/infra/v2 v2.32.0
+	github.com/bds421/rho-kit/io/v2 v2.32.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.32.0
+	github.com/bds421/rho-kit/resilience/v2 v2.32.0
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect

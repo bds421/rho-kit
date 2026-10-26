@@ -5,7 +5,7 @@ module github.com/bds421/rho-kit/infra/sqldb/dbtest/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/infra/v2 v2.31.1
+	github.com/bds421/rho-kit/infra/v2 v2.32.0
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 )
@@ -14,8 +14,8 @@ require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4 // indirect
 	github.com/Microsoft/go-winio v0.6.3 // indirect
-	github.com/bds421/rho-kit/core/v2 v2.31.1 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.32.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.32.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
