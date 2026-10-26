@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.32.0 — 2026-10-26
+
+- **feat(messaging/natsbackend): `Fetch`.** Pulls one batch from a
+  durable JetStream pull consumer with a message cap and a byte cap at
+  once, an expiry and an optional idle heartbeat. Returns the messages
+  received so far with the context error on cancellation; reports a
+  missing consumer, a deleted consumer and a first message beyond the
+  byte cap as distinct errors.
+- **feat(messaging/natsbackend): multi-token subjects.** `Subject` joins
+  values into a subject, each escaped into one token by `SubjectToken`
+  (reversible with `ParseSubjectToken`, distinct values stay distinct);
+  `ValidateSubject` and `ValidateFilter` check subjects and filters.
+
+No breaking changes.
+
 ## v2.31.1 — 2026-10-26
 
 - **chore(deps): the go-deps-minor-patch group** (Dependabot #142), among

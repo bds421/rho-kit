@@ -15,6 +15,8 @@
 
 - `NewPublisher(conn, opts...)` / `NewConsumer(conn, cfg ConsumerConfig, logger, opts...)`.
 - Auth is configured on the `Config` struct passed to `Connect(ctx, cfg)`: set `CredentialsFile` for a NATS `.creds` JWT-NKey file, or `NKeyFile` for an NKey seed file (also `Username`/`Token`).
+- `Fetch(ctx, js, stream, consumer, PullRequest{MaxMessages, MaxBytes, Expires, Heartbeat})` pulls one batch capped by count and bytes together (nats.go cannot combine both). It returns `*nats.Msg` whose `Ack`/`Nak`/`Term`/`Metadata` work; a missing consumer is `nats.ErrNoResponders`, a deleted one `jetstream.ErrConsumerDeleted`, a first message beyond `MaxBytes` `ErrMessageTooLarge`.
+- `Subject(values...)` / `SubjectToken` / `ParseSubjectToken` escape arbitrary values into single tokens injectively (`[A-Za-z0-9_-]` stays as is); `ValidateSubject` / `ValidateFilter` check a whole subject or filter.
 
 ## Common mistakes
 
