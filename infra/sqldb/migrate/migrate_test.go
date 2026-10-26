@@ -132,3 +132,17 @@ func TestDefaultTableName(t *testing.T) {
 		t.Fatalf("DefaultTableName = %q, want goose_db_version", DefaultTableName)
 	}
 }
+
+func TestDownTo_RejectsNilDB(t *testing.T) {
+	err := DownTo(context.Background(), nil, Config{Dir: fstest.MapFS{}}, 1)
+	if err == nil || !strings.Contains(err.Error(), "db must not be nil") {
+		t.Fatalf("DownTo(nil) = %v, want it to mention nil db", err)
+	}
+}
+
+func TestDownTo_RejectsANegativeVersion(t *testing.T) {
+	err := DownTo(context.Background(), &sql.DB{}, Config{Dir: fstest.MapFS{}}, -1)
+	if err == nil || !strings.Contains(err.Error(), "negative version") {
+		t.Fatalf("DownTo(-1) = %v, want it refused", err)
+	}
+}
