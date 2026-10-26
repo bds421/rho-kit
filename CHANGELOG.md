@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.30.0 — unreleased
+
+- **feat(httpx/webapp): `WithCSPNonce`.** index.html carries the request's
+  nonce from `middleware/cspnonce` as `<meta property="csp-nonce" nonce="…">`,
+  which React Aria reads for the style elements it adds, so an app needs no
+  `style-src 'unsafe-inline'`. The page is then rendered per request
+  (uncompressed, no ETag, `no-store`).
+
+No breaking changes.
+
 ## v2.29.2 — 2026-10-25
 
 - **fix(deps): mimetype v1.4.16** in `infra` (storage), `app/storage`, the

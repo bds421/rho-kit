@@ -59,6 +59,7 @@ type config struct {
 	immutable []string
 	dotPaths  []string
 	basePath  string
+	nonce     bool
 }
 
 // WithBasePath sets the base element of a build containing <base href="/">.
@@ -69,6 +70,14 @@ func WithBasePath(prefix string) Option {
 		panic("webapp: WithBasePath requires a canonical absolute path")
 	}
 	return func(c *config) { c.basePath = strings.TrimSuffix(prefix, "/") + "/" }
+}
+
+// WithCSPNonce puts the request's CSP nonce (middleware/cspnonce) into
+// index.html as <meta property="csp-nonce" nonce="...">, the tag React Aria
+// and other libraries read for the style elements they add. index.html is
+// then rendered per request: uncompressed, without an ETag, no-store.
+func WithCSPNonce() Option {
+	return func(c *config) { c.nonce = true }
 }
 
 // wellKnown is public by definition (RFC 8615).
@@ -123,6 +132,8 @@ type handler struct {
 	byName    map[string]*file
 	index     *file
 	immutable []string
+	// page is index.html, base set, when each answer carries its nonce.
+	page []byte
 }
 
 // New reads the build once to index its files and their precompressed
@@ -165,6 +176,11 @@ func New(files fs.FS, opts ...Option) (http.Handler, error) {
 		data = bytes.Replace(data, []byte(`<base href="/"`), []byte(`<base href="`+html.EscapeString(cfg.basePath)+`"`), 1)
 		sum := sha256.Sum256(data)
 		h.index.variants = []variant{{data: data, etag: `"` + hex.EncodeToString(sum[:16]) + `"`}}
+	}
+	if cfg.nonce {
+		if err := h.renderPerRequest(files); err != nil {
+			return nil, err
+		}
 	}
 	return h, nil
 }
@@ -268,6 +284,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serve(w, r, f, revalidate)
 	case immutable, name != indexFile && namesFile(name):
 		http.NotFound(w, r)
+	case h.page != nil:
+		h.servePage(w, r)
 	default:
 		h.serve(w, r, h.index, revalidate)
 	}

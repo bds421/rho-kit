@@ -19,6 +19,10 @@ files by path, `index.html` for every other path, precompressed siblings by
   mounting. Build with relative asset URLs and strip the prefix before the
   handler. The rewritten index has its own ETag and is served uncompressed;
   hashed assets retain their precompressed variants.
+- `WithCSPNonce()` — index.html carries the request's nonce from
+  `middleware/cspnonce` as `<meta property="csp-nonce" nonce="…">` (read by
+  React Aria for its style elements); it is then rendered per request,
+  uncompressed, without an ETag, `no-store`. Mount behind `cspnonce.Middleware`.
 
 ## Behaviour
 
