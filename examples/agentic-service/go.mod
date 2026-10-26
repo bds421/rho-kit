@@ -5,9 +5,9 @@ go 1.26.8
 require github.com/stretchr/testify v1.12.1
 
 require (
-	github.com/bds421/rho-kit/authz/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/crypto/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/security/v2 v2.31.0 // indirect
+	github.com/bds421/rho-kit/authz/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/crypto/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/security/v2 v2.31.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
@@ -40,16 +40,15 @@ require (
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
-	golang.org/x/tools v0.52.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.31.0
-	github.com/bds421/rho-kit/data/v2 v2.31.0
-	github.com/bds421/rho-kit/httpx/v2 v2.31.0
-	github.com/bds421/rho-kit/observability/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.31.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.31.1
+	github.com/bds421/rho-kit/data/v2 v2.31.1
+	github.com/bds421/rho-kit/httpx/v2 v2.31.1
+	github.com/bds421/rho-kit/observability/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.31.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
