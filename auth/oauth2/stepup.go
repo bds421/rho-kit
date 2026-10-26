@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,9 +22,10 @@ const (
 	authTimeSkew = time.Minute
 )
 
-// allowedPrompts are the OpenID Connect Core prompt values accepted on
-// GET /oauth/login.
-var allowedPrompts = map[string]bool{"none": true, "login": true, "consent": true, "select_account": true}
+// allowedPrompts are the prompt values accepted on GET /oauth/login: those
+// of OpenID Connect Core and create, which asks the provider to register a
+// new account (Initiating User Registration via OpenID Connect 1.0).
+var allowedPrompts = map[string]bool{"none": true, "login": true, "consent": true, "select_account": true, "create": true}
 
 // loginParams are the validated step-up parameters of a login request.
 type loginParams struct {
@@ -33,8 +35,8 @@ type loginParams struct {
 }
 
 // parseLoginParams validates the optional prompt, max_age and login_hint
-// query parameters. prompt is a space-separated subset of none, login, consent and
-// select_account ("none" only alone); max_age is a decimal integer from 0 to
+// query parameters. prompt is a space-separated subset of none, login, consent,
+// select_account and create ("none" only alone); max_age is a decimal integer from 0 to
 // one year in seconds.
 func parseLoginParams(q url.Values) (loginParams, error) {
 	var p loginParams
@@ -69,6 +71,10 @@ func parseLoginParams(q url.Values) (loginParams, error) {
 	}
 	return p, nil
 }
+
+// creates says whether the request asks for a new account, which names
+// nobody already signed in.
+func (p loginParams) creates() bool { return slices.Contains(strings.Split(p.prompt, " "), "create") }
 
 // authCodeOptions returns the authorization request parameters for p.
 func (p loginParams) authCodeOptions() []xoauth2.AuthCodeOption {
@@ -130,7 +136,7 @@ func validLoginHint(hint string) bool {
 // re-authenticates them (prompt or max_age), so they confirm who they are
 // instead of choosing again: their preferred_username claim.
 func (c *Client) stepUpHint(r *http.Request, p loginParams) string {
-	if p.loginHint != "" || (p.prompt == "" && p.maxAge == nil) {
+	if p.loginHint != "" || (p.prompt == "" && p.maxAge == nil) || p.creates() {
 		return p.loginHint
 	}
 	cookie, err := r.Cookie(c.cookieName)

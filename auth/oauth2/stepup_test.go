@@ -34,10 +34,20 @@ func TestLogin_ForwardsValidatedStepUpParameters(t *testing.T) {
 	assert.False(t, u.Query().Has("max_age"))
 }
 
+func TestLogin_ForwardsCreateWithoutNamingTheSignedInPerson(t *testing.T) {
+	store := oauth2.NewMemorySessionStore()
+	_, client := newLifetimeClient(t, store)
+	seedSession(t, store, oauth2.Session{SessionID: "s1", Claims: map[string]any{"preferred_username": "jdoe@corp.example"}})
+	u := loginLocation(t, client, "?prompt=create", "s1")
+	assert.Equal(t, "create", u.Query().Get("prompt"))
+	assert.False(t, u.Query().Has("login_hint"), "a new account is not the signed-in person's")
+	assert.Equal(t, "new@example.com", loginLocation(t, client, "?prompt=create&login_hint=new%40example.com", "").Query().Get("login_hint"))
+}
+
 func TestLogin_RejectsInvalidStepUpParameters(t *testing.T) {
 	_, client := newLifetimeClient(t, oauth2.NewMemorySessionStore())
 	for _, q := range []string{
-		"prompt=admin", "prompt=none+login", "prompt=login+login", "prompt=", "prompt=login%0d",
+		"prompt=admin", "prompt=none+login", "prompt=none+create", "prompt=create+create", "prompt=login+login", "prompt=", "prompt=login%0d",
 		"max_age=-1", "max_age=abc", "max_age=01", "max_age=1e3", "max_age=99999999999", "max_age=",
 	} {
 		res := httptest.NewRecorder()

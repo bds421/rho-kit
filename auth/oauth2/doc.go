@@ -92,5 +92,6 @@
 //     revoke a subject's sessions. Both need a [SessionIndex] store.
 //   - Session.AMR / Session.AuthTime expose how the user authenticated;
 //     GET /oauth/login?prompt=login&max_age=0 requests step-up and the
-//     callback enforces max_age against auth_time.
+//     callback enforces max_age against auth_time; prompt=create asks the
+//     provider to register a new account.
 package oauth2
