@@ -13,7 +13,7 @@ module github.com/bds421/rho-kit/authz/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.29.2
+	github.com/bds421/rho-kit/core/v2 v2.30.0
 	github.com/stretchr/testify v1.11.1
 )
 
