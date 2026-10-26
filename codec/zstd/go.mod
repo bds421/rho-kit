@@ -5,4 +5,4 @@ module github.com/bds421/rho-kit/codec/zstd/v2
 
 go 1.26.8
 
-require github.com/klauspost/compress v1.19.2
+require github.com/klauspost/compress v1.20.1

@@ -298,7 +298,7 @@ func decodePublicationPush(t *testing.T, wire publicationWire, data []byte) *pro
 	if wire.unidirectional {
 		push = new(protocol.Push)
 		if wire.protocol == cfg.ProtocolTypeProtobuf {
-			err = push.UnmarshalVT(data)
+			err = push.UnmarshalCF(data)
 		} else {
 			err = json.Unmarshal(data, push)
 		}
@@ -306,7 +306,7 @@ func decodePublicationPush(t *testing.T, wire publicationWire, data []byte) *pro
 		var reply protocol.Reply
 		if wire.protocol == cfg.ProtocolTypeProtobuf {
 			// Native event bytes are bare messages, not length-prefixed wire data.
-			err = reply.UnmarshalVT(data)
+			err = reply.UnmarshalCF(data)
 		} else {
 			err = json.Unmarshal(data, &reply)
 		}
@@ -373,12 +373,9 @@ func TestPublicationCloseFlushRejectsBeforePolicy(t *testing.T) {
 				// success here would otherwise race a normal single-item dequeue.
 				q.blockError = io.ErrClosedPipe
 				queuePrivatePublications(t, n, c, q)
-				done := make(chan struct{})
-				go func() { c.Disconnect(advice); close(done) }()
-				waitPublicationCondition(t, func() bool { return !c.IsSubscribed("fixture") }, "close did not unsubscribe before flush")
+				Connection{client: c}.Disconnect(advice)
 				q.release()
-				awaitPublicationSignal(t, done, "native close flush deadlocked under subscription guard")
-				awaitPublicationSignal(t, q.closed, "native transport not closed")
+				awaitPublicationSignal(t, q.closed, "native close flush deadlocked or transport not closed")
 				if decisions.Load() != 0 {
 					t.Errorf("unsubscribed close flush performed %d authority calls", decisions.Load())
 				}
@@ -435,9 +432,7 @@ func TestPublicationPostPolicyGuard(t *testing.T) {
 				var done chan struct{}
 				switch mode {
 				case "close":
-					done = make(chan struct{})
-					go func() { c.Disconnect(cfg.DisconnectPermissionDenied); close(done) }()
-					waitPublicationCondition(t, func() bool { return !c.IsSubscribed("fixture") }, "concurrent close did not unsubscribe")
+					Connection{client: c}.Disconnect(cfg.DisconnectPermissionDenied)
 				case "unsubscribe":
 					c.Unsubscribe("fixture")
 				case "cancel":

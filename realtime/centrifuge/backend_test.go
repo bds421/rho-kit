@@ -19,7 +19,7 @@ type countingBroker struct {
 	publishes atomic.Int64
 }
 
-func (b *countingBroker) Publish(ch string, data []byte, opts cfg.PublishOptions) (cfg.StreamPosition, bool, error) {
+func (b *countingBroker) Publish(ch string, data []byte, opts cfg.PublishOptions) (cfg.PublishResult, error) {
 	b.publishes.Add(1)
 	return b.MemoryBroker.Publish(ch, data, opts)
 }

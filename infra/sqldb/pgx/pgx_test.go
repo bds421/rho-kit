@@ -282,11 +282,20 @@ func TestRequireTLS_RejectsLastWinsBypass(t *testing.T) {
 // and skipped the FR-079 require check, accepting an unverified-TLS
 // connection. The scanner now anchors `sslmode=` on a real key
 // boundary, so the embedded token is ignored and require is enforced.
+// Since pgx v5.11 the unescaped URL form no longer parses at all; the
+// escaped URL form and a quoted keyword/value DSN carry the same token and
+// must still be refused.
 func TestRequireTLS_RejectsEmbeddedSSLModeSubstringBypass(t *testing.T) {
-	dsn := "postgres://u:p@h/db?sslmode=require&application_name=sslmode=verify-full"
-	err := checkTLS(t, dsn, false)
-	require.Error(t, err, "embedded sslmode= substring must not unlock the require path")
-	assert.Contains(t, err.Error(), "sslmode=require admits MITM")
+	_, err := pgxpool.ParseConfig("postgres://u:p@h/db?sslmode=require&application_name=sslmode=verify-full")
+	require.Error(t, err, "an unescaped embedded sslmode= must not reach a connection")
+	for _, dsn := range []string{
+		"postgres://u:p@h/db?sslmode=require&application_name=sslmode%3Dverify-full",
+		"host=h user=u dbname=db sslmode=require application_name='sslmode=verify-full'",
+	} {
+		err := checkTLS(t, dsn, false)
+		require.Error(t, err, "embedded sslmode= substring must not unlock the require path: %s", dsn)
+		assert.Contains(t, err.Error(), "sslmode=require admits MITM")
+	}
 }
 
 func TestLastSSLMode(t *testing.T) {

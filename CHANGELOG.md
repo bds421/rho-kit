@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.31.1 — 2026-10-26
+
+- **chore(deps): the go-deps-minor-patch group** (Dependabot #142), among
+  them centrifuge v0.40.1 with protocol v0.23.1 and pgx v5.11.0.
+- **fix(realtime/centrifuge): `Connection.Disconnect` latches the
+  publication write policy closed** before the close. centrifuge v0.40
+  flushes the queue before it unsubscribes, so the guard no longer relied
+  on the unsubscription: a PermissionDenied or Shutdown close still sends
+  no further publication and makes no policy call. A close through
+  `Underlying()` bypasses the kit and gets centrifuge's own order.
+- **test(infra/sqldb/pgx):** pgx v5.11 refuses an unescaped `=` in a URL
+  query value; the embedded-`sslmode` bypass test covers that and the
+  escaped URL and keyword/value forms.
+- **test(codec/zstd):** the slot bound is asserted directly instead of
+  through the process heap, which measured GC timing.
+
+No breaking changes.
+
 ## v2.31.0 — 2026-10-26
 
 - **feat(sqldb/migrate): `DownTo`.** Rolls back to an explicit version, so

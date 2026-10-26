@@ -43,9 +43,9 @@ func (n *Node) installPublicationWritePolicy() {
 			}
 			return false
 		}
-		// Native close releases the channel mutex after unsubscription and before
-		// acquiring the writer mutex. IsSubscribed is safe in this hook, including
-		// close flushing, and avoids authority I/O for already removed channels.
+		// A close through Connection.Disconnect has latched refused above;
+		// IsSubscribed is safe in this hook and avoids authority I/O for
+		// channels already removed.
 		if event.Channel == "" || n.stopped.Load() || !client.IsSubscribed(event.Channel) || client.Context().Err() != nil {
 			return refuse()
 		}
@@ -90,7 +90,15 @@ func (c Connection) Send(data []byte) error {
 	}
 	return nil
 }
-func (c Connection) Disconnect(advice cfg.Disconnect) { c.client.Disconnect(advice) }
+// Disconnect closes the connection. No publication reaches it from here
+// on: centrifuge flushes its queue before it unsubscribes, so the write
+// policy is latched closed first instead of relying on the subscriptions.
+func (c Connection) Disconnect(advice cfg.Disconnect) {
+	if state, ok := c.client.Context().Value(publicationStateKey{}).(*publicationState); ok {
+		state.refused.Store(true)
+	}
+	c.client.Disconnect(advice)
+}
 
 func policyExpiry(jwtExpiry, policyExpiry int64, now time.Time) (int64, error) {
 	if jwtExpiry < 0 || policyExpiry < 0 || (jwtExpiry > 0 && policyExpiry > jwtExpiry) {
