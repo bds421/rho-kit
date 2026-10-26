@@ -7,8 +7,8 @@ go 1.26.8
 
 require (
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.50.6
-	github.com/bds421/rho-kit/core/v2 v2.31.1
-	github.com/bds421/rho-kit/infra/secrets/v2 v2.31.1
+	github.com/bds421/rho-kit/core/v2 v2.32.0
+	github.com/bds421/rho-kit/infra/secrets/v2 v2.32.0
 	github.com/stretchr/testify v1.12.1
 )
 
