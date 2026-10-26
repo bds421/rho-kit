@@ -17,8 +17,8 @@ module github.com/bds421/rho-kit/data/queue/riverqueue/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.31.1
-	github.com/bds421/rho-kit/data/v2 v2.31.1
+	github.com/bds421/rho-kit/core/v2 v2.32.0
+	github.com/bds421/rho-kit/data/v2 v2.32.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/riverqueue/river v0.49.0
 	github.com/riverqueue/river/riverdriver v0.49.0
