@@ -3,19 +3,19 @@ module github.com/bds421/rho-kit/app/storage/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/app/v2 v2.31.0
-	github.com/bds421/rho-kit/infra/v2 v2.31.0
-	github.com/bds421/rho-kit/observability/v2 v2.31.0
+	github.com/bds421/rho-kit/app/v2 v2.31.1
+	github.com/bds421/rho-kit/infra/v2 v2.31.1
+	github.com/bds421/rho-kit/observability/v2 v2.31.1
 	github.com/stretchr/testify v1.12.1
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/httpx/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/io/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/runtime/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/security/v2 v2.31.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/httpx/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/runtime/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/security/v2 v2.31.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
@@ -32,7 +32,6 @@ require (
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/sony/gobreaker/v2 v2.4.0 // indirect
-	github.com/tink-crypto/tink-go/v2 v2.9.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0 // indirect
 	go.opentelemetry.io/otel v1.47.0 // indirect
