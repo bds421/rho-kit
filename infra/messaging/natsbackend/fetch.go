@@ -123,7 +123,9 @@ func collect(ctx context.Context, delivered <-chan *nats.Msg, req PullRequest) (
 			if silence != nil {
 				silence.Reset(2 * req.Heartbeat)
 			}
-			if status := m.Header.Get("Status"); status != "" && len(m.Data) == 0 {
+			// Server statuses carry no reply subject; a stream message always has
+			// its ack subject, even one a publisher dressed up as a status.
+			if status := m.Header.Get("Status"); m.Reply == "" && status != "" && len(m.Data) == 0 {
 				done, err := statusEnds(status, m.Header.Get("Description"), len(msgs))
 				if done || err != nil {
 					return msgs, err

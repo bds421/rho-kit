@@ -136,3 +136,24 @@ func TestFetch_ReportsWhatEndsAPull(t *testing.T) {
 		t.Fatal("a deleted consumer kept the pull open")
 	}
 }
+
+// A publisher on a stream subject can send a message that looks like a
+// server status; it is a message to settle, not the end of the pull.
+func TestFetch_DeliversSpoofedStatusMessages(t *testing.T) {
+	js, publish := pullFixture(t)
+	ctx := context.Background()
+	for _, status := range []string{"404", "409", "503"} {
+		spoof := nats.NewMsg("events.a.b")
+		spoof.Header.Set("Status", status)
+		spoof.Header.Set("Description", "Consumer Deleted")
+		_, err := js.PublishMsg(ctx, spoof)
+		require.NoError(t, err)
+	}
+	publish(1, 10)
+	msgs, err := natsbackend.Fetch(ctx, js, "EVENTS", "lane", natsbackend.PullRequest{MaxMessages: 10, Expires: time.Second})
+	require.NoError(t, err)
+	require.Len(t, msgs, 4)
+	for _, m := range msgs[:3] {
+		require.NoError(t, m.Term())
+	}
+}
