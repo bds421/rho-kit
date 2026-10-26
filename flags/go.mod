@@ -12,7 +12,7 @@ module github.com/bds421/rho-kit/flags/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.31.1
+	github.com/bds421/rho-kit/core/v2 v2.32.0
 	github.com/open-feature/go-sdk v1.19.0
 	github.com/stretchr/testify v1.12.1
 )
