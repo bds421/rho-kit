@@ -3,21 +3,21 @@ module github.com/bds421/rho-kit/examples/realtime-broadcast/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/app/http/v2 v2.31.0
-	github.com/bds421/rho-kit/app/v2 v2.31.0
-	github.com/bds421/rho-kit/realtime/centrifuge/v2 v2.31.0
-	github.com/bds421/rho-kit/security/v2 v2.31.0
+	github.com/bds421/rho-kit/app/http/v2 v2.31.1
+	github.com/bds421/rho-kit/app/v2 v2.31.1
+	github.com/bds421/rho-kit/realtime/centrifuge/v2 v2.31.1
+	github.com/bds421/rho-kit/security/v2 v2.31.1
 	github.com/lestrrat-go/jwx/v3 v3.3.0
 	github.com/stretchr/testify v1.12.1
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/httpx/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/infra/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/runtime/v2 v2.31.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/httpx/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/runtime/v2 v2.31.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/centrifugal/centrifuge v0.40.1 // indirect
@@ -48,7 +48,6 @@ require (
 	github.com/redis/rueidis v1.0.79 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
-	github.com/shopspring/decimal v1.5.0 // indirect
 	github.com/sony/gobreaker/v2 v2.4.0 // indirect
 	github.com/valyala/fastjson v1.6.10 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
