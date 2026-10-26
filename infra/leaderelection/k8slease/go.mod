@@ -3,9 +3,9 @@ module github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.32.0
-	github.com/bds421/rho-kit/infra/v2 v2.32.0
-	github.com/bds421/rho-kit/observability/v2 v2.32.0
+	github.com/bds421/rho-kit/core/v2 v2.33.0
+	github.com/bds421/rho-kit/infra/v2 v2.33.0
+	github.com/bds421/rho-kit/observability/v2 v2.33.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/stretchr/testify v1.12.1
 	k8s.io/api v0.37.1
