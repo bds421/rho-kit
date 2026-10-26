@@ -16,10 +16,8 @@ require (
 require (
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
-	github.com/tink-crypto/tink-go/v2 v2.9.0 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
 )
 
 require (
@@ -36,10 +34,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.38.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.5 // indirect
-	github.com/bds421/rho-kit/core/v2 v2.31.0
-	github.com/bds421/rho-kit/infra/v2 v2.31.0
-	github.com/bds421/rho-kit/io/v2 v2.31.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.31.0
+	github.com/bds421/rho-kit/core/v2 v2.31.1
+	github.com/bds421/rho-kit/infra/v2 v2.31.1
+	github.com/bds421/rho-kit/io/v2 v2.31.1 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.31.1
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.16 // indirect

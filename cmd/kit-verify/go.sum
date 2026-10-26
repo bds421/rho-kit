@@ -1,7 +1,7 @@
-github.com/bds421/rho-kit/core/v2 v2.31.0 h1:wgqmmU+38UAofkpHT3AwUsuUFLXDUefFBfhwwf2QZBM=
-github.com/bds421/rho-kit/core/v2 v2.31.0/go.mod h1:mt3OYCm4b/3jMVdxFGR1bwNJNgeV7huX2FEeTKk+rQo=
-github.com/bds421/rho-kit/security/v2 v2.31.0 h1:J5OT8arLArYwfPbBuzhrvSVEBlettq8etdUrKStr0x0=
-github.com/bds421/rho-kit/security/v2 v2.31.0/go.mod h1:6rszQNTdbUInh8dg4xrEEVwgjkAkAdVCYNayOWyp8+s=
+github.com/bds421/rho-kit/core/v2 v2.31.1 h1:FQ3dbmBFCMAiHPRtV66N4Sbe4gdcua+IY/vSYfA29L0=
+github.com/bds421/rho-kit/core/v2 v2.31.1/go.mod h1:JmwYR5uUk6q6kaA5g9p/aw1gXk+iquaYNYxywxceZ5A=
+github.com/bds421/rho-kit/security/v2 v2.31.1 h1:zpR2S1NAgaZTa3knVwCiZSszJPD5EWXLpRUne5gUNYc=
+github.com/bds421/rho-kit/security/v2 v2.31.1/go.mod h1:oqJ6rttjt5Bz40QD/bbdVp3gRwfkV+eyxspMXXjLUDg=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=

@@ -4,8 +4,8 @@ go 1.26.8
 
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
-	github.com/bds421/rho-kit/data/v2 v2.31.0
-	github.com/bds421/rho-kit/infra/redis/v2 v2.31.0
+	github.com/bds421/rho-kit/data/v2 v2.31.1
+	github.com/bds421/rho-kit/infra/redis/v2 v2.31.1
 	github.com/hibiken/asynq v0.26.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/redis/go-redis/v9 v9.23.0
@@ -26,9 +26,9 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.31.0
-	github.com/bds421/rho-kit/observability/v2 v2.31.0
-	github.com/bds421/rho-kit/resilience/v2 v2.31.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.31.1
+	github.com/bds421/rho-kit/observability/v2 v2.31.1
+	github.com/bds421/rho-kit/resilience/v2 v2.31.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
