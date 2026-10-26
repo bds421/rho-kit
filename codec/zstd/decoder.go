@@ -37,6 +37,9 @@ type Decoder struct {
 	limits Limits
 	dec    *kzstd.Decoder
 	slots  chan struct{}
+	// held, set only by tests, sees the bytes a decode reserves once it
+	// holds a slot, and their release (negative).
+	held func(bytes int64)
 }
 
 // NewDecoder builds a Decoder; MaxSize and MaxRatio must be positive.
@@ -73,6 +76,10 @@ func (d *Decoder) Decode(src []byte) ([]byte, error) {
 	}
 	d.slots <- struct{}{}
 	defer func() { <-d.slots }()
+	if d.held != nil {
+		d.held(int64(capacity))
+		defer d.held(-int64(capacity))
+	}
 	out, err := d.dec.DecodeAll(src, make([]byte, 0, capacity))
 	switch {
 	case errors.Is(err, kzstd.ErrDecoderSizeExceeded), errors.Is(err, kzstd.ErrWindowSizeExceeded):
