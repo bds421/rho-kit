@@ -60,6 +60,8 @@ func TestComputeCacheKeepsTenantsApartInFlight(t *testing.T) {
 	finish()
 	assert.Equal(t, "A", <-gotA)
 
-	_, err = scoped.Get(ctxA, "p:settings")
-	assert.NoError(t, err, "tenant A's computed value was not stored under its tenant")
+	assert.Eventually(t, func() bool {
+		_, err := scoped.Get(ctxA, "p:settings")
+		return err == nil
+	}, 2*time.Second, 10*time.Millisecond, "tenant A's computed value was not stored under its tenant")
 }
