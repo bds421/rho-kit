@@ -3,16 +3,16 @@ module github.com/bds421/rho-kit/infra/storage/storagehttp/uploadsec/clamav/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.33.0
-	github.com/bds421/rho-kit/infra/v2 v2.33.0
-	github.com/bds421/rho-kit/observability/v2 v2.33.0
+	github.com/bds421/rho-kit/core/v2 v2.33.1
+	github.com/bds421/rho-kit/infra/v2 v2.33.1
+	github.com/bds421/rho-kit/observability/v2 v2.33.1
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/stretchr/testify v1.12.1
 )
 
 require (
-	github.com/bds421/rho-kit/io/v2 v2.33.0 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.33.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
