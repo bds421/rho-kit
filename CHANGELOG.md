@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.33.1 — 2026-10-28
+
+- **fix(data/cache): tenants never share a compute.** `ComputeCache` over a
+  tenant-scoped backend (`cache/tenant.Wrap`) keyed singleflight by the
+  cache key alone, so a concurrent miss of the same key by another tenant
+  received the first tenant's value. The flight key now includes the
+  caller's tenant ID, and the compute context carries that tenant ID (and
+  no other caller value), so the result is stored under the right tenant.
+
+No breaking changes.
+
 ## v2.33.0 — 2026-10-26
 
 - **feat(auth/oauth2): `prompt=create`.** `GET /oauth/login` accepts

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 	"golang.org/x/sync/singleflight"
 )
@@ -22,8 +23,8 @@ var ErrCacheClosed = errors.New("cache: ComputeCache is closed")
 // The ctx passed to ComputeFunc is NOT the caller's context. Because a
 // single compute is shared across all concurrent callers (singleflight),
 // it is derived from a detached background context: it carries no caller
-// context values (trace spans, auth tokens, tenant IDs, request-scoped
-// loggers) and its deadline is the LEADER's deadline (see [ComputeCache.GetOrCompute]).
+// context values (trace spans, auth tokens, request-scoped loggers) except
+// the caller's tenant ID, and its deadline is the LEADER's deadline (see [ComputeCache.GetOrCompute]).
 // A ComputeFunc that makes authenticated or traced backend calls must
 // source those values from the closure it is defined in, not from ctx.
 type ComputeFunc[T any] func(ctx context.Context) (T, time.Duration, error)
@@ -262,7 +263,8 @@ func (cc *ComputeCache[T]) fullKey(key string) (string, error) {
 // concurrent caller for a key becomes the leader and runs fn; later
 // callers are followers that wait on the leader's single result.
 //   - Context values are detached: fn runs on a background-derived
-//     context with none of any caller's context values. See [ComputeFunc].
+//     context with none of the caller's context values but its tenant ID.
+//     Callers of different tenants never share a compute. See [ComputeFunc].
 //   - Deadline amplification: fn is bound to the LEADER's deadline (or
 //     [WithComputeTimeout] when the leader has none). If the leader has a
 //     short deadline, fn may be cancelled before a follower with a larger
@@ -333,7 +335,7 @@ func (cc *ComputeCache[T]) handleHit(
 		return cc.computeAndStore(ctx, full, fn)
 	}
 	cc.recordStaleServe()
-	cc.triggerBackgroundRefresh(full, fn)
+	cc.triggerBackgroundRefresh(ctx, full, fn)
 	return val, nil
 }
 
@@ -390,7 +392,8 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 	// inflight is for observability only — it is NOT the source of truth
 	// for cancel/drain ownership (that is the DoChan runner). LoadOrStore
 	// can disagree with singleflight leadership under interleaving.
-	_, isFollower := cc.inflight.LoadOrStore(full, struct{}{})
+	id, flight := flightOf(ctx, full)
+	_, isFollower := cc.inflight.LoadOrStore(flight, struct{}{})
 	waitStart := time.Now()
 	if isFollower {
 		cc.recordSingleflightFollower()
@@ -402,7 +405,7 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 		// already holds leadership for this key, so the foreground closure
 		// never runs. Without this the stale entry would persist and
 		// misclassify every later caller as a follower.
-		defer cc.inflight.Delete(full)
+		defer cc.inflight.Delete(flight)
 	}
 
 	// FR-048 [MED]: use DoChan + select on ctx so a short-deadline
@@ -413,8 +416,8 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 	// runner's deadline applies and only that runner's defer cancels it.
 	// A concurrent caller that lost LoadOrStore but won DoChan (or vice
 	// versa) can no longer cancel the shared compute via its own cleanup.
-	resCh := cc.group.DoChan(full, func() (any, error) {
-		computeCtx, cancelCompute := computeContext(cc.bgCtx, ctx, cc.cfg.computeTimeout)
+	resCh := cc.group.DoChan(flight, func() (any, error) {
+		computeCtx, cancelCompute := computeContext(withTenant(cc.bgCtx, id), ctx, cc.cfg.computeTimeout)
 		defer cancelCompute()
 		cc.recordSingleflightInflightInc()
 		defer cc.recordSingleflightInflightDec()
@@ -585,8 +588,9 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 // `refreshing` provides the same exactly-once semantics the
 // singleflight call gives the compute itself, but at the goroutine
 // layer.
-func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[T]) {
-	if _, loaded := cc.refreshing.LoadOrStore(full, struct{}{}); loaded {
+func (cc *ComputeCache[T]) triggerBackgroundRefresh(caller context.Context, full string, fn ComputeFunc[T]) {
+	id, flight := flightOf(caller, full)
+	if _, loaded := cc.refreshing.LoadOrStore(flight, struct{}{}); loaded {
 		return
 	}
 	// Hold bgMu across the closed-load and bgWg.Add so a concurrent Close
@@ -596,17 +600,17 @@ func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[
 	cc.bgMu.Lock()
 	if cc.closed.Load() {
 		cc.bgMu.Unlock()
-		cc.refreshing.Delete(full)
+		cc.refreshing.Delete(flight)
 		return
 	}
 	cc.bgWg.Add(1)
 	cc.bgMu.Unlock()
 
-	ch := cc.group.DoChan(full, func() (any, error) {
+	ch := cc.group.DoChan(flight, func() (any, error) {
 		// Use a timeout-scoped context derived from the background context
 		// created at construction time. This prevents unbounded refresh
 		// operations and allows Close() to cancel in-flight refreshes.
-		bgCtx, cancel := context.WithTimeout(cc.bgCtx, cc.cfg.refreshTimeout)
+		bgCtx, cancel := context.WithTimeout(withTenant(cc.bgCtx, id), cc.cfg.refreshTimeout)
 		defer cancel()
 		val, err := cc.executeCompute(bgCtx, full, fn)
 		if err != nil {
@@ -617,7 +621,7 @@ func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[
 
 	go func() {
 		defer cc.bgWg.Done()
-		defer cc.refreshing.Delete(full)
+		defer cc.refreshing.Delete(flight)
 		<-ch
 	}()
 }
@@ -739,4 +743,28 @@ func computeContext(bgCtx, caller context.Context, computeTimeout time.Duration)
 		return context.WithTimeout(bgCtx, computeTimeout)
 	}
 	return context.WithCancel(bgCtx)
+}
+
+// flightOf is the singleflight key for full as seen by the caller: callers
+// of different tenants never share a compute, since a tenant-scoped backend
+// stores each tenant's value under its own key.
+func flightOf(caller context.Context, full string) (coretenant.ID, string) {
+	id, ok := coretenant.FromContext(caller)
+	if !ok || id.IsZero() {
+		return "", full
+	}
+	return id, id.String() + "\x00" + full
+}
+
+// withTenant carries the caller's tenant, and only that, onto the detached
+// compute context, so a tenant-scoped backend stores the result.
+func withTenant(ctx context.Context, id coretenant.ID) context.Context {
+	if id.IsZero() {
+		return ctx
+	}
+	scoped, err := coretenant.WithID(ctx, id)
+	if err != nil {
+		return ctx
+	}
+	return scoped
 }
