@@ -5,7 +5,7 @@ go 1.26.8
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/bds421/rho-kit/infra/redis/v2 v2.33.1
-	github.com/go-redsync/redsync/v4 v4.18.0
+	github.com/go-redsync/redsync/v4 v4.18.1
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.47.0
@@ -15,7 +15,6 @@ require (
 require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/redis/rueidis v1.0.79 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
