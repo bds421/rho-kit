@@ -58,3 +58,40 @@ func TestMigrate_IndependentSetsShareDatabase(t *testing.T) {
 		"SELECT to_regclass('public.orders') IS NOT NULL").Scan(&exists))
 	assert.True(t, exists, "rolling back one set must not touch another")
 }
+
+// TestMigrate_RefusesADatabaseAheadOfTheFiles verifies that a database
+// migrated by a longer chain than the files on hand (a newer release, or a
+// chain since squashed into one baseline) is refused instead of taken as up
+// to date, and that a database at the newest file still migrates.
+func TestMigrate_RefusesADatabaseAheadOfTheFiles(t *testing.T) {
+	dsn := startPostgres(t)
+	pool, err := kitpgx.Connect(context.Background(), kitpgx.Config{DSN: dsn, AllowPlaintextLoopbackForTests: true})
+	require.NoError(t, err)
+	defer pool.Close()
+
+	sqlDB := stdlib.OpenDBFromPool(pool.Pool())
+	defer func() { _ = sqlDB.Close() }()
+
+	ctx := context.Background()
+	chain := migrate.Config{TableName: "accounts_schema_version", Dir: fstest.MapFS{
+		"00001_accounts.sql": {Data: []byte("-- +goose Up\nCREATE TABLE accounts (id INT);\n-- +goose Down\nDROP TABLE accounts;\n")},
+		"00002_owner.sql":    {Data: []byte("-- +goose Up\nALTER TABLE accounts ADD owner TEXT;\n-- +goose Down\nALTER TABLE accounts DROP owner;\n")},
+	}}
+	baseline := migrate.Config{TableName: "accounts_schema_version", Dir: fstest.MapFS{
+		"00001_baseline.sql": {Data: []byte("-- +goose Up\nCREATE TABLE IF NOT EXISTS accounts (id INT, owner TEXT);\n-- +goose Down\nDROP TABLE accounts;\n")},
+	}}
+
+	applied, err := migrate.Up(ctx, sqlDB, chain)
+	require.NoError(t, err)
+	assert.Equal(t, 2, applied)
+	applied, err = migrate.Up(ctx, sqlDB, chain)
+	require.NoError(t, err, "a database at the newest file must still migrate")
+	assert.Zero(t, applied)
+
+	applied, err = migrate.Up(ctx, sqlDB, baseline)
+	require.ErrorIs(t, err, migrate.ErrAhead)
+	assert.Zero(t, applied)
+	assert.Contains(t, err.Error(), "accounts_schema_version")
+	assert.Contains(t, err.Error(), "version 2")
+	assert.Contains(t, err.Error(), "00001_baseline.sql")
+}

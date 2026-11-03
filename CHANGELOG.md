@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.34.0 — 2026-11-03
+
+- **feat(infra/sqldb/migrate): refuse a database ahead of the files.**
+  `Up` (and with it `postgres.WithMigrations`/`WithMigrationSet`) returns
+  an error wrapping `migrate.ErrAhead`, naming the version table, the
+  recorded version and the newest migration file, when the database
+  records a version above the newest file of the set: one migrated by a
+  newer release or by a chain since squashed into a baseline. goose alone
+  took such a database as up to date and skipped later migrations.
+
+No breaking changes for databases at or below the newest file.
+
 ## v2.33.1 — 2026-10-28
 
 - **fix(data/cache): tenants never share a compute.** `ComputeCache` over a

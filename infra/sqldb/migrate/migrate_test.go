@@ -146,3 +146,12 @@ func TestDownTo_RejectsANegativeVersion(t *testing.T) {
 		t.Fatalf("DownTo(-1) = %v, want it refused", err)
 	}
 }
+
+func TestConfigTable_DefaultsToGooseTable(t *testing.T) {
+	if got := (Config{}).table(); got != DefaultTableName {
+		t.Fatalf("table() = %q, want %q", got, DefaultTableName)
+	}
+	if got := (Config{TableName: "billing_schema_version"}).table(); got != "billing_schema_version" {
+		t.Fatalf("table() = %q, want billing_schema_version", got)
+	}
+}

@@ -155,6 +155,13 @@ defer sqlDB.Close()
 _, err = migrate.Up(ctx, sqlDB, migrate.Config{Dir: migrationsFS})
 ```
 
+`migrate.Up` refuses a database whose version table records a version above
+the newest migration file of the set (`migrate.ErrAhead`, naming the table,
+the recorded version and the newest file): it was migrated by a newer release
+or by a chain since squashed into a baseline, and goose alone would take it as
+up to date and skip later migrations. Reset or restore such a database; do not
+lower its recorded version by hand.
+
 ## Transactions in context
 
 `pgxbackend.Pool.InTx(ctx, fn)` begins a transaction, passes it to `fn` in the

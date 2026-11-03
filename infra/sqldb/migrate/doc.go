@@ -41,6 +41,14 @@
 // The sets are applied independently; ordering between sets is the caller's
 // responsibility. With the bridge module, use `postgres.WithMigrationSet`.
 //
+// # Databases Ahead of the Files
+//
+// [Up] refuses a database whose version table records a version above the
+// newest migration file of the set, with an error wrapping [ErrAhead] that
+// names the table, the recorded version and the newest file. Such a
+// database was migrated by a newer release or by a chain since squashed
+// into a baseline; goose alone would report it as up to date.
+//
 // # Migration File Format
 //
 // SQL migration files follow the goose naming convention. Each file contains

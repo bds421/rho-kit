@@ -48,10 +48,15 @@ type Config struct {
 }
 
 // Up applies all pending migrations against the given *sql.DB. Returns
-// the number of migrations applied.
+// the number of migrations applied. A database that records a version
+// newer than the newest migration file is refused with [ErrAhead] before
+// anything is applied.
 func Up(ctx context.Context, db *sql.DB, cfg Config) (int, error) {
 	provider, err := newProvider(db, cfg)
 	if err != nil {
+		return 0, err
+	}
+	if err := refuseAhead(ctx, provider, cfg.table()); err != nil {
 		return 0, err
 	}
 	results, err := provider.Up(ctx)
@@ -170,4 +175,11 @@ func isIdentifier(s string) bool {
 		}
 	}
 	return true
+}
+
+func (c Config) table() string {
+	if c.TableName == "" {
+		return DefaultTableName
+	}
+	return c.TableName
 }
