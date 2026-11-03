@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.35.0 — 2026-11-03
+
+- **feat(observability/auditlog): rotate chain and cursor keys.**
+  `WithChainKeys(newest, older...)` seals new events with the newest key;
+  `Logger.VerifyChain`/`VerifyChainFrom` and the standalone
+  `VerifyChainKeysFrom` check each event against the key that sealed it
+  and refuse an event sealed by an older key than the event before it, so
+  a retired key cannot extend the chain. `WithCursorKeys(newest, older...)`
+  accepts cursors signed by an older key. `Close` zeroes every key.
+- **feat(crypto/encrypt): `Keyring`, an AEAD over several keys.**
+  `NewKeyring(newest, older...)` seals with the newest key and prefixes
+  each ciphertext with its key ID (`"id." || ciphertext`); `Decrypt` opens
+  with the key the ID names, `Current` tells whether a value needs
+  resealing, and an unlisted ID fails with `ErrUnknownKey`.
+- **feat(httpx/websocket): per-key connection limits.**
+  `WithKeyLimits(NewKeyLimit(n, key))` caps concurrent connections per key
+  (client address, member, ...) and refuses the upgrade beyond it with 429
+  and `Retry-After`; `KeyLimit.Room` lets a status endpoint report whether
+  a key could still connect. Refusals count under the
+  `max_connections_per_key` reason.
+
+No breaking changes.
+
 ## v2.34.1 — 2026-11-03
 
 - **fix(infra/sqldb/migrate): operators see why a database is refused.**
