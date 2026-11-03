@@ -1,5 +1,5 @@
-github.com/bds421/rho-kit/security/v2 v2.36.0 h1:YS3Nioi3GzfpJOIFqys2wRUjzMm474uJw+sXhbyJ7E0=
-github.com/bds421/rho-kit/security/v2 v2.36.0/go.mod h1:nLfdmIZxCG6MsV+l82k0M5e3MJMR1a86neGRCI2saxE=
+github.com/bds421/rho-kit/security/v2 v2.36.1 h1:n/Gdtd30T1FtXdTedvbM2yY0Gginm38r3eaXSAvHRzE=
+github.com/bds421/rho-kit/security/v2 v2.36.1/go.mod h1:t0WPySHGV18GUS2s4Bb/I5r+EXyAee13ugH8lyQmbfU=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
