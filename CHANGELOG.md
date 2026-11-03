@@ -9,8 +9,9 @@
   carries `KeyID` beside `HMAC` and `Events`, and `Verification.Anchor`
   takes the whole `Head`: the anchored event must be sealed by the anchored
   key and, without a watermark, sit at the anchored position; no event from
-  it on may carry an older key; an anchor at the watermark stands only when
-  no event follows it.
+  it on may carry an older key; once retention removed the anchored event,
+  the watermark stands for it under the same key rule. An empty chain's
+  head names the newest key.
 
 Breaking: `Verification.Anchor` is a `Head`, not `[]byte`; pass the `Head`
 a verification returned. v2.35.0's anchor check is not to be relied on.

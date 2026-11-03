@@ -662,11 +662,13 @@ returns the `Head` it verified: the newest event's HMAC, its position
 (`Events`) and the ID of the key that sealed it. Kept whole where store
 writers cannot reach it and passed back as `Anchor`, the chain must still
 contain that event, sealed by that key and, without a watermark, at that
-position, and no event from it on may carry an older key. An anchor equal
-to the watermark (the head of a chain retention emptied) stands only while
-no event follows the watermark. With a watermark the position is not
-checked, since retention shifts positions; the database sequence is covered
-by no HMAC either.
+position, and no event from it on may carry an older key. Once retention
+removed the anchored event, its HMAC is the watermark: the anchor then
+stands for the watermark, and every event after it still owes the anchored
+key or a newer one. The head of an empty chain names the newest key, the one
+that seals the next event. With a watermark the position is not checked,
+since retention shifts positions; the database sequence is covered by no
+HMAC either.
 
 **What is guaranteed.**
 
@@ -674,7 +676,8 @@ by no HMAC either.
   event between the retention watermark and the newest event without
   verification failing, except removing the newest events (truncating the
   tail): without an anchor that is never detected; with one, removing the
-  anchored event or any before it is.
+  anchored event or any before it is, unless the watermark is moved with it,
+  which looks the same as retention (the store writer owns the watermark).
 - Without an anchor, verification proves only that the stored events form
   one chain under the listed keys with the rotation rules: whoever holds
   any listed key can replace the tail from any point sealed by that key

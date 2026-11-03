@@ -57,8 +57,9 @@ type Head struct {
 	// Events is the number of events verified, so the newest event's
 	// position.
 	Events int
-	// KeyID names the chain key that sealed the newest event; empty for the
-	// unkeyed [WithChainKey] key and when no event was walked.
+	// KeyID names the chain key that sealed the newest event, or the newest
+	// listed key when no event was walked; empty for the unkeyed
+	// [WithChainKey] key.
 	KeyID string
 }
 
@@ -196,14 +197,11 @@ func newChainVerifier(keys []ChainKey, v Verification) (*chainVerifier, error) {
 	for i, k := range keys {
 		if k.ID == v.Anchor.KeyID {
 			c.anchorKey = i
+			// Retention may have removed the anchored event; every event
+			// walked then chains from it and still owes it the anchored key.
+			c.anchored = constantTimeEqualHMAC(v.Anchor.HMAC, v.Watermark)
 			return c, nil
 		}
-	}
-	// A head at the watermark names no key; finish accepts it only when no
-	// event follows the watermark.
-	if constantTimeEqualHMAC(v.Anchor.HMAC, v.Watermark) {
-		c.anchorKey = len(keys) - 1
-		return c, nil
 	}
 	return nil, fmt.Errorf("%w: the anchored chain key %q is not listed", ErrChainBroken, v.Anchor.KeyID)
 }
@@ -287,15 +285,14 @@ func (c *chainVerifier) sealer(event Event) (int, bool) {
 }
 
 func (c *chainVerifier) finish() (Head, error) {
-	// An anchor at the watermark stands only for a chain retention emptied;
-	// any event walked must reach the anchored one.
-	atWatermark := c.index == 0 && constantTimeEqualHMAC(c.v.Anchor.HMAC, c.v.Watermark)
-	if c.anchorKey >= 0 && !c.anchored && !atWatermark {
+	if c.anchorKey >= 0 && !c.anchored {
 		return Head{}, fmt.Errorf("%w: the anchored head is no longer in the chain: its tail was truncated or rewritten", ErrChainBroken)
 	}
 	head := Head{HMAC: c.prev, Events: c.index}
 	if c.index == 0 {
-		head.HMAC = c.v.Watermark
+		// The newest key seals the next event, so an anchor kept from an
+		// empty chain still refuses an older one after it.
+		head.HMAC, head.KeyID = c.v.Watermark, c.keys[0].ID
 	} else {
 		head.KeyID = c.keys[c.last].ID
 	}

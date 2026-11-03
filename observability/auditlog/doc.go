@@ -67,7 +67,10 @@
 // Keep all of it where whoever writes the store cannot change it, and pass
 // it back as [Verification.Anchor]: the chain must still contain that event,
 // sealed by that key, and no event from it on may carry an older key, so a
-// truncated or rewritten tail fails. Without an anchor, verification shows
+// truncated or rewritten tail fails. Once retention removed the anchored
+// event, the watermark stands for it and the same key rule holds; what the
+// anchor cannot tell from retention is removing events up to it. Without an
+// anchor, verification shows
 // only that the stored events form one chain under the listed keys: removing
 // the newest events goes unnoticed, and whoever holds any listed key can
 // replace the tail from a point that key sealed (a retired key: from before

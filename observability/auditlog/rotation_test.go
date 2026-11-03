@@ -145,9 +145,9 @@ func TestVerify_AnchorCatchesShorterChain(t *testing.T) {
 
 func TestVerify_AnchorAtWatermarkOfEmptyChain(t *testing.T) {
 	watermark := bytes.Repeat([]byte{7}, hmacSize)
-	head, err := VerifyChainKeys(nil, bothKeys, Verification{Watermark: watermark, Anchor: Head{HMAC: watermark}})
+	head, err := VerifyChainKeys(nil, bothKeys, Verification{Watermark: watermark, Anchor: Head{HMAC: watermark, KeyID: "2"}})
 	require.NoError(t, err)
-	assert.Equal(t, watermark, head.HMAC)
+	assert.Equal(t, Head{HMAC: watermark, KeyID: "2"}, head, "an empty chain's head names the key that seals the next event")
 }
 
 func TestLogE_RefusesRotationAction(t *testing.T) {
@@ -203,7 +203,7 @@ func TestClose_ZeroesOlderKeys(t *testing.T) {
 	assert.True(t, l.cursors.older[0].IsEmpty())
 }
 
-func TestVerify_AnchorAtWatermarkWithEventsWalkedFails(t *testing.T) {
+func TestVerify_AnchorRetentionRemovedHoldsTheEventsAfterIt(t *testing.T) {
 	store := NewMemoryStore()
 	l := keyed(store, secondKey, firstKey)
 	for _, action := range []string{"a", "b", "c"} {
@@ -211,9 +211,20 @@ func TestVerify_AnchorAtWatermarkWithEventsWalkedFails(t *testing.T) {
 	}
 	events := store.Events()
 	watermark := events[0].HMAC
-	_, err := VerifyChainKeys(events[1:], bothKeys, Verification{Watermark: watermark, Anchor: Head{HMAC: watermark, Events: 1, KeyID: "2"}})
-	require.ErrorIs(t, err, ErrChainBroken, "an anchor at the watermark stands only when no event follows it")
-	assert.Contains(t, err.Error(), "anchored head is no longer in the chain")
+	head, err := VerifyChainKeys(events[1:], bothKeys, Verification{Watermark: watermark, Anchor: Head{HMAC: watermark, Events: 1, KeyID: "2"}})
+	require.NoError(t, err, "retention removing the anchored event is no tamper")
+	assert.Equal(t, events[len(events)-1].HMAC, head.HMAC)
+}
+
+func TestVerify_AnchorAtWatermarkRefusesAnOlderKeyAfterIt(t *testing.T) {
+	store := NewMemoryStore()
+	logOne(t, unkeyed(store, secondKey.Key), "a")
+	watermark := store.Events()[0].HMAC
+	logOne(t, unkeyed(store, firstKey.Key), "forged")
+
+	_, err := VerifyChainKeys(store.Events()[1:], bothKeys, Verification{Watermark: watermark, Anchor: Head{HMAC: watermark, Events: 1, KeyID: "2"}})
+	require.ErrorIs(t, err, ErrChainBroken)
+	assert.Contains(t, err.Error(), `older than the anchored key "2"`)
 }
 
 func TestVerify_AnchoredEventSealedByOlderKeyFails(t *testing.T) {
