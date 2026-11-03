@@ -300,8 +300,10 @@ type Logger struct {
 	// to [computeHMACWithKey].
 	chainKey    *secret.String
 	chainKeyLen int
-	cursors     signedCursor
-	closed      atomic.Bool
+	// olderChainKeys verify records sealed before a rotation, newest first.
+	olderChainKeys []*secret.String
+	cursors        signedCursor
+	closed         atomic.Bool
 }
 
 // newAuditID is the package-level hook tests swap to install a
@@ -351,10 +353,9 @@ func WithLogger(l *slog.Logger) Option {
 
 // WithChainKey configures the HMAC key used to build the tamper-evident
 // chain. The key must be at least [MinChainKeyLen] (32) bytes; [New]
-// panics if no key (or a too-short key) is supplied. Rotating the chain
-// key invalidates [VerifyChain] for previously-appended events — operate
-// the chain on a single long-lived key for the chain's lifetime, and
-// archive the key alongside the records.
+// panics if no key (or a too-short key) is supplied. To rotate, use
+// [WithChainKeys] and keep the retired key listed while its events are
+// kept.
 //
 // Wire across processes: every replica that appends to the same store
 // must share the same chainKey. Source it from KMS / config secrets;
@@ -363,6 +364,25 @@ func WithChainKey(key []byte) Option {
 	return func(a *Logger) {
 		a.chainKey = secret.New(key)
 		a.chainKeyLen = len(key)
+	}
+}
+
+// WithChainKeys rotates the chain key: newest seals every new event, and
+// [Logger.VerifyChain] accepts each event sealed by newest or one of older
+// (newest first), as long as no event carries an older key than the event
+// before it, so a retired key cannot extend the chain. Keep a key in older
+// for as long as events it sealed are kept. Every key must be at least
+// [MinChainKeyLen] bytes; [New] panics otherwise.
+func WithChainKeys(newest []byte, older ...[]byte) Option {
+	return func(a *Logger) {
+		WithChainKey(newest)(a)
+		a.olderChainKeys = a.olderChainKeys[:0]
+		for _, k := range older {
+			if len(k) < MinChainKeyLen {
+				panic(fmt.Sprintf("auditlog: every chain key must be at least %d bytes", MinChainKeyLen))
+			}
+			a.olderChainKeys = append(a.olderChainKeys, secret.New(k))
+		}
 	}
 }
 
@@ -376,6 +396,23 @@ func WithChainKey(key []byte) Option {
 func WithCursorKey(key []byte) Option {
 	return func(a *Logger) {
 		a.cursors = signedCursor{key: secret.New(key), keyLen: len(key)}
+	}
+}
+
+// WithCursorKeys rotates the cursor key: newest signs every cursor, and a
+// cursor signed by newest or one of older is accepted, so pagination in
+// flight survives the rotation. Drop an older key once its cursors have
+// expired from use. Every key must be at least [MinCursorKeyLen] bytes;
+// [New] panics otherwise.
+func WithCursorKeys(newest []byte, older ...[]byte) Option {
+	return func(a *Logger) {
+		WithCursorKey(newest)(a)
+		for _, k := range older {
+			if len(k) < MinCursorKeyLen {
+				panic(fmt.Sprintf("auditlog: every cursor key must be at least %d bytes", MinCursorKeyLen))
+			}
+			a.cursors.older = append(a.cursors.older, secret.New(k))
+		}
 	}
 }
 
@@ -434,6 +471,12 @@ func (l *Logger) Close() error {
 	}
 	if l.cursors.key != nil {
 		l.cursors.key.Zero()
+	}
+	for _, k := range l.olderChainKeys {
+		k.Zero()
+	}
+	for _, k := range l.cursors.older {
+		k.Zero()
 	}
 	return nil
 }
@@ -691,22 +734,35 @@ func (l *Logger) VerifyChainFrom(ctx context.Context, watermark []byte) error {
 	if l.closed.Load() {
 		return ErrLoggerClosed
 	}
-	var verifyErr error
-	l.chainKey.Use(func(k []byte) {
+	keys := revealAll(append([]*secret.String{l.chainKey}, l.olderChainKeys...))
+	defer func() {
+		for _, k := range keys {
+			clear(k)
+		}
+	}()
+	for _, k := range keys {
 		if len(k) == 0 {
-			verifyErr = ErrLoggerClosed
-			return
+			return ErrLoggerClosed
 		}
 		if len(k) < MinChainKeyLen {
-			verifyErr = fmt.Errorf("%w: chain key must be at least %d bytes", ErrChainBroken, MinChainKeyLen)
-			return
+			return fmt.Errorf("%w: chain key must be at least %d bytes", ErrChainBroken, MinChainKeyLen)
 		}
-		verifyErr = l.streamVerifyChain(ctx, k, watermark)
-	})
-	return verifyErr
+	}
+	return l.streamVerifyChain(ctx, keys, watermark)
 }
 
-func (l *Logger) streamVerifyChain(ctx context.Context, chainKey []byte, watermark []byte) error {
+// revealAll copies each key out of its [secret.String]; the caller clears
+// the copies when done.
+func revealAll(secrets []*secret.String) [][]byte {
+	keys := make([][]byte, len(secrets))
+	for i, s := range secrets {
+		s.Use(func(k []byte) { keys[i] = append([]byte(nil), k...) })
+	}
+	return keys
+}
+
+func (l *Logger) streamVerifyChain(ctx context.Context, chainKeys [][]byte, watermark []byte) error {
+	oldest := len(chainKeys) - 1 // the oldest key the next event may carry
 	var (
 		prevHMAC []byte // HMAC of the previously visited (older) event
 		seenAny  bool
@@ -714,10 +770,11 @@ func (l *Logger) streamVerifyChain(ctx context.Context, chainKey []byte, waterma
 	)
 	err := l.store.RangeChain(ctx, func(event Event) error {
 		// 1. Self-consistency: recomputed HMAC must equal stored HMAC.
-		expected := computeHMAC(chainKey, eventWithoutHMAC(event))
-		if !constantTimeEqualHMAC(event.HMAC, expected) {
+		sealer := sealedBy(chainKeys[:oldest+1], event)
+		if sealer < 0 {
 			return fmt.Errorf("%w: event[%d] HMAC does not match canonical content", ErrChainBroken, index)
 		}
+		oldest = sealer
 		// 2. Genesis / link: the first event's PrevHMAC must equal the
 		// retention watermark (or be empty/zero when no watermark is
 		// supplied); subsequent events must point at the previous event's

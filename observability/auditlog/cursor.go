@@ -37,6 +37,8 @@ type signedCursor struct {
 	// by [secret.String.Use] closures inside encode/decode.
 	key    *secret.String
 	keyLen int
+	// older keys still verify cursors signed before a rotation.
+	older []*secret.String
 }
 
 // encodeCursor signs the raw cursor payload. Returns "" for empty
@@ -90,11 +92,13 @@ func (s signedCursor) decodeCursor(cursor string) (string, error) {
 		return "", fmt.Errorf("%w: cursor signature is not base64url", ErrInvalidCursor)
 	}
 	var match bool
-	s.key.Use(func(k []byte) {
-		expected := hmac.New(sha256.New, k)
-		expected.Write(payload)
-		match = subtle.ConstantTimeCompare(sig, expected.Sum(nil)) == 1
-	})
+	for _, key := range append([]*secret.String{s.key}, s.older...) {
+		key.Use(func(k []byte) {
+			expected := hmac.New(sha256.New, k)
+			expected.Write(payload)
+			match = match || len(k) > 0 && subtle.ConstantTimeCompare(sig, expected.Sum(nil)) == 1
+		})
+	}
 	if !match {
 		return "", fmt.Errorf("%w: cursor signature does not verify", ErrInvalidCursor)
 	}

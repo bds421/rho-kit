@@ -54,6 +54,15 @@
 // [ErrInvalidCursor]. Both keys are required (≥32 bytes); [New] panics
 // fast at startup if either is missing.
 //
+// # Key rotation
+//
+// [WithChainKeys] and [WithCursorKeys] take the newest key first and older
+// keys after it. The newest key seals events and signs cursors; older keys
+// only verify. Each event is checked against the key that sealed it, and no
+// event may carry an older key than the event before it, so a leaked
+// retired key cannot extend the chain. [VerifyChainKeysFrom] is the
+// standalone form for callers that read the chain themselves.
+//
 // # Key memory hygiene
 //
 // Both the chain key and the cursor key are wrapped in

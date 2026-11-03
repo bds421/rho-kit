@@ -175,9 +175,23 @@ func VerifyChain(events []Event, chainKey []byte) error {
 // VerifyChainFrom treats an empty slice as a valid (degenerate) chain
 // regardless of the watermark.
 func VerifyChainFrom(events []Event, chainKey []byte, watermark []byte) error {
-	if len(chainKey) < MinChainKeyLen {
-		return fmt.Errorf("%w: chain key must be at least %d bytes", ErrChainBroken, MinChainKeyLen)
+	return VerifyChainKeysFrom(events, [][]byte{chainKey}, watermark)
+}
+
+// VerifyChainKeysFrom is [VerifyChainFrom] across a chain-key rotation.
+// chainKeys lists the keys newest first (see [WithChainKeys]); each event
+// must be sealed by one of them, and no event may carry an older key than
+// the event before it, so a retired key cannot extend the chain.
+func VerifyChainKeysFrom(events []Event, chainKeys [][]byte, watermark []byte) error {
+	if len(chainKeys) == 0 {
+		return fmt.Errorf("%w: no chain key", ErrChainBroken)
 	}
+	for _, k := range chainKeys {
+		if len(k) < MinChainKeyLen {
+			return fmt.Errorf("%w: chain key must be at least %d bytes", ErrChainBroken, MinChainKeyLen)
+		}
+	}
+	oldest := len(chainKeys) - 1
 	var prev []byte
 	for i, event := range events {
 		if i == 0 {
@@ -193,10 +207,11 @@ func VerifyChainFrom(events []Event, chainKey []byte, watermark []byte) error {
 				return fmt.Errorf("%w: event[%d] PrevHMAC does not match event[%d] HMAC", ErrChainBroken, i, i-1)
 			}
 		}
-		expected := computeHMAC(chainKey, eventWithoutHMAC(event))
-		if !constantTimeEqualHMAC(event.HMAC, expected) {
+		sealer := sealedBy(chainKeys[:oldest+1], event)
+		if sealer < 0 {
 			return fmt.Errorf("%w: event[%d] HMAC does not match canonical content", ErrChainBroken, i)
 		}
+		oldest = sealer
 		prev = event.HMAC
 	}
 	return nil
@@ -235,4 +250,16 @@ func isZeroBytes(b []byte) bool {
 		}
 	}
 	return true
+}
+
+// sealedBy is the index of the key in keys whose HMAC the event carries, or
+// -1 when none matches.
+func sealedBy(keys [][]byte, event Event) int {
+	canonical := eventWithoutHMAC(event)
+	for i, k := range keys {
+		if constantTimeEqualHMAC(event.HMAC, computeHMAC(k, canonical)) {
+			return i
+		}
+	}
+	return -1
 }

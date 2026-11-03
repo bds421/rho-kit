@@ -93,6 +93,20 @@ sealed with a key no longer listed fails with `encrypt.ErrUnknownKey`.
 Ciphertext from a bare `NewGCM` has no key ID: prefix it with the ID of
 its key once (`"1." || ciphertext`) to bring it into a ring.
 
+### Rotating Audit Log Keys
+
+`auditlog.WithChainKeys` and `auditlog.WithCursorKeys` take the newest key
+first. New events are sealed and cursors signed with the newest key; older
+keys only verify. Verification checks each event against the key that sealed
+it and refuses an event sealed by an older key than the event before it.
+
+```go
+logger := auditlog.New(store,
+    auditlog.WithChainKeys(chainKey2, chainKey1), // keep chainKey1 while its events are kept
+    auditlog.WithCursorKeys(cursorKey2, cursorKey1), // drop cursorKey1 once old cursors expired
+)
+```
+
 ## Envelope Encryption
 
 Use `crypto/envelope` when records need per-write DEKs and online KEK rotation.
