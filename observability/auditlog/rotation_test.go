@@ -3,7 +3,6 @@ package auditlog
 import (
 	"bytes"
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,8 +10,10 @@ import (
 )
 
 var (
-	rotatedChainKey  = bytes.Repeat([]byte("d"), MinChainKeyLen)
+	firstKey         = ChainKey{ID: "1", Key: testChainKey}
+	secondKey        = ChainKey{ID: "2", Key: bytes.Repeat([]byte("d"), MinChainKeyLen)}
 	rotatedCursorKey = bytes.Repeat([]byte("v"), MinCursorKeyLen)
+	bothKeys         = []ChainKey{secondKey, firstKey}
 )
 
 func logOne(t *testing.T, l *Logger, action string) {
@@ -20,43 +21,156 @@ func logOne(t *testing.T, l *Logger, action string) {
 	require.NoError(t, l.LogE(context.Background(), Event{Actor: "a", Action: action, Resource: "r", Status: "success"}))
 }
 
+func keyed(store Store, newest ChainKey, older ...ChainKey) *Logger {
+	return New(store, WithChainKeys(newest, older...), WithCursorKey(testCursorKey))
+}
+
+func unkeyed(store Store, key []byte) *Logger {
+	return New(store, WithChainKey(key), WithCursorKey(testCursorKey))
+}
+
+// truncate keeps the first n events, as whoever can write the store could.
+func truncate(store *MemoryStore, n int) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.events = store.events[:n]
+}
+
 func TestWithChainKeys_VerifiesAcrossRotation(t *testing.T) {
 	store := NewMemoryStore()
-	before := New(store, WithChainKey(testChainKey), WithCursorKey(testCursorKey))
-	logOne(t, before, "first")
+	logOne(t, unkeyed(store, firstKey.Key), "before")
+	logOne(t, keyed(store, secondKey, firstKey), "after")
 
-	after := New(store, WithChainKeys(rotatedChainKey, testChainKey), WithCursorKey(testCursorKey))
-	logOne(t, after, "second")
+	events := store.Events()
+	require.Len(t, events, 3)
+	assert.Equal(t, RotationAction, events[1].Action)
+	assert.Equal(t, "chain-keys/2", events[1].Resource)
 
-	require.NoError(t, after.VerifyChain(context.Background()))
-	require.NoError(t, VerifyChainKeysFrom(store.Events(), [][]byte{rotatedChainKey, testChainKey}, nil))
+	head, err := keyed(store, secondKey, firstKey).Verify(context.Background(), Verification{})
+	require.NoError(t, err)
+	assert.Equal(t, events[2].HMAC, head.HMAC)
+	assert.Equal(t, 3, head.Events)
+	_, err = VerifyChainKeys(events, bothKeys, Verification{})
+	require.NoError(t, err)
 
-	err := before.VerifyChain(context.Background())
-	assert.ErrorIs(t, err, ErrChainBroken, "the old key alone does not verify the rotated event")
+	assert.ErrorIs(t, unkeyed(store, firstKey.Key).VerifyChain(context.Background()), ErrChainBroken,
+		"the old key alone does not verify the rotated events")
 }
 
-func TestWithChainKeys_RejectsOlderKeyAfterNewer(t *testing.T) {
+func TestWithChainKeys_MarkerOncePerRotation(t *testing.T) {
 	store := NewMemoryStore()
-	rotated := New(store, WithChainKey(rotatedChainKey), WithCursorKey(testCursorKey))
-	logOne(t, rotated, "first")
-	retired := New(store, WithChainKey(testChainKey), WithCursorKey(testCursorKey))
-	logOne(t, retired, "second")
+	logOne(t, keyed(store, secondKey, firstKey), "a")
+	logOne(t, keyed(store, secondKey, firstKey), "b")
+	require.NoError(t, keyed(store, secondKey, firstKey).RecordRotation(context.Background()))
 
-	verifier := New(store, WithChainKeys(rotatedChainKey, testChainKey), WithCursorKey(testCursorKey))
-	err := verifier.VerifyChain(context.Background())
+	var markers int
+	for _, e := range store.Events() {
+		if e.Action == RotationAction {
+			markers++
+		}
+	}
+	assert.Equal(t, 1, markers, "a restart under the same key adds no marker")
+}
+
+func TestVerify_RejectsOldKeyAfterRotation(t *testing.T) {
+	store := NewMemoryStore()
+	logOne(t, keyed(store, firstKey), "first")
+	require.NoError(t, keyed(store, secondKey, firstKey).RecordRotation(context.Background()))
+	logOne(t, keyed(store, firstKey), "retired-key")
+
+	_, err := keyed(store, secondKey, firstKey).Verify(context.Background(), Verification{})
 	require.ErrorIs(t, err, ErrChainBroken)
-	assert.Contains(t, err.Error(), "event[1]")
-	assert.ErrorIs(t, VerifyChainKeysFrom(store.Events(), [][]byte{rotatedChainKey, testChainKey}, nil), ErrChainBroken)
+	assert.Contains(t, err.Error(), `event[3] is sealed by chain key "1", older than the rotation`)
 }
 
-func TestWithChainKeys_PanicsOnShortOlderKey(t *testing.T) {
-	assert.Panics(t, func() {
-		New(NewMemoryStore(), WithChainKeys(rotatedChainKey, []byte("short")), WithCursorKey(testCursorKey))
-	})
+func TestVerify_RejectsNewKeyWithoutMarker(t *testing.T) {
+	store := NewMemoryStore()
+	logOne(t, unkeyed(store, firstKey.Key), "first")
+	logOne(t, unkeyed(store, secondKey.Key), "no-marker")
+
+	_, err := keyed(store, secondKey, firstKey).Verify(context.Background(), Verification{})
+	require.ErrorIs(t, err, ErrChainBroken)
+	assert.Contains(t, err.Error(), "without its rotation marker")
 }
 
-func TestVerifyChainKeysFrom_RequiresAKey(t *testing.T) {
-	assert.ErrorIs(t, VerifyChainKeysFrom(nil, nil, nil), ErrChainBroken)
+func TestVerify_RejectsUnkeyedEventAfterRotation(t *testing.T) {
+	store := NewMemoryStore()
+	logOne(t, keyed(store, secondKey, firstKey), "rotated")
+	logOne(t, unkeyed(store, secondKey.Key), "no-key-id")
+
+	_, err := keyed(store, secondKey, firstKey).Verify(context.Background(), Verification{})
+	require.ErrorIs(t, err, ErrChainBroken)
+	assert.Contains(t, err.Error(), "does not bind its chain key ID")
+}
+
+func TestVerify_AnchorCatchesTruncatedAndReextendedTail(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	logOne(t, keyed(store, firstKey), "first")
+	beforeRotation := len(store.Events())
+	logOne(t, keyed(store, secondKey, firstKey), "after-rotation")
+	verifier := keyed(store, secondKey, firstKey)
+	anchor, err := verifier.Verify(ctx, Verification{})
+	require.NoError(t, err)
+
+	truncate(store, beforeRotation)
+	logOne(t, keyed(store, firstKey), "forged")
+
+	_, err = verifier.Verify(ctx, Verification{})
+	require.NoError(t, err, "without an anchor a leaked key can rewrite the tail back to the rotation")
+	_, err = verifier.Verify(ctx, Verification{Anchor: anchor.HMAC})
+	require.ErrorIs(t, err, ErrChainBroken)
+	assert.Contains(t, err.Error(), "anchored head is no longer in the chain")
+}
+
+func TestVerify_AnchorCatchesShorterChain(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	l := keyed(store, secondKey, firstKey)
+	for _, action := range []string{"a", "b", "c"} {
+		logOne(t, l, action)
+	}
+	anchor, err := l.Verify(ctx, Verification{})
+	require.NoError(t, err)
+
+	logOne(t, l, "d")
+	head, err := l.Verify(ctx, Verification{Anchor: anchor.HMAC})
+	require.NoError(t, err, "a chain that grew past the anchor verifies")
+	assert.Equal(t, anchor.Events+1, head.Events)
+
+	truncate(store, anchor.Events-1)
+	_, err = l.Verify(ctx, Verification{Anchor: anchor.HMAC})
+	assert.ErrorIs(t, err, ErrChainBroken)
+}
+
+func TestVerify_AnchorAtWatermarkOfEmptyChain(t *testing.T) {
+	watermark := bytes.Repeat([]byte{7}, hmacSize)
+	head, err := VerifyChainKeys(nil, bothKeys, Verification{Watermark: watermark, Anchor: watermark})
+	require.NoError(t, err)
+	assert.Equal(t, watermark, head.HMAC)
+}
+
+func TestLogE_RefusesRotationAction(t *testing.T) {
+	err := keyed(NewMemoryStore(), secondKey).LogE(context.Background(), Event{Actor: "a", Action: RotationAction, Resource: "chain-keys/2", Status: "success"})
+	assert.ErrorIs(t, err, ErrInvalidEvent)
+}
+
+func TestWithChainKeys_PanicsOnBadKeys(t *testing.T) {
+	for name, keys := range map[string][]ChainKey{
+		"short older key": {secondKey, {ID: "1", Key: []byte("short")}},
+		"duplicate ID":    {secondKey, {ID: "2", Key: firstKey.Key}},
+		"empty ID":        {{Key: firstKey.Key}},
+		"ID with a dot":   {{ID: "a.b", Key: firstKey.Key}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Panics(t, func() { keyed(NewMemoryStore(), keys[0], keys[1:]...) })
+		})
+	}
+}
+
+func TestVerifyChainKeys_RequiresAKey(t *testing.T) {
+	_, err := VerifyChainKeys(nil, nil, Verification{})
+	assert.ErrorIs(t, err, ErrChainBroken)
 }
 
 func TestWithCursorKeys_AcceptsCursorOfOlderKey(t *testing.T) {
@@ -77,14 +191,14 @@ func TestWithCursorKeys_AcceptsCursorOfOlderKey(t *testing.T) {
 
 	retired := New(store, WithChainKey(testChainKey), WithCursorKey(rotatedCursorKey))
 	_, _, err = retired.List(ctx, Filter{}, cursor, 1)
-	assert.True(t, errors.Is(err, ErrInvalidCursor), "a dropped key no longer verifies its cursors")
+	assert.ErrorIs(t, err, ErrInvalidCursor, "a dropped key no longer verifies its cursors")
 	_, _, err = retired.List(ctx, Filter{}, next, 1)
 	assert.NoError(t, err, "new cursors are signed with the newest key")
 }
 
 func TestClose_ZeroesOlderKeys(t *testing.T) {
-	l := New(NewMemoryStore(), WithChainKeys(rotatedChainKey, testChainKey), WithCursorKeys(rotatedCursorKey, testCursorKey))
-	l.Close()
-	assert.True(t, l.olderChainKeys[0].IsEmpty())
+	l := New(NewMemoryStore(), WithChainKeys(secondKey, firstKey), WithCursorKeys(rotatedCursorKey, testCursorKey))
+	require.NoError(t, l.Close())
+	assert.True(t, l.olderChainKeys[0].key.IsEmpty())
 	assert.True(t, l.cursors.older[0].IsEmpty())
 }

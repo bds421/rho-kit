@@ -254,6 +254,24 @@ func (s *Store) RangeChain(ctx context.Context, fn func(auditlog.Event) error) e
 	return nil
 }
 
+// Head returns the most recently persisted event, so a rotating
+// [auditlog.Logger] writes a rotation marker only when the head was sealed
+// by another key. It implements [auditlog.HeadReader].
+func (s *Store) Head(ctx context.Context) (auditlog.Event, bool, error) {
+	if s == nil || s.pool == nil {
+		return auditlog.Event{}, false, errors.New("auditlog/postgres: store not initialized")
+	}
+	const q = selectColumns + " FROM audit_log_events ORDER BY seq DESC LIMIT 1"
+	event, err := scanEvent(s.pool.QueryRow(ctx, q))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return auditlog.Event{}, false, nil
+	}
+	if err != nil {
+		return auditlog.Event{}, false, fmt.Errorf("auditlog/postgres: head: %w", err)
+	}
+	return event, true, nil
+}
+
 // LastHMAC returns the HMAC of the most recently persisted event, or
 // nil when the chain is empty. Useful for operator tooling that wants
 // to inspect the tail without holding the chain lock.
@@ -366,6 +384,7 @@ func (s *Store) DeleteBefore(ctx context.Context, before time.Time) (int64, []by
 var (
 	_ auditlog.Store          = (*Store)(nil)
 	_ auditlog.RetentionStore = (*Store)(nil)
+	_ auditlog.HeadReader     = (*Store)(nil)
 )
 
 const selectColumns = `SELECT id, occurred_at, actor, tenant, action, resource, status,

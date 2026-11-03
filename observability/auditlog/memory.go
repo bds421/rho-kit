@@ -96,6 +96,19 @@ func (m *MemoryStore) LastHMAC(ctx context.Context) ([]byte, error) {
 	return append([]byte(nil), tail...), nil
 }
 
+// Head returns the newest event; it implements [HeadReader].
+func (m *MemoryStore) Head(ctx context.Context) (Event, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Event{}, false, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.events) == 0 {
+		return Event{}, false, nil
+	}
+	return cloneEvent(m.events[len(m.events)-1]), true, nil
+}
+
 // RangeChain calls fn for every stored event in append order (oldest
 // first). Implements [Store.RangeChain] so chain verification iterates
 // independently of the timestamp-ordered [Query] view — a backfilled

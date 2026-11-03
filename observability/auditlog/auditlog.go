@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -300,10 +301,15 @@ type Logger struct {
 	// to [computeHMACWithKey].
 	chainKey    *secret.String
 	chainKeyLen int
+	// chainKeyID names chainKey once [WithChainKeys] set it; empty for
+	// the unkeyed [WithChainKey].
+	chainKeyID string
 	// olderChainKeys verify records sealed before a rotation, newest first.
-	olderChainKeys []*secret.String
-	cursors        signedCursor
-	closed         atomic.Bool
+	olderChainKeys   []namedKey
+	rotationMu       sync.Mutex
+	rotationRecorded atomic.Bool
+	cursors          signedCursor
+	closed           atomic.Bool
 }
 
 // newAuditID is the package-level hook tests swap to install a
@@ -354,8 +360,8 @@ func WithLogger(l *slog.Logger) Option {
 // WithChainKey configures the HMAC key used to build the tamper-evident
 // chain. The key must be at least [MinChainKeyLen] (32) bytes; [New]
 // panics if no key (or a too-short key) is supplied. To rotate, use
-// [WithChainKeys] and keep the retired key listed while its events are
-// kept.
+// [WithChainKeys]; events sealed here verify under the [ChainKey] with the
+// same bytes.
 //
 // Wire across processes: every replica that appends to the same store
 // must share the same chainKey. Source it from KMS / config secrets;
@@ -364,25 +370,6 @@ func WithChainKey(key []byte) Option {
 	return func(a *Logger) {
 		a.chainKey = secret.New(key)
 		a.chainKeyLen = len(key)
-	}
-}
-
-// WithChainKeys rotates the chain key: newest seals every new event, and
-// [Logger.VerifyChain] accepts each event sealed by newest or one of older
-// (newest first), as long as no event carries an older key than the event
-// before it, so a retired key cannot extend the chain. Keep a key in older
-// for as long as events it sealed are kept. Every key must be at least
-// [MinChainKeyLen] bytes; [New] panics otherwise.
-func WithChainKeys(newest []byte, older ...[]byte) Option {
-	return func(a *Logger) {
-		WithChainKey(newest)(a)
-		a.olderChainKeys = a.olderChainKeys[:0]
-		for _, k := range older {
-			if len(k) < MinChainKeyLen {
-				panic(fmt.Sprintf("auditlog: every chain key must be at least %d bytes", MinChainKeyLen))
-			}
-			a.olderChainKeys = append(a.olderChainKeys, secret.New(k))
-		}
 	}
 }
 
@@ -473,7 +460,7 @@ func (l *Logger) Close() error {
 		l.cursors.key.Zero()
 	}
 	for _, k := range l.olderChainKeys {
-		k.Zero()
+		k.key.Zero()
 	}
 	for _, k := range l.cursors.older {
 		k.Zero()
@@ -505,6 +492,19 @@ func (l *Logger) Log(ctx context.Context, event Event) {
 // fields on the input event are ignored — they are always recomputed
 // from the store's current tail inside the chained build callback.
 func (l *Logger) LogE(ctx context.Context, event Event) error {
+	if l.closed.Load() {
+		return ErrLoggerClosed
+	}
+	if event.Action == RotationAction {
+		return fmt.Errorf("%w: action %q is reserved for rotation markers", ErrInvalidEvent, RotationAction)
+	}
+	if err := l.RecordRotation(ctx); err != nil {
+		return err
+	}
+	return l.appendEvent(ctx, event)
+}
+
+func (l *Logger) appendEvent(ctx context.Context, event Event) error {
 	if l.closed.Load() {
 		return ErrLoggerClosed
 	}
@@ -566,7 +566,7 @@ func (l *Logger) LogE(ctx context.Context, event Event) error {
 				keyEmpty = true
 				return
 			}
-			mac = computeHMAC(k, event)
+			mac = computeKeyedHMAC(k, l.chainKeyID, event)
 		})
 		if keyEmpty {
 			buildErr = ErrLoggerClosed
@@ -731,74 +731,52 @@ func (l *Logger) VerifyChain(ctx context.Context) error {
 //
 // Returns [ErrLoggerClosed] if the logger has been closed.
 func (l *Logger) VerifyChainFrom(ctx context.Context, watermark []byte) error {
+	_, err := l.Verify(ctx, Verification{Watermark: watermark})
+	return err
+}
+
+// Verify streams the store in append order through the checks of
+// [VerifyChainKeys] with every configured chain key, and returns the head
+// to keep as the next [Verification.Anchor]. Returns [ErrLoggerClosed] if
+// the logger has been closed.
+func (l *Logger) Verify(ctx context.Context, v Verification) (Head, error) {
 	if l.closed.Load() {
-		return ErrLoggerClosed
+		return Head{}, ErrLoggerClosed
 	}
-	keys := revealAll(append([]*secret.String{l.chainKey}, l.olderChainKeys...))
+	keys := l.revealChainKeys()
 	defer func() {
 		for _, k := range keys {
-			clear(k)
+			clear(k.Key)
 		}
 	}()
 	for _, k := range keys {
-		if len(k) == 0 {
-			return ErrLoggerClosed
-		}
-		if len(k) < MinChainKeyLen {
-			return fmt.Errorf("%w: chain key must be at least %d bytes", ErrChainBroken, MinChainKeyLen)
+		if len(k.Key) == 0 {
+			return Head{}, ErrLoggerClosed
 		}
 	}
-	return l.streamVerifyChain(ctx, keys, watermark)
+	verifier, err := newChainVerifier(keys, v)
+	if err != nil {
+		return Head{}, err
+	}
+	if err := l.store.RangeChain(ctx, verifier.step); err != nil {
+		return Head{}, err
+	}
+	return verifier.finish()
 }
 
-// revealAll copies each key out of its [secret.String]; the caller clears
-// the copies when done.
-func revealAll(secrets []*secret.String) [][]byte {
-	keys := make([][]byte, len(secrets))
-	for i, s := range secrets {
-		s.Use(func(k []byte) { keys[i] = append([]byte(nil), k...) })
+// revealChainKeys copies every chain key out of its [secret.String], newest
+// first; the caller clears the copies when done.
+func (l *Logger) revealChainKeys() []ChainKey {
+	reveal := func(id string, s *secret.String) ChainKey {
+		k := ChainKey{ID: id}
+		s.Use(func(b []byte) { k.Key = append([]byte(nil), b...) })
+		return k
+	}
+	keys := []ChainKey{reveal(l.chainKeyID, l.chainKey)}
+	for _, k := range l.olderChainKeys {
+		keys = append(keys, reveal(k.id, k.key))
 	}
 	return keys
-}
-
-func (l *Logger) streamVerifyChain(ctx context.Context, chainKeys [][]byte, watermark []byte) error {
-	oldest := len(chainKeys) - 1 // the oldest key the next event may carry
-	var (
-		prevHMAC []byte // HMAC of the previously visited (older) event
-		seenAny  bool
-		index    int // append-order index, for error messages
-	)
-	err := l.store.RangeChain(ctx, func(event Event) error {
-		// 1. Self-consistency: recomputed HMAC must equal stored HMAC.
-		sealer := sealedBy(chainKeys[:oldest+1], event)
-		if sealer < 0 {
-			return fmt.Errorf("%w: event[%d] HMAC does not match canonical content", ErrChainBroken, index)
-		}
-		oldest = sealer
-		// 2. Genesis / link: the first event's PrevHMAC must equal the
-		// retention watermark (or be empty/zero when no watermark is
-		// supplied); subsequent events must point at the previous event's
-		// HMAC.
-		if !seenAny {
-			if len(watermark) == 0 {
-				if len(event.PrevHMAC) != 0 && !isZeroBytes(event.PrevHMAC) {
-					return fmt.Errorf("%w: event[0] PrevHMAC must be empty or zero", ErrChainBroken)
-				}
-			} else if !constantTimeEqualHMAC(event.PrevHMAC, watermark) {
-				return fmt.Errorf("%w: event[0] PrevHMAC does not match retention watermark", ErrChainBroken)
-			}
-		} else if !constantTimeEqualHMAC(event.PrevHMAC, prevHMAC) {
-			return fmt.Errorf("%w: event[%d] PrevHMAC does not match event[%d] HMAC", ErrChainBroken, index, index-1)
-		}
-		prevHMAC = event.HMAC
-		seenAny = true
-		index++
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 // extractTraceID returns the OpenTelemetry trace ID from the context, or "".

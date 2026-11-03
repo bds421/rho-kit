@@ -2,13 +2,21 @@
 
 ## v2.35.0 — 2026-11-03
 
-- **feat(observability/auditlog): rotate chain and cursor keys.**
-  `WithChainKeys(newest, older...)` seals new events with the newest key;
-  `Logger.VerifyChain`/`VerifyChainFrom` and the standalone
-  `VerifyChainKeysFrom` check each event against the key that sealed it
-  and refuse an event sealed by an older key than the event before it, so
-  a retired key cannot extend the chain. `WithCursorKeys(newest, older...)`
-  accepts cursors signed by an older key. `Close` zeroes every key.
+- **feat(observability/auditlog): rotate chain and cursor keys, anchor the
+  head.** `WithChainKeys(newest, older...)` takes `ChainKey{ID, Key}`; the
+  newest key seals new events with its ID bound into the HMAC, after a
+  rotation marker (`RotationAction`) the Logger appends before its first
+  event or at `Logger.RecordRotation`. `Logger.Verify` and the standalone
+  `VerifyChainKeys` check each event against the key that sealed it and
+  refuse an event sealed by a key older than the latest marker, a newer key
+  without its marker, and an event without a key ID after a marker.
+  `Verification.Anchor` takes the `Head` an earlier verification returned:
+  a chain no longer containing it (tail truncated or rewritten) fails.
+  `WithCursorKeys(newest, older...)` accepts cursors of older keys. `Close`
+  zeroes every key. Existing chains and `WithChainKey` keep verifying
+  unchanged.
+- **feat(observability/auditlog/postgres): `Store.Head`** returns the newest
+  event (`auditlog.HeadReader`), so a rotation is recorded once.
 - **feat(crypto/encrypt): `Keyring`, an AEAD over several keys.**
   `NewKeyring(newest, older...)` seals with the newest key and prefixes
   each ciphertext with its key ID (`"id." || ciphertext`); `Decrypt` opens

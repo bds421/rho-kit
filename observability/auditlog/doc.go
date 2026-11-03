@@ -54,14 +54,22 @@
 // [ErrInvalidCursor]. Both keys are required (≥32 bytes); [New] panics
 // fast at startup if either is missing.
 //
-// # Key rotation
+// # Key rotation and anchors
 //
-// [WithChainKeys] and [WithCursorKeys] take the newest key first and older
-// keys after it. The newest key seals events and signs cursors; older keys
-// only verify. Each event is checked against the key that sealed it, and no
-// event may carry an older key than the event before it, so a leaked
-// retired key cannot extend the chain. [VerifyChainKeysFrom] is the
-// standalone form for callers that read the chain themselves.
+// [WithChainKeys] takes [ChainKey] values, newest first. The newest key
+// seals new events with its ID bound into the HMAC; older keys only verify.
+// The Logger appends a rotation marker ([RotationAction]) sealed by the new
+// key before its first event, or at startup through [Logger.RecordRotation].
+// Verification refuses an event sealed by a key older than the latest
+// marker and a newer key without its marker.
+//
+// [Logger.Verify] returns the [Head] it verified. Keep its HMAC where
+// whoever writes the store cannot change it, and pass it back as
+// [Verification.Anchor]: the chain must still contain that event, so a
+// truncated or rewritten tail fails. Without an anchor, removing the newest
+// events goes unnoticed, and whoever holds a retired key can cut the tail
+// back to before its rotation marker and extend it. Take an anchor right
+// after a rotation. [VerifyChainKeys] is the standalone form.
 //
 // # Key memory hygiene
 //

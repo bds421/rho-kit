@@ -95,17 +95,29 @@ its key once (`"1." || ciphertext`) to bring it into a ring.
 
 ### Rotating Audit Log Keys
 
-`auditlog.WithChainKeys` and `auditlog.WithCursorKeys` take the newest key
-first. New events are sealed and cursors signed with the newest key; older
-keys only verify. Verification checks each event against the key that sealed
-it and refuses an event sealed by an older key than the event before it.
+`auditlog.WithChainKeys` takes `ChainKey{ID, Key}` values, newest first. The
+newest key seals new events with its ID bound into the HMAC; older keys only
+verify. The Logger appends a rotation marker sealed by the new key before its
+first event (`Logger.RecordRotation` at startup writes it at once).
+Verification refuses an event sealed by a key older than the latest marker.
+`WithCursorKeys(newest, older...)` accepts cursors of older cursor keys.
 
 ```go
 logger := auditlog.New(store,
-    auditlog.WithChainKeys(chainKey2, chainKey1), // keep chainKey1 while its events are kept
+    auditlog.WithChainKeys(auditlog.ChainKey{ID: "2", Key: k2}, auditlog.ChainKey{ID: "1", Key: k1}),
     auditlog.WithCursorKeys(cursorKey2, cursorKey1), // drop cursorKey1 once old cursors expired
 )
+_ = logger.RecordRotation(ctx)
+head, err := logger.Verify(ctx, auditlog.Verification{Watermark: watermark, Anchor: lastHead})
+// keep head.HMAC as the next anchor, out of reach of whoever writes the store
 ```
+
+Without an anchor, deleting the newest events is not detected, and whoever
+holds a retired key can cut the tail back to before its rotation marker and
+extend it. With an anchor, only events after the anchored one can be
+rewritten, and only by a key that was current after it: take an anchor right
+after every rotation, and more often than retention removes events. Keep a
+retired chain key listed while events it sealed are kept.
 
 ## Envelope Encryption
 

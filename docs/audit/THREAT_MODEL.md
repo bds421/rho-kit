@@ -644,10 +644,40 @@ appends HMAC-chained audit records. Each record carries:
 Missing / short keys fail fast at constructor time — operators cannot
 silently ship the package without tamper-evidence. The key must be
 shared across every replica that appends to the same store; source it
-from KMS / config secrets, never from per-pod random material. Rotating
-the chain key invalidates `VerifyChain` for all previously-appended
-records, so operate the chain on a single long-lived key for the
-chain's lifetime and archive the key alongside the records.
+from KMS / config secrets, never from per-pod random material.
+
+**Key rotation.** `WithChainKeys(newest, older...)` takes `ChainKey{ID,
+Key}` values. The newest key seals every new event with its ID bound into
+the HMAC input (`canonicalEvent || 0xFF "kid" || len || id`). Before its
+first event the Logger appends a rotation marker (actor `auditlog`, action
+`auditlog.chain_key_rotated`, resource `chain-keys/<id>`) sealed by the new
+key and chained from the previous HMAC; `Logger.RecordRotation` writes it
+at startup, and only when the chain head is not already sealed by that key.
+Verification checks each event against the key that sealed it and refuses
+an event sealed by a key older than the latest marker, a newer key without
+its marker, and, once a marker exists, an event without a key ID.
+
+**Head anchor.** `Logger.Verify(ctx, Verification{Watermark, Anchor})`
+returns the head it verified; kept where store writers cannot reach it and
+passed back as `Anchor`, it must still be in the chain, so a truncated or
+rewritten tail fails. The anchor is matched by HMAC, not by position:
+retention removes the head, so positions shift, and the database sequence
+is not covered by any HMAC.
+
+**What is guaranteed.**
+
+- Without any chain key, nobody can change, insert, reorder or remove an
+  event between the retention watermark and the newest event without
+  verification failing. Removing newest events (truncating the tail) is
+  caught only with an anchor, and only up to the anchored event.
+- Whoever holds the newest key can rewrite every event after the anchor;
+  without an anchor, the whole chain.
+- Whoever holds a retired key cannot append after the marker that retired
+  it. Without an anchor they can truncate the tail to before that marker
+  and extend it with events of their own; with an anchor taken after the
+  marker they cannot. Take an anchor right after every rotation.
+- An anchored event that retention has since removed fails verification;
+  verify and re-anchor more often than the retention period.
 
 **Canonical encoding.**
 [`canonicalEvent`](../../observability/auditlog/chain.go) serialises
@@ -694,7 +724,8 @@ rotated separately.
 
 Threats defused: **A1 / A6 forge a future cursor to skip records or
 enumerate IDs**; **A6 tamper with a stored record after the fact**;
-**A5 silently strip middle records before retention runs**.
+**A5 silently strip middle records before retention runs**; with an
+anchor, **A5 truncate or rewrite the tail with a leaked retired key**.
 
 ### 5.5 Outbound HTTP discipline
 

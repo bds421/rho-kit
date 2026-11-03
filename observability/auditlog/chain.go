@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 )
 
@@ -114,6 +113,25 @@ func computeHMAC(chainKey []byte, event Event) []byte {
 	return mac.Sum(nil)
 }
 
+// keyIDTag opens the key-ID suffix of a keyed HMAC input. canonicalEvent ends
+// with a complete length-prefixed field, so the suffix cannot be read as part
+// of another event's encoding.
+var keyIDTag = []byte{0xFF, 'k', 'i', 'd'}
+
+// computeKeyedHMAC binds the sealing key's ID into the HMAC input, so an
+// event names the key that sealed it and a rotation marker cannot be
+// replayed under another key ID. An empty keyID is the unkeyed form.
+func computeKeyedHMAC(chainKey []byte, keyID string, event Event) []byte {
+	if keyID == "" {
+		return computeHMAC(chainKey, event)
+	}
+	mac := hmac.New(sha256.New, chainKey)
+	mac.Write(canonicalEvent(event))
+	mac.Write(keyIDTag)
+	mac.Write(appendLenPrefixed(nil, []byte(keyID)))
+	return mac.Sum(nil)
+}
+
 // constantTimeEqualHMAC compares two HMAC values in constant time. Returns
 // true iff the two slices are equal-length and bytewise identical.
 func constantTimeEqualHMAC(a, b []byte) bool {
@@ -175,46 +193,8 @@ func VerifyChain(events []Event, chainKey []byte) error {
 // VerifyChainFrom treats an empty slice as a valid (degenerate) chain
 // regardless of the watermark.
 func VerifyChainFrom(events []Event, chainKey []byte, watermark []byte) error {
-	return VerifyChainKeysFrom(events, [][]byte{chainKey}, watermark)
-}
-
-// VerifyChainKeysFrom is [VerifyChainFrom] across a chain-key rotation.
-// chainKeys lists the keys newest first (see [WithChainKeys]); each event
-// must be sealed by one of them, and no event may carry an older key than
-// the event before it, so a retired key cannot extend the chain.
-func VerifyChainKeysFrom(events []Event, chainKeys [][]byte, watermark []byte) error {
-	if len(chainKeys) == 0 {
-		return fmt.Errorf("%w: no chain key", ErrChainBroken)
-	}
-	for _, k := range chainKeys {
-		if len(k) < MinChainKeyLen {
-			return fmt.Errorf("%w: chain key must be at least %d bytes", ErrChainBroken, MinChainKeyLen)
-		}
-	}
-	oldest := len(chainKeys) - 1
-	var prev []byte
-	for i, event := range events {
-		if i == 0 {
-			if len(watermark) == 0 {
-				if len(event.PrevHMAC) != 0 && !isZeroBytes(event.PrevHMAC) {
-					return fmt.Errorf("%w: event[0] PrevHMAC must be empty or zero", ErrChainBroken)
-				}
-			} else if !constantTimeEqualHMAC(event.PrevHMAC, watermark) {
-				return fmt.Errorf("%w: event[0] PrevHMAC does not match retention watermark", ErrChainBroken)
-			}
-		} else {
-			if !constantTimeEqualHMAC(event.PrevHMAC, prev) {
-				return fmt.Errorf("%w: event[%d] PrevHMAC does not match event[%d] HMAC", ErrChainBroken, i, i-1)
-			}
-		}
-		sealer := sealedBy(chainKeys[:oldest+1], event)
-		if sealer < 0 {
-			return fmt.Errorf("%w: event[%d] HMAC does not match canonical content", ErrChainBroken, i)
-		}
-		oldest = sealer
-		prev = event.HMAC
-	}
-	return nil
+	_, err := VerifyChainKeys(events, []ChainKey{{Key: chainKey}}, Verification{Watermark: watermark})
+	return err
 }
 
 // eventWithoutHMAC returns a copy of event with the HMAC field cleared.
@@ -250,16 +230,4 @@ func isZeroBytes(b []byte) bool {
 		}
 	}
 	return true
-}
-
-// sealedBy is the index of the key in keys whose HMAC the event carries, or
-// -1 when none matches.
-func sealedBy(keys [][]byte, event Event) int {
-	canonical := eventWithoutHMAC(event)
-	for i, k := range keys {
-		if constantTimeEqualHMAC(event.HMAC, computeHMAC(k, canonical)) {
-			return i
-		}
-	}
-	return -1
 }
