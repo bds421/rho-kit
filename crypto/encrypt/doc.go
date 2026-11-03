@@ -1,6 +1,8 @@
 // Package encrypt provides AES-256-GCM encryption helpers at two levels:
 //
 //   - Byte-level: [NewGCM], [EncryptBytes], [DecryptBytes] for raw encryption.
+//   - Rotation: [NewKeyring] is an AEAD over several keys; the first seals,
+//     every key opens, and each ciphertext names its key.
 //   - Field-level: [FieldEncryptor] for database column encryption with
 //     base64 encoding and version-prefixed format.
 //

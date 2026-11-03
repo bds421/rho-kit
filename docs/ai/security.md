@@ -71,6 +71,28 @@ opened, err := encrypt.DecryptBytes(gcm, sealed)
 // AAD-binding variants: encrypt.EncryptBytesAAD, encrypt.DecryptBytesAAD.
 ```
 
+### Rotating a Byte-Encryption Key
+
+`encrypt.NewKeyring` is an AEAD over several keys, newest first: the first
+seals, every key opens, and each ciphertext starts with its key's ID.
+
+```go
+ring, err := encrypt.NewKeyring(
+    encrypt.Key{ID: "2", Key: newKey32},
+    encrypt.Key{ID: "1", Key: oldKey32},
+)
+sealed, err := encrypt.EncryptBytesAAD(ring, plaintext, aad) // "2." || nonce || ciphertext
+if !ring.Current(stored) { // reseal: open with any key, seal with the newest
+    plain, err := encrypt.DecryptBytesAAD(ring, stored, aad)
+    stored, err = encrypt.EncryptBytesAAD(ring, plain, aad)
+}
+```
+
+Remove the old key only after every stored value is current; a value
+sealed with a key no longer listed fails with `encrypt.ErrUnknownKey`.
+Ciphertext from a bare `NewGCM` has no key ID: prefix it with the ID of
+its key once (`"1." || ciphertext`) to bring it into a ring.
+
 ## Envelope Encryption
 
 Use `crypto/envelope` when records need per-write DEKs and online KEK rotation.

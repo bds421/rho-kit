@@ -207,6 +207,7 @@ row you start from:
 | Retry transient failures | `resilience/retry` | [resilience](docs/ai/resilience.md) |
 | Protect against cascading failure | `resilience/circuitbreaker` | [resilience](docs/ai/resilience.md) |
 | Encrypt DB fields | `crypto/encrypt.FieldEncryptor` | [security](docs/ai/security.md) |
+| Rotate an encryption key without losing what it sealed | `crypto/encrypt.NewKeyring` | [security](docs/ai/security.md) |
 | Sign/verify webhooks (HMAC) | `crypto/signing` | [security](docs/ai/security.md) |
 | Verify JWTs (JWKS) | `security/jwtutil` | [security](docs/ai/security.md) |
 | Revoke JWTs after logout | `security/jwtutil/revocation` | [security](docs/ai/security.md) |
