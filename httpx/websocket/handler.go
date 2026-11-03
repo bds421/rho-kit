@@ -108,6 +108,7 @@ func handleWithHooks(opts []Option, onOpen, onClose func(*Conn)) http.HandlerFun
 	pongTimeout := cfg.pongTimeout
 	readDrain := cfg.readDrain
 	limiter := newConnLimiter(cfg.maxConnections)
+	keyLimits := cfg.keyLimits
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Reject before Accept so a saturated server does not waste
@@ -120,6 +121,14 @@ func handleWithHooks(opts []Option, onOpen, onClose func(*Conn)) http.HandlerFun
 			return
 		}
 		defer limiter.release()
+		hold, ok := acquireKeys(keyLimits, r)
+		if !ok {
+			metrics.observeRejected(rejectReasonMaxConnectionsPerKey)
+			w.Header().Set("Retry-After", "30")
+			http.Error(w, "websocket: too many connections for this client", http.StatusTooManyRequests)
+			return
+		}
+		defer hold.release()
 
 		raw, err := coderws.Accept(w, r, acceptOpts)
 		if err != nil {

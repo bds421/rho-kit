@@ -70,7 +70,7 @@
 //   - `httpx_websocket_rejected_total{reason}` — Counter of upgrade
 //     requests rejected before reaching the WebSocket protocol.
 //     The `reason` label is a bounded enum (currently
-//     `max_connections`) so no caller-controlled value can blow up
+//     `max_connections`, `max_connections_per_key`) so no caller-controlled value can blow up
 //     cardinality.
 //
 // # Safety

@@ -20,6 +20,7 @@
 - `NewHub(opts...)` — creates an isolated connection registry when independent listeners or tests must not participate in package-level `Shutdown`; drain it with `Hub.Shutdown(ctx)`.
 - `WithHandler(fn)` — REQUIRED. Application callback signature `func(ctx Context, conn *Conn) error`.
 - `WithMaxConnections(n)` — caps concurrent connections per handler. Beyond cap returns `503` + `Retry-After: 1`.
+- `NewKeyLimit(n, key)` + `WithKeyLimits(limits...)` — caps concurrent connections per key a request names (client address, principal), so one client cannot take the whole `WithMaxConnections` budget. Beyond it returns `429` + `Retry-After: 30`; `KeyLimit.Room(r)` tells a status endpoint whether this client can connect.
 - `WithPingInterval(d)` + `WithPongTimeout(d)` — idle keepalive heartbeat. Defaults: 30s ping / 10s pong. Opt out with `WithNoHeartbeat()`.
 - `WithWriteTimeout(d)` — per-write deadline (default 30s). Slow consumer DoS lever — on deadline expiry the connection is dropped. Opt out with `WithNoWriteTimeout()`.
 - `WithMaxMessageBytes(n)` — caps inbound message size. Default 1 MiB.
@@ -28,7 +29,7 @@
 ## Common mistakes
 
 - **`WithNoHeartbeat` in production without another dead-peer path** — production WebSocket services WILL accumulate half-open connections if the default heartbeat is disabled without a substitute. RFC 6455 has no mandatory heartbeat; browsers don't ping.
-- **No `WithMaxConnections`** — unbounded concurrency → OOM. Default to a per-handler cap based on your service's connection budget.
+- **No `WithMaxConnections`** — unbounded concurrency → OOM. Default to a per-handler cap based on your service's connection budget. A public endpoint also needs `WithKeyLimits` per client address (and per principal when signed in); otherwise one client can fill the cap.
 - **`WithNoWriteTimeout` on untrusted peers** — a slow consumer wedges a goroutine for minutes (TCP backpressure). Keep the default 30s (or set a value comfortably larger than `largest_message / slowest_realistic_bandwidth`).
 - **`WithAnyOriginUnsafe()` without bearer-token auth in the first message** — opens the service to cross-site WebSocket hijacking (CSWSH). Either use explicit `WithOriginPatterns(allowlist)` OR independently auth the principal post-upgrade.
 - **`WithCompression()` in high-fanout services** — the default is `NoContextTakeover` (bounded per-conn memory). Avoid `WithCompressionContextTakeover()` unless workload measurements show the memory cost (~32 KiB per direction per conn) is acceptable.

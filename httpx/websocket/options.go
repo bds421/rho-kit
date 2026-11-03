@@ -52,6 +52,7 @@ type config struct {
 	compression    compressionMode
 	maxMessageSize int64
 	maxConnections int64
+	keyLimits      []*KeyLimit
 	writeTimeout   time.Duration
 	pingInterval   time.Duration
 	pongTimeout    time.Duration

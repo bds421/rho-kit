@@ -30,7 +30,8 @@ const (
 // bounded enum so the Prometheus label set never grows with
 // caller-controlled values.
 const (
-	rejectReasonMaxConnections = "max_connections"
+	rejectReasonMaxConnections       = "max_connections"
+	rejectReasonMaxConnectionsPerKey = "max_connections_per_key"
 )
 
 // Metrics holds the Prometheus collectors for the WebSocket adapter.
