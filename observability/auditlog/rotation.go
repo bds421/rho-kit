@@ -183,11 +183,11 @@ type chainVerifier struct {
 
 func newChainVerifier(keys []ChainKey, v Verification) (*chainVerifier, error) {
 	if len(keys) == 0 {
-		return nil, fmt.Errorf("%w: no chain key", ErrChainBroken)
+		return nil, ErrNoChainKey
 	}
 	for _, k := range keys {
 		if len(k.Key) < MinChainKeyLen {
-			return nil, fmt.Errorf("%w: chain key must be at least %d bytes", ErrChainBroken, MinChainKeyLen)
+			return nil, fmt.Errorf("%w: chain key must be at least %d bytes", ErrNoChainKey, MinChainKeyLen)
 		}
 	}
 	c := &chainVerifier{keys: keys, v: v, floor: len(keys) - 1, anchorKey: -1, last: -1}

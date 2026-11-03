@@ -28,6 +28,10 @@ const MinCursorKeyLen = 32
 // to distinguish tamper detection from I/O failures.
 var ErrChainBroken = errors.New("auditlog: chain integrity check failed")
 
+// ErrNoChainKey is returned by verification given no chain key, or one
+// shorter than [MinChainKeyLen]: a configuration error, not tampering.
+var ErrNoChainKey = errors.New("auditlog: no usable chain key")
+
 // canonicalEvent serialises an [Event] to a deterministic byte sequence
 // suitable for HMAC computation. The output:
 //   - excludes the [Event.HMAC] field itself (the HMAC is computed over

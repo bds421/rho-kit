@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.36.1 — 2026-11-04
+
+- **fix(observability/auditlog): a missing or short chain key is no
+  tampering.** Verification given no chain key, or one shorter than
+  `MinChainKeyLen`, returns the new `ErrNoChainKey` instead of a wrapped
+  `ErrChainBroken`, so a monitor that alerts on `ErrChainBroken` does not
+  report a configuration error as a broken chain.
+
 ## v2.36.0 — 2026-11-03
 
 - **fix(observability/auditlog): the anchor binds its key and position.**

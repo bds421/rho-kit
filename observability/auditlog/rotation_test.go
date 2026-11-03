@@ -170,7 +170,10 @@ func TestWithChainKeys_PanicsOnBadKeys(t *testing.T) {
 
 func TestVerifyChainKeys_RequiresAKey(t *testing.T) {
 	_, err := VerifyChainKeys(nil, nil, Verification{})
-	assert.ErrorIs(t, err, ErrChainBroken)
+	assert.ErrorIs(t, err, ErrNoChainKey)
+	assert.NotErrorIs(t, err, ErrChainBroken, "a missing key is no tampering")
+	_, err = VerifyChainKeys(nil, []ChainKey{{ID: "1", Key: []byte("short")}}, Verification{})
+	assert.ErrorIs(t, err, ErrNoChainKey)
 }
 
 func TestWithCursorKeys_AcceptsCursorOfOlderKey(t *testing.T) {
