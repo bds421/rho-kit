@@ -63,13 +63,15 @@
 // Verification refuses an event sealed by a key older than the latest
 // marker and a newer key without its marker.
 //
-// [Logger.Verify] returns the [Head] it verified. Keep its HMAC where
-// whoever writes the store cannot change it, and pass it back as
-// [Verification.Anchor]: the chain must still contain that event, so a
-// truncated or rewritten tail fails. Without an anchor, removing the newest
-// events goes unnoticed, and whoever holds a retired key can cut the tail
-// back to before its rotation marker and extend it. Take an anchor right
-// after a rotation. [VerifyChainKeys] is the standalone form.
+// [Logger.Verify] returns the [Head] it verified: HMAC, position and key ID.
+// Keep all of it where whoever writes the store cannot change it, and pass
+// it back as [Verification.Anchor]: the chain must still contain that event,
+// sealed by that key, and no event from it on may carry an older key, so a
+// truncated or rewritten tail fails. Without an anchor, verification shows
+// only that the stored events form one chain under the listed keys: removing
+// the newest events goes unnoticed, and whoever holds any listed key can
+// replace the tail from a point that key sealed (a retired key: from before
+// its rotation marker). Take an anchor right after a rotation. [VerifyChainKeys] is the standalone form.
 //
 // # Key memory hygiene
 //

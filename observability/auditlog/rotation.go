@@ -39,20 +39,27 @@ type Verification struct {
 	// Watermark is the HMAC of the last event a retention sweep removed
 	// (see [RetentionJob]); empty requires a genesis head.
 	Watermark []byte
-	// Anchor is the HMAC of a head an earlier verification returned, kept
-	// where whoever can write the store cannot change it. The chain must
-	// still contain that event, so a truncated or rewritten tail fails.
-	// Empty skips the check.
-	Anchor []byte
+	// Anchor is the [Head] an earlier verification returned, kept where
+	// whoever can write the store cannot change it. The chain must still
+	// contain that event, sealed by the key the anchor names and, without a
+	// watermark, at the same position; no event from it on may carry an
+	// older key. So a tail cut or rewritten since fails. The zero Head
+	// skips the check.
+	Anchor Head
 }
 
-// Head is the newest event a successful verification walked.
+// Head is the newest event a successful verification walked; keep all of
+// it as the next [Verification.Anchor].
 type Head struct {
-	// HMAC is the value to keep as the next [Verification.Anchor]. It is
-	// the watermark when no event follows it, and empty for an empty chain.
+	// HMAC is the newest event's HMAC: the watermark when no event follows
+	// it, and empty for an empty chain.
 	HMAC []byte
-	// Events is the number of events verified.
+	// Events is the number of events verified, so the newest event's
+	// position.
 	Events int
+	// KeyID names the chain key that sealed the newest event; empty for the
+	// unkeyed [WithChainKey] key and when no event was walked.
+	KeyID string
 }
 
 type namedKey struct {
@@ -166,8 +173,11 @@ type chainVerifier struct {
 	floor    int // index of the oldest key the next event may carry
 	rotated  bool
 	anchored bool
-	prev     []byte
-	index    int
+	// anchorKey indexes the anchored key; -1 without an anchor.
+	anchorKey int
+	prev      []byte
+	last      int // index of the key that sealed the newest event
+	index     int
 }
 
 func newChainVerifier(keys []ChainKey, v Verification) (*chainVerifier, error) {
@@ -179,7 +189,23 @@ func newChainVerifier(keys []ChainKey, v Verification) (*chainVerifier, error) {
 			return nil, fmt.Errorf("%w: chain key must be at least %d bytes", ErrChainBroken, MinChainKeyLen)
 		}
 	}
-	return &chainVerifier{keys: keys, v: v, floor: len(keys) - 1}, nil
+	c := &chainVerifier{keys: keys, v: v, floor: len(keys) - 1, anchorKey: -1, last: -1}
+	if len(v.Anchor.HMAC) == 0 {
+		return c, nil
+	}
+	for i, k := range keys {
+		if k.ID == v.Anchor.KeyID {
+			c.anchorKey = i
+			return c, nil
+		}
+	}
+	// A head at the watermark names no key; finish accepts it only when no
+	// event follows the watermark.
+	if constantTimeEqualHMAC(v.Anchor.HMAC, v.Watermark) {
+		c.anchorKey = len(keys) - 1
+		return c, nil
+	}
+	return nil, fmt.Errorf("%w: the anchored chain key %q is not listed", ErrChainBroken, v.Anchor.KeyID)
 }
 
 func (c *chainVerifier) step(event Event) error {
@@ -200,6 +226,9 @@ func (c *chainVerifier) step(event Event) error {
 		return fmt.Errorf("%w: event[%d] HMAC does not match canonical content", ErrChainBroken, i)
 	}
 	id := c.keys[sealer].ID
+	if err := c.checkAnchor(event, sealer); err != nil {
+		return err
+	}
 	switch {
 	case sealer > c.floor:
 		return fmt.Errorf("%w: event[%d] is sealed by chain key %q, older than the rotation before it", ErrChainBroken, i, id)
@@ -213,12 +242,32 @@ func (c *chainVerifier) step(event Event) error {
 	case i > 0 && sealer < c.floor:
 		return fmt.Errorf("%w: event[%d] is sealed by chain key %q without its rotation marker", ErrChainBroken, i, id)
 	}
-	c.floor = sealer
-	if len(c.v.Anchor) > 0 && constantTimeEqualHMAC(event.HMAC, c.v.Anchor) {
-		c.anchored = true
-	}
+	c.floor, c.last = sealer, sealer
 	c.prev = event.HMAC
 	c.index++
+	return nil
+}
+
+// checkAnchor holds the anchored event to the anchored key and position,
+// and every event from it on to that key or a newer one.
+func (c *chainVerifier) checkAnchor(event Event, sealer int) error {
+	i := c.index
+	if c.anchored {
+		if sealer > c.anchorKey {
+			return fmt.Errorf("%w: event[%d] is sealed by chain key %q, older than the anchored key %q", ErrChainBroken, i, c.keys[sealer].ID, c.v.Anchor.KeyID)
+		}
+		return nil
+	}
+	if c.anchorKey < 0 || !constantTimeEqualHMAC(event.HMAC, c.v.Anchor.HMAC) {
+		return nil
+	}
+	if sealer != c.anchorKey {
+		return fmt.Errorf("%w: the anchored event[%d] is sealed by chain key %q, not the anchored key %q", ErrChainBroken, i, c.keys[sealer].ID, c.v.Anchor.KeyID)
+	}
+	if len(c.v.Watermark) == 0 && i != c.v.Anchor.Events-1 {
+		return fmt.Errorf("%w: the anchored event is event[%d], not event[%d]", ErrChainBroken, i, c.v.Anchor.Events-1)
+	}
+	c.anchored = true
 	return nil
 }
 
@@ -238,12 +287,17 @@ func (c *chainVerifier) sealer(event Event) (int, bool) {
 }
 
 func (c *chainVerifier) finish() (Head, error) {
-	if len(c.v.Anchor) > 0 && !c.anchored && !constantTimeEqualHMAC(c.v.Anchor, c.v.Watermark) {
+	// An anchor at the watermark stands only for a chain retention emptied;
+	// any event walked must reach the anchored one.
+	atWatermark := c.index == 0 && constantTimeEqualHMAC(c.v.Anchor.HMAC, c.v.Watermark)
+	if c.anchorKey >= 0 && !c.anchored && !atWatermark {
 		return Head{}, fmt.Errorf("%w: the anchored head is no longer in the chain: its tail was truncated or rewritten", ErrChainBroken)
 	}
 	head := Head{HMAC: c.prev, Events: c.index}
 	if c.index == 0 {
 		head.HMAC = c.v.Watermark
+	} else {
+		head.KeyID = c.keys[c.last].ID
 	}
 	return head, nil
 }

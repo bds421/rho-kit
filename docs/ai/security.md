@@ -109,13 +109,15 @@ logger := auditlog.New(store,
 )
 _ = logger.RecordRotation(ctx)
 head, err := logger.Verify(ctx, auditlog.Verification{Watermark: watermark, Anchor: lastHead})
-// keep head.HMAC as the next anchor, out of reach of whoever writes the store
+// keep the whole head (HMAC, Events, KeyID) as the next anchor, out of reach of whoever writes the store
 ```
 
-Without an anchor, deleting the newest events is not detected, and whoever
-holds a retired key can cut the tail back to before its rotation marker and
-extend it. With an anchor, only events after the anchored one can be
-rewritten, and only by a key that was current after it: take an anchor right
+Without an anchor, verification shows only that the stored events form one
+chain under the listed keys: deleting the newest events is not detected, and
+whoever holds any listed key can replace the tail from a point that key
+sealed (a retired key: from before its rotation marker). With an anchor, the
+anchored event and everything before it are fixed, and no event from it on
+may carry a key older than the anchored one: take an anchor right
 after every rotation, and more often than retention removes events. Keep a
 retired chain key listed while events it sealed are kept.
 

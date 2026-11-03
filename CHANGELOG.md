@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.35.1 — 2026-11-03
+
+- **fix(observability/auditlog): the anchor binds its key and position.**
+  v2.35.0 accepted an anchor equal to the retention watermark even after
+  events were walked, and did not bind the anchored key, so whoever held a
+  retired chain key could still cut and re-extend the tail. `Head` now
+  carries `KeyID` beside `HMAC` and `Events`, and `Verification.Anchor`
+  takes the whole `Head`: the anchored event must be sealed by the anchored
+  key and, without a watermark, sit at the anchored position; no event from
+  it on may carry an older key; an anchor at the watermark stands only when
+  no event follows it.
+
+Breaking for v2.35.0 callers: `Verification.Anchor` is a `Head`, not
+`[]byte`; pass the `Head` a verification returned. v2.35.0's anchor check is
+not to be relied on.
+
 ## v2.35.0 — 2026-11-03
 
 - **feat(observability/auditlog): rotate chain and cursor keys, anchor the

@@ -118,7 +118,7 @@ func TestVerify_AnchorCatchesTruncatedAndReextendedTail(t *testing.T) {
 
 	_, err = verifier.Verify(ctx, Verification{})
 	require.NoError(t, err, "without an anchor a leaked key can rewrite the tail back to the rotation")
-	_, err = verifier.Verify(ctx, Verification{Anchor: anchor.HMAC})
+	_, err = verifier.Verify(ctx, Verification{Anchor: anchor})
 	require.ErrorIs(t, err, ErrChainBroken)
 	assert.Contains(t, err.Error(), "anchored head is no longer in the chain")
 }
@@ -134,18 +134,18 @@ func TestVerify_AnchorCatchesShorterChain(t *testing.T) {
 	require.NoError(t, err)
 
 	logOne(t, l, "d")
-	head, err := l.Verify(ctx, Verification{Anchor: anchor.HMAC})
+	head, err := l.Verify(ctx, Verification{Anchor: anchor})
 	require.NoError(t, err, "a chain that grew past the anchor verifies")
 	assert.Equal(t, anchor.Events+1, head.Events)
 
 	truncate(store, anchor.Events-1)
-	_, err = l.Verify(ctx, Verification{Anchor: anchor.HMAC})
+	_, err = l.Verify(ctx, Verification{Anchor: anchor})
 	assert.ErrorIs(t, err, ErrChainBroken)
 }
 
 func TestVerify_AnchorAtWatermarkOfEmptyChain(t *testing.T) {
 	watermark := bytes.Repeat([]byte{7}, hmacSize)
-	head, err := VerifyChainKeys(nil, bothKeys, Verification{Watermark: watermark, Anchor: watermark})
+	head, err := VerifyChainKeys(nil, bothKeys, Verification{Watermark: watermark, Anchor: Head{HMAC: watermark}})
 	require.NoError(t, err)
 	assert.Equal(t, watermark, head.HMAC)
 }
@@ -201,4 +201,75 @@ func TestClose_ZeroesOlderKeys(t *testing.T) {
 	require.NoError(t, l.Close())
 	assert.True(t, l.olderChainKeys[0].key.IsEmpty())
 	assert.True(t, l.cursors.older[0].IsEmpty())
+}
+
+func TestVerify_AnchorAtWatermarkWithEventsWalkedFails(t *testing.T) {
+	store := NewMemoryStore()
+	l := keyed(store, secondKey, firstKey)
+	for _, action := range []string{"a", "b", "c"} {
+		logOne(t, l, action)
+	}
+	events := store.Events()
+	watermark := events[0].HMAC
+	_, err := VerifyChainKeys(events[1:], bothKeys, Verification{Watermark: watermark, Anchor: Head{HMAC: watermark, Events: 1, KeyID: "2"}})
+	require.ErrorIs(t, err, ErrChainBroken, "an anchor at the watermark stands only when no event follows it")
+	assert.Contains(t, err.Error(), "anchored head is no longer in the chain")
+}
+
+func TestVerify_AnchoredEventSealedByOlderKeyFails(t *testing.T) {
+	store := NewMemoryStore()
+	logOne(t, unkeyed(store, firstKey.Key), "first")
+	events := store.Events()
+
+	forged := Head{HMAC: events[0].HMAC, Events: 1, KeyID: "2"}
+	_, err := VerifyChainKeys(events, bothKeys, Verification{Anchor: forged})
+	require.ErrorIs(t, err, ErrChainBroken)
+	assert.Contains(t, err.Error(), `anchored event[0] is sealed by chain key "1", not the anchored key "2"`)
+}
+
+func TestVerify_NoEventFromTheAnchorOnUsesAnOlderKey(t *testing.T) {
+	store := NewMemoryStore()
+	logOne(t, unkeyed(store, firstKey.Key), "first")
+	logOne(t, unkeyed(store, secondKey.Key), "second")
+	events := store.Events()
+	logOne(t, unkeyed(store, firstKey.Key), "older")
+
+	// From the watermark on, event[1] is the first event, which may carry
+	// any key; only the anchor on it refuses the older key after it.
+	anchor := Head{HMAC: events[1].HMAC, Events: 2, KeyID: "2"}
+	_, err := VerifyChainKeys(store.Events()[1:], bothKeys, Verification{Watermark: events[0].HMAC, Anchor: anchor})
+	require.ErrorIs(t, err, ErrChainBroken)
+	assert.Contains(t, err.Error(), `event[1] is sealed by chain key "1", older than the anchored key "2"`)
+}
+
+func TestVerify_AnchorAtAnotherPositionFails(t *testing.T) {
+	store := NewMemoryStore()
+	l := keyed(store, secondKey, firstKey)
+	logOne(t, l, "a")
+	head, err := l.Verify(context.Background(), Verification{})
+	require.NoError(t, err)
+	head.Events++
+	_, err = l.Verify(context.Background(), Verification{Anchor: head})
+	assert.ErrorIs(t, err, ErrChainBroken)
+}
+
+func TestVerify_AnchoredRotatedChainPasses(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	logOne(t, unkeyed(store, firstKey.Key), "before")
+	l := keyed(store, secondKey, firstKey)
+	logOne(t, l, "after")
+	anchor, err := l.Verify(ctx, Verification{})
+	require.NoError(t, err)
+	assert.Equal(t, "2", anchor.KeyID)
+	assert.Equal(t, 3, anchor.Events)
+	logOne(t, l, "later")
+	head, err := l.Verify(ctx, Verification{Anchor: anchor})
+	require.NoError(t, err)
+	assert.Equal(t, Head{HMAC: store.Events()[3].HMAC, Events: 4, KeyID: "2"}, head)
+}
+
+func TestVerify_AnchoredKeyMustBeListed(t *testing.T) {
+	_, err := VerifyChainKeys(nil, bothKeys, Verification{Anchor: Head{HMAC: bytes.Repeat([]byte{1}, hmacSize), KeyID: "9"}})
+	assert.ErrorIs(t, err, ErrChainBroken)
 }

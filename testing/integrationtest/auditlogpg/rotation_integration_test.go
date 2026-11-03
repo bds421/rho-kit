@@ -49,6 +49,6 @@ func TestPostgres_RotationMarkerAndAnchor(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, legacy.LogE(ctx, event))
 
-	_, err = rotated().Verify(ctx, auditlog.Verification{Anchor: anchor.HMAC})
+	_, err = rotated().Verify(ctx, auditlog.Verification{Anchor: anchor})
 	assert.ErrorIs(t, err, auditlog.ErrChainBroken)
 }

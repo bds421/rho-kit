@@ -658,24 +658,35 @@ an event sealed by a key older than the latest marker, a newer key without
 its marker, and, once a marker exists, an event without a key ID.
 
 **Head anchor.** `Logger.Verify(ctx, Verification{Watermark, Anchor})`
-returns the head it verified; kept where store writers cannot reach it and
-passed back as `Anchor`, it must still be in the chain, so a truncated or
-rewritten tail fails. The anchor is matched by HMAC, not by position:
-retention removes the head, so positions shift, and the database sequence
-is not covered by any HMAC.
+returns the `Head` it verified: the newest event's HMAC, its position
+(`Events`) and the ID of the key that sealed it. Kept whole where store
+writers cannot reach it and passed back as `Anchor`, the chain must still
+contain that event, sealed by that key and, without a watermark, at that
+position, and no event from it on may carry an older key. An anchor equal
+to the watermark (the head of a chain retention emptied) stands only while
+no event follows the watermark. With a watermark the position is not
+checked, since retention shifts positions; the database sequence is covered
+by no HMAC either.
 
 **What is guaranteed.**
 
 - Without any chain key, nobody can change, insert, reorder or remove an
   event between the retention watermark and the newest event without
-  verification failing. Removing newest events (truncating the tail) is
-  caught only with an anchor, and only up to the anchored event.
-- Whoever holds the newest key can rewrite every event after the anchor;
-  without an anchor, the whole chain.
-- Whoever holds a retired key cannot append after the marker that retired
-  it. Without an anchor they can truncate the tail to before that marker
-  and extend it with events of their own; with an anchor taken after the
-  marker they cannot. Take an anchor right after every rotation.
+  verification failing, except removing the newest events (truncating the
+  tail): without an anchor that is never detected; with one, removing the
+  anchored event or any before it is.
+- Without an anchor, verification proves only that the stored events form
+  one chain under the listed keys with the rotation rules: whoever holds
+  any listed key can replace the tail from any point sealed by that key
+  (for a retired key, from before the marker that retired it) with events
+  of their own, and whoever holds the oldest listed key can replace the
+  whole chain from genesis (or from the watermark). Nothing tells such a
+  chain from the real one.
+- With an anchor, everything up to and including the anchored event is
+  fixed. Whoever holds the anchored key or a newer one can still rewrite
+  events after it; a key older than the anchored one cannot add or change
+  anything from the anchor on. Take an anchor right after every rotation,
+  so the retired key is older than the anchored one.
 - An anchored event that retention has since removed fails verification;
   verify and re-anchor more often than the retention period.
 
