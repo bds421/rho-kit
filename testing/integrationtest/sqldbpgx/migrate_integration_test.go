@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	kitpgx "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 	"github.com/bds421/rho-kit/infra/v2/sqldb/migrate"
 )
@@ -94,4 +95,5 @@ func TestMigrate_RefusesADatabaseAheadOfTheFiles(t *testing.T) {
 	assert.Contains(t, err.Error(), "accounts_schema_version")
 	assert.Contains(t, err.Error(), "version 2")
 	assert.Contains(t, err.Error(), "00001_baseline.sql")
+	assert.Contains(t, redact.SafeMessages(err), "accounts_schema_version records version 2")
 }

@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.34.1 — 2026-11-03
+
+- **fix(infra/sqldb/migrate): operators see why a database is refused.**
+  `ErrAhead` and its details (version table, recorded version, newest
+  migration file) are safe messages, so `app.Main` and other redacting
+  loggers show them instead of a redacted error.
+
+No breaking changes.
+
 ## v2.34.0 — 2026-11-03
 
 - **feat(infra/sqldb/migrate): refuse a database ahead of the files.**

@@ -2,7 +2,6 @@ package migrate
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
@@ -14,7 +13,7 @@ import (
 // release, or by a migration chain since squashed into a baseline. goose
 // would take such a database as up to date and never run a later migration
 // whose version is not above the recorded one, so [Up] refuses it.
-var ErrAhead = errors.New("migrate: database is ahead of the migration files")
+var ErrAhead = redact.Safe("migrate: database is ahead of the migration files")
 
 func refuseAhead(ctx context.Context, provider *goose.Provider, table string) error {
 	recorded, newest, err := provider.GetVersions(ctx)
@@ -25,6 +24,8 @@ func refuseAhead(ctx context.Context, provider *goose.Provider, table string) er
 		return nil
 	}
 	sources := provider.ListSources()
-	return fmt.Errorf("%w: %s records version %d, the newest migration is %s (version %d)",
-		ErrAhead, table, recorded, sources[len(sources)-1].Path, newest)
+	// Table, versions and file name are no secrets; operators need them where
+	// logs redact the rest.
+	return redact.WrapSafe(fmt.Sprintf("migrate: %s records version %d, the newest migration is %s (version %d)",
+		table, recorded, sources[len(sources)-1].Path, newest), ErrAhead)
 }
