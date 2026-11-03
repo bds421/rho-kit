@@ -1,7 +1,7 @@
-github.com/bds421/rho-kit/core/v2 v2.34.1 h1:bhmTkUh3+krzthTSPGR59iG8hD1eQ02ffIxX+uKiffA=
-github.com/bds421/rho-kit/core/v2 v2.34.1/go.mod h1:JmwYR5uUk6q6kaA5g9p/aw1gXk+iquaYNYxywxceZ5A=
-github.com/bds421/rho-kit/data/v2 v2.34.1 h1:vZs+i3kLKazNZA0GFV+q+Kt2lX1jOcHvZWRxFGsfdSo=
-github.com/bds421/rho-kit/data/v2 v2.34.1/go.mod h1:CImdQ0mejZGJm6oEv71ekbqxwr9R8dFBJ/S1z2UFUcc=
+github.com/bds421/rho-kit/core/v2 v2.35.0 h1:K8G4SzUB63Sbrf+i4oRJnb3TLEZJObOYhI6fu+zBWhI=
+github.com/bds421/rho-kit/core/v2 v2.35.0/go.mod h1:JmwYR5uUk6q6kaA5g9p/aw1gXk+iquaYNYxywxceZ5A=
+github.com/bds421/rho-kit/data/v2 v2.35.0 h1:uw4/1GZ5X85mvRF8k4wJWyAR4uS8V1qXdxPSziZXZdQ=
+github.com/bds421/rho-kit/data/v2 v2.35.0/go.mod h1:w3rJ0IU3TxfFb/Efu13MJR8ZjQsQ0AWmdaK9L8to484=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
 github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
