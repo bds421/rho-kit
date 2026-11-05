@@ -82,7 +82,9 @@ or UserInfo without re-discovering endpoints.
 - Step-up: `Session.AMR`, `Session.AuthTime`; `GET /oauth/login` accepts
   allowlisted `prompt` (none|login|consent|select_account) and `max_age`
   (0..1y); with max_age the callback rejects an auth_time older than the
-  login request minus max_age (`ErrStaleAuthentication`)
+  login request minus max_age (`ErrStaleAuthentication`); a step-up sends
+  the live session's `preferred_username` as `login_hint`
+  (`WithStepUpHintClaim(name)`, empty for none)
 
 ## Security defaults
 

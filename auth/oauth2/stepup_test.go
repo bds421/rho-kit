@@ -151,3 +151,28 @@ func TestLogin_AStepUpNamesTheSignedInPerson(t *testing.T) {
 	assert.False(t, loginLocation(t, client, "?prompt=login", "").Query().Has("login_hint"), "without a session no one is named")
 	assert.Equal(t, "@corp.example", loginLocation(t, client, "?prompt=login&login_hint=%40corp.example", "s1").Query().Get("login_hint"))
 }
+
+func TestLogin_StepUpHintClaimIsConfigurable(t *testing.T) {
+	claims := map[string]any{"preferred_username": "jdoe@corp.example", "email": "j.doe@corp.example"}
+	store := oauth2.NewMemorySessionStore()
+	_, client := newLifetimeClient(t, store, oauth2.WithStepUpHintClaim("email"))
+	seedSession(t, store, oauth2.Session{SessionID: "s1", Claims: claims})
+	assert.Equal(t, "j.doe@corp.example", loginLocation(t, client, "?prompt=login&max_age=0", "s1").Query().Get("login_hint"))
+
+	store = oauth2.NewMemorySessionStore()
+	_, client = newLifetimeClient(t, store, oauth2.WithStepUpHintClaim(""))
+	seedSession(t, store, oauth2.Session{SessionID: "s1", Claims: claims})
+	assert.False(t, loginLocation(t, client, "?prompt=login&max_age=0", "s1").Query().Has("login_hint"), "an empty claim sends no hint")
+}
+
+func TestLogin_AStepUpNamesNoOneForASessionPastItsLifetime(t *testing.T) {
+	store := oauth2.NewMemorySessionStore()
+	_, client := newLifetimeClient(t, store, oauth2.WithAbsoluteSessionLifetime(time.Hour))
+	seedSession(t, store, oauth2.Session{
+		SessionID: "s1", CreatedAt: time.Now().Add(-2 * time.Hour),
+		Claims: map[string]any{"preferred_username": "jdoe@corp.example"},
+	})
+	assert.False(t, loginLocation(t, client, "?prompt=login&max_age=0", "s1").Query().Has("login_hint"))
+	_, err := store.Get(context.Background(), "s1")
+	assert.ErrorIs(t, err, oauth2.ErrSessionNotFound, "the expired session is deleted")
+}

@@ -132,22 +132,33 @@ func validLoginHint(hint string) bool {
 	return !strings.ContainsFunc(hint, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
 }
 
+// WithStepUpHintClaim names the session claim whose value a step-up login
+// (prompt or max_age) sends as login_hint, so the provider asks the
+// signed-in person to confirm instead of choosing an account. Default:
+// preferred_username. Empty sends no hint, as does a claim value that is not
+// a valid login_hint; an explicit login_hint on the request wins. Only a
+// live session counts: one past [WithAbsoluteSessionLifetime] or
+// [WithIdleTimeout] names no one.
+func WithStepUpHintClaim(name string) Option {
+	return func(c *Client) { c.stepUpHintClaim = name }
+}
+
 // stepUpHint names the signed-in person to the provider when a login
 // re-authenticates them (prompt or max_age), so they confirm who they are
-// instead of choosing again: their preferred_username claim.
+// instead of choosing again: the [WithStepUpHintClaim] claim of their live
+// session.
 func (c *Client) stepUpHint(r *http.Request, p loginParams) string {
 	if p.loginHint != "" || (p.prompt == "" && p.maxAge == nil) || p.creates() {
 		return p.loginHint
 	}
-	cookie, err := r.Cookie(c.cookieName)
-	if err != nil || cookie.Value == "" {
+	if c.stepUpHintClaim == "" {
 		return ""
 	}
-	sess, err := c.sessions.Get(r.Context(), cookie.Value)
+	_, sess, err := c.liveSession(r.Context(), r)
 	if err != nil {
 		return ""
 	}
-	name, _ := sess.Claims["preferred_username"].(string)
+	name, _ := sess.Claims[c.stepUpHintClaim].(string)
 	if !validLoginHint(name) {
 		return ""
 	}

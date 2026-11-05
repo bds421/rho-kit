@@ -72,6 +72,9 @@ type Client struct {
 	absoluteLifetime time.Duration
 	idleTimeout      time.Duration
 	backgroundHeader string
+
+	// Claim that names the signed-in person on a step-up (WithStepUpHintClaim).
+	stepUpHintClaim string
 }
 
 // Option configures a [Client].
@@ -211,6 +214,7 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 		cookieSecure:     true,
 		pathPrefix:       "/oauth",
 		homePath:         "/",
+		stepUpHintClaim:  "preferred_username",
 		backgroundHeader: DefaultBackgroundRequestHeader,
 		refreshLockWait:  defaultRefreshLockWait,
 	}
@@ -672,17 +676,9 @@ func (c *Client) SessionFromRequest(ctx context.Context, r *http.Request) (Sessi
 	if r == nil {
 		return Session{}, ErrSessionNotFound
 	}
-	cookie, err := r.Cookie(c.cookieName)
-	if err != nil || cookie.Value == "" {
-		return Session{}, ErrSessionNotFound
-	}
-	sessionID := cookie.Value
-	sess, err := c.sessions.Get(ctx, sessionID)
+	sessionID, sess, err := c.liveSession(ctx, r)
 	if err != nil {
 		return Session{}, err
-	}
-	if reason, exceeded := c.lifetimeExceeded(sess, time.Now()); exceeded {
-		return Session{}, c.expireSession(ctx, sessionID, reason)
 	}
 	sess, err = c.refreshIfNeeded(ctx, sessionID, sess)
 	if err != nil {
@@ -692,6 +688,25 @@ func (c *Client) SessionFromRequest(ctx context.Context, r *http.Request) (Sessi
 		sess = c.recordActivity(ctx, sessionID, sess, time.Now())
 	}
 	return sess, nil
+}
+
+// liveSession loads the session bound to the request's session cookie and
+// deletes it, reporting [ErrSessionNotFound], once it is past its absolute
+// lifetime or idle timeout. It neither refreshes tokens nor records
+// activity.
+func (c *Client) liveSession(ctx context.Context, r *http.Request) (string, Session, error) {
+	cookie, err := r.Cookie(c.cookieName)
+	if err != nil || cookie.Value == "" {
+		return "", Session{}, ErrSessionNotFound
+	}
+	sess, err := c.sessions.Get(ctx, cookie.Value)
+	if err != nil {
+		return "", Session{}, err
+	}
+	if reason, exceeded := c.lifetimeExceeded(sess, time.Now()); exceeded {
+		return "", Session{}, c.expireSession(ctx, cookie.Value, reason)
+	}
+	return cookie.Value, sess, nil
 }
 
 // CookieName returns the session cookie name used by this client.
