@@ -167,6 +167,13 @@ func (e *Encryptor) Encrypt(ctx context.Context, plaintext, aad []byte) ([]byte,
 // authenticates+decrypts the payload. aad must match what was passed
 // to [Encryptor.Encrypt].
 func (e *Encryptor) Decrypt(ctx context.Context, blob, aad []byte) ([]byte, error) {
+	return e.decryptFirst(ctx, blob, aad)
+}
+
+// decryptFirst unwraps the DEK once and opens the body with the first of
+// aads that authenticates it, so a reader accepting an older AAD layout
+// costs no second KEK call.
+func (e *Encryptor) decryptFirst(ctx context.Context, blob []byte, aads ...[]byte) ([]byte, error) {
 	if err := e.validate(ctx); err != nil {
 		return nil, err
 	}
@@ -196,11 +203,12 @@ func (e *Encryptor) Decrypt(ctx context.Context, blob, aad []byte) ([]byte, erro
 	// fails closed on tampered ciphertext, swapped wrap headers
 	// (wrong DEK), or AAD mismatch — see package doc for the
 	// rationale on why the wrap header is excluded from the body AAD.
-	pt, err := bodyAEAD.Decrypt(body, combineAAD(version, aad))
-	if err != nil {
-		return nil, ErrAuthFailed
+	for _, aad := range aads {
+		if pt, err := bodyAEAD.Decrypt(body, combineAAD(version, aad)); err == nil {
+			return pt, nil
+		}
 	}
-	return pt, nil
+	return nil, ErrAuthFailed
 }
 
 // Rewrap re-encrypts the embedded DEK under the current KEK version
