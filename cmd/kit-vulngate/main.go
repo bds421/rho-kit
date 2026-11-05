@@ -2,15 +2,16 @@
 // grype JSON reports (grype <target> -o json), one per image or SBOM that
 // ships, and lists every vulnerability with its deadline, counted from the
 // day its fix was published: CISA KEV 72 hours, critical 7 days, high 30,
-// medium 90 (also without a severity), low by the next release. It exits 1
-// when a fixed one is past its deadline and not accepted, 2 on bad input.
+// medium 90 (also without a severity), low by the next release; -kev,
+// -critical, -high, -medium and -low set other deadlines. It exits 1
+// when a fixed one is past its deadline and not accepted, 2 on bad input,
+// a missing -accepted file included.
 // A vulnerability without a fix is listed, never failed.
 //
-//	kit-vulngate [-accepted security/accepted-vulnerabilities.json] report.json...
+//	kit-vulngate [-accepted security/accepted-vulnerabilities.json] [-high 720h] report.json...
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -29,8 +30,14 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 	flags := flag.NewFlagSet("kit-vulngate", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	acceptedFile := flags.String("accepted", "", "JSON list of accepted findings (id, package, reason, until)")
+	deadlines := defaultPolicy()
+	severe := deadlines.register(flags)
 	if err := flags.Parse(args); err != nil || flags.NArg() == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kit-vulngate [-accepted file] grype-report.json...")
+		_, _ = fmt.Fprintln(stderr, "usage: kit-vulngate [-accepted file] [-kev d] [-critical d] [-high d] [-medium d] [-low d] grype-report.json...")
+		return 2
+	}
+	if err := deadlines.apply(severe); err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
 	list, err := acceptances(*acceptedFile)
@@ -47,7 +54,7 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		}
 		all = append(all, found...)
 	}
-	late := judge(stdout, all, list, now)
+	late := judge(stdout, all, list, deadlines, now)
 	if late > 0 {
 		_, _ = fmt.Fprintf(stdout, "%d past their patch deadline\n", late)
 		return 1
@@ -60,9 +67,6 @@ func acceptances(path string) ([]acceptance, error) {
 		return nil, nil
 	}
 	f, err := os.Open(path) //nolint:gosec // the caller names the file
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +84,7 @@ func readFile(path string) ([]finding, error) {
 }
 
 // judge prints each finding, most urgent first, and counts the late ones.
-func judge(w io.Writer, all []finding, list []acceptance, now time.Time) int {
+func judge(w io.Writer, all []finding, list []acceptance, p policy, now time.Time) int {
 	slices.SortFunc(all, func(a, b finding) int {
 		if d := rank(b.Severity) - rank(a.Severity); d != 0 {
 			return d
@@ -89,7 +93,7 @@ func judge(w io.Writer, all []finding, list []acceptance, now time.Time) int {
 	})
 	late := 0
 	for _, f := range all {
-		state := status(f, list, now)
+		state := status(f, list, p, now)
 		if strings.HasPrefix(state, "LATE") {
 			late++
 		}
@@ -102,7 +106,7 @@ func judge(w io.Writer, all []finding, list []acceptance, now time.Time) int {
 	return late
 }
 
-func status(f finding, list []acceptance, now time.Time) string {
+func status(f finding, list []acceptance, p policy, now time.Time) string {
 	switch {
 	case accepted(list, f, now):
 		return "accepted"
@@ -111,7 +115,7 @@ func status(f finding, list []acceptance, now time.Time) string {
 	case f.FixedSince.IsZero():
 		return "LATE: a fix exists, its date is unknown"
 	}
-	due := f.FixedSince.Add(deadline(f.Severity, f.Exploited))
+	due := f.FixedSince.Add(p.deadline(f.Severity, f.Exploited))
 	if !now.Before(due) {
 		return "LATE: due " + due.Format(time.DateOnly)
 	}

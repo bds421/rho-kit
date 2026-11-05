@@ -89,3 +89,28 @@ func TestBadInputIsNoPass(t *testing.T) {
 		t.Errorf("a missing report: exit %d", code)
 	}
 }
+
+// A named acceptance file that is missing is bad input, not an empty list.
+func TestAMissingAcceptanceFileIsNoPass(t *testing.T) {
+	report := write(t, "image.json", `{"matches":[`+match("C1", "Critical", "2026-11-04", "")+`]}`)
+	if code, out := gate(t, "-accepted", filepath.Join(t.TempDir(), "missing.json"), report); code != 2 {
+		t.Errorf("a missing acceptance file: exit %d\n%s", code, out)
+	}
+}
+
+// Each deadline can be set; a negative one is refused.
+func TestDeadlinesCanBeSet(t *testing.T) {
+	report := write(t, "image.json", `{"matches":[`+match("H1", "High", "2026-10-26", "")+`,`+match("L1", "Low", "2026-11-04", "")+`]}`)
+	if code, out := gate(t, report); code != 1 {
+		t.Fatalf("defaults: exit %d\n%s", code, out)
+	}
+	if code, out := gate(t, "-low", "720h", report); code != 0 {
+		t.Errorf("-low 720h: exit %d\n%s", code, out)
+	}
+	if code, out := gate(t, "-low", "720h", "-high", "168h", report); code != 1 || !strings.Contains(out, "LATE") {
+		t.Errorf("-high 168h: exit %d\n%s", code, out)
+	}
+	if code, _ := gate(t, "-kev", "-1h", report); code != 2 {
+		t.Errorf("a negative deadline: exit %d", code)
+	}
+}
