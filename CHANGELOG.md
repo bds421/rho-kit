@@ -1,5 +1,15 @@
 # Changelog
 
+## cmd/kit-vulngate v2.36.1 — 2026-11-05
+
+- **feat(cmd/kit-vulngate): patch deadlines as a release gate.** Reads
+  grype JSON reports of the images and SBOMs that ship and fails when a
+  vulnerability with a published fix is past its deadline, counted from the
+  fix's date: CISA KEV 72 hours, critical 7 days, high 30, medium 90 (also
+  without a severity), low by the next release. `-accepted` takes dated
+  exceptions with a reason; one past its date counts again. Standard
+  library only.
+
 ## v2.36.1 — 2026-11-04
 
 - **fix(observability/auditlog): a missing or short chain key is no
