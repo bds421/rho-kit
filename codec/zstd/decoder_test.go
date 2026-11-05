@@ -3,6 +3,8 @@ package zstd_test
 import (
 	"bytes"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 
 	kzstd "github.com/klauspost/compress/zstd"
@@ -73,4 +75,44 @@ func TestRequireSizeRefusesFramesWithoutOne(t *testing.T) {
 	if _, err := zstd.NewDecoder(zstd.Limits{}); err == nil {
 		t.Error("limits of zero were accepted")
 	}
+}
+
+func TestNewDecoderRefusesAMaxSizeBelowTheWindowMinimum(t *testing.T) {
+	_, err := zstd.NewDecoder(zstd.Limits{MaxSize: zstd.MinMaxSize - 1, MaxRatio: 200})
+	if err == nil || !strings.Contains(err.Error(), "MaxSize must be at least 1024 bytes") {
+		t.Fatalf("MaxSize below the minimum: %v", err)
+	}
+	d, err := zstd.NewDecoder(zstd.Limits{MaxSize: zstd.MinMaxSize, MaxRatio: 200})
+	if err != nil {
+		t.Fatalf("MaxSize at the minimum: %v", err)
+	}
+	defer d.Close()
+	if got, err := d.Decode(encode(t, []byte("tiny"), true)); err != nil || string(got) != "tiny" {
+		t.Errorf("decode at the minimum: %q, %v", got, err)
+	}
+	if _, err := zstd.NewDecoder(zstd.Limits{MaxSize: zstd.MinMaxSize}); err == nil {
+		t.Error("a MaxRatio of zero was accepted")
+	}
+}
+
+func TestCloseWaitsForDecodesAndRefusesLaterOnes(t *testing.T) {
+	d, err := zstd.NewDecoder(zstd.Limits{MaxSize: 1 << 20, MaxRatio: 200, Concurrency: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := encode(t, bytes.Repeat([]byte("abc"), 1000), true)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			if _, err := d.Decode(frame); err != nil && !errors.Is(err, zstd.ErrClosed) {
+				t.Errorf("decode around Close: %v", err)
+			}
+		})
+	}
+	d.Close()
+	wg.Wait()
+	if _, err := d.Decode(frame); !errors.Is(err, zstd.ErrClosed) {
+		t.Errorf("decode after Close: %v", err)
+	}
+	d.Close()
 }
