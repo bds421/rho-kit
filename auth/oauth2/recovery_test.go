@@ -272,3 +272,16 @@ func TestSignIn_ErrorRendererReplacesThePage(t *testing.T) {
 		{Kind: oauth2.FailureSignIn, Status: http.StatusBadGateway, ReturnTo: "/", RetryURL: "/oauth/login?redirect_to=%2F"},
 	}, got)
 }
+
+func TestSignIn_RestartIsRememberedForTwoMinutes(t *testing.T) {
+	b := newSignInRig(t).browser()
+	res := b.get("/oauth/callback?code=c&state=unknown")
+	require.Equal(t, http.StatusFound, res.Code)
+	for _, c := range res.Result().Cookies() {
+		if c.Name == "kit_oauth_session_retry" {
+			assert.Equal(t, 120, c.MaxAge)
+			return
+		}
+	}
+	t.Fatal("no retry cookie")
+}

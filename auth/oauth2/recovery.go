@@ -4,12 +4,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // retryWindow is how long a transparent sign-in restart is remembered. A
 // second failed callback inside it shows the error page instead of looping
 // between the application and the identity provider.
-const retryWindow = 2 * 60
+const retryWindow = 2 * time.Minute
 
 func (c *Client) retryCookieName() string {
 	return c.cookieName + "_retry"
@@ -40,7 +41,7 @@ func (c *Client) recoverSignIn(w http.ResponseWriter, r *http.Request, returnTo,
 		Value:    "1",
 		Path:     c.flowCookiePath(),
 		Domain:   c.cookieDomain,
-		MaxAge:   retryWindow,
+		MaxAge:   int(retryWindow.Seconds()),
 		HttpOnly: true,
 		Secure:   c.cookieSecure,
 		SameSite: http.SameSiteLaxMode,
