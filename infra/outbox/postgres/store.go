@@ -56,9 +56,8 @@ var (
 	_ outbox.PendingResetter = (*Store)(nil)
 )
 
-// New returns a Store wrapping pool with the existing claim-all behavior.
-// It preserves the original constructor's exact function type and panics on a
-// nil pool. Use NewWithOptions to configure selective claims.
+// New returns a Store wrapping pool that claims rows of every route. It
+// panics on a nil pool. Use NewWithOptions to configure selective claims.
 func New(pool *pgxpool.Pool) *Store {
 	return NewWithOptions(pool)
 }

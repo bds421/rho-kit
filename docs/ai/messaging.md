@@ -468,7 +468,7 @@ unfiltered; outcomes still require the original owned claim token. This is not a
 authorization boundary. Keep a separate writer store or explicit unfiltered
 operator store when table-wide maintenance is intended. Do not return a
 successful publish merely to defer a row.
-The original `New(pool)` constructor and its exact function type remain unchanged.
+`New(pool)` is `NewWithOptions(pool)` without options: it claims every route.
 
 ## Transactional Inbox
 
