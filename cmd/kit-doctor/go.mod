@@ -6,4 +6,4 @@ require github.com/stretchr/testify v1.12.1
 
 require go.yaml.in/yaml/v3 v3.0.5 // indirect
 
-require github.com/bds421/rho-kit/security/v2 v2.36.1
+require github.com/bds421/rho-kit/security/v2 v2.37.0
