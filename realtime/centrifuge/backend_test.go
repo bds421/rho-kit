@@ -152,6 +152,16 @@ func TestBackendOptionPanics(t *testing.T) {
 	}
 }
 
+func TestRedisBackend_WithoutTLSAcceptsAPlaintextShard(t *testing.T) {
+	factory := RedisBackend(RedisBackendConfig{
+		Shards:     []cfg.RedisShardConfig{{Address: "redis.internal:6379"}},
+		WithoutTLS: true,
+	})
+	if factory == nil {
+		t.Fatal("RedisBackend returned no factory")
+	}
+}
+
 func TestCheckRedisShardTransport(t *testing.T) {
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	cases := []struct {

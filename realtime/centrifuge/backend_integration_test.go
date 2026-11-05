@@ -21,9 +21,9 @@ func TestRedisBackend_SharesHistoryAcrossNodes(t *testing.T) {
 		t.Skip("CENTRIFUGE_TEST_REDIS_ADDR not set")
 	}
 	backend := RedisBackendConfig{
-		Shards:          []cfg.RedisShardConfig{{Address: addr}},
-		Prefix:          "kit-it-" + time.Now().Format("150405.000000000"),
-		PlaintextUnsafe: true,
+		Shards:     []cfg.RedisShardConfig{{Address: addr}},
+		Prefix:     "kit-it-" + time.Now().Format("150405.000000000"),
+		WithoutTLS: true,
 	}
 	newNode := func() *Node {
 		n, err := NewNode(WithAnonymousConnectionsUnsafe(), WithBackend(RedisBackend(backend)))

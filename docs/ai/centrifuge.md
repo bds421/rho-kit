@@ -122,7 +122,7 @@ native Run, inside `Node.Start`; `Backend.Close` runs after shutdown or a failed
 Run. `RedisBackend(RedisBackendConfig{Shards, Prefix, PresenceTTL})` uses the
 native Redis broker and presence manager from the centrifuge module itself (no
 extra direct dependency). Non-loopback shards need TLS and a password unless
-`PlaintextUnsafe` is set. Give each application its own `Prefix` on a shared Redis.
+`WithoutTLS` is set. Give each application its own `Prefix` on a shared Redis.
 
 ```go
 node, err := centrifuge.NewNode(

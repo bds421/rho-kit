@@ -57,9 +57,10 @@ type RedisBackendConfig struct {
 	// PresenceTTL bounds how long presence entries stay valid without an
 	// update. Zero uses the native default (60s).
 	PresenceTTL time.Duration
-	// PlaintextUnsafe allows non-loopback shards without TLS or a password.
-	// Leave false outside reviewed private networks.
-	PlaintextUnsafe bool
+	// WithoutTLS allows non-loopback shards without TLS or a password, like
+	// the kit Redis module's WithoutTLS. Leave false outside reviewed private
+	// networks.
+	WithoutTLS bool
 }
 
 // RedisBackend returns a [BackendFactory] that installs the native Redis
@@ -68,7 +69,7 @@ type RedisBackendConfig struct {
 //
 // Transport safety mirrors the kit's Redis module: a shard that targets a
 // non-loopback host must set TLSConfig (or use a rediss:// address) and a
-// password, unless PlaintextUnsafe is set. Hosts are classified without DNS.
+// password, unless WithoutTLS is set. Hosts are classified without DNS.
 // Panics on an invalid configuration.
 func RedisBackend(c RedisBackendConfig) BackendFactory {
 	if len(c.Shards) == 0 {
@@ -77,7 +78,7 @@ func RedisBackend(c RedisBackendConfig) BackendFactory {
 	if c.PresenceTTL < 0 {
 		panic("realtime/centrifuge: RedisBackend requires PresenceTTL >= 0")
 	}
-	if !c.PlaintextUnsafe {
+	if !c.WithoutTLS {
 		for i, shard := range c.Shards {
 			if err := checkRedisShardTransport(shard); err != nil {
 				panic(fmt.Sprintf("realtime/centrifuge: RedisBackend shard %d: %v", i, err))
@@ -151,10 +152,10 @@ func checkRedisShardTransport(s cfg.RedisShardConfig) error {
 		return nil
 	}
 	if !tlsOn {
-		return errors.New("non-loopback address requires TLSConfig or a rediss:// address (or PlaintextUnsafe)")
+		return errors.New("non-loopback address requires TLSConfig or a rediss:// address (or WithoutTLS)")
 	}
 	if password == "" {
-		return errors.New("non-loopback address requires a password (or PlaintextUnsafe)")
+		return errors.New("non-loopback address requires a password (or WithoutTLS)")
 	}
 	return nil
 }

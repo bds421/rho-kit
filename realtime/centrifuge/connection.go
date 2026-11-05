@@ -81,15 +81,25 @@ func (n *Node) observeSubscriptionReady(client *cfg.Client, channel string, read
 // Send queues a framework push; success is not proof of browser receipt.
 type Connection struct{ client *cfg.Client }
 
-func (c Connection) ID() string               { return c.client.ID() }
-func (c Connection) UserID() string           { return c.client.UserID() }
+// ID is the connection's unique client ID, assigned by centrifuge.
+func (c Connection) ID() string { return c.client.ID() }
+
+// UserID is the authenticated user the connection belongs to; empty for an
+// anonymous connection.
+func (c Connection) UserID() string { return c.client.UserID() }
+
+// Context is the context of the request the connection was accepted on; it
+// is done once the connection has closed.
 func (c Connection) Context() context.Context { return c.client.Context() }
+
+// Send queues data as a framework push to the connection.
 func (c Connection) Send(data []byte) error {
 	if err := c.client.Send(data); err != nil {
 		return redact.WrapError("realtime/centrifuge: client send", err)
 	}
 	return nil
 }
+
 // Disconnect closes the connection. No publication reaches it from here
 // on: centrifuge flushes its queue before it unsubscribes, so the write
 // policy is latched closed first instead of relying on the subscriptions.
