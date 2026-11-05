@@ -75,11 +75,9 @@ func (c Config) Clone() (Config, error) {
 }
 
 func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
-	opts := []tlsclone.Option(nil)
-	if cfg != nil && cfg.InsecureSkipVerify && cfg.VerifyConnection != nil {
-		opts = append(opts, tlsclone.WithAllowInsecureSkipVerify())
-	}
-	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion, opts...)
+	// Only the hot-rotation form (security/netutil.ReloadingClientTLS, verified
+	// through tlsclone.PeerVerifier) may keep InsecureSkipVerify.
+	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion, tlsclone.WithAllowPeerVerifier())
 	if err != nil {
 		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
 			return nil, errors.New("kafkabackend: TLS InsecureSkipVerify=true is not permitted")

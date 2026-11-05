@@ -120,21 +120,21 @@ func WithTLS(cfg *tls.Config) DialOption {
 // CA pool on every handshake without restart.
 //
 // Unlike [WithTLS], this option permits InsecureSkipVerify=true on the input
-// because the caller has already wired the verification replacement —
-// rejecting it here would force callers to choose between mTLS rotation and
-// the kit's anti-downgrade guardrail. WithReloadingTLS panics if
-// VerifyConnection is nil on the supplied config, so the InsecureSkipVerify
-// opt-in cannot be turned into a silent "no verification at all" by passing
-// a stripped config.
+// because the kit's verification replacement ([tlsclone.PeerVerifier]) is
+// wired — rejecting it here would force callers to choose between mTLS
+// rotation and the kit's anti-downgrade guardrail. WithReloadingTLS panics
+// unless VerifyConnection is that verifier (a ReloadingClientTLS config or a
+// clone of one), so the opt-in cannot be turned into a silent "no
+// verification at all" by a stripped config or a no-op VerifyConnection.
 func WithReloadingTLS(cfg *tls.Config) DialOption {
 	if cfg == nil {
 		panic("amqpbackend: WithReloadingTLS requires a non-nil tls.Config")
 	}
-	if cfg.VerifyConnection == nil {
-		panic("amqpbackend: WithReloadingTLS requires VerifyConnection to be set " +
+	if !tlsclone.VerifiesPeer(cfg) {
+		panic("amqpbackend: WithReloadingTLS requires the kit's peer verifier as VerifyConnection " +
 			"(use netutil.ReloadingClientTLS)")
 	}
-	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion, tlsclone.WithAllowInsecureSkipVerify())
+	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion, tlsclone.WithAllowPeerVerifier())
 	if err != nil {
 		panic("amqpbackend: WithReloadingTLS MaxVersion must allow TLS 1.2 or newer")
 	}

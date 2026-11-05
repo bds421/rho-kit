@@ -99,9 +99,9 @@ func (m *natsModule) Init(ctx context.Context, mc app.ModuleContext) error {
 	m.logger = mc.Logger
 
 	// Prefer the Builder's hot-rotation source when ReloadingTLS was
-	// wired. natsbackend.Config.Clone() detects the reloading-config
-	// shape (InsecureSkipVerify+VerifyConnection) and bypasses the
-	// anti-downgrade guard for that intentional path. Caller-supplied
+	// wired. natsbackend.Config.Clone() recognises the reloading config
+	// (its VerifyConnection is tlsclone.PeerVerifier) and keeps its
+	// InsecureSkipVerify for that intentional path. Caller-supplied
 	// TLS material on m.cfg is preserved when the source is absent.
 	if mc.TLSCertSource != nil {
 		m.cfg.TLS = netutil.ReloadingClientTLS(mc.TLSCertSource)

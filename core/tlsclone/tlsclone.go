@@ -19,6 +19,10 @@
 //   - [ErrMaxVersionBelowFloor] — sentinel returned when the input's
 //     MaxVersion is below the requested floor, which would otherwise
 //     leave the cloned config unable to handshake.
+//   - [PeerVerifier] — a VerifyConnection callback that verifies chain and
+//     server name against a CA pool read per handshake; with
+//     [WithAllowPeerVerifier] it is the one InsecureSkipVerify form the
+//     clone helpers accept without [WithAllowInsecureSkipVerify].
 //
 // The minimum-version floor is the kit's defence against downgrade by
 // stale config (a service inheriting a TLS 1.0 config from an old
@@ -37,10 +41,10 @@
 //     [tls.Config.GetCertificate] on the kit-owned config.
 //   - InsecureSkipVerify=true on the caller config is refused with
 //     [ErrInsecureSkipVerifyNotPermitted] unless the caller passes
-//     [WithAllowInsecureSkipVerify]. The opt-in is rare and must be
-//     justified in code review; current callers are kit-verify (dev
-//     probing) and the messaging backends (kafkabackend, amqpbackend,
-//     natsbackend) that honour caller-supplied insecure dev configs.
+//     [WithAllowInsecureSkipVerify], or [WithAllowPeerVerifier] and the
+//     config verifies through a [PeerVerifier]. The unconditional opt-in is
+//     rare and must be justified in code review; the kit transports and
+//     messaging backends use only [WithAllowPeerVerifier].
 package tlsclone
 
 import (
@@ -64,6 +68,7 @@ type Option func(*options)
 
 type options struct {
 	allowInsecureSkipVerify bool
+	allowPeerVerifier       bool
 	allowKeyLogWriter       bool
 }
 
@@ -72,12 +77,20 @@ type options struct {
 // opt-in, the clone helpers refuse such configs to make the dangerous
 // inheritance explicit at every call site.
 //
-// kit-verify uses it to probe services with dev-issued certificates, and
-// the messaging backends (kafkabackend, amqpbackend, natsbackend) honour
-// caller-supplied insecure dev configs through it. New callers must
-// justify the opt-in in code review.
+// New callers must justify the opt-in in code review; a config that only
+// replaces stdlib verification takes [WithAllowPeerVerifier] instead.
 func WithAllowInsecureSkipVerify() Option {
 	return func(o *options) { o.allowInsecureSkipVerify = true }
+}
+
+// WithAllowPeerVerifier permits `InsecureSkipVerify=true` only on a config
+// whose VerifyConnection is a [PeerVerifier] callback, the form
+// security/netutil.ReloadingClientTLS produces: stdlib verification is
+// replaced by an equivalent one, not switched off. Any other config with
+// InsecureSkipVerify is still refused, also one with a VerifyConnection of
+// its own.
+func WithAllowPeerVerifier() Option {
+	return func(o *options) { o.allowPeerVerifier = true }
 }
 
 // WithAllowKeyLogWriter permits a non-nil tls.Config.KeyLogWriter to be
@@ -96,7 +109,8 @@ func WithAllowKeyLogWriter() Option {
 // [tls.RenegotiateNever] and the deprecated NameToCertificate map
 // reset to nil. If cfg.InsecureSkipVerify is true the call returns
 // [ErrInsecureSkipVerifyNotPermitted] unless [WithAllowInsecureSkipVerify]
-// is passed.
+// is passed, or [WithAllowPeerVerifier] and the config verifies through a
+// [PeerVerifier].
 func ConfigWithFloor(cfg *tls.Config, minVersion uint16, opts ...Option) (*tls.Config, error) {
 	if cfg == nil {
 		return nil, nil
@@ -108,7 +122,7 @@ func ConfigWithFloor(cfg *tls.Config, minVersion uint16, opts ...Option) (*tls.C
 		}
 		opt(&settings)
 	}
-	if cfg.InsecureSkipVerify && !settings.allowInsecureSkipVerify {
+	if cfg.InsecureSkipVerify && !settings.permitsSkipVerify(cfg) {
 		return nil, ErrInsecureSkipVerifyNotPermitted
 	}
 	cloned := cfg.Clone()
@@ -134,6 +148,12 @@ func ConfigOrEmptyWithFloor(cfg *tls.Config, minVersion uint16, opts ...Option) 
 		cfg = &tls.Config{}
 	}
 	return ConfigWithFloor(cfg, minVersion, opts...)
+}
+
+// permitsSkipVerify reports whether the options let cfg keep
+// InsecureSkipVerify.
+func (o options) permitsSkipVerify(cfg *tls.Config) bool {
+	return o.allowInsecureSkipVerify || o.allowPeerVerifier && VerifiesPeer(cfg)
 }
 
 func detachTLSConfig(cfg *tls.Config, allowKeyLogWriter bool) {

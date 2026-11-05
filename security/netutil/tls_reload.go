@@ -5,13 +5,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 )
 
 // ErrServerNameRequired is returned by the [ReloadingClientTLS]
@@ -21,8 +21,8 @@ import (
 // ServerName would let the peer's chain pass with no hostname
 // binding — strictly weaker than the stock Go TLS client. Callers
 // MUST set [tls.Config.ServerName] (typically via the SDK's
-// per-target setter) before dialing.
-var ErrServerNameRequired = errors.New("netutil: ReloadingClientTLS requires tls.Config.ServerName to be set before dialing")
+// per-target setter) before dialing. It is [tlsclone.ErrServerNameRequired].
+var ErrServerNameRequired = tlsclone.ErrServerNameRequired
 
 // CertificateSource is the read side of a hot-rotatable TLS keypair
 // and trust store. Each call returns the freshest material the source
@@ -384,32 +384,18 @@ func ReloadingClientTLS(src CertificateSource) *tls.Config {
 		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
 			return src.ClientCertificate()
 		},
-		VerifyConnection: func(state tls.ConnectionState) error {
-			if state.ServerName == "" {
-				return ErrServerNameRequired
-			}
-			pool, err := src.CAs()
-			if err != nil {
-				return fmt.Errorf("netutil: client TLS verify: %w", err)
-			}
-			if len(state.PeerCertificates) == 0 {
-				return errors.New("netutil: client TLS verify: server presented no certificates")
-			}
-			intermediates := x509.NewCertPool()
-			for _, c := range state.PeerCertificates[1:] {
-				intermediates.AddCert(c)
-			}
-			opts := x509.VerifyOptions{
-				Roots:         pool,
-				Intermediates: intermediates,
-				DNSName:       state.ServerName,
-			}
-			if _, err := state.PeerCertificates[0].Verify(opts); err != nil {
-				return fmt.Errorf("netutil: client TLS verify: %w", err)
-			}
-			return nil
-		},
+		VerifyConnection: tlsclone.PeerVerifier(src.CAs),
 	}
+}
+
+// IsReloadingClientTLS reports whether cfg verifies its peer the way a
+// [ReloadingClientTLS] config does: InsecureSkipVerify set and stdlib
+// verification replaced by the kit's per-handshake chain and hostname
+// check ([tlsclone.PeerVerifier]). Clones of such a config qualify; a
+// config with a VerifyConnection of its own does not, so a no-op callback
+// cannot pass the kit's InsecureSkipVerify guards.
+func IsReloadingClientTLS(cfg *tls.Config) bool {
+	return cfg != nil && cfg.InsecureSkipVerify && tlsclone.VerifiesPeer(cfg)
 }
 
 // WaitForReload blocks until the next successful reload after the

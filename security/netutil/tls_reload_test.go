@@ -237,6 +237,29 @@ func TestReloadingClientTLS_FailsClosedWithoutServerName(t *testing.T) {
 	require.ErrorIs(t, err, ErrServerNameRequired)
 }
 
+// TestIsReloadingClientTLS_OnlyTheKitVerifier verifies that the reloading
+// config and its clones are recognised, and that InsecureSkipVerify with any
+// other VerifyConnection, a no-op one included, is not.
+func TestIsReloadingClientTLS_OnlyTheKitVerifier(t *testing.T) {
+	t.Parallel()
+	reloading := ReloadingClientTLS(poolSource{pool: x509.NewCertPool()})
+	assert.True(t, IsReloadingClientTLS(reloading))
+
+	clone := reloading.Clone()
+	clone.ServerName = "service.test"
+	assert.True(t, IsReloadingClientTLS(clone), "a clone with its own ServerName keeps the verifier")
+
+	noop := reloading.Clone()
+	noop.VerifyConnection = func(tls.ConnectionState) error { return nil }
+	assert.False(t, IsReloadingClientTLS(noop))
+
+	verifying := reloading.Clone()
+	verifying.InsecureSkipVerify = false
+	assert.False(t, IsReloadingClientTLS(verifying), "only the InsecureSkipVerify form needs the exemption")
+	assert.False(t, IsReloadingClientTLS(&tls.Config{InsecureSkipVerify: true}))
+	assert.False(t, IsReloadingClientTLS(nil))
+}
+
 // poolSource is a CertificateSource whose only meaningful method is
 // CAs(); ReloadingClientTLS.VerifyConnection consults only the trust
 // pool, so the cert getters fail loudly if the test path ever calls

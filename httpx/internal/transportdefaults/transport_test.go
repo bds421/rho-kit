@@ -2,10 +2,14 @@ package transportdefaults
 
 import (
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 func TestNew_AppliesKitDefaults(t *testing.T) {
@@ -169,16 +173,29 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func TestCloneTLSConfigWithFloor_AcceptsVerifyConnectionReplacement(t *testing.T) {
+type poolOnlySource struct{}
+
+func (poolOnlySource) ServerCertificate() (*tls.Certificate, error) { return nil, errors.New("unused") }
+func (poolOnlySource) ClientCertificate() (*tls.Certificate, error) { return nil, errors.New("unused") }
+func (poolOnlySource) CAs() (*x509.CertPool, error)                 { return x509.NewCertPool(), nil }
+
+func TestCloneTLSConfigWithFloor_AcceptsTheReloadingClientTLS(t *testing.T) {
+	cloned := CloneTLSConfigWithFloor(netutil.ReloadingClientTLS(poolOnlySource{}), "test")
+	if !netutil.IsReloadingClientTLS(cloned) {
+		t.Fatal("the clone must keep the kit verifier; it is the only verification left")
+	}
+}
+
+func TestCloneTLSConfigWithFloor_RefusesSkipVerifyWithANoOpVerifyConnection(t *testing.T) {
 	cfg := &tls.Config{
 		InsecureSkipVerify: true,
 		VerifyConnection:   func(tls.ConnectionState) error { return nil },
 	}
-	cloned := CloneTLSConfigWithFloor(cfg, "test")
-	if cloned.VerifyConnection == nil {
-		t.Fatal("VerifyConnection must survive the clone; it is the only verification left")
-	}
-	if !cloned.InsecureSkipVerify {
-		t.Error("InsecureSkipVerify must stay set so VerifyConnection checks against the live CA pool")
-	}
+	defer func() {
+		msg, _ := recover().(string)
+		if !strings.Contains(msg, "InsecureSkipVerify=true is not permitted") {
+			t.Fatalf("panic = %q, want the InsecureSkipVerify refusal", msg)
+		}
+	}()
+	CloneTLSConfigWithFloor(cfg, "test")
 }
