@@ -40,6 +40,7 @@ use (
 	./cmd/kit-new
 	./cmd/kit-verify
 	./cmd/kit-vulngate
+	./codec/zstd
 	./core
 	./crypto
 	./crypto/envelope/awskms
@@ -101,7 +102,6 @@ use (
 	./infra/storage/sftpbackend
 	./infra/storage/storagehttp/uploadsec/clamav
 	./infra/storage/storagetest
-	./codec/zstd
 	./io
 	./observability
 	./observability/auditlog/postgres
