@@ -14,7 +14,6 @@ files by path, `index.html` for every other path, precompressed siblings by
   year (`public, max-age=31536000, immutable`); a missing file there is 404.
 - `WithDotPaths(paths ...string)` — files or `dir/` prefixes under
   dot-named segments that may be served; `.well-known/` always is.
-
 - `WithBasePath(prefix)` — changes the build's `<base href="/">` for runtime
   mounting. Build with relative asset URLs and strip the prefix before the
   handler. The rewritten index has its own ETag and is served uncompressed;

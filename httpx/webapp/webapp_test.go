@@ -47,7 +47,7 @@ func TestServesFilesAndTheAppForEveryOtherPath(t *testing.T) {
 	}{
 		{"/", "app", "no-cache", "text/html; charset=utf-8"},
 		{"/index.html", "app", "no-cache", "text/html; charset=utf-8"},
-		{"/o/123/workspaces", "app", "no-cache", "text/html; charset=utf-8"},
+		{"/some/route", "app", "no-cache", "text/html; charset=utf-8"},
 		{"/assets/app.js", "js", "public, max-age=31536000, immutable", "text/javascript; charset=utf-8"},
 		{"/assets/logo.woff2", "font", "public, max-age=31536000, immutable", "font/woff2"},
 		{"/favicon.svg", "svg", "no-cache", "image/svg+xml"},
