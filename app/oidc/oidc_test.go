@@ -87,7 +87,7 @@ func TestMiddleware_ProjectsBrowserSessionPrincipal(t *testing.T) {
 	).(*module)
 	initModule(t, m)
 	require.NoError(t, sessions.Put(context.Background(), "session-1", kitoauth.Session{
-		SessionID: "session-1", UserID: "auth0|user-1", Claims: map[string]any{"org": "org-1", "scope": "orders:read"},
+		SessionID: "session-1", UserID: "provider|user-1", Claims: map[string]any{"org": "org-1", "scope": "orders:read"},
 	}, time.Minute))
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +95,7 @@ func TestMiddleware_ProjectsBrowserSessionPrincipal(t *testing.T) {
 		if !ok {
 			t.Fatal("expected OIDC principal")
 		}
-		assert.Equal(t, "auth0|user-1", p.Subject)
+		assert.Equal(t, "provider|user-1", p.Subject)
 		assert.Equal(t, "org-1", p.Tenant)
 		assert.Equal(t, []string{"orders:read"}, p.Scopes)
 		w.WriteHeader(http.StatusNoContent)

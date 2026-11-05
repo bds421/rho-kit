@@ -422,7 +422,7 @@ appoidc.Module(cfg,
 
 ```go
 var c struct {
-    Roles map[string]map[string]string `json:"urn:zitadel:iam:org:project:roles"`
+    Roles map[string]map[string]string `json:"urn:example:roles"`
 }
 if err := appoidc.DecodeSessionClaims(r.Context(), &c); err != nil { ... }
 ```

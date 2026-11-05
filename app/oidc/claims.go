@@ -20,7 +20,8 @@ var sessionClaimsKey = contextutil.NewKey[map[string]any]("app.oidc.session_clai
 // canonical identity.Principal, which carries only mapped string values, for
 // provider claims with object or array shape. ok is false when the request
 // has no session. The module middleware sets it for every route except the
-// fixed /oauth/* routes.
+// module's own login, callback, logout and back-channel logout routes
+// (under /oauth or the auth/oauth2.WithPathPrefix prefix).
 //
 // The claims are the ID token's, refreshed together with it when token
 // refresh is enabled; authorization decisions should still prefer the

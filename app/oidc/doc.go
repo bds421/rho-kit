@@ -3,7 +3,9 @@
 // separate from app/jwt: API resource services should use JWT verification
 // without importing browser session or OIDC discovery dependencies.
 //
-// Routes other than /oauth/* receive the mapped identity.Principal and, via
+// Routes other than the module's own (/oauth/login, callback, logout and
+// back-channel logout, or under auth/oauth2.WithPathPrefix) receive the
+// mapped identity.Principal and, via
 // [SessionClaims] / [DecodeSessionClaims], the session's verified ID-token
 // claims (including object and array claims). Token refresh and
 // RP-initiated logout are enabled through [WithClientOption] with

@@ -15,7 +15,7 @@ import (
 	"github.com/bds421/rho-kit/security/v2/identity"
 )
 
-const rolesClaim = "urn:zitadel:iam:org:project:roles"
+const rolesClaim = "urn:example:roles"
 
 func newTestModule(t *testing.T, sessions *kitoauth.MemorySessionStore, opts ...Option) *module {
 	t.Helper()
@@ -61,7 +61,7 @@ func TestSessionClaims_ExposeObjectClaims(t *testing.T) {
 		assert.Equal(t, "a", again["groups"].([]any)[0])
 
 		var typed struct {
-			Roles  map[string]map[string]string `json:"urn:zitadel:iam:org:project:roles"`
+			Roles  map[string]map[string]string `json:"urn:example:roles"`
 			Groups []string                     `json:"groups"`
 		}
 		require.NoError(t, DecodeSessionClaims(r.Context(), &typed))
