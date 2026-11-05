@@ -53,4 +53,7 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-retract v2.9.0 // Tagged from branches that were never merged; use v2.10.0.
+retract (
+	v2.12.0 // WithAllowedNetworks lets a wide IPv6 network reach IPv4 hosts; use v2.12.1 or later.
+	v2.9.0 // Tagged from branches that were never merged; use v2.10.0.
+)
