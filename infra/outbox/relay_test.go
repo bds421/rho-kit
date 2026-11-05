@@ -19,6 +19,7 @@ import (
 
 	"github.com/bds421/rho-kit/core/v2/id"
 	"github.com/bds421/rho-kit/infra/v2/outbox"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 // fakePublisher records published entries and can simulate errors.
@@ -433,6 +434,7 @@ func TestRelay_StartRejectsAfterStopBeforeStart(t *testing.T) {
 	err := relay.Start(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already stopped")
+	assert.ErrorIs(t, err, lifecycle.ErrStoppedBeforeStart, "the Runner must take it as a clean end")
 }
 
 func TestRelay_StartRejectsRestartAfterStop(t *testing.T) {
@@ -457,6 +459,7 @@ func TestRelay_StartRejectsRestartAfterStop(t *testing.T) {
 	// point operators at the wrong condition (a concurrent run that is not
 	// happening).
 	assert.Contains(t, err.Error(), "already stopped")
+	assert.NotErrorIs(t, err, lifecycle.ErrStoppedBeforeStart, "a relay that ran was not stopped before it started")
 }
 
 func TestRelay_StopRejectsNilContext(t *testing.T) {

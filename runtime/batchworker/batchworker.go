@@ -12,6 +12,7 @@ package batchworker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"runtime/debug"
@@ -24,6 +25,7 @@ import (
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/logattr"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 // Worker runs a batch function periodically with jitter, metrics, and
@@ -168,7 +170,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	}
 	if w.stopped {
 		w.mu.Unlock()
-		return errors.New("batchworker: Worker already stopped")
+		return fmt.Errorf("batchworker: Worker already stopped: %w", lifecycle.ErrStoppedBeforeStart)
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel

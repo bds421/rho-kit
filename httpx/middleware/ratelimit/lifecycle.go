@@ -3,11 +3,13 @@ package ratelimit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 // lifecycleState is the shared Start/Stop state machine for [Limiter] and
@@ -39,7 +41,7 @@ func (s *lifecycleState) beginStart(ctx context.Context, kind string) (context.C
 		// Stop ran before Start and latched stopped=true. Launching the
 		// cleanup loop now would orphan a goroutine the prior Stop already
 		// promised to wait on. Reject, mirroring lifecycle.FuncComponent.
-		return nil, errors.New("ratelimit: " + kind + ".Start already stopped")
+		return nil, fmt.Errorf("ratelimit: %s.Start already stopped: %w", kind, lifecycle.ErrStoppedBeforeStart)
 	}
 	s.started = true
 	runCtx, cancel := context.WithCancel(ctx)

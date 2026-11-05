@@ -7,6 +7,7 @@ require (
 	github.com/bds421/rho-kit/data/v2 v2.36.1
 	github.com/bds421/rho-kit/observability/v2 v2.36.1
 	github.com/bds421/rho-kit/resilience/v2 v2.36.1
+	github.com/bds421/rho-kit/runtime/v2 v2.36.1
 	github.com/bds421/rho-kit/security/v2 v2.36.1
 	github.com/google/jsonschema-go v0.4.3
 	github.com/google/uuid v1.6.0

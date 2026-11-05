@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"runtime/debug"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/logattr"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 // DefaultJobTimeout caps any cron job that has no explicit
@@ -233,7 +235,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	}
 	if s.stopped {
 		s.mu.Unlock()
-		return errors.New("cron: Scheduler already stopped")
+		return fmt.Errorf("cron: Scheduler already stopped: %w", lifecycle.ErrStoppedBeforeStart)
 	}
 	s.started = true
 	s.ctx, s.cancel = context.WithCancel(ctx)

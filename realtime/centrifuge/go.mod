@@ -5,6 +5,7 @@ go 1.26.8
 require (
 	github.com/bds421/rho-kit/core/v2 v2.36.1
 	github.com/bds421/rho-kit/observability/v2 v2.36.1
+	github.com/bds421/rho-kit/runtime/v2 v2.36.1
 	github.com/bds421/rho-kit/security/v2 v2.36.1
 	github.com/centrifugal/centrifuge v0.40.1
 	github.com/centrifugal/protocol v0.23.1

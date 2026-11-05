@@ -13,6 +13,8 @@ import (
 	io_prometheus_client "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 func TestScheduler_JobExecution(t *testing.T) {
@@ -188,6 +190,7 @@ func TestScheduler_StartRejectsAfterStopBeforeStart(t *testing.T) {
 	err := s.Start(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already stopped")
+	assert.ErrorIs(t, err, lifecycle.ErrStoppedBeforeStart, "the Runner must take it as a clean end")
 }
 
 func TestScheduler_StopRejectsNilContext(t *testing.T) {

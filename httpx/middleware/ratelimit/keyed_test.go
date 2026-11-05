@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 func TestKeyedLimiter_Allow(t *testing.T) {
@@ -271,6 +273,9 @@ func TestKeyedLimiter_RunRejectsStartAfterStop(t *testing.T) {
 	err := rl.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "stopped") {
 		t.Fatalf("expected already stopped error, got %v", err)
+	}
+	if !errors.Is(err, lifecycle.ErrStoppedBeforeStart) {
+		t.Fatalf("expected lifecycle.ErrStoppedBeforeStart so the Runner ends cleanly, got %v", err)
 	}
 }
 

@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 type testEvent struct {
@@ -322,6 +324,7 @@ func TestBus_StartRejectsAfterStopBeforeStart(t *testing.T) {
 	err := bus.Start(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already stopped")
+	assert.ErrorIs(t, err, lifecycle.ErrStoppedBeforeStart, "the Runner must take it as a clean end")
 }
 
 func TestPublish_UnboundedAsync_AfterStopSurfacesErrStopped(t *testing.T) {

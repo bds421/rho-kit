@@ -16,6 +16,7 @@ import (
 	cfg "github.com/centrifugal/centrifuge"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )
 
@@ -196,6 +197,9 @@ func (n *Node) Start(ctx context.Context) error {
 	n.lifecycleMu.Lock()
 	if n.stopped.Load() {
 		n.lifecycleMu.Unlock()
+		if !n.started.Load() {
+			return fmt.Errorf("realtime/centrifuge: Node.Start after Stop: %w", lifecycle.ErrStoppedBeforeStart)
+		}
 		return errors.New("realtime/centrifuge: Node.Start after Stop")
 	}
 	if n.started.Load() {

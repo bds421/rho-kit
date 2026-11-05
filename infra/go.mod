@@ -19,6 +19,7 @@ require (
 	github.com/bds421/rho-kit/crypto/v2 v2.36.1
 	github.com/bds421/rho-kit/observability/v2 v2.36.1
 	github.com/bds421/rho-kit/resilience/v2 v2.36.1
+	github.com/bds421/rho-kit/runtime/v2 v2.36.1
 	github.com/gabriel-vasile/mimetype v1.4.16
 	github.com/google/uuid v1.6.0
 	github.com/pressly/goose/v3 v3.29.0

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 const (
@@ -292,8 +293,12 @@ func (r *Relay) Start(ctx context.Context) error {
 	// relay that is currently running (started && !stopped) still reports
 	// "already started" via the second branch.
 	if r.stopped {
+		started := r.started
 		r.mu.Unlock()
 		cancel()
+		if !started {
+			return fmt.Errorf("outbox: Relay already stopped: %w", lifecycle.ErrStoppedBeforeStart)
+		}
 		return errors.New("outbox: Relay already stopped")
 	}
 	if r.started {

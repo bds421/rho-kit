@@ -217,6 +217,8 @@ err := runner.Run(context.Background()) // blocks until signal or error
 
 Components implement `lifecycle.Component` (Start + Stop). If any component returns an error, all others are cancelled. On SIGINT/SIGTERM, all components are stopped in reverse registration order. The Runner includes panic recovery per goroutine.
 
+A component that a shutdown stopped before its Start ran returns `lifecycle.ErrStoppedBeforeStart` (wrapped) from Start, and the Runner takes it as a clean end, like `http.ErrServerClosed`. The kit components do this: `FuncComponent`, `cron.Scheduler`, `eventbus.Bus`, `batchworker.Worker`, `outbox.Relay`, the `ratelimit` limiters and `centrifuge.Node`. A custom component that refuses Start after Stop should wrap it too.
+
 ## concurrency — Fan-Out Helpers
 
 Run N functions concurrently with panic recovery and optional bounded parallelism:

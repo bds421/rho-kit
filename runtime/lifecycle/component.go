@@ -99,7 +99,8 @@ func (h *httpServerComponent) Stop(ctx context.Context) error {
 
 // ErrStoppedBeforeStart is what a component's Start returns when it was
 // stopped before it ran: a service told to stop while its components still
-// start. The [Runner] takes it as a clean end.
+// start. The [Runner] takes it as a clean end. Components that refuse a
+// Start after an earlier Stop wrap it, so errors.Is matches.
 var ErrStoppedBeforeStart = errors.New("lifecycle: component stopped before it started")
 
 // FuncComponent adapts a simple function to the Component interface.

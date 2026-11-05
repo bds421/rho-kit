@@ -15,6 +15,7 @@ import (
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/logattr"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 // OnFullPolicy controls what async dispatch does when the worker pool queue
@@ -631,7 +632,7 @@ func (b *Bus) Start(ctx context.Context) error {
 	}
 	if b.stopped {
 		b.startMu.Unlock()
-		return errors.New("eventbus: Bus already stopped")
+		return fmt.Errorf("eventbus: Bus already stopped: %w", lifecycle.ErrStoppedBeforeStart)
 	}
 	b.started = true
 	b.startMu.Unlock()

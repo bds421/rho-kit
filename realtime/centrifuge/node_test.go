@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	rtcentrifuge "github.com/bds421/rho-kit/realtime/centrifuge/v2"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 func newQuietLogger() *slog.Logger {
@@ -96,6 +97,16 @@ func TestNode_StartStop(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Start did not return after Stop + ctx cancel")
 	}
+}
+
+func TestNode_StartAfterStopBeforeStartIsStoppedBeforeStart(t *testing.T) {
+	node, err := rtcentrifuge.NewNode(rtcentrifuge.WithAnonymousConnectionsUnsafe(), rtcentrifuge.WithLogger(newQuietLogger()))
+	require.NoError(t, err)
+
+	require.NoError(t, node.Stop(context.Background()))
+
+	err = node.Start(context.Background())
+	require.ErrorIs(t, err, lifecycle.ErrStoppedBeforeStart, "the Runner must take it as a clean end")
 }
 
 func TestNode_DoubleStartRejected(t *testing.T) {

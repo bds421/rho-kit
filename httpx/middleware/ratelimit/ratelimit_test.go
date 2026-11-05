@@ -2,12 +2,15 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 func TestCleanupInterval_SaturatesOnLargeWindow(t *testing.T) {
@@ -371,6 +374,9 @@ func TestLimiterRun_RejectsStartAfterStop(t *testing.T) {
 	err := rl.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "stopped") {
 		t.Fatalf("expected already stopped error, got %v", err)
+	}
+	if !errors.Is(err, lifecycle.ErrStoppedBeforeStart) {
+		t.Fatalf("expected lifecycle.ErrStoppedBeforeStart so the Runner ends cleanly, got %v", err)
 	}
 }
 
