@@ -8,7 +8,11 @@
 // a missing -accepted file included.
 // A vulnerability without a fix is listed, never failed.
 //
-//	kit-vulngate [-accepted security/accepted-vulnerabilities.json] [-high 720h] report.json...
+// An acceptance with an image applies only to reports of that image: a
+// registry scan by digest names it, and image=report.json names it for a
+// report of an archive built from it.
+//
+//	kit-vulngate [-accepted security/accepted-vulnerabilities.json] [-high 720h] [image=]report.json...
 package main
 
 import (
@@ -29,11 +33,11 @@ func main() {
 func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 	flags := flag.NewFlagSet("kit-vulngate", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	acceptedFile := flags.String("accepted", "", "JSON list of accepted findings (id, package, reason, until)")
+	acceptedFile := flags.String("accepted", "", "JSON list of accepted findings (id, package, image, reason, until)")
 	deadlines := defaultPolicy()
 	severe := deadlines.register(flags)
 	if err := flags.Parse(args); err != nil || flags.NArg() == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kit-vulngate [-accepted file] [-kev d] [-critical d] [-high d] [-medium d] [-low d] grype-report.json...")
+		_, _ = fmt.Fprintln(stderr, "usage: kit-vulngate [-accepted file] [-kev d] [-critical d] [-high d] [-medium d] [-low d] [image=]grype-report.json...")
 		return 2
 	}
 	if err := deadlines.apply(severe); err != nil {
@@ -46,8 +50,9 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		return 2
 	}
 	var all []finding
-	for _, path := range flags.Args() {
-		found, err := readFile(path)
+	seen := map[string]bool{}
+	for _, arg := range flags.Args() {
+		found, err := readArg(arg, seen)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, err)
 			return 2
@@ -74,13 +79,29 @@ func acceptances(path string) ([]acceptance, error) {
 	return readAccepted(f)
 }
 
-func readFile(path string) ([]finding, error) {
+// readArg reads report.json, or image=report.json for a report of an
+// archive built from that image. Two reports of one name are refused, as
+// the findings would be listed as one target.
+func readArg(arg string, seen map[string]bool) ([]finding, error) {
+	path, im := arg, image{}
+	if ref, file, ok := strings.Cut(arg, "="); ok {
+		parsed, valid := parseImage(ref)
+		if !valid {
+			return nil, fmt.Errorf("%s: %q is not name[:tag]@sha256:<digest>", file, ref)
+		}
+		path, im = file, parsed
+	}
+	target := strings.TrimSuffix(filepath.Base(path), ".json")
+	if seen[target] {
+		return nil, fmt.Errorf("two reports are named %s", target)
+	}
+	seen[target] = true
 	f, err := os.Open(path) //nolint:gosec // the caller names the reports
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	return readReport(f, strings.TrimSuffix(filepath.Base(path), ".json"))
+	return readReport(f, target, im)
 }
 
 // judge prints each finding, most urgent first, and counts the late ones.

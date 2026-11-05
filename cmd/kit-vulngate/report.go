@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -42,22 +43,27 @@ type vulnerability struct {
 // finding is one vulnerable package in one scanned target.
 type finding struct {
 	Target, ID, Severity, Package, Version, FixedIn string
-	Exploited                                       bool
+	// Image is the scanned image, when the report or the caller names it.
+	Image     image
+	Exploited bool
 	// FixedSince is when the earliest fix was published; zero when there
 	// is none or its date is unknown.
 	FixedSince time.Time
 	Fixed      bool
 }
 
-func readReport(r io.Reader, target string) ([]finding, error) {
+func readReport(r io.Reader, target string, im image) ([]finding, error) {
 	var rep report
 	if err := json.NewDecoder(r).Decode(&rep); err != nil {
 		return nil, fmt.Errorf("%s: not a grype JSON report: %w", target, err)
 	}
+	if im == (image{}) {
+		im = scannedImage(rep.Source.Target)
+	}
 	out := make([]finding, 0, len(rep.Matches))
 	for _, m := range rep.Matches {
 		v := m.Vulnerability
-		f := finding{Target: target, ID: v.ID, Severity: v.Severity, Package: m.Artifact.Name, Version: m.Artifact.Version, Exploited: len(v.KnownExploited) > 0}
+		f := finding{Target: target, Image: im, ID: v.ID, Severity: v.Severity, Package: m.Artifact.Name, Version: m.Artifact.Version, Exploited: len(v.KnownExploited) > 0}
 		for _, related := range m.RelatedVulnerabilities {
 			if rank(related.Severity) > rank(f.Severity) {
 				f.Severity = related.Severity
@@ -79,4 +85,17 @@ func readReport(r io.Reader, target string) ([]finding, error) {
 		out = append(out, f)
 	}
 	return out, nil
+}
+
+// scannedImage is the image a registry scan names by digest
+// (grype registry:name@sha256:…); an archive or SBOM scan names none.
+func scannedImage(target json.RawMessage) image {
+	var t struct {
+		UserInput string `json:"userInput"`
+	}
+	if json.Unmarshal(target, &t) != nil {
+		return image{}
+	}
+	im, _ := parseImage(strings.TrimPrefix(t.UserInput, "registry:"))
+	return im
 }

@@ -114,3 +114,47 @@ func TestDeadlinesCanBeSet(t *testing.T) {
 		t.Errorf("a negative deadline: exit %d", code)
 	}
 }
+
+// An acceptance with an image passes the finding only in that image: by
+// the digest a registry scan names, or the one given for an archive's
+// report; another digest, an unnamed image or an SBOM counts it again.
+func TestAnAcceptanceWithAnImageAppliesToThatImageOnly(t *testing.T) {
+	const digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	const other = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	scan := func(name, userInput string) string {
+		return write(t, name, `{"matches":[`+match("C1", "Critical", "2026-10-01", "")+`],"source":{"type":"image","target":{"userInput":"`+userInput+`"}}}`)
+	}
+	accepted := write(t, "accepted.json", `[{"id":"C1","package":"pkg-C1","image":"example/db:1.2@`+digest+`","reason":"not reached","until":"2026-12-01"}]`)
+	for name, c := range map[string]struct {
+		args []string
+		pass bool
+	}{
+		"that image":                     {[]string{scan("a.json", "example/db:1.2@"+digest)}, true},
+		"that image, Docker Hub spelled": {[]string{scan("b.json", "registry:docker.io/example/db@"+digest)}, true},
+		"another digest":                 {[]string{scan("c.json", "example/db:1.2@"+other)}, false},
+		"another image":                  {[]string{scan("d.json", "example/cache:1.2@"+digest)}, false},
+		"an archive":                     {[]string{scan("e.json", "/build/db.oci.tar")}, false},
+		"an archive built from it":       {[]string{"example/db:1.2@" + digest + "=" + scan("f.json", "/build/db.oci.tar")}, true},
+	} {
+		code, out := gate(t, append([]string{"-accepted", accepted}, c.args...)...)
+		if (code == 0) != c.pass || code == 2 {
+			t.Errorf("%s: exit %d\n%s", name, code, out)
+		}
+	}
+	if code, _ := gate(t, "-accepted", write(t, "bad.json", `[{"id":"C1","package":"p","image":"example/db:1.2","reason":"r","until":"2026-12-01"}]`), scan("g.json", "x")); code != 2 {
+		t.Errorf("an image without digest: exit %d", code)
+	}
+	if code, _ := gate(t, "example/db:1.2="+scan("h.json", "x")); code != 2 {
+		t.Errorf("an archive's image without digest: exit %d", code)
+	}
+}
+
+// Two reports of one name would be listed as one target, so a clean one
+// could stand for a dirty one: refused.
+func TestTwoReportsOfOneNameAreRefused(t *testing.T) {
+	clean := write(t, "db.json", `{"matches":[]}`)
+	dirty := write(t, "db.json", `{"matches":[`+match("C1", "Critical", "2026-10-01", "")+`]}`)
+	if code, out := gate(t, clean, dirty); code != 2 || !strings.Contains(out, "two reports are named db") {
+		t.Errorf("exit %d\n%s", code, out)
+	}
+}

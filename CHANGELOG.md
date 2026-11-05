@@ -1,5 +1,18 @@
 # Changelog
 
+## cmd/kit-vulngate v2.37.1 — 2026-11-05
+
+- **fix(cmd/kit-vulngate): an acceptance can be limited to one image.**
+  `image` (`name[:tag]@sha256:<digest>`) in an accepted finding makes it
+  apply only to reports of that image: a registry scan by digest names it
+  (grype `registry:name@sha256:…`), and `image=report.json` names it for a
+  report of an archive built from it. Repository and digest are compared,
+  Docker Hub's implied registry and `library/` normalised, the tag
+  ignored. Without `image` an acceptance applies everywhere, as before.
+- **fix(cmd/kit-vulngate): two reports of one name are refused** (exit 2):
+  their findings would be listed as one target, so a clean report could
+  stand for a dirty one.
+
 ## v2.37.0 — 2026-11-05
 
 - **fix(crypto/envelope): Box keeps binding elements apart.** The caller
