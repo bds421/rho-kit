@@ -1,5 +1,83 @@
 # Changelog
 
+## v2.37.0 — 2026-11-05
+
+- **fix(crypto/envelope): Box keeps binding elements apart.** The caller
+  AAD was purpose and binding joined by "/", so `Seal(x, "a/b")` and
+  `Seal(x, "a", "b")` were interchangeable. New seals bind
+  `"\x00envelope.Box/v2\x00"` followed by the uvarint-length-prefixed
+  purpose and each binding element. `Open` still accepts values sealed the
+  old way (one KEK call either way); no old AAD can equal a new one because
+  `NewBox` refuses a purpose starting with a NUL byte. Old values stay
+  ambiguous until resealed: reseal them to bind them unambiguously.
+- **fix(observability/auditlog): rolling chain-key rotation.** Every append
+  checks which configured key sealed the chain head and never seals with an
+  older one. `WithNextChainKeys(next...)` lets a replica still sealing with
+  the previous key verify with the new one and seal with it once the head
+  does; a replica that does not know the head's key refuses with the new
+  `ErrChainHeadUnknown` instead of adding events no verification accepts.
+  Rotate in two rolls: new key as next key everywhere, then as sealing key
+  (docs/ai/credential-rotation.md). Replicas on earlier kit versions must
+  be upgraded before a rotation.
+- **fix(observability/auditlog): `ErrAnchorPruned`.** When retention removed
+  the anchored event and later ones, verification returns `ErrAnchorPruned`
+  instead of `ErrChainBroken` ("tail was truncated"), unless a remaining
+  event carries a key older than the anchored one.
+- **feat(infra/sqldb/migrate, app/postgres): `Config.AllowAhead`.** Takes a
+  database a newer release migrated as up to date, for rolling deploys and
+  rollbacks under expand/contract; a squashed chain then goes undetected.
+  `postgres.WithMigrationsAllowAhead()` sets it for every set. The default
+  still refuses with `ErrAhead`.
+- **fix(httpx, infra/messaging/{nats,kafka,amqp}backend): a no-op
+  `VerifyConnection` no longer lifts the `InsecureSkipVerify` refusal.**
+  Only the reloading client config's verifier does (new
+  `tlsclone.PeerVerifier`, `VerifiesPeer`, `WithAllowPeerVerifier`;
+  `netutil.IsReloadingClientTLS`), clones included.
+- **fix(runtime, infra/outbox, httpx/middleware/ratelimit,
+  realtime/centrifuge): stopped before start ends cleanly.**
+  `cron.Scheduler`, `eventbus.Bus`, `batchworker.Worker`, `outbox.Relay`,
+  the ratelimit limiters and `centrifuge.Node` wrap
+  `lifecycle.ErrStoppedBeforeStart` when Stop ran before Start, so the
+  Runner ends cleanly. `infra`, `httpx` and `realtime/centrifuge` now
+  require `runtime/v2`.
+- **fix(auth/oauth2/redis): `WithEncryption` uses `encrypt.Keyring`.** Same
+  `rk1.` format; stored sessions and login states keep decrypting.
+- **feat(auth/oauth2): `WithErrorRenderer(func(w, r, Failure))`** replaces
+  the sign-in error page; `Failure{Kind, Status, ReturnTo, RetryURL}` with
+  `FailureSignIn`, `FailureRefused`, `FailureUnavailable`. The built-in
+  page stays the default. Since v2.21.0 callback failures answer with this
+  HTML page instead of plain text.
+- **fix(auth/oauth2): step-up `login_hint` from the live session.**
+  `WithStepUpHintClaim(name)` picks the claim (default
+  `preferred_username`, empty for none); a session past its absolute
+  lifetime or idle timeout no longer supplies a hint. The sign-in retry
+  window is a `time.Duration` (unchanged 2 minutes).
+- **fix(codec/zstd):** `NewDecoder` refuses a `MaxSize` below `MinMaxSize`
+  (1 KiB) with a clear error; new `Decoder.Close`, after which Decode
+  returns `ErrClosed`.
+- **fix(cmd/kit-vulngate):** `-kev`, `-critical`, `-high`, `-medium` and
+  `-low` set the deadlines (defaults unchanged); a named `-accepted` file
+  that does not exist exits 2 instead of counting as empty.
+- **fix(security): retract v2.12.0**, whose `WithAllowedNetworks` let a
+  wide IPv6 network reach IPv4 hosts.
+- **docs:** `infra/messaging/natsbackend` `Fetch` states that messages
+  delivered after it returned are redelivered after AckWait;
+  `app/oidc.SessionClaims` names the module's own routes; examples and
+  tests use neutral names (`urn:example:roles`); AGENTS.md states that the
+  kit stays public and generic.
+
+Breaking:
+- `auditlog.Store.AppendChained`'s build takes the head `Event` instead of
+  the previous HMAC; custom stores pass the newest event (the zero `Event`
+  on an empty chain). `LogE` refuses (`ErrChainHeadUnknown`) a head no
+  configured key sealed, which earlier chained on silently.
+- `envelope.NewBox` panics on a purpose starting with a NUL byte; Box
+  values no longer open with `Encryptor.Decrypt` and the `"purpose/..."`
+  AAD.
+- `centrifuge.RedisBackendConfig.PlaintextUnsafe` is now `WithoutTLS`.
+- TLS configs with `InsecureSkipVerify` and a `VerifyConnection` of their
+  own are refused by kit transports and messaging backends.
+
 ## cmd/kit-vulngate v2.36.1 — 2026-11-05
 
 - **feat(cmd/kit-vulngate): patch deadlines as a release gate.** Reads
@@ -17,6 +95,11 @@
   `MinChainKeyLen`, returns the new `ErrNoChainKey` instead of a wrapped
   `ErrChainBroken`, so a monitor that alerts on `ErrChainBroken` does not
   report a configuration error as a broken chain.
+
+Error identity change: the standalone `VerifyChainFrom` and
+`VerifyChainKeys` given a chain key shorter than `MinChainKeyLen` now return
+`ErrNoChainKey` instead of `ErrChainBroken`; `errors.Is(err, ErrChainBroken)`
+no longer matches that case.
 
 ## v2.36.0 — 2026-11-03
 
@@ -44,8 +127,9 @@ a verification returned. v2.35.0's anchor check is not to be relied on.
   `VerifyChainKeys` check each event against the key that sealed it and
   refuse an event sealed by a key older than the latest marker, a newer key
   without its marker, and an event without a key ID after a marker.
-  `Verification.Anchor` takes the `Head` an earlier verification returned:
-  a chain no longer containing it (tail truncated or rewritten) fails.
+  `Verification.Anchor` takes the HMAC (`[]byte`) of the head an earlier
+  verification returned: a chain no longer containing it (tail truncated or
+  rewritten) fails.
   `WithCursorKeys(newest, older...)` accepts cursors of older keys. `Close`
   zeroes every key. Existing chains and `WithChainKey` keep verifying
   unchanged.
@@ -459,6 +543,8 @@ No breaking changes.
   no IPv4 address.
 
 ## v2.13.0 — 2026-10-19
+
+Not published as module tags: these changes first shipped in v2.13.1.
 
 - **feat(infra/sqldb/pgx): `Config.PrepareConn`.** Runs whenever a connection
   is taken from the pool, with the caller's context, so per-request session
