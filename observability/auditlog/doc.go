@@ -63,18 +63,31 @@
 // Verification refuses an event sealed by a key older than the latest
 // marker and a newer key without its marker.
 //
+// Every append checks which key sealed the chain head and never seals with
+// an older one, so replicas sharing a store can roll through a rotation: a
+// Logger given the new key through [WithNextChainKeys] seals with it as soon
+// as the head carries it, and a Logger that does not know the head's key
+// refuses the append with [ErrChainHeadUnknown] instead of breaking the
+// chain. Deploy the new key as next key everywhere first, then switch the
+// sealing key.
+//
 // [Logger.Verify] returns the [Head] it verified: HMAC, position and key ID.
 // Keep all of it where whoever writes the store cannot change it, and pass
 // it back as [Verification.Anchor]: the chain must still contain that event,
 // sealed by that key, and no event from it on may carry an older key, so a
-// truncated or rewritten tail fails. Once retention removed the anchored
-// event, the watermark stands for it and the same key rule holds; what the
-// anchor cannot tell from retention is removing events up to it. Without an
-// anchor, verification shows
-// only that the stored events form one chain under the listed keys: removing
-// the newest events goes unnoticed, and whoever holds any listed key can
-// replace the tail from a point that key sealed (a retired key: from before
-// its rotation marker). Take an anchor right after a rotation. [VerifyChainKeys] is the standalone form.
+// truncated or rewritten tail fails with [ErrChainBroken]. When retention
+// removed exactly up to the anchored event, the watermark stands for it and
+// the same key rule holds. When retention removed it and later events too,
+// verification fails with [ErrAnchorPruned]: the events from the watermark
+// on verified, but the anchor proves nothing any more, since removing the
+// newest events including the anchored one looks the same (an event with a
+// key older than the anchored one still fails with [ErrChainBroken]). Verify
+// with the anchor before every retention run. Without an anchor,
+// verification shows only that the stored events form one chain under the
+// listed keys: removing the newest events goes unnoticed, and whoever holds
+// any listed key can replace the tail from a point that key sealed (a
+// retired key: from before its rotation marker). Take an anchor right after
+// a rotation. [VerifyChainKeys] is the standalone form.
 //
 // # Key memory hygiene
 //

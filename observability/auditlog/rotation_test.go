@@ -29,6 +29,20 @@ func unkeyed(store Store, key []byte) *Logger {
 	return New(store, WithChainKey(key), WithCursorKey(testCursorKey))
 }
 
+// forge appends an event sealed by key onto the head without the Logger's
+// head check, as an older kit version or whoever holds the key could.
+func forge(t *testing.T, store *MemoryStore, key ChainKey, action string) {
+	t.Helper()
+	ctx := context.Background()
+	event, err := unkeyed(store, key.Key).prepareEvent(ctx, Event{Actor: "a", Action: action, Resource: "r", Status: "success"})
+	require.NoError(t, err)
+	if head, found, err := store.Head(ctx); err == nil && found {
+		event.PrevHMAC = head.HMAC
+	}
+	event.HMAC = computeKeyedHMAC(key.Key, key.ID, event)
+	require.NoError(t, store.Append(ctx, event))
+}
+
 // truncate keeps the first n events, as whoever can write the store could.
 func truncate(store *MemoryStore, n int) {
 	store.mu.Lock()
@@ -76,7 +90,7 @@ func TestVerify_RejectsOldKeyAfterRotation(t *testing.T) {
 	store := NewMemoryStore()
 	logOne(t, keyed(store, firstKey), "first")
 	require.NoError(t, keyed(store, secondKey, firstKey).RecordRotation(context.Background()))
-	logOne(t, keyed(store, firstKey), "retired-key")
+	forge(t, store, firstKey, "retired-key")
 
 	_, err := keyed(store, secondKey, firstKey).Verify(context.Background(), Verification{})
 	require.ErrorIs(t, err, ErrChainBroken)
@@ -86,7 +100,7 @@ func TestVerify_RejectsOldKeyAfterRotation(t *testing.T) {
 func TestVerify_RejectsNewKeyWithoutMarker(t *testing.T) {
 	store := NewMemoryStore()
 	logOne(t, unkeyed(store, firstKey.Key), "first")
-	logOne(t, unkeyed(store, secondKey.Key), "no-marker")
+	forge(t, store, ChainKey{Key: secondKey.Key}, "no-marker")
 
 	_, err := keyed(store, secondKey, firstKey).Verify(context.Background(), Verification{})
 	require.ErrorIs(t, err, ErrChainBroken)
@@ -96,7 +110,7 @@ func TestVerify_RejectsNewKeyWithoutMarker(t *testing.T) {
 func TestVerify_RejectsUnkeyedEventAfterRotation(t *testing.T) {
 	store := NewMemoryStore()
 	logOne(t, keyed(store, secondKey, firstKey), "rotated")
-	logOne(t, unkeyed(store, secondKey.Key), "no-key-id")
+	forge(t, store, ChainKey{Key: secondKey.Key}, "no-key-id")
 
 	_, err := keyed(store, secondKey, firstKey).Verify(context.Background(), Verification{})
 	require.ErrorIs(t, err, ErrChainBroken)
@@ -223,7 +237,7 @@ func TestVerify_AnchorAtWatermarkRefusesAnOlderKeyAfterIt(t *testing.T) {
 	store := NewMemoryStore()
 	logOne(t, unkeyed(store, secondKey.Key), "a")
 	watermark := store.Events()[0].HMAC
-	logOne(t, unkeyed(store, firstKey.Key), "forged")
+	forge(t, store, ChainKey{Key: firstKey.Key}, "forged")
 
 	_, err := VerifyChainKeys(store.Events()[1:], bothKeys, Verification{Watermark: watermark, Anchor: Head{HMAC: watermark, Events: 1, KeyID: "2"}})
 	require.ErrorIs(t, err, ErrChainBroken)
@@ -244,9 +258,9 @@ func TestVerify_AnchoredEventSealedByOlderKeyFails(t *testing.T) {
 func TestVerify_NoEventFromTheAnchorOnUsesAnOlderKey(t *testing.T) {
 	store := NewMemoryStore()
 	logOne(t, unkeyed(store, firstKey.Key), "first")
-	logOne(t, unkeyed(store, secondKey.Key), "second")
+	forge(t, store, ChainKey{Key: secondKey.Key}, "second")
 	events := store.Events()
-	logOne(t, unkeyed(store, firstKey.Key), "older")
+	forge(t, store, ChainKey{Key: firstKey.Key}, "older")
 
 	// From the watermark on, event[1] is the first event, which may carry
 	// any key; only the anchor on it refuses the older key after it.
@@ -286,4 +300,34 @@ func TestVerify_AnchoredRotatedChainPasses(t *testing.T) {
 func TestVerify_AnchoredKeyMustBeListed(t *testing.T) {
 	_, err := VerifyChainKeys(nil, bothKeys, Verification{Anchor: Head{HMAC: bytes.Repeat([]byte{1}, hmacSize), KeyID: "9"}})
 	assert.ErrorIs(t, err, ErrChainBroken)
+}
+
+func TestVerify_RetentionPastTheAnchorIsAnchorPruned(t *testing.T) {
+	store := NewMemoryStore()
+	l := keyed(store, secondKey, firstKey)
+	for _, action := range []string{"a", "b", "c", "d"} {
+		logOne(t, l, action)
+	}
+	events := store.Events()
+	anchor := Head{HMAC: events[1].HMAC, Events: 2, KeyID: "2"}
+
+	_, err := VerifyChainKeys(events[3:], bothKeys, Verification{Watermark: events[2].HMAC, Anchor: anchor})
+	require.ErrorIs(t, err, ErrAnchorPruned)
+	assert.NotErrorIs(t, err, ErrChainBroken)
+	assert.NotContains(t, err.Error(), "truncated")
+
+	_, err = VerifyChainKeys(nil, bothKeys, Verification{Watermark: events[4].HMAC, Anchor: anchor})
+	assert.ErrorIs(t, err, ErrAnchorPruned, "retention that removed every event")
+}
+
+func TestVerify_OlderKeyPastAPrunedAnchorIsChainBroken(t *testing.T) {
+	store := NewMemoryStore()
+	logOne(t, keyed(store, secondKey, firstKey), "a")
+	watermark := store.Events()[1].HMAC
+	forge(t, store, firstKey, "forged")
+
+	anchor := Head{HMAC: store.Events()[0].HMAC, Events: 1, KeyID: "2"}
+	_, err := VerifyChainKeys(store.Events()[2:], bothKeys, Verification{Watermark: watermark, Anchor: anchor})
+	require.ErrorIs(t, err, ErrChainBroken, "a key older than the anchored one cannot follow it, pruned or not")
+	assert.NotErrorIs(t, err, ErrAnchorPruned)
 }

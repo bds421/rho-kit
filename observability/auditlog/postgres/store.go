@@ -39,7 +39,7 @@ const chainLockKey int64 = 8_157_398_551_437_201_487
 //
 //   - AppendChained holds pg_advisory_xact_lock for the duration of
 //     the build+persist sequence so two concurrent appenders cannot
-//     observe the same prev HMAC and fork the chain.
+//     observe the same head and fork the chain.
 //   - Query returns events ordered by (occurred_at DESC, id DESC),
 //     matching the [auditlog.Store] contract.
 //   - RangeChain iterates by the monotonic append-order seq column,
@@ -64,7 +64,7 @@ func New(pool *pgxpool.Pool) *Store {
 // audit-chain advisory lock. Every chain writer (append and retention)
 // takes the same lock, so the tail read needs no row lock and the table
 // can be granted to application roles as INSERT/SELECT only.
-func (s *Store) AppendChained(ctx context.Context, build func(prev []byte) (auditlog.Event, error)) error {
+func (s *Store) AppendChained(ctx context.Context, build func(head auditlog.Event) (auditlog.Event, error)) error {
 	if s == nil || s.pool == nil {
 		return errors.New("auditlog/postgres: store not initialized")
 	}
@@ -85,12 +85,12 @@ func (s *Store) AppendChained(ctx context.Context, build func(prev []byte) (audi
 		return fmt.Errorf("auditlog/postgres: advisory lock: %w", err)
 	}
 
-	prev, err := selectTailHMAC(ctx, tx)
+	head, err := selectHead(ctx, tx)
 	if err != nil {
 		return err
 	}
 
-	event, err := build(prev)
+	event, err := build(head)
 	if err != nil {
 		return err
 	}
@@ -254,22 +254,14 @@ func (s *Store) RangeChain(ctx context.Context, fn func(auditlog.Event) error) e
 	return nil
 }
 
-// Head returns the most recently persisted event, so a rotating
-// [auditlog.Logger] writes a rotation marker only when the head was sealed
-// by another key. It implements [auditlog.HeadReader].
+// Head returns the most recently persisted event. It implements
+// [auditlog.HeadReader].
 func (s *Store) Head(ctx context.Context) (auditlog.Event, bool, error) {
 	if s == nil || s.pool == nil {
 		return auditlog.Event{}, false, errors.New("auditlog/postgres: store not initialized")
 	}
-	const q = selectColumns + " FROM audit_log_events ORDER BY seq DESC LIMIT 1"
-	event, err := scanEvent(s.pool.QueryRow(ctx, q))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return auditlog.Event{}, false, nil
-	}
-	if err != nil {
-		return auditlog.Event{}, false, fmt.Errorf("auditlog/postgres: head: %w", err)
-	}
-	return event, true, nil
+	event, err := selectHead(ctx, s.pool)
+	return event, err == nil && event.ID != "", err
 }
 
 // LastHMAC returns the HMAC of the most recently persisted event, or
@@ -390,19 +382,21 @@ var (
 const selectColumns = `SELECT id, occurred_at, actor, tenant, action, resource, status,
        ip_address, trace_id, metadata, signed_metadata, prev_hmac, hmac`
 
-func selectTailHMAC(ctx context.Context, tx pgx.Tx) ([]byte, error) {
-	const q = "SELECT hmac FROM audit_log_events ORDER BY seq DESC LIMIT 1"
-	var hmac []byte
-	if err := tx.QueryRow(ctx, q).Scan(&hmac); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("auditlog/postgres: select tail hmac: %w", err)
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// selectHead reads the newest event, or the zero Event on an empty chain.
+func selectHead(ctx context.Context, q rowQuerier) (auditlog.Event, error) {
+	const sql = selectColumns + " FROM audit_log_events ORDER BY seq DESC LIMIT 1"
+	event, err := scanEvent(q.QueryRow(ctx, sql))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return auditlog.Event{}, nil
 	}
-	if len(hmac) == 0 {
-		return nil, nil
+	if err != nil {
+		return auditlog.Event{}, fmt.Errorf("auditlog/postgres: select head: %w", err)
 	}
-	return hmac, nil
+	return event, nil
 }
 
 func insertEvent(ctx context.Context, tx pgx.Tx, e auditlog.Event) error {

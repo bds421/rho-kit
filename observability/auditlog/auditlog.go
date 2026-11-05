@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/netip"
 	"runtime/debug"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -190,21 +189,22 @@ func ValidateEvent(event Event) error {
 
 // Store is the append-only persistence interface for audit events.
 type Store interface {
-	// AppendChained reads the tail HMAC, calls build with it, and persists
-	// the resulting event atomically under a per-store lock. Logger.LogE
-	// uses this to extend the tamper-evident chain without holding its own
-	// mutex across user-supplied Store code — pre-2.0 the Logger held a
-	// global appendMu across LastHMAC+Append, which made a slow or
-	// re-entrant Store implementation a deadlock attractor and serialised
-	// every LogE call on Append latency.
+	// AppendChained reads the newest event (the chain head), calls build
+	// with it, and persists the resulting event atomically under a
+	// per-store lock. build receives the zero Event on an empty chain; the
+	// Logger chains from head.HMAC and checks which chain key sealed the
+	// head, so a replica never seals with a key older than the one the
+	// chain has rotated to. Logger.LogE uses this to extend the
+	// tamper-evident chain without holding its own mutex across
+	// user-supplied Store code.
 	//
-	// Implementations MUST hold their internal lock across the read-tail
+	// Implementations MUST hold their internal lock across the read-head
 	// / call-build / persist sequence so two concurrent appenders cannot
-	// observe the same prev HMAC and produce a forked chain. The supplied
+	// observe the same head and produce a forked chain. The supplied
 	// build function may return an error to abort the append (e.g. for
 	// per-event validation); the Store must NOT persist the resulting
 	// event in that case.
-	AppendChained(ctx context.Context, build func(prev []byte) (Event, error)) error
+	AppendChained(ctx context.Context, build func(head Event) (Event, error)) error
 
 	// Query returns events matching the filter, ordered by timestamp descending.
 	// Returns the next cursor for pagination (empty string if no more results).
@@ -305,11 +305,12 @@ type Logger struct {
 	// the unkeyed [WithChainKey].
 	chainKeyID string
 	// olderChainKeys verify records sealed before a rotation, newest first.
-	olderChainKeys   []namedKey
-	rotationMu       sync.Mutex
-	rotationRecorded atomic.Bool
-	cursors          signedCursor
-	closed           atomic.Bool
+	olderChainKeys []namedKey
+	// nextChainKeys are newer than chainKey, newest first: verified, and
+	// sealed with once another replica rotated the chain head to one.
+	nextChainKeys []namedKey
+	cursors       signedCursor
+	closed        atomic.Bool
 }
 
 // newAuditID is the package-level hook tests swap to install a
@@ -426,6 +427,14 @@ func New(store Store, opts ...Option) *Logger {
 	if l.chainKeyLen < MinChainKeyLen {
 		panic(fmt.Sprintf("auditlog: chain key must be at least %d bytes — pass WithChainKey", MinChainKeyLen))
 	}
+	ring, _ := l.keyRing()
+	seen := map[string]bool{}
+	for _, k := range ring {
+		if k.id != "" && seen[k.id] {
+			panic(fmt.Sprintf("auditlog: chain key ID %q is listed twice", k.id))
+		}
+		seen[k.id] = true
+	}
 	if l.cursors.keyLen < MinCursorKeyLen {
 		panic(fmt.Sprintf("auditlog: cursor key must be at least %d bytes — pass WithCursorKey", MinCursorKeyLen))
 	}
@@ -459,8 +468,10 @@ func (l *Logger) Close() error {
 	if l.cursors.key != nil {
 		l.cursors.key.Zero()
 	}
-	for _, k := range l.olderChainKeys {
-		k.key.Zero()
+	for _, keys := range [][]namedKey{l.olderChainKeys, l.nextChainKeys} {
+		for _, k := range keys {
+			k.key.Zero()
+		}
 	}
 	for _, k := range l.cursors.older {
 		k.Zero()
@@ -486,11 +497,16 @@ func (l *Logger) Log(ctx context.Context, event Event) {
 // silently drop. The drop hook + counter still fire on failure so
 // monitoring stays in place.
 //
-// Chain construction (read-tail / compute-HMAC / persist) is delegated
+// Chain construction (read-head / compute-HMAC / persist) is delegated
 // to [Store.AppendChained] so the Logger no longer holds a global mutex
 // across user-supplied Store code. Caller-supplied PrevHMAC / HMAC
 // fields on the input event are ignored — they are always recomputed
-// from the store's current tail inside the chained build callback.
+// from the store's current head inside the chained build callback.
+//
+// The event is sealed with the sealing key after its rotation marker, or
+// with a newer [WithNextChainKeys] key the head is already sealed by. A
+// head no configured key sealed refuses the append with
+// [ErrChainHeadUnknown].
 func (l *Logger) LogE(ctx context.Context, event Event) error {
 	if l.closed.Load() {
 		return ErrLoggerClosed
@@ -498,16 +514,27 @@ func (l *Logger) LogE(ctx context.Context, event Event) error {
 	if event.Action == RotationAction {
 		return fmt.Errorf("%w: action %q is reserved for rotation markers", ErrInvalidEvent, RotationAction)
 	}
-	if err := l.RecordRotation(ctx); err != nil {
+	event, err := l.prepareEvent(ctx, event)
+	if err != nil {
 		return err
 	}
-	return l.appendEvent(ctx, event)
+	err = l.appendSealed(ctx, event, false)
+	for attempt := 1; errors.Is(err, errRotationDue) && attempt < maxRotationAttempts; attempt++ {
+		var marker Event
+		if marker, err = l.prepareEvent(ctx, l.rotationMarker()); err == nil {
+			if err = l.recordRotation(ctx, marker); err == nil {
+				err = l.appendSealed(ctx, event, false)
+			}
+		}
+	}
+	if errors.Is(err, errRotationDue) {
+		err = fmt.Errorf("auditlog: the chain head kept moving to an older chain key: %w", ErrChainBroken)
+	}
+	return l.reportAppend(ctx, event, err)
 }
 
-func (l *Logger) appendEvent(ctx context.Context, event Event) error {
-	if l.closed.Load() {
-		return ErrLoggerClosed
-	}
+// prepareEvent fills and normalizes the fields the HMAC covers.
+func (l *Logger) prepareEvent(ctx context.Context, event Event) (Event, error) {
 	if event.ID == "" {
 		event.ID = newAuditID()
 	}
@@ -525,7 +552,7 @@ func (l *Logger) appendEvent(ctx context.Context, event Event) error {
 	if len(event.Metadata) > 0 {
 		canonical, err := canonicalizeJSONMetadata(event.Metadata)
 		if err != nil {
-			return fmt.Errorf("auditlog: metadata: %w", err)
+			return Event{}, fmt.Errorf("auditlog: metadata: %w", err)
 		}
 		event.Metadata = canonical
 	}
@@ -538,66 +565,76 @@ func (l *Logger) appendEvent(ctx context.Context, event Event) error {
 	// authority on chain HMACs.
 	event.PrevHMAC = nil
 	event.HMAC = nil
+	return event, nil
+}
 
+// appendSealed chains event onto the store's head. Build errors, including
+// the internal rotation sentinels, come back unwrapped; store errors are
+// wrapped.
+func (l *Logger) appendSealed(ctx context.Context, event Event, marker bool) error {
 	var buildErr error
-	err := l.store.AppendChained(ctx, func(prev []byte) (Event, error) {
-		// Re-check the closed flag inside the chained callback so a
-		// concurrent Close that wipes chainKey cannot race a HMAC
-		// computation over zeroed key material.
-		if l.closed.Load() {
-			buildErr = ErrLoggerClosed
-			return Event{}, ErrLoggerClosed
-		}
-		if len(prev) > 0 {
-			event.PrevHMAC = append([]byte(nil), prev...)
-		}
-		var (
-			mac      []byte
-			keyEmpty bool
-		)
-		l.chainKey.Use(func(k []byte) {
-			// chainKey.Use snapshots the key under secret.String's
-			// internal lock. If Close.Zero ran between the closed-load
-			// above and the snapshot, k is empty here. Treat that as
-			// ErrLoggerClosed so we never persist an event signed with
-			// nil/zero key material — that would silently break
-			// VerifyChain at shutdown boundaries (H2-003).
-			if len(k) == 0 {
-				keyEmpty = true
-				return
-			}
-			mac = computeKeyedHMAC(k, l.chainKeyID, event)
-		})
-		if keyEmpty {
-			buildErr = ErrLoggerClosed
-			return Event{}, ErrLoggerClosed
-		}
-		event.HMAC = mac
-		if vErr := ValidateEvent(event); vErr != nil {
-			buildErr = vErr
-			return Event{}, vErr
-		}
-		return event, nil
+	err := l.store.AppendChained(ctx, func(head Event) (Event, error) {
+		sealed, err := l.seal(event, head, marker)
+		buildErr = err
+		return sealed, err
 	})
-	if err != nil {
-		if buildErr != nil {
-			l.logger.Error("auditlog: failed to build event for append",
-				redact.Error(buildErr),
-				redact.String("event_id", event.ID),
-			)
-			l.recordDrop(ctx, event, buildErr)
-			return buildErr
-		}
-		err = fmt.Errorf("auditlog: append event: %w", err)
-		l.logger.Error("auditlog: failed to append event",
-			redact.Error(err),
-			redact.String("event_id", event.ID),
-			redact.String("action", event.Action),
-		)
-		l.recordDrop(ctx, event, err)
-		return err
+	switch {
+	case err == nil:
+		return nil
+	case buildErr != nil:
+		return buildErr
+	default:
+		return fmt.Errorf("auditlog: append event: %w", err)
 	}
-	return nil
+}
+
+func (l *Logger) seal(event Event, head Event, marker bool) (Event, error) {
+	// Re-check the closed flag inside the chained callback so a
+	// concurrent Close that wipes chainKey cannot race a HMAC
+	// computation over zeroed key material.
+	if l.closed.Load() {
+		return Event{}, ErrLoggerClosed
+	}
+	key, err := l.sealingKey(head, marker)
+	if err != nil {
+		return Event{}, err
+	}
+	event.PrevHMAC = nil
+	if len(head.HMAC) > 0 {
+		event.PrevHMAC = append([]byte(nil), head.HMAC...)
+	}
+	var mac []byte
+	key.key.Use(func(k []byte) {
+		// If Close.Zero ran between the closed-load above and this
+		// snapshot, k is empty: never persist an event signed with
+		// nil/zero key material, which would silently break VerifyChain
+		// at shutdown boundaries (H2-003).
+		if len(k) > 0 {
+			mac = computeKeyedHMAC(k, key.id, event)
+		}
+	})
+	if mac == nil {
+		return Event{}, ErrLoggerClosed
+	}
+	event.HMAC = mac
+	if err := ValidateEvent(event); err != nil {
+		return Event{}, err
+	}
+	return event, nil
+}
+
+// reportAppend logs and counts a failed append as a drop and returns err.
+func (l *Logger) reportAppend(ctx context.Context, event Event, err error) error {
+	if err == nil {
+		return nil
+	}
+	l.logger.Error("auditlog: failed to append event",
+		redact.Error(err),
+		redact.String("event_id", event.ID),
+		redact.String("action", event.Action),
+	)
+	l.recordDrop(ctx, event, err)
+	return err
 }
 
 func (l *Logger) recordDrop(ctx context.Context, event Event, err error) {
@@ -743,7 +780,7 @@ func (l *Logger) Verify(ctx context.Context, v Verification) (Head, error) {
 	if l.closed.Load() {
 		return Head{}, ErrLoggerClosed
 	}
-	keys := l.revealChainKeys()
+	keys, sealing := l.revealChainKeys()
 	defer func() {
 		for _, k := range keys {
 			clear(k.Key)
@@ -754,7 +791,7 @@ func (l *Logger) Verify(ctx context.Context, v Verification) (Head, error) {
 			return Head{}, ErrLoggerClosed
 		}
 	}
-	verifier, err := newChainVerifier(keys, v)
+	verifier, err := newChainVerifier(keys, sealing, v)
 	if err != nil {
 		return Head{}, err
 	}
@@ -764,19 +801,17 @@ func (l *Logger) Verify(ctx context.Context, v Verification) (Head, error) {
 	return verifier.finish()
 }
 
-// revealChainKeys copies every chain key out of its [secret.String], newest
-// first; the caller clears the copies when done.
-func (l *Logger) revealChainKeys() []ChainKey {
-	reveal := func(id string, s *secret.String) ChainKey {
-		k := ChainKey{ID: id}
-		s.Use(func(b []byte) { k.Key = append([]byte(nil), b...) })
-		return k
+// revealChainKeys copies every chain key out of its [secret.String] in
+// [Logger.keyRing] order; the caller clears the copies when done.
+func (l *Logger) revealChainKeys() (keys []ChainKey, sealing int) {
+	ring, sealing := l.keyRing()
+	keys = make([]ChainKey, 0, len(ring))
+	for _, k := range ring {
+		revealed := ChainKey{ID: k.id}
+		k.key.Use(func(b []byte) { revealed.Key = append([]byte(nil), b...) })
+		keys = append(keys, revealed)
 	}
-	keys := []ChainKey{reveal(l.chainKeyID, l.chainKey)}
-	for _, k := range l.olderChainKeys {
-		keys = append(keys, reveal(k.id, k.key))
-	}
-	return keys
+	return keys, sealing
 }
 
 // extractTraceID returns the OpenTelemetry trace ID from the context, or "".

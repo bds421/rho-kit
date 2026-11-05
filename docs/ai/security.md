@@ -100,6 +100,12 @@ newest key seals new events with its ID bound into the HMAC; older keys only
 verify. The Logger appends a rotation marker sealed by the new key before its
 first event (`Logger.RecordRotation` at startup writes it at once).
 Verification refuses an event sealed by a key older than the latest marker.
+Appends never seal with a key older than the chain head's, so replicas sharing
+a store roll in two steps: first every replica gets the new key through
+`WithNextChainKeys(new)` (it verifies with it and follows a head sealed by it),
+then every replica seals with it. A replica that does not know the head's key
+refuses to append (`auditlog.ErrChainHeadUnknown`); see
+[credential-rotation.md](credential-rotation.md).
 `WithCursorKeys(newest, older...)` accepts cursors of older cursor keys.
 
 ```go
@@ -118,8 +124,10 @@ whoever holds any listed key can replace the tail from a point that key
 sealed (a retired key: from before its rotation marker). With an anchor, the
 anchored event and everything before it are fixed, and no event from it on
 may carry a key older than the anchored one: take an anchor right
-after every rotation, and more often than retention removes events. Keep a
-retired chain key listed while events it sealed are kept.
+after every rotation, and verify with the anchor before every retention run:
+once retention removed the anchored event and later ones, verification
+returns `auditlog.ErrAnchorPruned`, since the anchor no longer proves the
+tail. Keep a retired chain key listed while events it sealed are kept.
 
 ## Envelope Encryption
 

@@ -16,6 +16,8 @@ type MemoryStore struct {
 	events []Event
 }
 
+var _ Store = (*MemoryStore)(nil)
+
 // NewMemoryStore creates an empty in-memory audit store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{}
@@ -27,11 +29,11 @@ func NewMemoryStore() *MemoryStore {
 // without making the common case noticeably slower.
 const memCtxCheckBatch = 1024
 
-// AppendChained holds the store mutex, reads the tail HMAC, runs build,
+// AppendChained holds the store mutex, reads the head, runs build,
 // validates the resulting event, and persists it atomically. Two
-// concurrent appenders cannot observe the same prev HMAC because the
-// read-tail / build / persist sequence happens under m.mu.
-func (m *MemoryStore) AppendChained(ctx context.Context, build func(prev []byte) (Event, error)) error {
+// concurrent appenders cannot observe the same head because the
+// read-head / build / persist sequence happens under m.mu.
+func (m *MemoryStore) AppendChained(ctx context.Context, build func(head Event) (Event, error)) error {
 	if build == nil {
 		return ErrInvalidEvent
 	}
@@ -40,14 +42,11 @@ func (m *MemoryStore) AppendChained(ctx context.Context, build func(prev []byte)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var prev []byte
+	var head Event
 	if len(m.events) > 0 {
-		tail := m.events[len(m.events)-1].HMAC
-		if len(tail) > 0 {
-			prev = append([]byte(nil), tail...)
-		}
+		head = cloneEvent(m.events[len(m.events)-1])
 	}
-	event, err := build(prev)
+	event, err := build(head)
 	if err != nil {
 		return err
 	}

@@ -362,15 +362,12 @@ func (s *auditRecordingStore) Append(_ context.Context, e auditlog.Event) error 
 	return nil
 }
 
-func (s *auditRecordingStore) AppendChained(_ context.Context, build func(prev []byte) (auditlog.Event, error)) error {
-	var prev []byte
+func (s *auditRecordingStore) AppendChained(_ context.Context, build func(head auditlog.Event) (auditlog.Event, error)) error {
+	var head auditlog.Event
 	if len(s.events) > 0 {
-		tail := s.events[len(s.events)-1].HMAC
-		if len(tail) > 0 {
-			prev = append([]byte(nil), tail...)
-		}
+		head = s.events[len(s.events)-1]
 	}
-	event, err := build(prev)
+	event, err := build(head)
 	if err != nil {
 		return err
 	}

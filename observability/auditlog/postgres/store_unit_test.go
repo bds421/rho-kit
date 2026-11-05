@@ -20,7 +20,7 @@ func TestStore_NilReceiverReturnsError(t *testing.T) {
 	ctx := context.Background()
 	var s *Store
 
-	err := s.AppendChained(ctx, func([]byte) (auditlog.Event, error) {
+	err := s.AppendChained(ctx, func(auditlog.Event) (auditlog.Event, error) {
 		return auditlog.Event{}, nil
 	})
 	assert.Error(t, err)

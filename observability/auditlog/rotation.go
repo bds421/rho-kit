@@ -2,6 +2,7 @@ package auditlog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 
@@ -25,11 +26,29 @@ const (
 	rotationResource = "chain-keys/"
 )
 
+// ErrChainHeadUnknown is returned by [Logger.LogE] and
+// [Logger.RecordRotation] when no configured chain key sealed the newest
+// event: typically another replica rotated to a key this Logger was not
+// given (see [WithNextChainKeys]), otherwise the head was written by
+// something else. The event is not appended, since chaining onto that head
+// would seal it with a key the chain has already rotated past. Configure
+// the head's key, as next or older key, to append again.
+var ErrChainHeadUnknown = errors.New("auditlog: the chain head is sealed by no configured chain key")
+
+// ErrAnchorPruned is returned by verification when the anchored event is no
+// longer in the chain, a retention watermark is set and no remaining event
+// carries a key older than the anchored one: retention most likely removed
+// the anchored event together with later ones. Every remaining event still
+// verified from the watermark on, but the anchor no longer proves the tail:
+// removing the newest events including the anchored one looks the same.
+// Verify with the anchor before each retention run so the kept anchor stays
+// newer than the retention cut.
+var ErrAnchorPruned = errors.New("auditlog: retention removed the anchored event")
+
 var keyIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 
 // HeadReader is implemented by stores that can return the newest event of
-// the chain. With it a [Logger] writes a rotation marker only when the head
-// was sealed by another key; without it, once per Logger.
+// the chain, for operator tooling.
 type HeadReader interface {
 	Head(ctx context.Context) (Event, bool, error)
 }
@@ -43,8 +62,11 @@ type Verification struct {
 	// whoever can write the store cannot change it. The chain must still
 	// contain that event, sealed by the key the anchor names and, without a
 	// watermark, at the same position; no event from it on may carry an
-	// older key. So a tail cut or rewritten since fails. The zero Head
-	// skips the check.
+	// older key. So a tail cut or rewritten since fails. When the anchored
+	// event is the watermark, retention removed exactly up to it and the
+	// anchor stands for the watermark; when retention removed it and later
+	// events, verification returns [ErrAnchorPruned]. The zero Head skips
+	// the check.
 	Anchor Head
 }
 
@@ -57,9 +79,9 @@ type Head struct {
 	// Events is the number of events verified, so the newest event's
 	// position.
 	Events int
-	// KeyID names the chain key that sealed the newest event, or the newest
-	// listed key when no event was walked; empty for the unkeyed
-	// [WithChainKey] key.
+	// KeyID names the chain key that sealed the newest event, or the key
+	// that seals the next one when no event was walked; empty for the
+	// unkeyed [WithChainKey] key.
 	KeyID string
 }
 
@@ -69,25 +91,22 @@ type namedKey struct {
 }
 
 // WithChainKeys rotates the chain key. newest seals every new event, with
-// its ID bound into the HMAC; older keys only verify. On its first append
-// the Logger writes a rotation marker sealed by newest (see
+// its ID bound into the HMAC; older keys only verify. Before its first event
+// under newest the Logger writes a rotation marker sealed by newest (see
 // [Logger.RecordRotation]). Verification checks each event against the key
 // that sealed it and refuses an event sealed by a key older than the latest
 // marker, a newer key without its marker, and once a marker exists an event
 // without a key ID. Keep a key listed while events it sealed are kept. IDs
 // are 1–32 characters of [A-Za-z0-9_-], unique; keys are at least
 // [MinChainKeyLen] bytes. [New] panics otherwise.
+//
+// Replicas sharing a store must not seal with a key older than the chain
+// head: give every replica the new key through [WithNextChainKeys] before
+// any replica seals with it.
 func WithChainKeys(newest ChainKey, older ...ChainKey) Option {
 	return func(a *Logger) {
-		seen := map[string]bool{}
 		for _, k := range append([]ChainKey{newest}, older...) {
-			if !keyIDPattern.MatchString(k.ID) || seen[k.ID] {
-				panic(fmt.Sprintf("auditlog: chain key ID %q must be unique and 1-32 characters of [A-Za-z0-9_-]", k.ID))
-			}
-			if len(k.Key) < MinChainKeyLen {
-				panic(fmt.Sprintf("auditlog: every chain key must be at least %d bytes", MinChainKeyLen))
-			}
-			seen[k.ID] = true
+			mustBeChainKey(k)
 		}
 		WithChainKey(newest.Key)(a)
 		a.chainKeyID = newest.ID
@@ -98,53 +117,66 @@ func WithChainKeys(newest ChainKey, older ...ChainKey) Option {
 	}
 }
 
-// RecordRotation appends the rotation marker for the newest chain key
-// unless the chain head is already sealed by it. LogE calls it before the
-// first event; call it at startup so the rotation is in the chain before
-// anything else is logged. A Logger built with [WithChainKey] has no key ID
-// and records nothing.
+// WithNextChainKeys lists keys newer than the sealing key, newest first:
+// keys another replica may already seal with during a rolling rotation. The
+// Logger verifies with them, and once the chain head is sealed by one it
+// seals its own events with that key as well, so a replica still on the
+// previous configuration follows the rotation instead of breaking the chain.
+// Without the key such a replica refuses to append ([ErrChainHeadUnknown]).
+// IDs and lengths follow [WithChainKeys]; [New] panics otherwise.
+func WithNextChainKeys(next ...ChainKey) Option {
+	return func(a *Logger) {
+		a.nextChainKeys = a.nextChainKeys[:0]
+		for _, k := range next {
+			mustBeChainKey(k)
+			a.nextChainKeys = append(a.nextChainKeys, namedKey{id: k.ID, key: secret.New(k.Key)})
+		}
+	}
+}
+
+func mustBeChainKey(k ChainKey) {
+	if !keyIDPattern.MatchString(k.ID) {
+		panic(fmt.Sprintf("auditlog: chain key ID %q must be 1-32 characters of [A-Za-z0-9_-]", k.ID))
+	}
+	if len(k.Key) < MinChainKeyLen {
+		panic(fmt.Sprintf("auditlog: every chain key must be at least %d bytes", MinChainKeyLen))
+	}
+}
+
+// RecordRotation appends the rotation marker for the sealing chain key
+// unless the chain head is already sealed by it or by a newer key from
+// [WithNextChainKeys]. LogE writes it when due; call it at startup so the
+// rotation is in the chain before anything else is logged. A Logger built
+// with [WithChainKey] has no key ID and records nothing.
 func (l *Logger) RecordRotation(ctx context.Context) error {
-	if l.chainKeyID == "" || l.rotationRecorded.Load() {
+	if l.closed.Load() {
+		return ErrLoggerClosed
+	}
+	if l.chainKeyID == "" {
 		return nil
 	}
-	l.rotationMu.Lock()
-	defer l.rotationMu.Unlock()
-	if l.rotationRecorded.Load() {
-		return nil
-	}
-	current, err := l.headSealedByNewest(ctx)
+	marker, err := l.prepareEvent(ctx, l.rotationMarker())
 	if err != nil {
 		return err
 	}
-	if !current {
-		marker := Event{
-			Actor:    RotationActor,
-			Action:   RotationAction,
-			Resource: rotationResource + l.chainKeyID,
-			Status:   "success",
-		}
-		if err := l.appendEvent(ctx, marker); err != nil {
-			return err
-		}
-	}
-	l.rotationRecorded.Store(true)
-	return nil
+	return l.reportAppend(ctx, marker, l.recordRotation(ctx, marker))
 }
 
-func (l *Logger) headSealedByNewest(ctx context.Context) (bool, error) {
-	reader, ok := l.store.(HeadReader)
-	if !ok {
-		return false, nil
+func (l *Logger) rotationMarker() Event {
+	return Event{
+		Actor:    RotationActor,
+		Action:   RotationAction,
+		Resource: rotationResource + l.chainKeyID,
+		Status:   StatusSuccess,
 	}
-	head, found, err := reader.Head(ctx)
-	if err != nil || !found {
-		return false, err
+}
+
+func (l *Logger) recordRotation(ctx context.Context, marker Event) error {
+	err := l.appendSealed(ctx, marker, true)
+	if errors.Is(err, errRotationCurrent) {
+		return nil
 	}
-	var match bool
-	l.chainKey.Use(func(k []byte) {
-		match = len(k) > 0 && constantTimeEqualHMAC(head.HMAC, computeKeyedHMAC(k, l.chainKeyID, eventWithoutHMAC(head)))
-	})
-	return match, nil
+	return err
 }
 
 func isRotation(event Event) bool {
@@ -156,7 +188,7 @@ func isRotation(event Event) bool {
 // [WithChainKeys]; a key with an empty ID is the unkeyed [WithChainKey]
 // form. The returned [Head] is the next anchor to keep.
 func VerifyChainKeys(events []Event, keys []ChainKey, v Verification) (Head, error) {
-	verifier, err := newChainVerifier(keys, v)
+	verifier, err := newChainVerifier(keys, 0, v)
 	if err != nil {
 		return Head{}, err
 	}
@@ -178,10 +210,12 @@ type chainVerifier struct {
 	anchorKey int
 	prev      []byte
 	last      int // index of the key that sealed the newest event
+	oldest    int // index of the oldest key any walked event carries
+	sealing   int // index of the key that seals the next event
 	index     int
 }
 
-func newChainVerifier(keys []ChainKey, v Verification) (*chainVerifier, error) {
+func newChainVerifier(keys []ChainKey, sealing int, v Verification) (*chainVerifier, error) {
 	if len(keys) == 0 {
 		return nil, ErrNoChainKey
 	}
@@ -190,7 +224,7 @@ func newChainVerifier(keys []ChainKey, v Verification) (*chainVerifier, error) {
 			return nil, fmt.Errorf("%w: chain key must be at least %d bytes", ErrNoChainKey, MinChainKeyLen)
 		}
 	}
-	c := &chainVerifier{keys: keys, v: v, floor: len(keys) - 1, anchorKey: -1, last: -1}
+	c := &chainVerifier{keys: keys, sealing: sealing, v: v, floor: len(keys) - 1, anchorKey: -1, last: -1, oldest: -1}
 	if len(v.Anchor.HMAC) == 0 {
 		return c, nil
 	}
@@ -241,6 +275,7 @@ func (c *chainVerifier) step(event Event) error {
 		return fmt.Errorf("%w: event[%d] is sealed by chain key %q without its rotation marker", ErrChainBroken, i, id)
 	}
 	c.floor, c.last = sealer, sealer
+	c.oldest = max(c.oldest, sealer)
 	c.prev = event.HMAC
 	c.index++
 	return nil
@@ -274,11 +309,8 @@ func (c *chainVerifier) checkAnchor(event Event, sealer int) error {
 func (c *chainVerifier) sealer(event Event) (int, bool) {
 	canonical := eventWithoutHMAC(event)
 	for i, k := range c.keys {
-		if k.ID != "" && constantTimeEqualHMAC(event.HMAC, computeKeyedHMAC(k.Key, k.ID, canonical)) {
-			return i, true
-		}
-		if constantTimeEqualHMAC(event.HMAC, computeHMAC(k.Key, canonical)) {
-			return i, false
+		if matched, keyed := sealedBy(k, canonical, event.HMAC); matched {
+			return i, keyed
 		}
 	}
 	return -1, false
@@ -286,13 +318,18 @@ func (c *chainVerifier) sealer(event Event) (int, bool) {
 
 func (c *chainVerifier) finish() (Head, error) {
 	if c.anchorKey >= 0 && !c.anchored {
+		// Past a watermark the anchored event may be gone to retention; an
+		// event older than the anchored key still proves a rewritten tail.
+		if len(c.v.Watermark) > 0 && c.oldest <= c.anchorKey {
+			return Head{}, fmt.Errorf("%w: the anchored event is before the watermark; re-anchor", ErrAnchorPruned)
+		}
 		return Head{}, fmt.Errorf("%w: the anchored head is no longer in the chain: its tail was truncated or rewritten", ErrChainBroken)
 	}
 	head := Head{HMAC: c.prev, Events: c.index}
 	if c.index == 0 {
-		// The newest key seals the next event, so an anchor kept from an
+		// The sealing key seals the next event, so an anchor kept from an
 		// empty chain still refuses an older one after it.
-		head.HMAC, head.KeyID = c.v.Watermark, c.keys[0].ID
+		head.HMAC, head.KeyID = c.v.Watermark, c.keys[c.sealing].ID
 	} else {
 		head.KeyID = c.keys[c.last].ID
 	}

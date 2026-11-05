@@ -355,10 +355,10 @@ func (s failingStore) Append(context.Context, Event) error {
 	return s.err
 }
 
-func (s failingStore) AppendChained(_ context.Context, build func(prev []byte) (Event, error)) error {
+func (s failingStore) AppendChained(_ context.Context, build func(head Event) (Event, error)) error {
 	// Allow build to run (so the Logger exercises its HMAC path) and
 	// then surface the store error as if the persist step failed.
-	if _, err := build(nil); err != nil {
+	if _, err := build(Event{}); err != nil {
 		return err
 	}
 	return s.err
@@ -384,7 +384,7 @@ type hmacFailingStore struct {
 	hmacErr error
 }
 
-func (s hmacFailingStore) AppendChained(context.Context, func(prev []byte) (Event, error)) error {
+func (s hmacFailingStore) AppendChained(context.Context, func(head Event) (Event, error)) error {
 	return s.hmacErr
 }
 
@@ -479,17 +479,14 @@ func (s *captureStore) Append(_ context.Context, event Event) error {
 	return nil
 }
 
-func (s *captureStore) AppendChained(_ context.Context, build func(prev []byte) (Event, error)) error {
+func (s *captureStore) AppendChained(_ context.Context, build func(head Event) (Event, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var prev []byte
+	var head Event
 	if len(s.events) > 0 {
-		tail := s.events[len(s.events)-1].HMAC
-		if len(tail) > 0 {
-			prev = append([]byte(nil), tail...)
-		}
+		head = cloneEvent(s.events[len(s.events)-1])
 	}
-	event, err := build(prev)
+	event, err := build(head)
 	if err != nil {
 		return err
 	}
@@ -1250,8 +1247,8 @@ func (s *retentionCaptureStore) Append(context.Context, Event) error {
 	return nil
 }
 
-func (s *retentionCaptureStore) AppendChained(_ context.Context, build func(prev []byte) (Event, error)) error {
-	_, err := build(nil)
+func (s *retentionCaptureStore) AppendChained(_ context.Context, build func(head Event) (Event, error)) error {
+	_, err := build(Event{})
 	return err
 }
 
@@ -1334,16 +1331,16 @@ func (s *gatedStore) Append(_ context.Context, event Event) error {
 	return nil
 }
 
-func (s *gatedStore) AppendChained(_ context.Context, build func(prev []byte) (Event, error)) error {
+func (s *gatedStore) AppendChained(_ context.Context, build func(head Event) (Event, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var prev []byte
+	var head Event
 	if len(s.events) > 0 {
-		prev = append([]byte(nil), s.events[len(s.events)-1].HMAC...)
+		head = cloneEvent(s.events[len(s.events)-1])
 	}
 	s.enter <- struct{}{}
 	<-s.release
-	event, err := build(prev)
+	event, err := build(head)
 	if err != nil {
 		return err
 	}
