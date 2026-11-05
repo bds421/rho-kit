@@ -43,3 +43,4 @@ docs/release/
 # Claude
 .claude/
 /.worktrees/
+cmd/kit-vulngate/kit-vulngate

@@ -39,6 +39,7 @@ use (
 	./cmd/kit-migrate
 	./cmd/kit-new
 	./cmd/kit-verify
+	./cmd/kit-vulngate
 	./core
 	./crypto
 	./crypto/envelope/awskms

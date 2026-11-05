@@ -1,6 +1,6 @@
 # Kit — Go Service Toolkit
 
-**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 107 Go modules; all are at the `/v2` path suffix except the 4 internal `tools/*` helper modules)
+**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 108 Go modules; all are at the `/v2` path suffix except the 4 internal `tools/*` helper modules)
 **Go:** 1.26+ | **License:** Apache 2.0
 
 Shared infrastructure library for rho platform microservices. Provides secure-by-default, composable packages so services focus on domain logic.
@@ -277,6 +277,7 @@ row you start from:
 | Scaffold a new service | `cmd/kit-new` (`-tenant` for tenant-aware Redis/cache/idempotency; `-production` for resource JWT + OpenFGA + Postgres/RabbitMQ inbox/outbox baseline) | — |
 | Audit a service for security regressions | `cmd/kit-doctor` (`-interactive` prompts to apply safe, idempotent fixes per finding; default `[y/N/skip-all]` is "no") | [observability](docs/ai/observability.md) |
 | Verify a running service's ASVS controls | `cmd/kit-verify` | [security](docs/ai/security.md) |
+| Hold a release to patch deadlines from grype reports | `cmd/kit-vulngate` (KEV 72 h, critical 7 d, high 30 d, medium 90 d, low next release; `-accepted` for dated exceptions) | [security](docs/ai/security.md) |
 | NATS JetStream messaging | `infra/messaging/natsbackend` | [messaging](docs/ai/messaging.md) |
 | Postgres-backed durable job queue | `data/queue/riverqueue` | [database](docs/ai/sqldb.md) |
 | Leader election | `infra/leaderelection` (`pgadvisory`/`redislock`) | [redis](docs/ai/redis.md) |
