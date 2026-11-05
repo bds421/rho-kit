@@ -73,7 +73,11 @@ type pullBody struct {
 // the first message alone exceeds MaxBytes, Fetch returns
 // ErrMessageTooLarge, so a too small limit never looks like an empty
 // consumer. A cancelled ctx ends the pull with the messages so far and
-// ctx's error.
+// ctx's error. The server may still deliver the rest of the pull after
+// that: Fetch has unsubscribed, so those messages are dropped unseen and
+// unacknowledged, and the server redelivers them once the consumer's
+// AckWait has passed. Messages arriving after Fetch returned for any other
+// reason go the same way.
 func Fetch(ctx context.Context, js jetstream.JetStream, stream, consumer string, req PullRequest) ([]*nats.Msg, error) {
 	if err := req.Validate(); err != nil {
 		return nil, err
