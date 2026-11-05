@@ -20,8 +20,8 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.36.1
-	github.com/bds421/rho-kit/data/v2 v2.36.1
+	github.com/bds421/rho-kit/core/v2 v2.37.0
+	github.com/bds421/rho-kit/data/v2 v2.37.0
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
 )
