@@ -12,7 +12,7 @@ require (
 require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-redsync/redsync/v4 v4.18.0 // indirect
+	github.com/go-redsync/redsync/v4 v4.18.1 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect

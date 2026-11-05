@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/bds421/rho-kit/infra/outbox/postgres/v2 v2.37.0
-	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jackc/pgx/v5 v5.12.0
 )
 
 require (

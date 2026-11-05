@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/bds421/rho-kit/infra/v2 v2.37.0
-	github.com/pkg/sftp v1.13.11
+	github.com/pkg/sftp v1.13.12
 	github.com/prometheus/client_golang v1.25.0
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.47.0

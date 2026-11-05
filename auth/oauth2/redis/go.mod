@@ -8,7 +8,7 @@ require (
 	github.com/bds421/rho-kit/core/v2 v2.37.0
 	github.com/bds421/rho-kit/crypto/v2 v2.37.0
 	github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.37.0
-	github.com/go-jose/go-jose/v4 v4.1.6
+	github.com/go-jose/go-jose/v4 v4.1.7
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/stretchr/testify v1.12.1
 )
@@ -36,7 +36,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.20.1 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260330125221-c963978e514e // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mdelapenya/tlscert v0.2.0 // indirect

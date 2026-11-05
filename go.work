@@ -76,11 +76,11 @@ use (
 	./httpx/middleware/signedrequest/redis
 	./httpx/websocket
 	./infra
+	./infra/inbox/postgres
 	./infra/leaderelection/etcd
 	./infra/leaderelection/k8slease
 	./infra/leaderelection/pgadvisory
 	./infra/leaderelection/redislock
-	./infra/inbox/postgres
 	./infra/messaging/amqpbackend
 	./infra/messaging/amqpbackend/debughttp
 	./infra/messaging/kafkabackend
