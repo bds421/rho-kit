@@ -97,3 +97,46 @@ func TestMigrate_RefusesADatabaseAheadOfTheFiles(t *testing.T) {
 	assert.Contains(t, err.Error(), "00001_baseline.sql")
 	assert.Contains(t, redact.SafeMessages(err), "accounts_schema_version records version 2")
 }
+
+// TestMigrate_AllowAheadTakesANewerDatabase verifies that an older release
+// with AllowAhead starts against a database a newer release migrated, and
+// that a file the database never applied below its version still fails.
+func TestMigrate_AllowAheadTakesANewerDatabase(t *testing.T) {
+	dsn := startPostgres(t)
+	pool, err := kitpgx.Connect(context.Background(), kitpgx.Config{DSN: dsn, AllowPlaintextLoopbackForTests: true})
+	require.NoError(t, err)
+	defer pool.Close()
+
+	sqlDB := stdlib.OpenDBFromPool(pool.Pool())
+	defer func() { _ = sqlDB.Close() }()
+
+	ctx := context.Background()
+	accounts := []byte("-- +goose Up\nCREATE TABLE accounts (id INT);\n-- +goose Down\nDROP TABLE accounts;\n")
+	newer := migrate.Config{TableName: "accounts_schema_version", Dir: fstest.MapFS{
+		"00001_accounts.sql": {Data: accounts},
+		"00003_owner.sql":    {Data: []byte("-- +goose Up\nALTER TABLE accounts ADD owner TEXT;\n-- +goose Down\nALTER TABLE accounts DROP owner;\n")},
+	}}
+	older := migrate.Config{TableName: "accounts_schema_version", AllowAhead: true, Dir: fstest.MapFS{
+		"00001_accounts.sql": {Data: accounts},
+	}}
+	unapplied := migrate.Config{TableName: "accounts_schema_version", AllowAhead: true, Dir: fstest.MapFS{
+		"00001_accounts.sql": {Data: accounts},
+		"00002_email.sql":    {Data: []byte("-- +goose Up\nALTER TABLE accounts ADD email TEXT;\n-- +goose Down\nALTER TABLE accounts DROP email;\n")},
+	}}
+
+	applied, err := migrate.Up(ctx, sqlDB, newer)
+	require.NoError(t, err)
+	assert.Equal(t, 2, applied)
+
+	applied, err = migrate.Up(ctx, sqlDB, older)
+	require.NoError(t, err, "an older release must start against a newer schema")
+	assert.Zero(t, applied)
+
+	_, err = migrate.Up(ctx, sqlDB, unapplied)
+	require.Error(t, err, "a file below the recorded version that never ran must not be skipped")
+	assert.NotErrorIs(t, err, migrate.ErrAhead)
+
+	older.AllowAhead = false
+	_, err = migrate.Up(ctx, sqlDB, older)
+	require.ErrorIs(t, err, migrate.ErrAhead, "the default still refuses")
+}

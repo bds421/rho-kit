@@ -43,6 +43,7 @@ type Option func(*moduleConfig)
 type moduleConfig struct {
 	cfg        pgxbackend.Config
 	migrations []migrationSet
+	allowAhead bool
 	registerer prometheus.Registerer
 	instance   string
 }
@@ -91,6 +92,19 @@ func WithMigrationSet(table string, dir fs.FS) Option {
 	}
 }
 
+// WithMigrationsAllowAhead sets [migrate.Config.AllowAhead] for every
+// migration set of the module: a database whose version table records a
+// version above the newest file of a set starts instead of aborting
+// startup with [migrate.ErrAhead]. Use it for rolling deploys and
+// rollbacks under expand/contract, where an older release must start
+// against a schema a newer release migrated; a database migrated by a
+// chain since squashed into a baseline then goes unnoticed.
+func WithMigrationsAllowAhead() Option {
+	return func(c *moduleConfig) {
+		c.allowAhead = true
+	}
+}
+
 // setMigrations replaces the default-table set in place, or appends it.
 func (c *moduleConfig) setMigrations(set migrationSet) {
 	for i := range c.migrations {
@@ -100,6 +114,11 @@ func (c *moduleConfig) setMigrations(set migrationSet) {
 		}
 	}
 	c.migrations = append(c.migrations, set)
+}
+
+// migrateConfig is the migrate configuration [Module.Init] runs set with.
+func (c *moduleConfig) migrateConfig(set migrationSet) migrate.Config {
+	return migrate.Config{Dir: set.dir, TableName: set.table, AllowAhead: c.allowAhead}
 }
 
 // validateMigrationSets panics when two sets share a version table.
@@ -231,7 +250,7 @@ func (m *pgxModule) Init(ctx context.Context, mc app.ModuleContext) error {
 
 func (m *pgxModule) runMigrations(ctx context.Context) error {
 	for _, set := range m.cfg.migrations {
-		applied, err := migrate.Up(ctx, m.sqlDB, migrate.Config{Dir: set.dir, TableName: set.table})
+		applied, err := migrate.Up(ctx, m.sqlDB, m.cfg.migrateConfig(set))
 		if err != nil {
 			if set.table == "" {
 				return fmt.Errorf("postgres module: migrations failed: %w", err)

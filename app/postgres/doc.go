@@ -24,6 +24,8 @@
 // traffic. Failure to apply migrations aborts startup. [WithMigrationSet]
 // registers further sets, each tracked in its own goose version table, so
 // independently owned modules can share one database.
+// [WithMigrationsAllowAhead] lets an older release start against a database
+// a newer release migrated.
 //
 // Failure semantics: Module panics if cfg.DSN is empty; the pgx package's
 // Connect rejects non-loopback DSNs that disable TLS so misconfigured

@@ -45,19 +45,34 @@ type Config struct {
 	// schema-qualified ("schema.table"): letters, digits and underscores,
 	// not starting with a digit, at most 63 bytes per part.
 	TableName string
+
+	// AllowAhead lets [Up] run against a database whose version table
+	// records a version above the newest migration file, instead of
+	// refusing it with [ErrAhead]. Up then applies nothing newer and still
+	// fails on a file below the recorded version that was never applied.
+	//
+	// Set it where an older release must start against a schema a newer
+	// release already migrated: rolling deploys and rollbacks under
+	// expand/contract, where every migration keeps the schema compatible
+	// with the release before it. The cost is that a database migrated by a
+	// chain since squashed into a baseline is no longer detected and is
+	// taken as up to date. The default (false) refuses.
+	AllowAhead bool
 }
 
 // Up applies all pending migrations against the given *sql.DB. Returns
 // the number of migrations applied. A database that records a version
 // newer than the newest migration file is refused with [ErrAhead] before
-// anything is applied.
+// anything is applied, unless [Config.AllowAhead] is set.
 func Up(ctx context.Context, db *sql.DB, cfg Config) (int, error) {
 	provider, err := newProvider(db, cfg)
 	if err != nil {
 		return 0, err
 	}
-	if err := refuseAhead(ctx, provider, cfg.table()); err != nil {
-		return 0, err
+	if !cfg.AllowAhead {
+		if err := refuseAhead(ctx, provider, cfg.table()); err != nil {
+			return 0, err
+		}
 	}
 	results, err := provider.Up(ctx)
 	if err != nil {

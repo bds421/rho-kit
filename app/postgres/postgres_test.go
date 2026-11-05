@@ -201,3 +201,23 @@ func TestInit_InvalidMigrationTableAbortsStartup(t *testing.T) {
 	assert.Nil(t, m.pool)
 	assert.False(t, m.SQLDBReady())
 }
+
+func TestWithMigrationsAllowAhead_ReachesEverySet(t *testing.T) {
+	dsn := pgxbackend.Config{DSN: "postgres://u:p@h/db?sslmode=require"}
+	sets := []Option{
+		WithMigrations(fstest.MapFS{}),
+		WithMigrationSet("orders_schema_version", fstest.MapFS{}),
+	}
+
+	refusing := Module(dsn, sets...).(*pgxModule)
+	for _, set := range refusing.cfg.migrations {
+		assert.False(t, refusing.cfg.migrateConfig(set).AllowAhead, "the default refuses a database ahead of the files")
+	}
+
+	allowing := Module(dsn, append(sets, WithMigrationsAllowAhead())...).(*pgxModule)
+	for _, set := range allowing.cfg.migrations {
+		cfg := allowing.cfg.migrateConfig(set)
+		assert.True(t, cfg.AllowAhead)
+		assert.Equal(t, set.table, cfg.TableName)
+	}
+}

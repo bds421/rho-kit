@@ -49,6 +49,12 @@
 // database was migrated by a newer release or by a chain since squashed
 // into a baseline; goose alone would report it as up to date.
 //
+// [Config.AllowAhead] takes such a database instead, for rolling deploys
+// and rollbacks where an older release starts against a schema a newer
+// release migrated (expand/contract). The database is then taken as up to
+// date, so a squashed chain goes unnoticed; a file below the recorded
+// version that was never applied still fails.
+//
 // # Migration File Format
 //
 // SQL migration files follow the goose naming convention. Each file contains

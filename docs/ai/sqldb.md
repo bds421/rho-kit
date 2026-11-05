@@ -162,6 +162,14 @@ or by a chain since squashed into a baseline, and goose alone would take it as
 up to date and skip later migrations. Reset or restore such a database; do not
 lower its recorded version by hand.
 
+Rolling deploys and rollbacks under expand/contract start an older release
+against a schema a newer release migrated. Set `migrate.Config{AllowAhead:
+true}` (bridge: `postgres.WithMigrationsAllowAhead()`, for every set of the
+module) to take such a database as up to date. The trade-off: a database
+migrated by a chain since squashed into a baseline is no longer detected, so
+only use it when every migration keeps the schema working for the release
+before it. A file below the recorded version that never ran still fails.
+
 ## Transactions in context
 
 `pgxbackend.Pool.InTx(ctx, fn)` begins a transaction, passes it to `fn` in the
