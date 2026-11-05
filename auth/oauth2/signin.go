@@ -33,11 +33,11 @@ func (c *Client) runSignInHook(w http.ResponseWriter, r *http.Request, sess *Ses
 	switch {
 	case errors.Is(err, ErrSignInRefused):
 		c.logger.InfoContext(r.Context(), "oauth2: sign-in refused by hook")
-		c.renderFailure(w, r, http.StatusForbidden, failureRefused, returnTo)
+		c.renderFailure(w, r, http.StatusForbidden, FailureRefused, returnTo)
 		return false
 	case err != nil:
 		c.logger.WarnContext(r.Context(), "oauth2: sign-in hook failed", redact.Error(err))
-		c.renderFailure(w, r, http.StatusBadGateway, failureUnavailable, returnTo)
+		c.renderFailure(w, r, http.StatusBadGateway, FailureUnavailable, returnTo)
 		return false
 	}
 	sess.Attributes = attrs

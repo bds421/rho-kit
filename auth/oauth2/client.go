@@ -64,8 +64,9 @@ type Client struct {
 	// Sign-in hook (WithSignInHook).
 	signInHook func(ctx context.Context, sess Session) (map[string]string, error)
 
-	// Sign-in error page (WithErrorPageBrand).
-	errorBrand ErrorPageBrand
+	// Sign-in error page (WithErrorPageBrand, WithErrorRenderer).
+	errorBrand    ErrorPageBrand
+	errorRenderer ErrorRenderer
 
 	// Session lifetime limits (WithAbsoluteSessionLifetime, WithIdleTimeout).
 	absoluteLifetime time.Duration
@@ -392,17 +393,17 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 	params, err := parseLoginParams(r.URL.Query())
 	if err != nil {
 		c.logger.InfoContext(r.Context(), "oauth2: invalid login parameters", redact.Error(err))
-		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, c.homePath)
+		c.renderFailure(w, r, http.StatusBadRequest, FailureSignIn, c.homePath)
 		return
 	}
 	state, err := generateRandomToken()
 	if err != nil {
-		c.renderFailure(w, r, http.StatusInternalServerError, failureUnavailable, c.homePath)
+		c.renderFailure(w, r, http.StatusInternalServerError, FailureUnavailable, c.homePath)
 		return
 	}
 	nonce, err := generateRandomToken()
 	if err != nil {
-		c.renderFailure(w, r, http.StatusInternalServerError, failureUnavailable, c.homePath)
+		c.renderFailure(w, r, http.StatusInternalServerError, FailureUnavailable, c.homePath)
 		return
 	}
 	params.loginHint = c.stepUpHint(r, params)
@@ -434,7 +435,7 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if err := c.state.Put(r.Context(), state, entry, c.pendingLifetime()); err != nil {
 		c.logger.WarnContext(r.Context(), "oauth2: state.Put failed", redact.Error(err))
-		c.renderFailure(w, r, http.StatusServiceUnavailable, failureUnavailable, entry.RedirectTo)
+		c.renderFailure(w, r, http.StatusServiceUnavailable, FailureUnavailable, entry.RedirectTo)
 		return
 	}
 	c.startPending(w, r, state, entry.CreatedAt)
@@ -468,7 +469,7 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		// reported as a state problem: that misleads operators and
 		// confuses attack-signal dashboards with availability faults.
 		c.logger.WarnContext(r.Context(), "oauth2: callback state store failed", redact.Error(err))
-		c.renderFailure(w, r, http.StatusServiceUnavailable, failureUnavailable, "")
+		c.renderFailure(w, r, http.StatusServiceUnavailable, FailureUnavailable, "")
 		return
 	}
 	if errParam := q.Get("error"); errParam != "" {
@@ -478,7 +479,7 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		c.logger.WarnContext(r.Context(), "oauth2: provider returned an error",
 			slog.String("error", redact.StringValue(errParam)),
 			slog.String("error_description", redact.StringValue(q.Get("error_description"))))
-		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, entry.RedirectTo)
+		c.renderFailure(w, r, http.StatusBadRequest, FailureSignIn, entry.RedirectTo)
 		return
 	}
 	if time.Since(entry.CreatedAt) > c.stateTTL {
@@ -499,13 +500,13 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	token, err := c.oauth.Exchange(exchangeCtx, code, exchangeOpts...)
 	if err != nil {
 		c.logger.WarnContext(r.Context(), "oauth2: code exchange failed", redact.Error(err))
-		c.renderFailure(w, r, http.StatusBadGateway, failureSignIn, entry.RedirectTo)
+		c.renderFailure(w, r, http.StatusBadGateway, FailureSignIn, entry.RedirectTo)
 		return
 	}
 	rawIDToken, ok := token.Extra("id_token").(string)
 	if !ok || rawIDToken == "" {
 		c.logger.WarnContext(r.Context(), "oauth2: token response missing id_token")
-		c.renderFailure(w, r, http.StatusBadGateway, failureSignIn, entry.RedirectTo)
+		c.renderFailure(w, r, http.StatusBadGateway, FailureSignIn, entry.RedirectTo)
 		return
 	}
 	idToken, err := c.verifier.Verify(exchangeCtx, rawIDToken)
@@ -514,30 +515,30 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		// or the issuer's raw endpoint body. Log it redacted and return
 		// only the opaque sentinel across the trust boundary.
 		c.logger.WarnContext(r.Context(), "oauth2: id_token verify failed", redact.Error(err))
-		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, entry.RedirectTo)
+		c.renderFailure(w, r, http.StatusBadRequest, FailureSignIn, entry.RedirectTo)
 		return
 	}
 	if idToken.Nonce != entry.Nonce {
 		c.logger.WarnContext(r.Context(), "oauth2: id_token nonce mismatch")
-		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, entry.RedirectTo)
+		c.renderFailure(w, r, http.StatusBadRequest, FailureSignIn, entry.RedirectTo)
 		return
 	}
 	var claims map[string]any
 	if err := idToken.Claims(&claims); err != nil {
 		c.logger.WarnContext(r.Context(), "oauth2: id_token claims decode failed", redact.Error(err))
-		c.renderFailure(w, r, http.StatusBadGateway, failureSignIn, entry.RedirectTo)
+		c.renderFailure(w, r, http.StatusBadGateway, FailureSignIn, entry.RedirectTo)
 		return
 	}
 	amr, authTime := authenticationClaims(claims)
 	if entry.MaxAge != nil && !satisfiesMaxAge(authTime, entry.CreatedAt, *entry.MaxAge) {
 		c.logger.WarnContext(r.Context(), "oauth2: id_token auth_time does not satisfy the requested max_age")
-		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, entry.RedirectTo)
+		c.renderFailure(w, r, http.StatusBadRequest, FailureSignIn, entry.RedirectTo)
 		return
 	}
 
 	sessionID, err := generateRandomToken()
 	if err != nil {
-		c.renderFailure(w, r, http.StatusInternalServerError, failureUnavailable, entry.RedirectTo)
+		c.renderFailure(w, r, http.StatusInternalServerError, FailureUnavailable, entry.RedirectTo)
 		return
 	}
 	now := time.Now()
@@ -564,7 +565,7 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := c.sessions.Put(r.Context(), sessionID, sess, c.sessionTTLFor(sess, now)); err != nil {
 		c.logger.WarnContext(r.Context(), "oauth2: session.Put failed", redact.Error(err))
-		c.renderFailure(w, r, http.StatusServiceUnavailable, failureUnavailable, entry.RedirectTo)
+		c.renderFailure(w, r, http.StatusServiceUnavailable, FailureUnavailable, entry.RedirectTo)
 		return
 	}
 	http.SetCookie(w, c.sessionCookie(sessionID, now))

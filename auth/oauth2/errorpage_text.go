@@ -9,7 +9,7 @@ type errorText struct {
 	lang     string
 	title    string
 	action   string
-	messages map[failure]string
+	messages map[FailureKind]string
 }
 
 var errorTexts = map[string]errorText{
@@ -17,30 +17,30 @@ var errorTexts = map[string]errorText{
 		lang:   "en",
 		title:  "Sign-in not completed",
 		action: "Sign in again",
-		messages: map[failure]string{
-			failureSignIn:      "The sign-in could not be completed. Please sign in again.",
-			failureRefused:     "This account cannot sign in. Please contact your administrator.",
-			failureUnavailable: "Sign-in is temporarily unavailable. Please try again in a moment.",
+		messages: map[FailureKind]string{
+			FailureSignIn:      "The sign-in could not be completed. Please sign in again.",
+			FailureRefused:     "This account cannot sign in. Please contact your administrator.",
+			FailureUnavailable: "Sign-in is temporarily unavailable. Please try again in a moment.",
 		},
 	},
 	"de": {
 		lang:   "de",
 		title:  "Anmeldung nicht abgeschlossen",
 		action: "Erneut anmelden",
-		messages: map[failure]string{
-			failureSignIn:      "Die Anmeldung konnte nicht abgeschlossen werden. Bitte melden Sie sich erneut an.",
-			failureRefused:     "Mit diesem Konto ist keine Anmeldung möglich. Bitte wenden Sie sich an Ihre Administration.",
-			failureUnavailable: "Die Anmeldung ist vorübergehend nicht verfügbar. Bitte versuchen Sie es gleich noch einmal.",
+		messages: map[FailureKind]string{
+			FailureSignIn:      "Die Anmeldung konnte nicht abgeschlossen werden. Bitte melden Sie sich erneut an.",
+			FailureRefused:     "Mit diesem Konto ist keine Anmeldung möglich. Bitte wenden Sie sich an Ihre Administration.",
+			FailureUnavailable: "Die Anmeldung ist vorübergehend nicht verfügbar. Bitte versuchen Sie es gleich noch einmal.",
 		},
 	},
 	"es": {
 		lang:   "es",
 		title:  "Inicio de sesión no completado",
 		action: "Iniciar sesión de nuevo",
-		messages: map[failure]string{
-			failureSignIn:      "No se pudo completar el inicio de sesión. Por favor, inicie sesión de nuevo.",
-			failureRefused:     "Esta cuenta no puede iniciar sesión. Por favor, póngase en contacto con su administrador.",
-			failureUnavailable: "El inicio de sesión no está disponible temporalmente. Por favor, inténtelo de nuevo en un momento.",
+		messages: map[FailureKind]string{
+			FailureSignIn:      "No se pudo completar el inicio de sesión. Por favor, inicie sesión de nuevo.",
+			FailureRefused:     "Esta cuenta no puede iniciar sesión. Por favor, póngase en contacto con su administrador.",
+			FailureUnavailable: "El inicio de sesión no está disponible temporalmente. Por favor, inténtelo de nuevo en un momento.",
 		},
 	},
 }

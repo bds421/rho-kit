@@ -74,7 +74,8 @@
 // callback exchanges nothing: a browser with a valid session goes to the
 // return URL, otherwise the sign-in restarts once with the same return URL.
 // What still fails renders a translated page with "Sign in again"
-// ([WithErrorPageBrand]), never error text.
+// ([WithErrorPageBrand]), never error text; [WithErrorRenderer] supplies the
+// application's own page from a [Failure] (kind, status, retry URL).
 //
 // # Session security (all opt-in)
 //

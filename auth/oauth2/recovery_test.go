@@ -243,3 +243,32 @@ func TestWithHomePath_RefusesPathsLeavingTheOrigin(t *testing.T) {
 		assert.Panics(t, func() { oauth2.WithHomePath(p) }, p)
 	}
 }
+
+func TestSignIn_ErrorRendererReplacesThePage(t *testing.T) {
+	var got []oauth2.Failure
+	render := oauth2.WithErrorRenderer(func(w http.ResponseWriter, _ *http.Request, f oauth2.Failure) {
+		got = append(got, f)
+		w.WriteHeader(f.Status)
+		_, _ = w.Write([]byte("own page"))
+	})
+	refuse := oauth2.WithSignInHook(func(context.Context, oauth2.Session) (map[string]string, error) {
+		return nil, oauth2.ErrSignInRefused
+	})
+	rig := newSignInRig(t, render, refuse)
+	b := rig.browser()
+
+	res := b.get(b.startSignIn("/cases"))
+	require.Equal(t, http.StatusForbidden, res.Code)
+	assert.Equal(t, "own page", res.Body.String())
+
+	rig.issuer.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "server_error", http.StatusInternalServerError)
+	}
+	res = b.get(b.startSignIn("https://evil.example/"))
+	require.Equal(t, http.StatusBadGateway, res.Code)
+
+	assert.Equal(t, []oauth2.Failure{
+		{Kind: oauth2.FailureRefused, Status: http.StatusForbidden, ReturnTo: "/cases", RetryURL: "/oauth/login?redirect_to=%2Fcases"},
+		{Kind: oauth2.FailureSignIn, Status: http.StatusBadGateway, ReturnTo: "/", RetryURL: "/oauth/login?redirect_to=%2F"},
+	}, got)
+}

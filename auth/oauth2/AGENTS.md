@@ -44,7 +44,10 @@ or UserInfo without re-discovering endpoints.
   session is created
 - `WithErrorPageBrand(ErrorPageBrand{Name, LogoSVG, Accent})`: brands the
   page shown when a sign-in cannot complete (English/German/Spanish from
-  Accept-Language, link "Sign in again" with the original return URL)
+  Accept-Language, link "Sign in again" with the original return URL);
+  `WithErrorRenderer(func(w, r, Failure))` replaces the page: `Failure{Kind
+  (FailureSignIn|FailureRefused|FailureUnavailable), Status, ReturnTo,
+  RetryURL}`, the renderer writes headers, status and body
 - `Session.IDToken` keeps the raw verified ID token for `id_token_hint`;
   `auth/oauth2/redis.WithEncryption` encrypts stored sessions/state
 - `SessionUpdater` (optional store interface, `Update(ctx, id, expectedVersion,

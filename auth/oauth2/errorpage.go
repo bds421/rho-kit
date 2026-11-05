@@ -19,18 +19,51 @@ type ErrorPageBrand struct {
 
 // WithErrorPageBrand brands the sign-in error page. Without it the page shows
 // a neutral look. The page is translated (English, German, Spanish) from the
-// browser's Accept-Language.
+// browser's Accept-Language. [WithErrorRenderer] replaces the page and
+// makes the brand unused.
 func WithErrorPageBrand(b ErrorPageBrand) Option {
 	return func(c *Client) { c.errorBrand = b }
 }
 
-type failure int
+// FailureKind says why a sign-in cannot be completed.
+type FailureKind int
 
 const (
-	failureSignIn failure = iota
-	failureRefused
-	failureUnavailable
+	// FailureSignIn: the sign-in itself failed (lost or expired pending
+	// sign-in, rejected callback, invalid tokens); signing in again helps.
+	FailureSignIn FailureKind = iota
+	// FailureRefused: the account may not sign in (WithSignInHook refused it).
+	FailureRefused
+	// FailureUnavailable: the identity provider or a store is unreachable;
+	// trying again later helps.
+	FailureUnavailable
 )
+
+// Failure is a sign-in that cannot be completed, as an [ErrorRenderer]
+// receives it.
+type Failure struct {
+	// Kind says why.
+	Kind FailureKind
+	// Status is the HTTP status the response must carry.
+	Status int
+	// ReturnTo is the checked relative URL the user was signing in for.
+	ReturnTo string
+	// RetryURL is the relative login URL that signs in again and returns
+	// to ReturnTo.
+	RetryURL string
+}
+
+// ErrorRenderer writes the whole response (headers, Failure.Status, body)
+// for a sign-in that cannot be completed. It must not reveal internal
+// error text; the Failure carries none.
+type ErrorRenderer func(w http.ResponseWriter, r *http.Request, f Failure)
+
+// WithErrorRenderer replaces the built-in sign-in error page, for example
+// to render it in the application's own design or languages. Without it
+// (or with nil) the built-in page answers, branded by [WithErrorPageBrand].
+func WithErrorRenderer(render ErrorRenderer) Option {
+	return func(c *Client) { c.errorRenderer = render }
+}
 
 type errorPageData struct {
 	Lang    string
@@ -47,16 +80,28 @@ type errorPageData struct {
 // logo, whatever policy the surrounding application sets.
 const errorPagePolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
-// renderFailure answers a sign-in that cannot be completed with a translated
-// page offering to sign in again, never with the internal error text.
-func (c *Client) renderFailure(w http.ResponseWriter, r *http.Request, status int, f failure, returnTo string) {
+// renderFailure answers a sign-in that cannot be completed through the
+// configured renderer, never with the internal error text.
+func (c *Client) renderFailure(w http.ResponseWriter, r *http.Request, status int, kind FailureKind, returnTo string) {
+	returnTo = c.safeReturnTo(returnTo)
+	f := Failure{Kind: kind, Status: status, ReturnTo: returnTo, RetryURL: c.loginURL(returnTo)}
+	if c.errorRenderer != nil {
+		c.errorRenderer(w, r, f)
+		return
+	}
+	c.renderErrorPage(w, r, f)
+}
+
+// renderErrorPage is the built-in renderer: a translated page offering to
+// sign in again.
+func (c *Client) renderErrorPage(w http.ResponseWriter, r *http.Request, f Failure) {
 	text := errorTexts[preferredLanguage(r.Header.Get("Accept-Language"))]
 	data := errorPageData{
 		Lang:    text.lang,
 		Title:   text.title,
-		Message: text.messages[f],
+		Message: text.messages[f.Kind],
 		Action:  text.action,
-		Retry:   c.loginURL(c.safeReturnTo(returnTo)),
+		Retry:   f.RetryURL,
 		Name:    c.errorBrand.Name,
 		Accent:  c.errorBrand.Accent,
 	}
@@ -71,7 +116,7 @@ func (c *Client) renderFailure(w http.ResponseWriter, r *http.Request, status in
 	h.Set("Content-Security-Policy", errorPagePolicy)
 	h.Set("Cache-Control", "no-store")
 	h.Set("Content-Language", text.lang)
-	w.WriteHeader(status)
+	w.WriteHeader(f.Status)
 	if err := errorPage.Execute(w, data); err != nil {
 		c.logger.WarnContext(r.Context(), "oauth2: error page render failed")
 	}

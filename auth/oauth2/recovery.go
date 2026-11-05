@@ -31,7 +31,7 @@ func (c *Client) recoverSignIn(w http.ResponseWriter, r *http.Request, returnTo,
 	if retry, err := r.Cookie(c.retryCookieName()); err == nil && retry.Value != "" {
 		c.logger.WarnContext(r.Context(), "oauth2: sign-in restart failed again", slog.String("reason", reason))
 		http.SetCookie(w, c.expiredCookie(c.retryCookieName(), c.flowCookiePath()))
-		c.renderFailure(w, r, http.StatusBadRequest, failureSignIn, returnTo)
+		c.renderFailure(w, r, http.StatusBadRequest, FailureSignIn, returnTo)
 		return
 	}
 	c.logger.InfoContext(r.Context(), "oauth2: restarting sign-in", slog.String("reason", reason))

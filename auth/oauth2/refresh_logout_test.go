@@ -291,7 +291,6 @@ func TestLogout_DefaultStays204(t *testing.T) {
 	assert.Empty(t, res.Body.String())
 }
 
-
 // logoutDuring returns a token handler that logs the session out through the
 // real logout route after the refresh read the session and before it writes
 // the result, then answers with fresh tokens.
