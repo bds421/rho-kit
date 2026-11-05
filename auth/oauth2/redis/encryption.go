@@ -8,11 +8,12 @@ import (
 	"github.com/bds421/rho-kit/crypto/v2/encrypt"
 )
 
-// sealedPrefix marks an encrypted value: "rk1." + key ID + "." + nonce ‖
-// ciphertext ‖ tag. Plain JSON values start with '{' and never match.
+// sealedPrefix marks an encrypted value: "rk1." followed by the
+// [encrypt.Keyring] ciphertext (key ID + "." + nonce ‖ ciphertext ‖ tag).
+// Plain JSON values start with '{' and never match.
 const sealedPrefix = "rk1."
 
-// maxKeyIDLen bounds EncryptionKey.ID.
+// maxKeyIDLen bounds EncryptionKey.ID, as [encrypt.Key] does.
 const maxKeyIDLen = 32
 
 // sealOverhead is the extra stored size of an encrypted value over its
@@ -36,15 +37,13 @@ type EncryptionKey struct {
 }
 
 type sealer struct {
-	activeID string
-	active   encrypt.AEAD
-	byID     map[string]encrypt.AEAD
+	ring *encrypt.Keyring
 }
 
 // WithEncryption encrypts every stored session and login-state value with
-// AES-256-GCM (via crypto/encrypt) before it reaches Redis. Recommended for
-// all deployments: sessions hold access, refresh and ID tokens. Default: off
-// (values are stored as plain JSON).
+// AES-256-GCM (an [encrypt.Keyring]) before it reaches Redis. Recommended
+// for all deployments: sessions hold access, refresh and ID tokens.
+// Default: off (values are stored as plain JSON).
 //
 // The first key encrypts; every key decrypts. To rotate, prepend a new key,
 // deploy, and remove the old key once entries written with it have expired
@@ -59,67 +58,39 @@ func WithEncryption(keys ...EncryptionKey) Option {
 	if len(keys) == 0 {
 		panic("oauth2/redis: WithEncryption requires at least one key")
 	}
-	s := &sealer{byID: make(map[string]encrypt.AEAD, len(keys))}
+	ringKeys := make([]encrypt.Key, len(keys))
 	for i, k := range keys {
-		if !validKeyID(k.ID) {
-			panic(fmt.Sprintf("oauth2/redis: WithEncryption key %d has an invalid ID", i))
-		}
-		if _, dup := s.byID[k.ID]; dup {
-			panic(fmt.Sprintf("oauth2/redis: WithEncryption key ID %q is duplicated", k.ID))
-		}
-		aead, err := encrypt.NewGCM(k.Key)
-		if err != nil {
-			panic(fmt.Sprintf("oauth2/redis: WithEncryption key %q must be 32 bytes", k.ID))
-		}
-		s.byID[k.ID] = aead
-		if i == 0 {
-			s.activeID, s.active = k.ID, aead
-		}
+		ringKeys[i] = encrypt.Key{ID: k.ID, Key: k.Key}
 	}
+	ring, err := encrypt.NewKeyring(ringKeys...)
+	if err != nil {
+		panic(fmt.Sprintf("oauth2/redis: WithEncryption: %v", err))
+	}
+	s := &sealer{ring: ring}
 	return func(st *Store) { st.sealer = s }
 }
 
 func (s *sealer) seal(redisKey string, plaintext []byte) ([]byte, error) {
-	ct, err := encrypt.EncryptBytesAAD(s.active, plaintext, []byte(redisKey))
+	ct, err := s.ring.Encrypt(plaintext, []byte(redisKey))
 	if err != nil {
 		return nil, errors.New("oauth2/redis: encrypt value")
 	}
-	out := make([]byte, 0, len(sealedPrefix)+len(s.activeID)+1+len(ct))
+	out := make([]byte, 0, len(sealedPrefix)+len(ct))
 	out = append(out, sealedPrefix...)
-	out = append(out, s.activeID...)
-	out = append(out, '.')
 	return append(out, ct...), nil
 }
 
 func (s *sealer) open(redisKey string, stored []byte) ([]byte, error) {
-	rest, ok := bytes.CutPrefix(stored, []byte(sealedPrefix))
+	ct, ok := bytes.CutPrefix(stored, []byte(sealedPrefix))
 	if !ok {
 		return nil, errNotDecryptable
 	}
-	id, ct, ok := bytes.Cut(rest, []byte{'.'})
-	if !ok {
-		return nil, errors.New("oauth2/redis: stored value is invalid")
-	}
-	aead, ok := s.byID[string(id)]
-	if !ok {
+	plaintext, err := s.ring.Decrypt(ct, []byte(redisKey))
+	if errors.Is(err, encrypt.ErrUnknownKey) {
 		return nil, errNotDecryptable
 	}
-	plaintext, err := encrypt.DecryptBytesAAD(aead, ct, []byte(redisKey))
 	if err != nil {
-		return nil, errors.New("oauth2/redis: stored value failed authentication")
+		return nil, errors.New("oauth2/redis: stored value is invalid or failed authentication")
 	}
 	return plaintext, nil
-}
-
-func validKeyID(id string) bool {
-	if id == "" || len(id) > maxKeyIDLen {
-		return false
-	}
-	for i := 0; i < len(id); i++ {
-		c := id[i]
-		if c != '_' && c != '-' && (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
-			return false
-		}
-	}
-	return true
 }

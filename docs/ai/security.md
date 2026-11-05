@@ -367,7 +367,7 @@ subject. It never exposes an unbounded raw claim map or a bearer token to
 business handlers. Set `MappingProfile.AllowMissingClaims` when selected
 claims are optional: absent claims stay empty instead of answering 401, while
 malformed present claims still fail closed. Keep Redis protected with
-TLS/authentication, enable `oauth2redis.WithEncryption(keys...)` (AES-256-GCM,
+TLS/authentication, enable `oauth2redis.WithEncryption(keys...)` (an `encrypt.Keyring`, AES-256-GCM,
 first key encrypts, all keys decrypt) and never log stored session values.
 
 Browser-session extras, all opt-in:

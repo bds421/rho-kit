@@ -14,6 +14,7 @@ import (
 	redisoauth "github.com/bds421/rho-kit/auth/oauth2/redis/v2"
 	"github.com/bds421/rho-kit/auth/oauth2/v2"
 	"github.com/bds421/rho-kit/core/v2/secret"
+	"github.com/bds421/rho-kit/crypto/v2/encrypt"
 )
 
 func key(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
@@ -141,4 +142,24 @@ func TestSession_IDTokenPersistedWithoutEncryption(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got.IDToken)
 	assert.Equal(t, "id-token-secret", got.IDToken.RevealString())
+}
+
+func TestEncryption_OpensValuesSealedBeforeTheKeyring(t *testing.T) {
+	mr := miniredis.RunT(t)
+	ctx := context.Background()
+	require.NoError(t, newEncryptedStore(t, mr).Put(ctx, "s1", testSession(), time.Minute))
+	plain, err := mr.Get("test:oidc:session:s1")
+	require.NoError(t, err)
+
+	// The format WithEncryption wrote before it used encrypt.Keyring:
+	// "rk1." + key ID + "." + AES-256-GCM(value, AAD = Redis key).
+	aead, err := encrypt.NewGCM(key(1))
+	require.NoError(t, err)
+	ct, err := encrypt.EncryptBytesAAD(aead, []byte(plain), []byte("test:oidc:session:s1"))
+	require.NoError(t, err)
+	require.NoError(t, mr.Set("test:oidc:session:s1", "rk1.k1."+string(ct)))
+
+	got, err := newEncryptedStore(t, mr, redisoauth.EncryptionKey{ID: "k1", Key: key(1)}).Get(ctx, "s1")
+	require.NoError(t, err)
+	assert.Equal(t, "access-secret", got.AccessToken.RevealString())
 }
