@@ -474,6 +474,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		"infra/outbox/postgres",
 		"infra/redis",
 		"infra/sqldb/pgx",
+		"observability/auditlog/postgres",
 	}
 	replaceArgs := []string{"mod", "edit"}
 	for _, sub := range internal {
