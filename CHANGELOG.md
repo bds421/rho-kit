@@ -7,6 +7,12 @@
   counts them all; when it refuses, it counts none, so a batch that does not
   fit spends nothing of what is left (a refused `Allow` still counts, as
   before). A count below one or above the limit is `ErrInvalidCount`.
+- **fix(deps): github.com/klauspost/compress v1.20.3** in every module that
+  requires it. v1.20.1 panics on crafted two-block zstd frames
+  (GO-2026-6865, GHSA-fpmh-frq8-7rj8), reachable through `codec/zstd`'s
+  decoder; v1.20.3 carries the fix of v1.20.2, re-applied (fse count and
+  norm checks, huff0 weights tableLog), and is the version the platform
+  pins.
 
 ## cmd/kit-vulngate v2.37.1 — 2026-11-05
 

@@ -36,7 +36,7 @@ require (
 	github.com/bds421/rho-kit/io/v2 v2.37.0 // indirect
 	github.com/bds421/rho-kit/observability/v2 v2.37.0
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.20.1 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/nats-io/nkeys v0.4.16 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
