@@ -1,6 +1,6 @@
 # Changelog
 
-## httpx v2.38.0 — 2026-11-06
+## v2.38.0 — 2026-11-06
 
 - **feat(httpx/middleware/ratelimit): KeyedLimiter.AllowN takes n requests
   at once.** It allows them when all of them fit in the key's window and
