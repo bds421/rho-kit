@@ -183,6 +183,23 @@ func (rl *KeyedLimiter) Allow(key string) (allowed bool, retryAfter int) {
 // AllowKey checks whether the given key is within its rate limit and returns
 // an error for invalid keys or uninitialized limiters.
 func (rl *KeyedLimiter) AllowKey(key string) (allowed bool, retryAfter int, err error) {
+	return rl.take(key, 1, true)
+}
+
+// AllowN takes n requests of the key at once: allowed when all of them
+// fit in the key's window, and then all counted; when refused, none is
+// counted, unlike a refused [KeyedLimiter.AllowKey]. n must be between 1
+// and the limit ([ErrInvalidCount]).
+func (rl *KeyedLimiter) AllowN(key string, n int) (allowed bool, retryAfter int, err error) {
+	if err := rl.ready(); err == nil && (n < 1 || n > rl.limit) {
+		return false, 0, ErrInvalidCount
+	}
+	return rl.take(key, n, false)
+}
+
+// take counts n requests of the key when they fit; a refusal counts them
+// too when spend is set, as a single request always has.
+func (rl *KeyedLimiter) take(key string, n int, spend bool) (allowed bool, retryAfter int, err error) {
 	if err := rl.ready(); err != nil {
 		rl.observeDecision(rateLimitOutcomeUnavailable)
 		return false, 0, err
@@ -197,39 +214,41 @@ func (rl *KeyedLimiter) AllowKey(key string) (allowed bool, retryAfter int, err 
 	defer s.mu.Unlock()
 
 	entry, ok := s.entries.Get(key)
-	if ok {
-		// Mutating *keyedRateLimitEntry through the cached pointer is safe:
-		// the shard mutex serialises all access. Get() already marked it recently used.
-		//
-		// Use !now.Before(windowEnd) (i.e. now >= windowEnd) so the window is
-		// half-open [start, end) — identical to the IP Limiter's
-		// `elapsed >= window`. At the exact boundary instant both siblings
-		// start a fresh window rather than counting against the old one.
-		if !now.Before(entry.windowEnd) {
-			entry.count = 1
-			entry.windowEnd = now.Add(rl.window)
-			rl.observeDecision(rateLimitOutcomeAllowed)
-			return true, 0, nil
+	if !ok {
+		if s.entries.Add(key, &keyedRateLimitEntry{count: n, windowEnd: now.Add(rl.window)}) {
+			rl.observeLRUEviction()
 		}
-		entry.count++
-		if entry.count <= rl.limit {
-			rl.observeDecision(rateLimitOutcomeAllowed)
-			return true, 0, nil
-		}
-		seconds := int(math.Ceil(entry.windowEnd.Sub(now).Seconds()))
-		if seconds < 1 {
-			seconds = 1
-		}
-		rl.observeDecision(rateLimitOutcomeLimited)
-		rl.observeRetryAfter(float64(seconds))
-		return false, seconds, nil
+		rl.observeDecision(rateLimitOutcomeAllowed)
+		return true, 0, nil
 	}
-
-	if s.entries.Add(key, &keyedRateLimitEntry{count: 1, windowEnd: now.Add(rl.window)}) {
-		rl.observeLRUEviction()
+	// Mutating *keyedRateLimitEntry through the cached pointer is safe:
+	// the shard mutex serialises all access. Get() already marked it recently used.
+	//
+	// Use !now.Before(windowEnd) (i.e. now >= windowEnd) so the window is
+	// half-open [start, end) — identical to the IP Limiter's
+	// `elapsed >= window`. At the exact boundary instant both siblings
+	// start a fresh window rather than counting against the old one.
+	if !now.Before(entry.windowEnd) {
+		entry.count = n
+		entry.windowEnd = now.Add(rl.window)
+		rl.observeDecision(rateLimitOutcomeAllowed)
+		return true, 0, nil
 	}
-	rl.observeDecision(rateLimitOutcomeAllowed)
-	return true, 0, nil
+	if entry.count+n <= rl.limit {
+		entry.count += n
+		rl.observeDecision(rateLimitOutcomeAllowed)
+		return true, 0, nil
+	}
+	if spend {
+		entry.count += n
+	}
+	seconds := int(math.Ceil(entry.windowEnd.Sub(now).Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	rl.observeDecision(rateLimitOutcomeLimited)
+	rl.observeRetryAfter(float64(seconds))
+	return false, seconds, nil
 }
 
 func (rl *KeyedLimiter) observeLRUEviction() {

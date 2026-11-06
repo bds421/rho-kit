@@ -1,5 +1,13 @@
 # Changelog
 
+## httpx v2.38.0 — 2026-11-06
+
+- **feat(httpx/middleware/ratelimit): KeyedLimiter.AllowN takes n requests
+  at once.** It allows them when all of them fit in the key's window and
+  counts them all; when it refuses, it counts none, so a batch that does not
+  fit spends nothing of what is left (a refused `Allow` still counts, as
+  before). A count below one or above the limit is `ErrInvalidCount`.
+
 ## cmd/kit-vulngate v2.37.1 — 2026-11-05
 
 - **fix(cmd/kit-vulngate): an acceptance can be limited to one image.**

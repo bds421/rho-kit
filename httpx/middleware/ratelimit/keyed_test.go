@@ -463,3 +463,43 @@ func keyedEntryCount(rl *KeyedLimiter) int {
 	}
 	return count
 }
+
+func TestKeyedLimiter_AllowNTakesAllOrNothing(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	rl := NewKeyedLimiter(5, time.Minute, WithKeyedClock(func() time.Time { return now }))
+
+	if ok, _, err := rl.AllowN("key1", 3); !ok || err != nil {
+		t.Fatalf("3 of 5: %v %v", ok, err)
+	}
+	if ok, retry, err := rl.AllowN("key1", 3); ok || err != nil || retry < 1 {
+		t.Fatalf("3 more of the 2 left: %v %d %v", ok, retry, err)
+	}
+	for i := range 2 {
+		if ok, _ := rl.Allow("key1"); !ok {
+			t.Fatalf("a refused batch counted: request %d of the 2 left was denied", i+1)
+		}
+	}
+	if ok, _ := rl.Allow("key1"); ok {
+		t.Fatal("the limit no longer holds")
+	}
+	now = now.Add(time.Minute)
+	if ok, _, err := rl.AllowN("key1", 5); !ok || err != nil {
+		t.Fatalf("a full batch in a fresh window: %v %v", ok, err)
+	}
+}
+
+func TestKeyedLimiter_AllowNRefusesCountsNoWindowAllows(t *testing.T) {
+	rl := NewKeyedLimiter(5, time.Minute)
+	for _, n := range []int{0, -1, 6} {
+		if ok, _, err := rl.AllowN("key1", n); ok || !errors.Is(err, ErrInvalidCount) {
+			t.Errorf("n=%d: %v %v", n, ok, err)
+		}
+	}
+	if ok, _, err := rl.AllowN("", 1); ok || !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("an invalid key: %v %v", ok, err)
+	}
+	var nilLimiter *KeyedLimiter
+	if ok, _, err := nilLimiter.AllowN("key1", 1); ok || !errors.Is(err, ErrInvalidLimiter) {
+		t.Errorf("a nil limiter: %v %v", ok, err)
+	}
+}

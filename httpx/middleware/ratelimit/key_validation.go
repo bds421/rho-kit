@@ -20,6 +20,10 @@ var ErrInvalidKey = errors.New("ratelimit: invalid key")
 // otherwise uninitialized keyed limiter.
 var ErrInvalidLimiter = errors.New("ratelimit: limiter is not initialized")
 
+// ErrInvalidCount is returned by [KeyedLimiter.AllowN] for a count below
+// one or above the limit, which no window could allow.
+var ErrInvalidCount = errors.New("ratelimit: count outside 1 to the limit")
+
 // ValidateKey checks that a keyed rate-limit key is safe to store and use as
 // a cache key. Use the same validator in custom middleware before calling
 // lower-level keyed limiter methods.
