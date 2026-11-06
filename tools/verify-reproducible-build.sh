@@ -27,7 +27,10 @@ fi
 
 tmp1=$(mktemp -d)
 tmp2=$(mktemp -d)
-trap 'rm -rf "$tmp1" "$tmp2"' EXIT
+# bash 3.2 exits 0 through an EXIT trap when set -u stops it: a run
+# that did not reach its end (finished=yes) failed.
+finished='' trapped=''
+trap 'trapped=$?; rm -rf "$tmp1" "$tmp2"; [ "$trapped" != 0 ] || [ "${finished:-}" = yes ] || exit 1' EXIT
 
 echo "==> Copying repository to $tmp1"
 cp -R . "$tmp1"
@@ -58,3 +61,4 @@ if [ "$h1" != "$h2" ]; then
 fi
 
 echo "OK: reproducible build of $BIN sha256=$h1"
+finished=yes

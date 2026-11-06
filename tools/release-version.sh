@@ -216,7 +216,10 @@ else
   # workspace, so go.work cannot mask a bad require pin with local sources.
   # This is the check that actually proves the release is consumable.
   smoke_dir="$(mktemp -d)"
-  trap 'rm -rf "$smoke_dir"' EXIT
+  # bash 3.2 exits 0 through an EXIT trap when set -u stops it: a run
+  # that did not reach its end (finished=yes) failed.
+  finished='' trapped=''
+  trap 'trapped=$?; rm -rf "$smoke_dir"; [ "$trapped" != 0 ] || [ "${finished:-}" = yes ] || exit 1' EXIT
 
   # macOS ships bash 3.2, which has no `mapfile`; keep this readable there.
   awk -F'\t' 'NR>1 {print $3}' "$PLAN" | grep . | sort -u > "$smoke_dir/modules.txt"
@@ -251,3 +254,4 @@ echo ""
 echo "Release complete. Remember to:"
 echo "  - Create a GitHub Release: gh release create release/$VERSION --notes ..."
 echo "  - Check CI on the final release commit (the last level intentionally runs it)."
+finished=yes

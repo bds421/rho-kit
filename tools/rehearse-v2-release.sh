@@ -65,7 +65,10 @@ cleanup() {
     rm -rf "$tmpdir"
   fi
 }
-trap cleanup EXIT
+# bash 3.2 exits 0 through an EXIT trap when set -u stops it: a run
+# that did not reach its end (finished=yes) failed.
+finished='' trapped=''
+trap 'trapped=$?; cleanup; [ "$trapped" != 0 ] || [ "${finished:-}" = yes ] || exit 1' EXIT
 
 echo "rho-kit v2 release rehearsal"
 echo "version: $VERSION"
@@ -292,3 +295,4 @@ go install github.com/bds421/rho-kit/cmd/kit-doctor/v2@"$VERSION"
 echo
 echo "Rehearsal passed."
 echo "log: $log_file"
+finished=yes

@@ -8,7 +8,10 @@
 set -euo pipefail
 
 tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
+# bash 3.2 exits 0 through an EXIT trap when set -u stops it: a run
+# that did not reach its end (finished=yes) failed.
+finished='' trapped=''
+trap 'trapped=$?; rm -rf "$tmpdir"; [ "$trapped" != 0 ] || [ "${finished:-}" = yes ] || exit 1' EXIT
 
 direct="$tmpdir/direct"
 violations="$tmpdir/violations"
@@ -327,3 +330,4 @@ fi
 
 count=$(wc -l < "$direct" | tr -d ' ')
 echo "heavy dependency boundary check OK (${count} direct module edges checked)"
+finished=yes

@@ -73,7 +73,10 @@ if [[ "${#WORKSPACE_MODULES[@]}" -eq 0 ]]; then
 fi
 
 WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
+# bash 3.2 exits 0 through an EXIT trap when set -u stops it: a run
+# that did not reach its end (finished=yes) failed.
+finished='' trapped=''
+trap 'trapped=$?; rm -rf "$WORK_DIR"; [ "$trapped" != 0 ] || [ "${finished:-}" = yes ] || exit 1' EXIT
 CSV_OUT="${WORK_DIR}/licenses.csv"
 : > "$CSV_OUT"
 
@@ -177,3 +180,4 @@ if [[ "$fail" == 1 ]]; then
 fi
 
 echo "OK: all license declarations on the §8.1 allowlist."
+finished=yes

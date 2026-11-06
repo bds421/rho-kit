@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-short test-race test-integration test-cover build tidy fmt vet clean help ci ci-fast release-candidate kit-doctor kit-contract release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-tidy check-release-team bench check-bench-regression update-bench-baseline
+.PHONY: lint vulncheck test test-short test-race test-integration test-cover build tidy fmt vet clean help ci ci-fast release-candidate kit-doctor kit-contract release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-tidy check-release-team bench check-bench-regression update-bench-baseline exit-traps
 
 GOLANGCI_LINT_VERSION := v2.14.0
 GOVULNCHECK_VERSION  ?= v1.8.0
@@ -21,7 +21,13 @@ help:
 ## lint: Run golangci-lint sequentially across workspace modules
 # Sequential because golangci-lint v2 uses a shared cache lock that collides
 # with parallel invocations across modules in the same workspace.
-lint:
+# Every shell script whose trap covers EXIT marks where it finished
+# (finished=yes): bash 3.2 exits 0 through such a trap when set -u stops it.
+exit-traps:
+	@bad=$$(git grep -lE '^[[:space:]]*trap .*EXIT' -- '*.sh' | while read -r f; do grep -q 'finished=yes' "$$f" || echo "$$f"; done); \
+	if [ -n "$$bad" ]; then echo "an EXIT trap without finished=yes: $$bad" >&2; exit 1; fi
+
+lint: exit-traps
 	@for dir in $(WORKSPACE_MODULES); do \
 		echo "==> Linting $$dir"; \
 		(cd $$dir && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout=5m --allow-serial-runners) || exit 1; \

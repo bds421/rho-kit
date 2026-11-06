@@ -16,7 +16,10 @@ if [[ ! -f "$ALLOWLIST_FILE" ]]; then
 fi
 
 tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
+# bash 3.2 exits 0 through an EXIT trap when set -u stops it: a run
+# that did not reach its end (finished=yes) failed.
+finished='' trapped=''
+trap 'trapped=$?; rm -rf "$tmpdir"; [ "$trapped" != 0 ] || [ "${finished:-}" = yes ] || exit 1' EXIT
 
 allowed="$tmpdir/allowed"
 raw_actual="$tmpdir/raw-actual"
@@ -95,3 +98,4 @@ fi
 
 count=$(wc -l < "$actual" | tr -d ' ')
 echo "dependency allowlist check OK (${count} direct external deps approved)"
+finished=yes

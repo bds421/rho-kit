@@ -25,7 +25,10 @@ fi
 allow_file="$(mktemp)"
 candidates_file="$(mktemp)"
 literals_file="$(mktemp)"
-trap 'rm -f "$allow_file" "$candidates_file" "$literals_file"' EXIT
+# bash 3.2 exits 0 through an EXIT trap when set -u stops it: a run
+# that did not reach its end (finished=yes) failed.
+finished='' trapped=''
+trap 'trapped=$?; rm -f "$allow_file" "$candidates_file" "$literals_file"; [ "$trapped" != 0 ] || [ "${finished:-}" = yes ] || exit 1' EXIT
 
 # Allowlist: PromQL builtins, dashboard-template names, and Prometheus
 # scrape-time labels that are not metric names but are valid PromQL
@@ -355,3 +358,4 @@ fi
 
 allowlist_hits=$(comm -12 "$candidates_file" "$allow_file" | wc -l | tr -d ' ')
 echo "dashboard metric contract OK (${candidate_count} candidates; ${allowlist_hits} resolved by allowlist, rest matched against Go sources)"
+finished=yes

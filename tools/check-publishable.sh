@@ -68,7 +68,10 @@ replaces_file="$(mktemp)"
 stale_replaces_file="$(mktemp)"
 internal_requires_file="$(mktemp)"
 unexpected_internal_versions_file="$(mktemp)"
-trap 'rm -f "$modules_file" "$replaces_file" "$stale_replaces_file" "$internal_requires_file" "$unexpected_internal_versions_file"' EXIT
+# bash 3.2 exits 0 through an EXIT trap when set -u stops it: a run
+# that did not reach its end (finished=yes) failed.
+finished='' trapped=''
+trap 'trapped=$?; rm -f "$modules_file" "$replaces_file" "$stale_replaces_file" "$internal_requires_file" "$unexpected_internal_versions_file"; [ "$trapped" != 0 ] || [ "${finished:-}" = yes ] || exit 1' EXIT
 
 find_go_mods |
   xargs -0 sed -n 's/^module //p' |
@@ -193,3 +196,4 @@ if [[ -n "$go_version_mismatches" ]]; then
 fi
 
 echo "OK: all module Go directives match go.work (${expected_go_version})."
+finished=yes
