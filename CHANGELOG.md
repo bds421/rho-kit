@@ -8,7 +8,9 @@
   client of their own (a monitor's workload certificate) apart from the
   public API's clients, also in a service without a public server or kit
   TLS. The Builder reads it through the optional `app.InternalTLSProvider`.
-  Leaving loopback still needs `WithInternalNonLoopback`.
+  Leaving loopback still needs `WithInternalNonLoopback`. The config
+  covers /health and /ready too: when it requires client certificates,
+  every probe of the internal port needs one as well.
 
 ## observability v2.39.0, observability/auditlog/postgres v2.39.0 — 2026-11-07
 

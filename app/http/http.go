@@ -232,6 +232,9 @@ func WithInternalListener(l net.Listener) Option {
 // with cfg instead of the kit server TLS, so it can require a client of its
 // own, such as a monitor's certificate, rather than the public API's. With
 // [WithInternalNonLoopback] it lets /metrics leave loopback only over TLS.
+// cfg covers /health and /ready too: when it requires client certificates,
+// every probe of the internal port (a container healthcheck, a readiness
+// check on 127.0.0.1) needs one as well.
 //
 // Panics if cfg is nil.
 func WithInternalTLS(cfg *tls.Config) Option {
