@@ -16,10 +16,11 @@
   component ships the fix, which the reports cannot tell. Any other is
   new: held to its deadline from the package's fix, and recorded with its
   first day and due date, which every later gate holds it to until it is
-  gone; recording never makes it inherited. Only the initial baseline
-  (`-report -record` without `-baseline`, of what is deployed) or a
-  reviewed edit of the committed file marks an entry inherited. Without
-  `-baseline` every third-party finding is new, as strict as before.
+  gone; recording never makes it inherited. `-record` needs `-baseline`,
+  so a missing baseline never turns findings inherited; only the first
+  baseline (`-report -record -initial`, of what is deployed) or a reviewed
+  edit of the committed file marks an entry inherited. Without `-baseline`
+  every third-party finding is new, as strict as before.
 - **feat(cmd/kit-vulngate): an inherited known exploited finding fails**
   once `inheritedKev` (default 14 days) has passed since the package's
   fix; one whose fix date is unknown fails at once.

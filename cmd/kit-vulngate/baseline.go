@@ -90,9 +90,9 @@ func (b *baseline) lookup(f finding) (entry, bool) {
 // record writes this run's third-party findings, sorted and once each, as
 // the baseline of the next release. An entry the previous baseline had
 // keeps its state, first day and due date; any other is new, unless
-// initial (a report of what is deployed, without a baseline) marks all
-// inherited.
-func (j judge) record(path, release string, all []finding, initial bool) error {
+// j.initial (-initial: the first baseline, a report of what is deployed)
+// marks all inherited.
+func (j judge) record(path, release string, all []finding) error {
 	out := baseline{Release: release, Recorded: j.now.UTC().Format(time.DateOnly), Findings: []entry{}}
 	seen := map[entryKey]bool{}
 	for _, f := range all {
@@ -102,7 +102,7 @@ func (j judge) record(path, release string, all []finding, initial bool) error {
 		e, ok := j.baseline.lookup(f)
 		if !ok {
 			e = entry{Component: f.Component, Package: f.Package, ID: f.ID, State: stateNew, FirstSeen: out.Recorded}
-			if initial {
+			if j.initial {
 				e = entry{Component: f.Component, Package: f.Package, ID: f.ID, State: stateInherited}
 			}
 		}

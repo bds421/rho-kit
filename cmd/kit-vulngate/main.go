@@ -23,15 +23,16 @@
 //
 // -report lists what is deployed instead of gating a release, by the
 // same rules, for a monitor: it exits 1 when a finding is past its
-// deadline. Without -baseline every third-party finding is inherited,
-// and -record then writes the initial baseline, all inherited; marking an
-// entry inherited later is an edit of the committed file, reviewed.
+// deadline. -record needs -baseline, except once: -report -record
+// -initial, without -baseline, writes the first baseline with every
+// third-party finding inherited. Marking an entry inherited later is an
+// edit of the committed file, reviewed.
 //
 // An acceptance with an image applies only to reports of that image: a
 // registry scan by digest names it, and image=report.json names it for a
 // report of an archive built from it.
 //
-//	kit-vulngate [-policy file] [-accepted file] [-baseline file [-previous release]] [-record file -release name] [-report] [image=]report.json...
+//	kit-vulngate [-policy file] [-accepted file] [-baseline file [-previous release]] [-record file -release name] [-report [-initial]] [image=]report.json...
 package main
 
 import (
@@ -48,7 +49,7 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, time.Now()))
 }
 
-const usage = "usage: kit-vulngate [-policy file] [-accepted file] [-baseline file [-previous release]] [-record file -release name] [-report] [image=]grype-report.json..."
+const usage = "usage: kit-vulngate [-policy file] [-accepted file] [-baseline file [-previous release]] [-record file -release name] [-report [-initial]] [image=]grype-report.json..."
 
 func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 	flags := flag.NewFlagSet("kit-vulngate", flag.ContinueOnError)
@@ -59,9 +60,14 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 	previous := flags.String("previous", "", "the release before this one, which the baseline must be of (or of -release)")
 	recordFile := flags.String("record", "", "write this run's third-party findings here, for the next release's -baseline")
 	release := flags.String("release", "", "the release -record writes the baseline of")
-	reportMode := flags.Bool("report", false, "list what is deployed by the same rules; without -baseline every third-party finding is inherited")
+	reportMode := flags.Bool("report", false, "list what is deployed, by the same rules")
+	initial := flags.Bool("initial", false, "with -report -record and no -baseline: write the first baseline, every third-party finding inherited")
 	if err := flags.Parse(args); err != nil || flags.NArg() == 0 || (*recordFile != "") != (*release != "") {
 		_, _ = fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	if err := recordable(*recordFile, *baselineFile, *reportMode, *initial); err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
 	j, err := load(*policyFile, *acceptedFile, *baselineFile)
@@ -72,7 +78,7 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
-	j.now, j.deployed = now, *reportMode
+	j.now, j.deployed, j.initial = now, *reportMode, *initial
 	var all []finding
 	seen := map[string]bool{}
 	for _, arg := range flags.Args() {
@@ -91,7 +97,7 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		_, _ = fmt.Fprintf(stdout, "%d past their patch deadline\n", late)
 	}
 	if *recordFile != "" && (late == 0 || j.deployed) {
-		if err := j.record(*recordFile, *release, all, j.deployed && j.baseline == nil); err != nil {
+		if err := j.record(*recordFile, *release, all); err != nil {
 			_, _ = fmt.Fprintln(stderr, err)
 			return 2
 		}
@@ -100,6 +106,19 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		return 1
 	}
 	return 0
+}
+
+// recordable refuses -record without -baseline, unless -initial: a
+// missing baseline must never turn every third-party finding inherited.
+// -initial is only for -report -record without -baseline.
+func recordable(record, baseline string, report, initial bool) error {
+	if initial && (!report || record == "" || baseline != "") {
+		return fmt.Errorf("-initial is only for -report -record without -baseline")
+	}
+	if record != "" && baseline == "" && !initial {
+		return fmt.Errorf("-record needs -baseline (or -report -initial for the first baseline)")
+	}
+	return nil
 }
 
 // checkBaseline names the baseline's release in the output and refuses

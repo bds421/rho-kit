@@ -17,6 +17,9 @@ type judge struct {
 	now      time.Time
 	// deployed is -report: everything scanned is in production already.
 	deployed bool
+	// initial is -initial: this report creates the first baseline, so
+	// every third-party finding is inherited.
+	initial bool
 }
 
 // list prints each finding, most urgent first, and counts the late ones.
@@ -66,7 +69,7 @@ func (j judge) status(f finding) (state string, late, tracked bool) {
 		return j.deadlineState("", due, dated)
 	}
 	e, known := j.baseline.lookup(f)
-	if (j.deployed && j.baseline == nil) || (known && e.State == stateInherited) {
+	if j.initial || (known && e.State == stateInherited) {
 		return j.inherited(f)
 	}
 	due, dated := j.libraryDue(f)

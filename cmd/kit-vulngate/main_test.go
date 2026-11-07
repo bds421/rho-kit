@@ -271,7 +271,7 @@ func TestARecordedNewFindingKeepsItsDeadline(t *testing.T) {
 		finding := strings.Replace(inBinary("H1", c.fixedOn, "/usr/bin/server"), `"fix":`, c.extra+`"fix":`, 1)
 		report := write(t, "proxy-1.json", `{"matches":[`+finding+`]}`)
 		first := filepath.Join(t.TempDir(), "first.json")
-		if code, out := gate(t, "-policy", policy, "-record", first, "-release", "1.0", report); code != 0 || !strings.Contains(out, "new, due "+c.due) {
+		if code, out := gate(t, "-policy", policy, "-baseline", write(t, "empty.json", base("")), "-record", first, "-release", "1.0", report); code != 0 || !strings.Contains(out, "new, due "+c.due) {
 			t.Fatalf("%s, release 1.0: exit %d\n%s", name, code, out)
 		}
 		second := filepath.Join(t.TempDir(), "second.json")
@@ -297,7 +297,7 @@ func TestARecordIsTheNextBaseline(t *testing.T) {
 	recorded := filepath.Join(t.TempDir(), "baseline.json")
 	fresh := write(t, "proxy-1.amd64.json", `{"matches":[`+inBinary("H4", "2026-11-01", "/usr/bin/server")+`,`+inBinary("H3", "", "/usr/bin/server")+`,`+inBinary("O1", "2026-11-01", "/lib/apk/db/installed")+`]}`)
 	twin := write(t, "proxy-1.arm64.json", `{"matches":[`+inBinary("H4", "2026-11-01", "/usr/bin/server")+`]}`)
-	if code, out := gate(t, "-policy", policy, "-record", recorded, "-release", "2.0", fresh, twin); code != 0 {
+	if code, out := gate(t, "-policy", policy, "-baseline", write(t, "empty.json", base("")), "-record", recorded, "-release", "2.0", fresh, twin); code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 	got, err := os.ReadFile(recorded)
@@ -334,7 +334,7 @@ func TestARecordIsTheNextBaseline(t *testing.T) {
 	}
 	late := write(t, "proxy-2.json", `{"matches":[`+inBinary("H5", "2026-09-01", "/usr/bin/server")+`]}`)
 	failing := filepath.Join(t.TempDir(), "failing.json")
-	if code, _ := gate(t, "-policy", policy, "-record", failing, "-release", "2.1", late); code != 1 {
+	if code, _ := gate(t, "-policy", policy, "-baseline", write(t, "empty.json", base("")), "-record", failing, "-release", "2.1", late); code != 1 {
 		t.Errorf("late: exit %d", code)
 	}
 	if _, err := os.Stat(failing); !os.IsNotExist(err) {
@@ -361,21 +361,20 @@ func TestTheBaselineMustBeOfThePreviousRelease(t *testing.T) {
 	}
 }
 
-// -report holds findings by the same rules; without a baseline every
-// third-party finding is inherited and -record writes them so, the
-// initial baseline.
+// -report holds findings by the same rules; only -report -record -initial
+// marks every third-party finding inherited, writing the first baseline.
 func TestReportTracksWhatIsDeployed(t *testing.T) {
 	policy := write(t, "policy.json", proxyPolicy)
 	theirs := write(t, "proxy-1.json", `{"matches":[`+inBinary("H3", "2026-09-01", "/usr/bin/server")+`]}`)
 	ours := write(t, "app.json", `{"matches":[`+match("C1", "Critical", "2026-10-01", "")+`]}`)
 	recorded := filepath.Join(t.TempDir(), "baseline.json")
-	if code, out := gate(t, "-report", "-policy", policy, "-record", recorded, "-release", "1.0", theirs); code != 0 || !strings.Contains(out, "server  tracked") || !strings.Contains(out, "1 tracked in third-party components") {
+	if code, out := gate(t, "-report", "-initial", "-policy", policy, "-record", recorded, "-release", "1.0", theirs); code != 0 || !strings.Contains(out, "server  tracked") || !strings.Contains(out, "1 tracked in third-party components") {
 		t.Errorf("third-party only: exit %d\n%s", code, out)
 	}
 	if b, err := os.ReadFile(recorded); err != nil || !strings.Contains(string(b), `"state": "inherited"`) {
 		t.Errorf("record: %v\n%s", err, b)
 	}
-	if code, out := gate(t, "-report", "-policy", policy, theirs, ours); code != 1 || !strings.Contains(out, "own  LATE: due 2026-10-08") {
+	if code, out := gate(t, "-report", "-policy", policy, "-baseline", write(t, "b0.json", base(inherited("server", "pkg-H3", "H3"))), theirs, ours); code != 1 || !strings.Contains(out, "own  LATE: due 2026-10-08") || !strings.Contains(out, "server  tracked") {
 		t.Errorf("ours late: exit %d\n%s", code, out)
 	}
 	if code, out := gate(t, "-report", "-policy", policy, "-baseline", write(t, "b.json", base("")), theirs); code != 1 || !strings.Contains(out, "LATE: new") {
@@ -401,5 +400,29 @@ func TestBadPolicyOrBaselineIsNoPass(t *testing.T) {
 		if code, out := gate(t, append(args, report)...); code != 2 {
 			t.Errorf("%s: exit %d\n%s", name, code, out)
 		}
+	}
+}
+
+// A baseline that is missing never makes findings inherited: -record
+// needs -baseline unless -initial, -initial needs -report -record and no
+// -baseline, and a report without a baseline holds every third-party
+// finding as new.
+func TestOnlyInitialMarksFindingsInherited(t *testing.T) {
+	policy := write(t, "policy.json", proxyPolicy)
+	theirs := write(t, "proxy-1.json", `{"matches":[`+inBinary("H3", "2026-09-01", "/usr/bin/server")+`]}`)
+	record := func() string { return filepath.Join(t.TempDir(), "r.json") }
+	for name, args := range map[string][]string{
+		"gate record without baseline":   {"-record", record(), "-release", "1.0"},
+		"report record without baseline": {"-report", "-record", record(), "-release", "1.0"},
+		"initial without report":         {"-initial", "-record", record(), "-release", "1.0"},
+		"initial without record":         {"-report", "-initial"},
+		"initial with a baseline":        {"-report", "-initial", "-baseline", write(t, "b.json", base("")), "-record", record(), "-release", "1.0"},
+	} {
+		if code, out := gate(t, append(append([]string{"-policy", policy}, args...), theirs)...); code != 2 {
+			t.Errorf("%s: exit %d\n%s", name, code, out)
+		}
+	}
+	if code, out := gate(t, "-report", "-policy", policy, theirs); code != 1 || !strings.Contains(out, "LATE: new, due 2026-10-01") {
+		t.Errorf("a report without baseline: exit %d\n%s", code, out)
 	}
 }
