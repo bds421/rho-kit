@@ -16,10 +16,10 @@ github.com/bds421/rho-kit/infra/v2 v2.38.0 h1:t7tZpNjkYnoXq2HT9Gryidw8ysASprA6dY
 github.com/bds421/rho-kit/infra/v2 v2.38.0/go.mod h1:Iux1z1vQCU0f1U8un4yIFTV9S9wpYRkSuEz+ZFkg0V0=
 github.com/bds421/rho-kit/io/v2 v2.38.0 h1:5mOO9ahwUGrX5Dkj+1L3jxjHqWjkSv5YsTE8EqxKcAk=
 github.com/bds421/rho-kit/io/v2 v2.38.0/go.mod h1:l478kh7/s8dCymdJE7V7fXw1XG43Bf77bc1lMS+NnKw=
-github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.38.0 h1:PxU6PGTYdHCBKqM32lvYBftoqtr5M5uQkGOGnnpdEEs=
-github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.38.0/go.mod h1:i34xIpLs50JIxcnxUiPcirpKTCiOkYLTb64IxatCles=
-github.com/bds421/rho-kit/observability/v2 v2.38.0 h1:ipz08Vm/ZIODqxLce01rA1ChFtS7TKYjx9Md5jhdgEM=
-github.com/bds421/rho-kit/observability/v2 v2.38.0/go.mod h1:Fz1bKp+MNVjXh+R10mHh/N+Mcoh2SHKkwjr3F4JhSjM=
+github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.39.0 h1:DyBnhIQb98bXIvVDOCJIc/HOsRx4jhTJQbKz8u1RJtA=
+github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.39.0/go.mod h1:ztWmqP51LS2Tslw5DhstMGC61nCUggoeMZ/vKeHCdUo=
+github.com/bds421/rho-kit/observability/v2 v2.39.0 h1:DfVU0oQQme0Z3T7XUVgstzu2yoKpjdC35Uq+o2lsYQc=
+github.com/bds421/rho-kit/observability/v2 v2.39.0/go.mod h1:Fz1bKp+MNVjXh+R10mHh/N+Mcoh2SHKkwjr3F4JhSjM=
 github.com/bds421/rho-kit/runtime/v2 v2.38.0 h1:iuKzfqpK1oZCYqcABrpVpiPKcZNDrPBDszVQT3b7964=
 github.com/bds421/rho-kit/runtime/v2 v2.38.0/go.mod h1:Ij7qgyA7Dq8H0RueIPrmiUj/WnxGvekiQ2OY4TJOhE8=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
