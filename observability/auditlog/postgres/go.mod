@@ -3,7 +3,7 @@ module github.com/bds421/rho-kit/observability/auditlog/postgres/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/observability/v2 v2.38.0
+	github.com/bds421/rho-kit/observability/v2 v2.39.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/stretchr/testify v1.12.1
 )
