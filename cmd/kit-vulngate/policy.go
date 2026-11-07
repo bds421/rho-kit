@@ -12,17 +12,20 @@ import (
 // policy holds the deadlines counted from when a fix is available and the
 // third-party components. The default deadlines: an actively exploited
 // vulnerability (CISA KEV) 72 hours, critical 7 days, high 30, medium, low
-// and one without a severity 90.
+// and one without a severity 90; a known exploited one a third-party component
+// inherited 14 days after the package's fix (inheritedKev).
 type policy struct {
-	exploited  time.Duration
-	severity   map[string]time.Duration
-	thirdParty []component
+	exploited          time.Duration
+	inheritedExploited time.Duration
+	severity           map[string]time.Duration
+	thirdParty         []component
 }
 
 func defaultPolicy() policy {
 	day := 24 * time.Hour
 	return policy{
-		exploited: 72 * time.Hour,
+		exploited:          72 * time.Hour,
+		inheritedExploited: 14 * day,
 		severity: map[string]time.Duration{
 			"critical": 7 * day,
 			"high":     30 * day,
@@ -34,16 +37,17 @@ func defaultPolicy() policy {
 }
 
 // policyFile is a repository's policy (-policy): deadlines ("7d" or a Go
-// duration such as "72h") by "kev" and severity, and the third-party
-// components.
+// duration such as "72h") by "kev", "inheritedKev" and severity, and the
+// third-party components.
 type policyFile struct {
 	Deadlines  map[string]string `json:"deadlines"`
 	ThirdParty []component       `json:"thirdParty"`
 }
 
 // readPolicy returns the defaults with the file's deadlines and
-// components; an unknown key, deadline or a component that matches
-// nothing is refused.
+// components; an unknown key or deadline, and a component without a name
+// or without image, target or path, are refused. A component no report
+// holds is fine: a gate may scan only some images (one proxy build).
 func readPolicy(r io.Reader) (policy, error) {
 	p := defaultPolicy()
 	var file policyFile
@@ -57,12 +61,16 @@ func readPolicy(r io.Reader) (policy, error) {
 		if err != nil {
 			return p, fmt.Errorf("policy: deadline %s: %w", name, err)
 		}
-		if name == "kev" {
+		switch name {
+		case "kev":
 			p.exploited = d
+			continue
+		case "inheritedKev":
+			p.inheritedExploited = d
 			continue
 		}
 		if _, ok := p.severity[name]; !ok {
-			return p, fmt.Errorf("policy: deadline %q is none of kev, critical, high, medium, low, unknown", name)
+			return p, fmt.Errorf("policy: deadline %q is none of kev, inheritedKev, critical, high, medium, low, unknown", name)
 		}
 		p.severity[name] = d
 	}

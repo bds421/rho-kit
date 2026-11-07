@@ -179,14 +179,22 @@ func inBinary(id, fixedOn, path string) string {
 	return strings.Replace(m, `"version":"1.0.0"}`, `"version":"1.0.0","locations":[{"path":"`+path+`"}]}`, 1)
 }
 
-// A third-party finding the previous release carried is tracked, not
-// failed, under its ID or an alias; one this release adds is held to its
-// deadline from the package's fix; one in what we own is held to it
-// whether the previous release had it or not.
+func base(entries string) string {
+	return `{"release":"1.0","recorded":"2026-10-01","findings":[` + entries + `]}`
+}
+
+func inherited(component, pkg, id string) string {
+	return `{"component":"` + component + `","package":"` + pkg + `","id":"` + id + `","state":"inherited"}`
+}
+
+// An inherited third-party finding is tracked, not failed, under its ID
+// or an alias; one this release adds is held to its deadline from the
+// package's fix; one in what we own is held to it whatever the baseline
+// says.
 func TestThirdPartyFindingsFailOnlyWhenNew(t *testing.T) {
 	policy := write(t, "policy.json", proxyPolicy)
 	old := "2026-09-01"
-	baseline := write(t, "baseline.json", `[{"component":"server","package":"pkg-H1","id":"H1"},{"component":"server","package":"pkg-H2","id":"CVE-2026-9"},{"component":"server","package":"pkg-O1","id":"O1"}]`)
+	baseline := write(t, "baseline.json", base(inherited("server", "pkg-H1", "H1")+","+inherited("server", "pkg-H2", "CVE-2026-9")+","+inherited("server", "pkg-O1", "O1")))
 	for name, c := range map[string]struct {
 		match string
 		pass  bool
@@ -207,92 +215,188 @@ func TestThirdPartyFindingsFailOnlyWhenNew(t *testing.T) {
 	}
 }
 
+// An inherited known exploited finding fails once inheritedKev (14 days by
+// default, set in the policy) has passed since the package's fix.
+func TestAnInheritedKnownExploitedFindingEscalates(t *testing.T) {
+	exploited := func(fixedOn string) string {
+		return write(t, "proxy-1.json", `{"matches":[`+strings.Replace(inBinary("K1", fixedOn, "/usr/bin/server"), `"fix":`, `"knownExploited":[{"cve":"CVE-2026-1"}],"fix":`, 1)+`]}`)
+	}
+	baseline := write(t, "baseline.json", base(inherited("server", "pkg-K1", "K1")))
+	policy := write(t, "policy.json", proxyPolicy)
+	if code, out := gate(t, "-policy", policy, "-baseline", baseline, exploited("2026-10-25")); code != 0 || !strings.Contains(out, "known exploited: fails 2026-11-08") {
+		t.Errorf("11 days: exit %d\n%s", code, out)
+	}
+	if code, out := gate(t, "-policy", policy, "-baseline", baseline, exploited("2026-10-20")); code != 1 || !strings.Contains(out, "LATE: inherited, known exploited, due 2026-11-03") {
+		t.Errorf("16 days: exit %d\n%s", code, out)
+	}
+	longer := write(t, "policy.json", `{"deadlines":{"inheritedKev":"30d"},"thirdParty":[{"component":"server","path":"/usr/bin/server"}]}`)
+	if code, out := gate(t, "-policy", longer, "-baseline", baseline, exploited("2026-10-20")); code != 0 {
+		t.Errorf("inheritedKev 30d: exit %d\n%s", code, out)
+	}
+}
+
 // An upstream image is a component by its repository, whichever digest.
 func TestAnUpstreamImageIsAComponent(t *testing.T) {
 	const digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	report := write(t, "db.json", `{"matches":[`+match("C1", "Critical", "2026-10-01", "")+`],"source":{"type":"image","target":{"userInput":"registry:docker.io/example/db:2.0@`+digest+`"}}}`)
 	policy := write(t, "policy.json", proxyPolicy)
-	if code, out := gate(t, "-policy", policy, "-baseline", write(t, "b.json", `[{"component":"db","package":"pkg-C1","id":"C1"}]`), report); code != 0 || !strings.Contains(out, "db  tracked") {
+	if code, out := gate(t, "-policy", policy, "-baseline", write(t, "b.json", base(inherited("db", "pkg-C1", "C1"))), report); code != 0 || !strings.Contains(out, "db  tracked") {
 		t.Errorf("inherited: exit %d\n%s", code, out)
 	}
-	if code, out := gate(t, "-policy", policy, "-baseline", write(t, "b.json", `[]`), report); code != 1 {
+	if code, out := gate(t, "-policy", policy, "-baseline", write(t, "b.json", base("")), report); code != 1 {
 		t.Errorf("new: exit %d\n%s", code, out)
 	}
 }
 
-// -record writes the third-party findings once each, sorted, when the
-// gate passes, and nothing when it fails; the record is the next run's
-// baseline.
+func gateAt(t *testing.T, at time.Time, args ...string) (int, string) {
+	t.Helper()
+	var out bytes.Buffer
+	code := run(args, &out, &out, at)
+	return code, out.String()
+}
+
+// A new finding a gate records stays new: the next gates hold it to the
+// due date recorded, so recording never turns it into an inherited one,
+// known exploited or not. Only the initial baseline of what is deployed
+// marks findings inherited.
+func TestARecordedNewFindingKeepsItsDeadline(t *testing.T) {
+	policy := write(t, "policy.json", proxyPolicy)
+	for name, c := range map[string]struct {
+		fixedOn, extra, due string
+		later               time.Time
+	}{
+		"high":            {"2026-11-01", "", "2026-12-01", time.Date(2026, 12, 2, 0, 0, 0, 0, time.UTC)},
+		"known exploited": {"2026-11-04", `"knownExploited":[{"cve":"CVE-2026-1"}],`, "2026-11-07", time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)},
+	} {
+		finding := strings.Replace(inBinary("H1", c.fixedOn, "/usr/bin/server"), `"fix":`, c.extra+`"fix":`, 1)
+		report := write(t, "proxy-1.json", `{"matches":[`+finding+`]}`)
+		first := filepath.Join(t.TempDir(), "first.json")
+		if code, out := gate(t, "-policy", policy, "-record", first, "-release", "1.0", report); code != 0 || !strings.Contains(out, "new, due "+c.due) {
+			t.Fatalf("%s, release 1.0: exit %d\n%s", name, code, out)
+		}
+		second := filepath.Join(t.TempDir(), "second.json")
+		if code, out := gate(t, "-policy", policy, "-baseline", first, "-record", second, "-release", "1.1", report); code != 0 {
+			t.Fatalf("%s, release 1.1: exit %d\n%s", name, code, out)
+		}
+		got, _ := os.ReadFile(second)
+		for _, want := range []string{`"release": "1.1"`, `"state": "new"`, `"firstSeen": "2026-11-05"`, `"due": "` + c.due + `"`} {
+			if !strings.Contains(string(got), want) {
+				t.Errorf("%s: second record has no %s:\n%s", name, want, got)
+			}
+		}
+		if code, out := gateAt(t, c.later, "-policy", policy, "-baseline", second, report); code != 1 || !strings.Contains(out, "LATE: new, due "+c.due) {
+			t.Errorf("%s, past its due date: exit %d\n%s", name, code, out)
+		}
+	}
+}
+
+// -record writes the third-party findings once each, sorted, with this
+// release; it needs -release, and a failing gate writes nothing.
 func TestARecordIsTheNextBaseline(t *testing.T) {
 	policy := write(t, "policy.json", proxyPolicy)
 	recorded := filepath.Join(t.TempDir(), "baseline.json")
-	fresh := write(t, "proxy-1.amd64.json", `{"matches":[`+inBinary("H4", "2026-11-01", "/usr/bin/server")+`,`+inBinary("H3", "2026-11-01", "/usr/bin/server")+`,`+inBinary("O1", "2026-11-01", "/lib/apk/db/installed")+`]}`)
+	fresh := write(t, "proxy-1.amd64.json", `{"matches":[`+inBinary("H4", "2026-11-01", "/usr/bin/server")+`,`+inBinary("H3", "", "/usr/bin/server")+`,`+inBinary("O1", "2026-11-01", "/lib/apk/db/installed")+`]}`)
 	twin := write(t, "proxy-1.arm64.json", `{"matches":[`+inBinary("H4", "2026-11-01", "/usr/bin/server")+`]}`)
-	if code, out := gate(t, "-policy", policy, "-record", recorded, fresh, twin); code != 0 {
+	if code, out := gate(t, "-policy", policy, "-record", recorded, "-release", "2.0", fresh, twin); code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 	got, err := os.ReadFile(recorded)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `[
-  {
-    "component": "server",
-    "package": "pkg-H3",
-    "id": "H3"
-  },
-  {
-    "component": "server",
-    "package": "pkg-H4",
-    "id": "H4"
-  }
-]
+	want := `{
+  "release": "2.0",
+  "recorded": "2026-11-05",
+  "findings": [
+    {
+      "component": "server",
+      "package": "pkg-H3",
+      "id": "H3",
+      "state": "new",
+      "firstSeen": "2026-11-05"
+    },
+    {
+      "component": "server",
+      "package": "pkg-H4",
+      "id": "H4",
+      "state": "new",
+      "firstSeen": "2026-11-05",
+      "due": "2026-12-01"
+    }
+  ]
+}
 `
 	if string(got) != want {
 		t.Errorf("recorded:\n%s", got)
 	}
-	later := write(t, "proxy-2.json", `{"matches":[`+inBinary("H3", "2026-09-01", "/usr/bin/server")+`]}`)
-	if code, out := gate(t, "-policy", policy, "-baseline", recorded, later); code != 0 {
-		t.Errorf("with the record as baseline: exit %d\n%s", code, out)
+	if code, _ := gate(t, "-policy", policy, "-record", recorded, fresh); code != 2 {
+		t.Errorf("-record without -release: exit %d", code)
 	}
+	late := write(t, "proxy-2.json", `{"matches":[`+inBinary("H5", "2026-09-01", "/usr/bin/server")+`]}`)
 	failing := filepath.Join(t.TempDir(), "failing.json")
-	if code, _ := gate(t, "-policy", policy, "-record", failing, later); code != 1 {
-		t.Errorf("without baseline: exit %d", code)
+	if code, _ := gate(t, "-policy", policy, "-record", failing, "-release", "2.1", late); code != 1 {
+		t.Errorf("late: exit %d", code)
 	}
 	if _, err := os.Stat(failing); !os.IsNotExist(err) {
 		t.Errorf("a failing gate recorded: %v", err)
 	}
 }
 
-// -report tracks every third-party finding and fails only on ours past
-// its deadline; its record is the deployed release's baseline.
+// The baseline's release is printed; with -previous, a baseline of
+// neither the previous release nor this one (a rerun) is refused.
+func TestTheBaselineMustBeOfThePreviousRelease(t *testing.T) {
+	report := write(t, "image.json", `{"matches":[]}`)
+	baseline := write(t, "b.json", base(""))
+	if code, out := gate(t, "-baseline", baseline, report); code != 0 || !strings.Contains(out, "baseline of release 1.0, recorded 2026-10-01") {
+		t.Errorf("printed: exit %d\n%s", code, out)
+	}
+	if code, out := gate(t, "-baseline", baseline, "-previous", "1.0", report); code != 0 {
+		t.Errorf("previous: exit %d\n%s", code, out)
+	}
+	if code, out := gate(t, "-baseline", baseline, "-previous", "0.9", "-record", filepath.Join(t.TempDir(), "r.json"), "-release", "1.0", report); code != 0 {
+		t.Errorf("a rerun: exit %d\n%s", code, out)
+	}
+	if code, out := gate(t, "-baseline", baseline, "-previous", "1.1", report); code != 2 || !strings.Contains(out, "not of the previous release 1.1") {
+		t.Errorf("an older baseline: exit %d\n%s", code, out)
+	}
+}
+
+// -report holds findings by the same rules; without a baseline every
+// third-party finding is inherited and -record writes them so, the
+// initial baseline.
 func TestReportTracksWhatIsDeployed(t *testing.T) {
 	policy := write(t, "policy.json", proxyPolicy)
 	theirs := write(t, "proxy-1.json", `{"matches":[`+inBinary("H3", "2026-09-01", "/usr/bin/server")+`]}`)
 	ours := write(t, "app.json", `{"matches":[`+match("C1", "Critical", "2026-10-01", "")+`]}`)
 	recorded := filepath.Join(t.TempDir(), "baseline.json")
-	if code, out := gate(t, "-report", "-policy", policy, "-record", recorded, theirs); code != 0 || !strings.Contains(out, "server  tracked") || !strings.Contains(out, "1 tracked in third-party components") {
+	if code, out := gate(t, "-report", "-policy", policy, "-record", recorded, "-release", "1.0", theirs); code != 0 || !strings.Contains(out, "server  tracked") || !strings.Contains(out, "1 tracked in third-party components") {
 		t.Errorf("third-party only: exit %d\n%s", code, out)
 	}
-	if b, err := os.ReadFile(recorded); err != nil || !strings.Contains(string(b), `"id": "H3"`) {
+	if b, err := os.ReadFile(recorded); err != nil || !strings.Contains(string(b), `"state": "inherited"`) {
 		t.Errorf("record: %v\n%s", err, b)
 	}
 	if code, out := gate(t, "-report", "-policy", policy, theirs, ours); code != 1 || !strings.Contains(out, "own  LATE: due 2026-10-08") {
 		t.Errorf("ours late: exit %d\n%s", code, out)
 	}
+	if code, out := gate(t, "-report", "-policy", policy, "-baseline", write(t, "b.json", base("")), theirs); code != 1 || !strings.Contains(out, "LATE: new") {
+		t.Errorf("with a baseline: exit %d\n%s", code, out)
+	}
 }
 
 // A component that names nothing to match, or a named baseline or policy
-// that is missing, is bad input.
+// that is missing or incomplete, is bad input.
 func TestBadPolicyOrBaselineIsNoPass(t *testing.T) {
 	report := write(t, "image.json", `{"matches":[]}`)
 	for name, args := range map[string][]string{
-		"component without match": {"-policy", write(t, "p.json", `{"thirdParty":[{"component":"x"}]}`)},
-		"component without name":  {"-policy", write(t, "p.json", `{"thirdParty":[{"image":"x"}]}`)},
-		"bad pattern":             {"-policy", write(t, "p.json", `{"thirdParty":[{"component":"x","path":"["}]}`)},
-		"missing policy":          {"-policy", filepath.Join(t.TempDir(), "missing.json")},
-		"missing baseline":        {"-baseline", filepath.Join(t.TempDir(), "missing.json")},
-		"incomplete baseline":     {"-baseline", write(t, "b.json", `[{"component":"x","id":"y"}]`)},
+		"component without match":   {"-policy", write(t, "p.json", `{"thirdParty":[{"component":"x"}]}`)},
+		"component without name":    {"-policy", write(t, "p.json", `{"thirdParty":[{"image":"x"}]}`)},
+		"bad pattern":               {"-policy", write(t, "p.json", `{"thirdParty":[{"component":"x","path":"["}]}`)},
+		"missing policy":            {"-policy", filepath.Join(t.TempDir(), "missing.json")},
+		"missing baseline":          {"-baseline", filepath.Join(t.TempDir(), "missing.json")},
+		"baseline without state":    {"-baseline", write(t, "b.json", base(`{"component":"x","package":"p","id":"y"}`))},
+		"baseline without release":  {"-baseline", write(t, "b.json", `{"findings":[]}`)},
+		"old baseline list":         {"-baseline", write(t, "b.json", `[]`)},
+		"previous without baseline": {"-previous", "1.0"},
 	} {
 		if code, out := gate(t, append(args, report)...); code != 2 {
 			t.Errorf("%s: exit %d\n%s", name, code, out)

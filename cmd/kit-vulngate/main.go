@@ -5,26 +5,33 @@
 // 7 days, high 30, medium, low and without a severity 90; a -policy file
 // sets other deadlines and names the third-party components.
 //
-// It exits 1 when a fixed finding is past its deadline and not accepted
+// It exits 1 when a fixed finding is past its deadline and not accepted:
 // in what we own (all that no third-party component holds), or in a
-// third-party component that the -baseline of the previous release does
-// not carry it in; 2 on bad input, a missing named file included. A
-// finding the previous release already carried in a third-party component
-// is tracked, not failed: its deadline counts from when that component
-// ships a fix, which the reports cannot tell. A vulnerability without a
-// fix is listed, never failed. -record writes this run's third-party
-// findings as the next release's baseline, when it passes.
+// third-party component, unless the -baseline marks it inherited; 2 on
+// bad input, a missing named file included. An inherited finding is
+// tracked, not failed, as its deadline counts from when the component
+// ships a fix, which the reports cannot tell; a known exploited one fails
+// once inheritedKev (14 days) has passed since the package's fix. A
+// finding a release adds stays new, held to the due date the baseline
+// keeps for it, until it is gone. A vulnerability without a fix is
+// listed, never failed.
 //
-// -report lists what is deployed instead of gating a release: every
-// third-party finding is tracked, and it exits 1 when one of ours is past
-// its deadline, for a monitor to notify; -record then writes the
-// deployed release's baseline.
+// -record writes this run's third-party findings as the baseline of
+// -release, when the gate passes: entries of the previous baseline keep
+// their state and due date, any other is new. -previous names the release
+// before this one; a baseline of neither is refused.
+//
+// -report lists what is deployed instead of gating a release, by the
+// same rules, for a monitor: it exits 1 when a finding is past its
+// deadline. Without -baseline every third-party finding is inherited,
+// and -record then writes the initial baseline, all inherited; marking an
+// entry inherited later is an edit of the committed file, reviewed.
 //
 // An acceptance with an image applies only to reports of that image: a
 // registry scan by digest names it, and image=report.json names it for a
 // report of an archive built from it.
 //
-//	kit-vulngate [-policy file] [-accepted file] [-baseline file] [-record file] [-report] [image=]report.json...
+//	kit-vulngate [-policy file] [-accepted file] [-baseline file [-previous release]] [-record file -release name] [-report] [image=]report.json...
 package main
 
 import (
@@ -41,7 +48,7 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, time.Now()))
 }
 
-const usage = "usage: kit-vulngate [-policy file] [-accepted file] [-baseline file] [-record file] [-report] [image=]grype-report.json..."
+const usage = "usage: kit-vulngate [-policy file] [-accepted file] [-baseline file [-previous release]] [-record file -release name] [-report] [image=]grype-report.json..."
 
 func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 	flags := flag.NewFlagSet("kit-vulngate", flag.ContinueOnError)
@@ -49,13 +56,18 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 	policyFile := flags.String("policy", "", "JSON deadlines and third-party components")
 	acceptedFile := flags.String("accepted", "", "JSON list of accepted findings (id, package, image, reason, until)")
 	baselineFile := flags.String("baseline", "", "JSON third-party findings of the previous release (as -record writes them)")
+	previous := flags.String("previous", "", "the release before this one, which the baseline must be of (or of -release)")
 	recordFile := flags.String("record", "", "write this run's third-party findings here, for the next release's -baseline")
-	reportMode := flags.Bool("report", false, "list what is deployed: track every third-party finding, fail only ours")
-	if err := flags.Parse(args); err != nil || flags.NArg() == 0 {
+	release := flags.String("release", "", "the release -record writes the baseline of")
+	reportMode := flags.Bool("report", false, "list what is deployed by the same rules; without -baseline every third-party finding is inherited")
+	if err := flags.Parse(args); err != nil || flags.NArg() == 0 || (*recordFile != "") != (*release != "") {
 		_, _ = fmt.Fprintln(stderr, usage)
 		return 2
 	}
 	j, err := load(*policyFile, *acceptedFile, *baselineFile)
+	if err == nil {
+		err = j.checkBaseline(stdout, *previous, *release)
+	}
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 2
@@ -79,7 +91,7 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		_, _ = fmt.Fprintf(stdout, "%d past their patch deadline\n", late)
 	}
 	if *recordFile != "" && (late == 0 || j.deployed) {
-		if err := record(*recordFile, all); err != nil {
+		if err := j.record(*recordFile, *release, all, j.deployed && j.baseline == nil); err != nil {
 			_, _ = fmt.Fprintln(stderr, err)
 			return 2
 		}
@@ -88,6 +100,22 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		return 1
 	}
 	return 0
+}
+
+// checkBaseline names the baseline's release in the output and refuses
+// one that is neither of the previous release nor of this one (a rerun).
+func (j judge) checkBaseline(w io.Writer, previous, release string) error {
+	if j.baseline == nil {
+		if previous != "" {
+			return fmt.Errorf("-previous %s needs a -baseline", previous)
+		}
+		return nil
+	}
+	_, _ = fmt.Fprintf(w, "baseline of release %s, recorded %s\n", j.baseline.Release, j.baseline.Recorded)
+	if previous != "" && j.baseline.Release != previous && j.baseline.Release != release {
+		return fmt.Errorf("the baseline is of release %s, not of the previous release %s", j.baseline.Release, previous)
+	}
+	return nil
 }
 
 // load reads the named files; one not named is the default, one named
