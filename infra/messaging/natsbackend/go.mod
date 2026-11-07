@@ -5,7 +5,7 @@ go 1.26.8
 require (
 	github.com/bds421/rho-kit/core/v2 v2.38.0
 	github.com/bds421/rho-kit/infra/v2 v2.38.0
-	github.com/nats-io/nats.go v1.54.0
+	github.com/nats-io/nats.go v1.55.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/stretchr/testify v1.12.1
@@ -28,7 +28,7 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
