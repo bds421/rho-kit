@@ -309,6 +309,14 @@ type ListenerProvider interface {
 	InternalListener() net.Listener
 }
 
+// InternalTLSProvider is optionally implemented by the [HTTPConfigProvider]:
+// a TLS configuration of its own for the internal ops server, used instead
+// of the kit server TLS, so /metrics can require a different client than
+// the public API (a monitor's certificate, say). Nil keeps the kit TLS.
+type InternalTLSProvider interface {
+	InternalTLS() *tls.Config
+}
+
 // BaseModule provides no-op defaults for optional Module methods. Embed it in
 // custom module structs to avoid implementing methods you don't need:
 //

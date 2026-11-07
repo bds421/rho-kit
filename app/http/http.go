@@ -31,6 +31,7 @@ package http
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"os"
@@ -65,6 +66,7 @@ type config struct {
 
 	publicListener   net.Listener
 	internalListener net.Listener
+	internalTLS      *tls.Config
 }
 
 // WithoutTLS acknowledges that the public HTTP server will run
@@ -103,8 +105,8 @@ func WithOptionalClientCertificates() Option {
 // internal listener that resolves outside loopback so /metrics
 // cannot be exposed on the network by accident.
 //
-// When kit server TLS is configured, the internal listener reuses
-// that TLS config. Without TLS material the internal ops surface is
+// The internal listener uses [WithInternalTLS] when given, otherwise the
+// kit server TLS when configured. Without either the internal ops surface is
 // plaintext — operators who need non-loopback metrics must either
 // configure kit TLS or enforce network-layer encryption (mesh/mTLS
 // sidecar, private network ACLs).
@@ -226,6 +228,22 @@ func WithInternalListener(l net.Listener) Option {
 	return func(c *config) { c.internalListener = l }
 }
 
+// WithInternalTLS serves the internal ops server (/health, /ready, /metrics)
+// with cfg instead of the kit server TLS, so it can require a client of its
+// own, such as a monitor's certificate, rather than the public API's. With
+// [WithInternalNonLoopback] it lets /metrics leave loopback only over TLS.
+// cfg covers /health and /ready too: when it requires client certificates,
+// every probe of the internal port (a container healthcheck, a readiness
+// check on 127.0.0.1) needs one as well.
+//
+// Panics if cfg is nil.
+func WithInternalTLS(cfg *tls.Config) Option {
+	if cfg == nil {
+		panic("app/http: WithInternalTLS requires a non-nil *tls.Config")
+	}
+	return func(c *config) { c.internalTLS = cfg }
+}
+
 // Module returns an [app.Module] carrying the HTTP server
 // configuration. The Builder reads the configuration via the
 // [app.HTTPConfigProvider] capability and applies it to the
@@ -276,3 +294,4 @@ func (m *httpModule) CustomReadiness() http.Handler { return m.cfg.customReadine
 // ListenerProvider implementation.
 func (m *httpModule) PublicListener() net.Listener   { return m.cfg.publicListener }
 func (m *httpModule) InternalListener() net.Listener { return m.cfg.internalListener }
+func (m *httpModule) InternalTLS() *tls.Config       { return m.cfg.internalTLS }
