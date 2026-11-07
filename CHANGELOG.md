@@ -2,18 +2,23 @@
 
 ## cmd/kit-basepin v2.39.0 — 2026-11-07
 
-- **feat(cmd/kit-basepin): pinned base images stay current.** Reads the
-  images Dockerfiles pin (`FROM name:tag@sha256:…`, also with
-  `--platform`, and `ARG` defaults of that form) and asks the registry
-  which digest each tag names now. A pin behind its tag fails (exit 1)
-  once the tag's digest is past the dependency wait (`-wait`, 7 days),
-  dated by Docker Hub's tag API, a `tags/list` with upload times (Google's
-  registries) or the image's creation time; one whose push time none of
-  them tells fails too. Within the wait the old pin passes, unless
-  `-advisories` names the pinned digest with an advisory, which overrides
-  the wait. An advisory for a digest nothing pins, or for the digest the
-  tag still has, and a `FROM` without a digest exit 2. Anonymous pulls
-  only; standard library only.
+- **feat(cmd/kit-basepin): pinned images stay current.** Reads the images
+  Dockerfiles pin (`FROM name:tag@sha256:…`, also with `--platform`, or
+  `FROM ${X}` with a pinned, possibly quoted `ARG X` default) and the
+  service images of `-compose` files (`image:`, or a `${X:-…}` default; a
+  variable without default and an image of an `-own` prefix are skipped),
+  and asks the registry which digest each tag names now. A pin behind its
+  tag fails (exit 1) once the tag's digest is past the dependency wait
+  (`-wait`, 7 days), dated by Docker Hub's tag API or a `tags/list` with
+  upload times (Google's registries). A digest dated only by its build
+  date, or not at all, fails too, the output naming a build date as such.
+  Within the wait the old pin passes, unless `-advisories` names the
+  pinned digest with an advisory, which overrides the wait. A pin of one
+  platform's manifest is current while the tag's index lists it. Exit 2
+  for a `FROM` or image without tag and digest, a `FROM ${X}` whose `ARG`
+  has no pinned default, an advisory for a digest nothing pins or that the
+  tag still has, and a token realm that is not the registry's own scheme
+  and domain (https). Anonymous pulls only; standard library only.
 
 ## cmd/kit-vulngate v2.39.0 — 2026-11-07
 

@@ -77,6 +77,11 @@ func (r *registry) token(p pin, challenge string) error {
 			values[k] = strings.Trim(v, `"`)
 		}
 	}
+	realm, err := url.Parse(values["realm"])
+	endpoint, _ := url.Parse(r.endpoint(p.Host))
+	if err != nil || realm.Scheme != endpoint.Scheme || !sameFamily(realm.Hostname(), endpoint.Hostname()) {
+		return fmt.Errorf("%s: token realm %q is not https on the registry's own domain", p.Host, values["realm"])
+	}
 	q := url.Values{"service": {values["service"]}, "scope": {"repository:" + p.Repository + ":pull"}}
 	resp, err := r.client.Get(values["realm"] + "?" + q.Encode())
 	if err != nil {
@@ -111,23 +116,51 @@ func (r *registry) current(p pin) (string, error) {
 	return d, nil
 }
 
-// pushed is when digest was pushed, from Docker Hub's tag API, a
-// tags/list that reports upload times (Google's registries), or the
-// image's creation time; zero when none of them tells (a reproducible
-// build dates itself 1970).
-func (r *registry) pushed(p pin, digest string) time.Time {
+// pushed is when digest was pushed, from Docker Hub's tag API or a
+// tags/list that reports upload times (Google's registries). Failing both,
+// it is the image's build date with built set: the push may be much later,
+// so it can only tell that a digest is old. Zero when nothing tells (a
+// reproducible build dates itself 1970).
+func (r *registry) pushed(p pin, digest string) (at time.Time, built bool) {
 	if p.Host == "docker.io" {
 		if at := r.hubPushed(p, digest); !at.IsZero() {
-			return at
+			return at, false
 		}
 	}
 	if at := r.listedUpload(p, digest); !at.IsZero() {
-		return at
+		return at, false
 	}
 	if at := r.created(p, digest); at.Year() >= 2000 {
-		return at
+		return at, true
 	}
-	return time.Time{}
+	return time.Time{}, false
+}
+
+// platforms are the manifests an index lists; none for a single manifest.
+func (r *registry) platforms(p pin, digest string) []string {
+	var index struct {
+		Manifests []struct {
+			Digest string `json:"digest"`
+		} `json:"manifests"`
+	}
+	if r.decode(p, "/manifests/"+digest, manifestTypes, &index) != nil {
+		return nil
+	}
+	out := make([]string, 0, len(index.Manifests))
+	for _, m := range index.Manifests {
+		out = append(out, m.Digest)
+	}
+	return out
+}
+
+// sameFamily tells whether two hosts share their last two labels
+// (registry-1.docker.io and auth.docker.io), or are the same.
+func sameFamily(a, b string) bool {
+	if a == b {
+		return true
+	}
+	la, lb := strings.Split(a, "."), strings.Split(b, ".")
+	return len(la) >= 2 && len(lb) >= 2 && la[len(la)-2] == lb[len(lb)-2] && la[len(la)-1] == lb[len(lb)-1]
 }
 
 func (r *registry) hubPushed(p pin, digest string) time.Time {

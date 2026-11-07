@@ -28,6 +28,7 @@ type image struct {
 	uploaded time.Time // tags/list timeUploadedMs, zero for none
 	hub      time.Time // Docker Hub's tag_last_pushed, zero for none
 	created  time.Time // the config's creation time
+	realm    string    // the token realm, the fake's own when empty
 }
 
 // fakeRegistry serves the Distribution API behind an anonymous Bearer
@@ -52,7 +53,11 @@ func fakeRegistry(t *testing.T, img image) *registry {
 	})
 	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer t0k" {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="`+srv.URL+`/token",service="fake"`)
+			realm := img.realm
+			if realm == "" {
+				realm = srv.URL + "/token"
+			}
+			w.Header().Set("WWW-Authenticate", `Bearer realm="`+realm+`",service="fake"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -116,7 +121,8 @@ func TestAPinBehindItsTagFailsAfterTheWait(t *testing.T) {
 		"uploaded 2 days ago":    {"registry.example", image{digest: newDigest, uploaded: now.Add(-2 * day)}, true, "newer digest in its wait: the tag is sha256:222222222222 since 2026-11-05, due 2026-11-12"},
 		"Docker Hub, 8 days ago": {"docker.io", image{digest: newDigest, hub: now.Add(-8 * day)}, false, "since 2026-10-30"},
 		"Docker Hub, 1 day ago":  {"docker.io", image{digest: newDigest, hub: now.Add(-day)}, true, "in its wait"},
-		"created 9 days ago":     {"registry.example", image{digest: newDigest, created: now.Add(-9 * day)}, false, "since 2026-10-29"},
+		"built 9 days ago":       {"registry.example", image{digest: newDigest, created: now.Add(-9 * day)}, false, "built 2026-10-29 (a build date: the push time is unknown)"},
+		"built 1 day ago":        {"registry.example", image{digest: newDigest, created: now.Add(-24 * time.Hour)}, false, "built 2026-11-06 (a build date"},
 		"no push time (1970)":    {"registry.example", image{digest: newDigest, created: time.Unix(0, 0)}, false, "pushed at an unknown time"},
 	} {
 		ref := c.host + "/team/base:1.0@" + oldDigest
@@ -144,7 +150,7 @@ func TestAnAdvisoryOverridesTheWait(t *testing.T) {
 	if code, out := basepin(t, fakeRegistry(t, fresh), "-advisories", advise(newDigest), file); code != 2 || !strings.Contains(out, "remove the entry") {
 		t.Errorf("advisory on another digest: exit %d\n%s", code, out)
 	}
-	if code, out := basepin(t, fakeRegistry(t, image{digest: oldDigest}), "-advisories", advise(oldDigest), file); code != 2 || !strings.Contains(out, "not in a newer base yet") {
+	if code, out := basepin(t, fakeRegistry(t, image{digest: oldDigest}), "-advisories", advise(oldDigest), file); code != 2 || !strings.Contains(out, "not in a newer image yet") {
 		t.Errorf("advisory, tag unchanged: exit %d\n%s", code, out)
 	}
 	if code, _ := basepin(t, fakeRegistry(t, fresh), "-advisories", dockerfile(t, `[{"image":"x"}]`), file); code != 2 {
@@ -165,10 +171,75 @@ func TestBadInputIsNoPass(t *testing.T) {
 	if code, out := basepin(t, reg, dockerfile(t, "FROM registry.example/team/base:2.0@"+oldDigest+"\n")); code != 2 || !strings.Contains(out, "tag not resolved") {
 		t.Errorf("unknown tag: exit %d\n%s", code, out)
 	}
-	if code, out := basepin(t, reg, dockerfile(t, "FROM scratch\nFROM ${IMAGE}\n")); code != 0 {
+	if code, out := basepin(t, reg, dockerfile(t, "FROM scratch\n")); code != 0 {
 		t.Errorf("no pins: exit %d\n%s", code, out)
 	}
 	if code, _ := basepin(t, reg); code != 2 {
 		t.Errorf("no Dockerfile: exit %d", code)
+	}
+}
+
+// FROM ${X} is checked by ARG X's default, quoted or not; an ARG with no
+// default, or one that is not pinned, is refused.
+func TestFromAnArgUsesItsPinnedDefault(t *testing.T) {
+	reg := fakeRegistry(t, image{digest: oldDigest})
+	ref := "registry.example/team/base:1.0@" + oldDigest
+	if code, out := basepin(t, reg, dockerfile(t, "ARG BASE=\""+ref+"\"\nFROM $BASE AS build\n")); code != 0 || !strings.Contains(out, "current") {
+		t.Errorf("quoted default: exit %d\n%s", code, out)
+	}
+	for name, body := range map[string]string{
+		"no default":       "ARG BASE\nFROM ${BASE}\n",
+		"unpinned default": "ARG BASE=registry.example/team/base:1.0\nFROM ${BASE}\n",
+	} {
+		if code, out := basepin(t, reg, dockerfile(t, body)); code != 2 {
+			t.Errorf("%s: exit %d\n%s", name, code, out)
+		}
+	}
+}
+
+// A pin of one platform's manifest is current while the tag's index lists
+// it, and behind once the index moved on without it.
+func TestAPlatformManifestPinIsComparedWithTheIndex(t *testing.T) {
+	file := dockerfile(t, "FROM registry.example/team/base:1.0@"+amd64+"\n")
+	if code, out := basepin(t, fakeRegistry(t, image{digest: newDigest}), file); code != 0 || !strings.Contains(out, "current") {
+		t.Errorf("listed: exit %d\n%s", code, out)
+	}
+	other := dockerfile(t, "FROM registry.example/team/base:1.0@"+config+"\n")
+	if code, out := basepin(t, fakeRegistry(t, image{digest: newDigest, uploaded: now.Add(-30 * 24 * time.Hour)}), other); code != 1 {
+		t.Errorf("not listed: exit %d\n%s", code, out)
+	}
+}
+
+// A token realm must use the registry's scheme and domain.
+func TestATokenRealmElsewhereIsRefused(t *testing.T) {
+	file := dockerfile(t, "FROM registry.example/team/base:1.0@"+oldDigest+"\n")
+	for name, realm := range map[string]string{
+		"another domain": "http://auth.example.invalid/token",
+		"another scheme": "https://127.0.0.1/token",
+	} {
+		if code, out := basepin(t, fakeRegistry(t, image{digest: oldDigest, realm: realm}), file); code != 2 || !strings.Contains(out, "token realm") {
+			t.Errorf("%s: exit %d\n%s", name, code, out)
+		}
+	}
+}
+
+// -compose checks service images: a pinned one, a variable's pinned
+// default; a variable without default and one of -own are skipped; an
+// unpinned image or one pinned by digest alone is refused.
+func TestComposeImagesAreChecked(t *testing.T) {
+	reg := fakeRegistry(t, image{digest: newDigest, uploaded: now.Add(-20 * 24 * time.Hour)})
+	ref := "registry.example/team/base:1.0@" + oldDigest
+	compose := dockerfile(t, "services:\n  db:\n    image: "+ref+"\n  web:\n    image: \"${WEB_IMAGE:-"+ref+"}\"\n  app:\n    image: ${APP_IMAGE:?set it}\n  proxy:\n    image: example/proxy:1.0@"+oldDigest+"\n")
+	code, out := basepin(t, reg, "-own", "example/", "-compose", compose)
+	if code != 1 || strings.Count(out, "BEHIND") != 2 || strings.Contains(out, "proxy") {
+		t.Errorf("compose: exit %d\n%s", code, out)
+	}
+	for name, img := range map[string]string{
+		"unpinned":    "registry.example/team/base:1.0",
+		"digest only": "registry.example/team/base@" + oldDigest,
+	} {
+		if code, out := basepin(t, reg, "-compose", dockerfile(t, "services:\n  db:\n    image: "+img+"\n")); code != 2 {
+			t.Errorf("%s: exit %d\n%s", name, code, out)
+		}
 	}
 }

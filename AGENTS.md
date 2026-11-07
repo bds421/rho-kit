@@ -288,7 +288,7 @@ row you start from:
 | Audit a service for security regressions | `cmd/kit-doctor` (`-interactive` prompts to apply safe, idempotent fixes per finding; default `[y/N/skip-all]` is "no") | [observability](docs/ai/observability.md) |
 | Verify a running service's ASVS controls | `cmd/kit-verify` | [security](docs/ai/security.md) |
 | Hold a release to patch deadlines from grype reports | `cmd/kit-vulngate` (KEV 72 h, critical 7 d, high 30 d, medium, low and none 90 d, set in `-policy`, which also names third-party components; a third-party finding the previous release's `-baseline` marks inherited is tracked, not failed, a new one keeps its due date until gone, an inherited KEV fails after `inheritedKev`; `-report` lists what is deployed for a monitor; `-accepted` for dated exceptions, each limited to one image by digest if it names one) | [security](docs/ai/security.md) |
-| Fail a release whose pinned base images are behind their tags | `cmd/kit-basepin` (Dockerfile `FROM`/`ARG` pins against the registry; a tag digest past the 7-day wait fails, within it passes unless `-advisories` names the pinned digest) | [security](docs/ai/security.md) |
+| Fail a release whose pinned base images are behind their tags | `cmd/kit-basepin` (Dockerfile `FROM` pins and `-compose` service images against the registry; a tag digest past the 7-day wait fails, within it passes unless `-advisories` names the pinned digest) | [security](docs/ai/security.md) |
 | NATS JetStream messaging | `infra/messaging/natsbackend` | [messaging](docs/ai/messaging.md) |
 | Postgres-backed durable job queue | `data/queue/riverqueue` | [database](docs/ai/sqldb.md) |
 | Leader election | `infra/leaderelection` (`pgadvisory`/`redislock`) | [redis](docs/ai/redis.md) |
