@@ -113,3 +113,9 @@ func TestEscapeLike(t *testing.T) {
 	assert.Equal(t, `50\%\_off`, escapeLike("50%_off"))
 	assert.Equal(t, `path\\thing`, escapeLike(`path\thing`))
 }
+
+func TestWithLockTimeout_PanicsWithoutALimit(t *testing.T) {
+	assert.Panics(t, func() { WithLockTimeout(0) })
+	assert.Panics(t, func() { WithLockTimeout(-time.Second) })
+	assert.NotPanics(t, func() { WithLockTimeout(time.Millisecond) })
+}

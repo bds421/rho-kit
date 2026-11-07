@@ -9,14 +9,19 @@
   joins a `pgx.Tx`: the event is appended inside it and commits or rolls
   back with the change. The transaction must be READ COMMITTED
   (`ErrNotReadCommitted` otherwise), and it holds the chain lock until it
-  ends, so append as its last statement before COMMIT.
+  ends, so append as its last statement before COMMIT. A refusal or failure
+  logged from that ctx after a joined append fails at once with
+  `ErrChainHeld`: log it before the success entry or outside the change.
 - **feat(observability/auditlog/postgres): bounded lock wait and no
-  forks.** An append waits for the chain lock at most
-  `WithLockTimeout` (default 5 s; `New(pool, opts...)`). Migration
+  forks.** An append waits for the chain lock at most `WithLockTimeout`
+  (default 5 s, at least 1 ms; `New(pool, opts...)`). Migration
   20261107000001 adds a unique index on `prev_hmac` (built
   `CONCURRENTLY`, outside a transaction), so an append that chained onto a
-  stale head fails instead of forking the chain; a chain that already holds
-  two rows with one `prev_hmac` fails the migration.
+  stale head fails instead of forking the chain. On a chain that
+  already forked, the migration stops before building anything and names
+  how many links are shared (find them with `SELECT prev_hmac FROM
+  audit_log_events GROUP BY 1 HAVING count(*) > 1`); an INVALID index an
+  interrupted build left is dropped and built again.
 
 ## cmd/kit-basepin v2.39.0 — 2026-11-07
 

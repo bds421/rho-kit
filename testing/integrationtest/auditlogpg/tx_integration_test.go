@@ -35,7 +35,8 @@ func actions(t *testing.T, logger *auditlog.Logger) []string {
 
 // A success event appended with WithTx commits and rolls back with the
 // caller's change; a denied or failed one is kept even when the change
-// rolls back. The chain verifies throughout.
+// rolls back, and one logged after the joined append is refused at once.
+// The chain verifies throughout.
 func TestPostgres_AppendJoinsTheCallersTransaction(t *testing.T) {
 	ctx := context.Background()
 	pool := openAndMigrate(t, startPostgres(t))
@@ -48,6 +49,9 @@ func TestPostgres_AppendJoinsTheCallersTransaction(t *testing.T) {
 		require.NoError(t, logger.LogE(joined, event("change.denied", auditlog.StatusDenied)))
 		require.NoError(t, logger.LogE(joined, event("change.failed", auditlog.StatusFailure)))
 		require.NoError(t, logger.LogE(joined, event("change.rolled_back", auditlog.StatusSuccess)))
+		started := time.Now()
+		require.ErrorIs(t, logger.LogE(joined, event("change.denied_late", auditlog.StatusDenied)), auditlog.ErrChainHeld)
+		assert.Less(t, time.Since(started), time.Second, "refused at once, not after the lock timeout")
 		return errLater
 	})
 	require.ErrorIs(t, err, errLater)
@@ -164,4 +168,42 @@ func waitForAdvisoryWaiter(t *testing.T, pool *pgxpool.Pool) {
 		err := pool.QueryRow(context.Background(), "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted").Scan(&waiting)
 		return err == nil && waiting == 1
 	}, 4*time.Second, 20*time.Millisecond, "an appender waits for the chain lock")
+}
+
+// The prev_hmac migration stops on a forked chain and names how many links
+// are shared, before it builds anything; once the fork is resolved it runs,
+// and an INVALID index an interrupted build left is built again.
+func TestPostgres_PrevHMACMigrationRefusesAForkAndRepairsAnInvalidIndex(t *testing.T) {
+	const prevHMACMigration = 20261107000001
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, startPostgres(t))
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	provider := gooseProvider(t, pool)
+	_, err = provider.UpTo(ctx, prevHMACMigration-1)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO audit_log_events (id, occurred_at, actor, action, resource, status, prev_hmac, hmac, search_text) VALUES
+ ('a', now(), 'svc', 'x', 'r', 'success', '\x01', '\x02', ''),
+ ('b', now(), 'svc', 'x', 'r', 'success', '\x01', '\x03', '')`)
+	require.NoError(t, err)
+
+	_, err = provider.Up(ctx)
+	require.ErrorContains(t, err, "1 prev_hmac values are shared by more than one row")
+	var present bool
+	require.NoError(t, pool.QueryRow(ctx, "SELECT to_regclass('idx_audit_log_events_prev_hmac') IS NOT NULL").Scan(&present))
+	assert.False(t, present, "nothing is built on a forked chain")
+
+	_, err = pool.Exec(ctx, "DELETE FROM audit_log_events WHERE id = 'b'")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, "CREATE INDEX idx_audit_log_events_prev_hmac ON audit_log_events (prev_hmac)")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, "UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'idx_audit_log_events_prev_hmac'::regclass")
+	require.NoError(t, err)
+
+	_, err = provider.Up(ctx)
+	require.NoError(t, err)
+	var unique, valid bool
+	require.NoError(t, pool.QueryRow(ctx, "SELECT indisunique, indisvalid FROM pg_index WHERE indexrelid = 'idx_audit_log_events_prev_hmac'::regclass").Scan(&unique, &valid))
+	assert.True(t, unique)
+	assert.True(t, valid)
 }

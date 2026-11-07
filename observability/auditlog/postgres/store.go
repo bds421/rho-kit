@@ -66,9 +66,12 @@ type Option func(*Store)
 // WithLockTimeout sets how long an append waits for the chain lock before
 // it fails (default [DefaultLockTimeout]); a joined transaction holds the
 // lock until it ends, so a waiting appender fails rather than piles up.
-// Zero or less waits without limit.
+// Panics on zero or less, which would wait without limit.
 func WithLockTimeout(d time.Duration) Option {
-	return func(s *Store) { s.lockTimeout = max(d, 0) }
+	if d < time.Millisecond {
+		panic("auditlog/postgres: WithLockTimeout needs at least a millisecond")
+	}
+	return func(s *Store) { s.lockTimeout = d }
 }
 
 // New returns a Store wrapping the given pool. Panics on a nil pool —
@@ -152,6 +155,7 @@ func (s *Store) appendJoined(ctx context.Context, tx pgx.Tx, build func(head aud
 	if err := s.lock(ctx, tx); err != nil {
 		return err
 	}
+	auditlog.MarkChainHeld(ctx)
 	if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true)", timeout); err != nil {
 		return fmt.Errorf("auditlog/postgres: restore lock_timeout: %w", err)
 	}
