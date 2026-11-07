@@ -1,5 +1,23 @@
 # Changelog
 
+## observability v2.39.0, observability/auditlog/postgres v2.39.0 — 2026-11-07
+
+- **feat(observability/auditlog): an entry commits with its change.**
+  `auditlog.Join(ctx, tx)` hands a Store the caller's transaction;
+  `LogE` passes it for success events only, so a refusal or failure stays
+  on record when the change rolls back. `auditlog/postgres.WithTx(ctx, tx)`
+  joins a `pgx.Tx`: the event is appended inside it and commits or rolls
+  back with the change. The transaction must be READ COMMITTED
+  (`ErrNotReadCommitted` otherwise), and it holds the chain lock until it
+  ends, so append as its last statement before COMMIT.
+- **feat(observability/auditlog/postgres): bounded lock wait and no
+  forks.** An append waits for the chain lock at most
+  `WithLockTimeout` (default 5 s; `New(pool, opts...)`). Migration
+  20261107000001 adds a unique index on `prev_hmac` (built
+  `CONCURRENTLY`, outside a transaction), so an append that chained onto a
+  stale head fails instead of forking the chain; a chain that already holds
+  two rows with one `prev_hmac` fails the migration.
+
 ## cmd/kit-basepin v2.39.0 — 2026-11-07
 
 - **feat(cmd/kit-basepin): pinned images stay current.** Reads the images

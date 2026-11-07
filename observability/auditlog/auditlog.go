@@ -507,7 +507,12 @@ func (l *Logger) Log(ctx context.Context, event Event) {
 // with a newer [WithNextChainKeys] key the head is already sealed by. A
 // head no configured key sealed refuses the append with
 // [ErrChainHeadUnknown].
+//
+// A success event appends inside the transaction [Join] put into ctx, when
+// the Store supports it; any other status appends on its own, so a change
+// that rolls back still leaves its refusal or failure on record.
 func (l *Logger) LogE(ctx context.Context, event Event) error {
+	ctx = detached(ctx, event)
 	if l.closed.Load() {
 		return ErrLoggerClosed
 	}

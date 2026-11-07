@@ -101,11 +101,11 @@ func TestPostgres_SearchMigrationBackfillsAndIndexes(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = pool.Exec(ctx, `
-INSERT INTO audit_log_events (id, occurred_at, actor, action, resource, status, metadata, signed_metadata, hmac) VALUES
- ('signed', now(), 'user:dora', 'role.granted', 'org:1/role:7', 'success', NULL, convert_to('{"details":{"role":"Auditor","tags":["a",["b",2.50]]},"n":42}', 'UTF8'), '\x01'),
- ('empty', now(), 'user:erin', 'org.closed', 'org:1', 'success', NULL, '\x', '\x02'),
- ('legacy', now(), 'svc', 'export', 'org:1', 'success', '{"format":"csv"}', NULL, '\x03'),
- ('broken', now(), 'svc', 'import', 'org:1', 'success', NULL, '\xff00', '\x04')`)
+INSERT INTO audit_log_events (id, occurred_at, actor, action, resource, status, metadata, signed_metadata, prev_hmac, hmac) VALUES
+ ('signed', now(), 'user:dora', 'role.granted', 'org:1/role:7', 'success', NULL, convert_to('{"details":{"role":"Auditor","tags":["a",["b",2.50]]},"n":42}', 'UTF8'), '\x', '\x01'),
+ ('empty', now(), 'user:erin', 'org.closed', 'org:1', 'success', NULL, '\x', '\x01', '\x02'),
+ ('legacy', now(), 'svc', 'export', 'org:1', 'success', '{"format":"csv"}', NULL, '\x02', '\x03'),
+ ('broken', now(), 'svc', 'import', 'org:1', 'success', NULL, '\xff00', '\x03', '\x04')`)
 	require.NoError(t, err)
 
 	_, err = provider.Up(ctx)
