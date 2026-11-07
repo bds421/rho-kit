@@ -78,6 +78,7 @@ func TestTheServersServeOnGivenListeners(t *testing.T) {
 
 func TestListenerOptionsRejectNil(t *testing.T) {
 	for name, f := range map[string]func(){
+		"internal TLS": func() { apphttp.WithInternalTLS(nil) },
 		"public":   func() { apphttp.WithListener(nil) },
 		"internal": func() { apphttp.WithInternalListener(nil) },
 	} {

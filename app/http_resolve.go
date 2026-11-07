@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/tls"
 	"net"
 	"net/http"
 	"os"
@@ -31,6 +32,7 @@ type resolvedHTTPConfig struct {
 	customReadiness          http.Handler
 	publicListener           net.Listener
 	internalListener         net.Listener
+	internalTLS              *tls.Config
 }
 
 // resolveHTTPConfig walks the module list looking for the single
@@ -71,9 +73,14 @@ func resolveHTTPConfig(modules []Module) resolvedHTTPConfig {
 	if lp, ok := provider.(ListenerProvider); ok {
 		public, internal = lp.PublicListener(), lp.InternalListener()
 	}
+	var internalTLS *tls.Config
+	if tp, ok := provider.(InternalTLSProvider); ok {
+		internalTLS = tp.InternalTLS()
+	}
 	return resolvedHTTPConfig{
 		publicListener:           public,
 		internalListener:         internal,
+		internalTLS:              internalTLS,
 		allowPlaintext:           provider.AllowPlaintext(),
 		optionalClientCerts:      provider.OptionalClientCerts(),
 		allowInternalNonLoopback: provider.AllowInternalNonLoopback(),

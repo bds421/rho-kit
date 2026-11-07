@@ -678,7 +678,9 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		}
 	}
 	internalSrvOpts := []httpx.ServerOption{serverErrorLogOpt}
-	if serverTLS != nil {
+	if internalTLS := httpCfg.internalTLS; internalTLS != nil {
+		internalSrvOpts = append(internalSrvOpts, httpx.WithTLSConfig(internalTLS))
+	} else if serverTLS != nil {
 		internalSrvOpts = append(internalSrvOpts, httpx.WithTLSConfig(serverTLS))
 	}
 	internalSrv := httpx.NewServer(listenAddr(b.cfg.Internal.Addr(), httpCfg.internalListener), internalHandler, internalSrvOpts...)

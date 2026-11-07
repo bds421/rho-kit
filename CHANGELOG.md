@@ -1,5 +1,15 @@
 # Changelog
 
+## app v2.39.0, app/http v2.39.0 — 2026-11-07
+
+- **feat(app/http): the internal ops server can take a TLS configuration
+  of its own.** `apphttp.WithInternalTLS(cfg)` serves /health, /ready and
+  /metrics with `cfg` instead of the kit server TLS, so they can require a
+  client of their own (a monitor's workload certificate) apart from the
+  public API's clients, also in a service without a public server or kit
+  TLS. The Builder reads it through the optional `app.InternalTLSProvider`.
+  Leaving loopback still needs `WithInternalNonLoopback`.
+
 ## observability v2.39.0, observability/auditlog/postgres v2.39.0 — 2026-11-07
 
 - **feat(observability/auditlog): an entry commits with its change.**
