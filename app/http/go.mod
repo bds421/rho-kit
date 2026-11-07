@@ -3,7 +3,7 @@ module github.com/bds421/rho-kit/app/http/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/app/v2 v2.38.0
+	github.com/bds421/rho-kit/app/v2 v2.39.0
 	github.com/bds421/rho-kit/httpx/v2 v2.38.0
 	github.com/bds421/rho-kit/observability/v2 v2.38.0
 	github.com/bds421/rho-kit/security/v2 v2.38.0
