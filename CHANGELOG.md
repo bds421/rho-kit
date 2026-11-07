@@ -1,5 +1,20 @@
 # Changelog
 
+## cmd/kit-basepin v2.39.0 — 2026-11-07
+
+- **feat(cmd/kit-basepin): pinned base images stay current.** Reads the
+  images Dockerfiles pin (`FROM name:tag@sha256:…`, also with
+  `--platform`, and `ARG` defaults of that form) and asks the registry
+  which digest each tag names now. A pin behind its tag fails (exit 1)
+  once the tag's digest is past the dependency wait (`-wait`, 7 days),
+  dated by Docker Hub's tag API, a `tags/list` with upload times (Google's
+  registries) or the image's creation time; one whose push time none of
+  them tells fails too. Within the wait the old pin passes, unless
+  `-advisories` names the pinned digest with an advisory, which overrides
+  the wait. An advisory for a digest nothing pins, or for the digest the
+  tag still has, and a `FROM` without a digest exit 2. Anonymous pulls
+  only; standard library only.
+
 ## cmd/kit-vulngate v2.39.0 — 2026-11-07
 
 - **feat(cmd/kit-vulngate): third-party components and the previous

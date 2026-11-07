@@ -43,4 +43,5 @@ docs/release/
 # Claude
 .claude/
 /.worktrees/
+cmd/kit-basepin/kit-basepin
 cmd/kit-vulngate/kit-vulngate
