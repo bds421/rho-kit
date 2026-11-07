@@ -1,5 +1,15 @@
 # Changelog
 
+## security v2.39.0 — 2026-11-07
+
+- **fix(security/netutil): `ReloadingServerTLS` keeps the caller's checks
+  on every handshake.** Each handshake took a config of its own with only
+  the certificate, CA pool, ClientAuth and TLS 1.3, so what the caller set
+  on the returned config afterwards, `VerifyConnection` (who may connect),
+  `VerifyPeerCertificate` or `NextProtos`, never applied: any certificate
+  of the CA passed. A handshake now takes a clone of the caller's config
+  with the current certificate and CA pool.
+
 ## app v2.39.0, app/http v2.39.0 — 2026-11-07
 
 - **feat(app/http): the internal ops server can take a TLS configuration

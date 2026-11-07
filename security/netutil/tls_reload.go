@@ -314,7 +314,12 @@ func certEqual(a, b *certSnapshot) bool {
 // rotation of the underlying files is picked up without restart.
 //
 // The returned config sets ClientAuth based on opts (defaults to
-// RequireAndVerifyClientCert) and pins TLS 1.3.
+// RequireAndVerifyClientCert) and pins TLS 1.3. What the caller sets on the
+// returned config itself, before it serves (VerifyConnection,
+// VerifyPeerCertificate, NextProtos, ClientAuth, MinVersion: any version
+// set applies, a lower one too), holds on every handshake: each one takes
+// a clone of that config with the current certificate and CA pool. Fields
+// set on a clone of the returned config are not seen.
 func ReloadingServerTLS(src CertificateSource, opts ...ServerTLSOption) *tls.Config {
 	if src == nil {
 		panic("netutil: ReloadingServerTLS requires a non-nil CertificateSource")
@@ -330,31 +335,33 @@ func ReloadingServerTLS(src CertificateSource, opts ...ServerTLSOption) *tls.Con
 	if o.requireClientCert {
 		clientAuth = tls.RequireAndVerifyClientCert
 	}
-	return &tls.Config{
+	cfg := &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		ClientAuth: clientAuth,
 		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 			return src.ServerCertificate()
 		},
-		// GetConfigForClient fires on every handshake, so swapping
-		// ClientCAs takes effect immediately on the next connection.
-		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
-			cert, err := src.ServerCertificate()
-			if err != nil {
-				return nil, err
-			}
-			caPool, err := src.CAs()
-			if err != nil {
-				return nil, err
-			}
-			return &tls.Config{
-				MinVersion:   tls.VersionTLS13,
-				ClientAuth:   clientAuth,
-				ClientCAs:    caPool,
-				Certificates: []tls.Certificate{*cert},
-			}, nil
-		},
 	}
+	// GetConfigForClient fires on every handshake, so swapping
+	// ClientCAs takes effect immediately on the next connection. It
+	// clones cfg as it is then, so the caller's own settings stay.
+	cfg.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		cert, err := src.ServerCertificate()
+		if err != nil {
+			return nil, err
+		}
+		caPool, err := src.CAs()
+		if err != nil {
+			return nil, err
+		}
+		handshake := cfg.Clone()
+		handshake.GetConfigForClient = nil
+		handshake.GetCertificate = nil
+		handshake.ClientCAs = caPool
+		handshake.Certificates = []tls.Certificate{*cert}
+		return handshake, nil
+	}
+	return cfg
 }
 
 // ReloadingClientTLS returns a *tls.Config wired to read the client
