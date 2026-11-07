@@ -57,6 +57,10 @@ func run(args []string, stdout, stderr io.Writer, reg *registry, now time.Time) 
 	}
 	behind, failed := 0, false
 	for _, p := range pins {
+		if p.Unchecked != "" {
+			_, _ = fmt.Fprintf(stdout, "%s  %s  not checked: set at run time\n", p.Line, p.Unchecked)
+			continue
+		}
 		state, late, err := judge(reg, p, advisoryFor(advisories, p), *wait, now)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "%s: %v\n", p.Line, err)

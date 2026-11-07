@@ -181,17 +181,19 @@ func TestBadInputIsNoPass(t *testing.T) {
 	}
 }
 
-// FROM ${X} is checked by ARG X's default, quoted or not; an ARG with no
-// default, or one that is not pinned, is refused.
+// FROM ${X} is checked by ARG X's default, quoted or not; a quoted value
+// with spaces is one declaration. An ARG with no default, one that is not
+// pinned, or an ARG line with several names is refused.
 func TestFromAnArgUsesItsPinnedDefault(t *testing.T) {
 	reg := fakeRegistry(t, image{digest: oldDigest})
 	ref := "registry.example/team/base:1.0@" + oldDigest
-	if code, out := basepin(t, reg, dockerfile(t, "ARG BASE=\""+ref+"\"\nFROM $BASE AS build\n")); code != 0 || !strings.Contains(out, "current") {
+	if code, out := basepin(t, reg, dockerfile(t, "ARG FIXES=\"a=b c=d\"\nARG BASE=\""+ref+"\"\nFROM $BASE AS build\n")); code != 0 || !strings.Contains(out, "current") {
 		t.Errorf("quoted default: exit %d\n%s", code, out)
 	}
 	for name, body := range map[string]string{
 		"no default":       "ARG BASE\nFROM ${BASE}\n",
 		"unpinned default": "ARG BASE=registry.example/team/base:1.0\nFROM ${BASE}\n",
+		"several names":    "ARG OTHER=1 BASE=" + ref + "\nFROM ${BASE}\n",
 	} {
 		if code, out := basepin(t, reg, dockerfile(t, body)); code != 2 {
 			t.Errorf("%s: exit %d\n%s", name, code, out)
@@ -245,14 +247,14 @@ func TestATokenRealmElsewhereIsRefused(t *testing.T) {
 }
 
 // -compose checks service images: a pinned one, a variable's pinned
-// default; a variable without default and one of -own are skipped; an
-// unpinned image or one pinned by digest alone is refused.
+// default; a variable without default is listed unchecked, one of -own
+// skipped; an unpinned image or one pinned by digest alone is refused.
 func TestComposeImagesAreChecked(t *testing.T) {
 	reg := fakeRegistry(t, image{digest: newDigest, uploaded: now.Add(-20 * 24 * time.Hour)})
 	ref := "registry.example/team/base:1.0@" + oldDigest
 	compose := dockerfile(t, "services:\n  db:\n    image: "+ref+"\n  web:\n    image: \"${WEB_IMAGE:-"+ref+"}\"\n  app:\n    image: ${APP_IMAGE:?set it}\n  proxy:\n    image: example/proxy:1.0@"+oldDigest+"\n")
 	code, out := basepin(t, reg, "-own", "example/", "-compose", compose)
-	if code != 1 || strings.Count(out, "BEHIND") != 2 || strings.Contains(out, "proxy") {
+	if code != 1 || strings.Count(out, "BEHIND") != 2 || strings.Contains(out, "proxy") || !strings.Contains(out, "Dockerfile:7  ${APP_IMAGE:?set it}  not checked: set at run time") {
 		t.Errorf("compose: exit %d\n%s", code, out)
 	}
 	for name, img := range map[string]string{

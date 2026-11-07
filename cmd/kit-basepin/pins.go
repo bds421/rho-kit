@@ -15,6 +15,9 @@ type pin struct {
 	Repository string // "library/alpine", "distroless/static-debian13"
 	Tag        string
 	Digest     string
+	// Unchecked holds the raw reference of a compose image set at run time;
+	// it is listed, not checked.
+	Unchecked string
 }
 
 func (p pin) name() string { return p.Host + "/" + p.Repository + ":" + p.Tag }
@@ -39,7 +42,11 @@ func readDockerfile(r io.Reader, file string) ([]pin, error) {
 	err := eachLine(r, file, func(at string, fields []string) error {
 		switch strings.ToUpper(fields[0]) {
 		case "ARG":
-			if name, value, ok := strings.Cut(fields[1], "="); ok {
+			words := argWords(strings.Join(fields[1:], " "))
+			if len(words) != 1 {
+				return fmt.Errorf("%s: ARG with more than one name; write one ARG per line", at)
+			}
+			if name, value, ok := strings.Cut(words[0], "="); ok {
 				defaults[name] = strings.Trim(value, `"'`)
 			}
 		case "FROM":
@@ -73,8 +80,9 @@ func readDockerfile(r io.Reader, file string) ([]pin, error) {
 
 // readCompose returns the images of a compose file's services. A variable
 // with a default is checked by its default; one without is set where the
-// stack is run (the product's own image). An image of one of own (a
-// repository prefix) is built here and checked by its own release.
+// stack is run (the product's own image) and is listed unchecked, so a
+// third-party image written that way stays visible. An image of one of
+// own (a repository prefix) is built here and checked by its own release.
 func readCompose(r io.Reader, file string, own []string) ([]pin, error) {
 	var pins []pin
 	err := eachLine(r, file, func(at string, fields []string) error {
@@ -84,6 +92,7 @@ func readCompose(r io.Reader, file string, own []string) ([]pin, error) {
 		ref := strings.Trim(strings.Join(fields[1:], " "), `"'`)
 		if m := composeVar.FindStringSubmatch(ref); m != nil {
 			if m[1] == "" {
+				pins = append(pins, pin{Line: at, Unchecked: ref})
 				return nil
 			}
 			ref = m[1]
@@ -96,6 +105,33 @@ func readCompose(r io.Reader, file string, own []string) ([]pin, error) {
 		return add(&pins, at, ref)
 	})
 	return pins, err
+}
+
+// argWords splits an ARG line's declarations at spaces outside quotes,
+// so a quoted value with spaces stays one declaration.
+func argWords(s string) []string {
+	var words []string
+	var word strings.Builder
+	var quote rune
+	for _, c := range s {
+		switch {
+		case quote != 0 && c == quote:
+			quote = 0
+		case quote == 0 && (c == '"' || c == '\''):
+			quote = c
+		case quote == 0 && c == ' ':
+			if word.Len() > 0 {
+				words = append(words, word.String())
+				word.Reset()
+			}
+			continue
+		}
+		word.WriteRune(c)
+	}
+	if word.Len() > 0 {
+		words = append(words, word.String())
+	}
+	return words
 }
 
 func add(pins *[]pin, at, ref string) error {

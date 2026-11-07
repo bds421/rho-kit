@@ -6,20 +6,21 @@
   Dockerfiles pin (`FROM name:tag@sha256:…`, also with `--platform`, or
   `FROM ${X}` with a pinned, possibly quoted `ARG X` default) and the
   service images of `-compose` files (`image:`, or a `${X:-…}` default; a
-  variable without default and an image of an `-own` prefix are skipped),
-  and asks the registry which digest each tag names now. A pin behind its
-  tag fails (exit 1) once the tag's digest is past the dependency wait
-  (`-wait`, 7 days), dated by Docker Hub's tag API or a `tags/list` with
-  upload times (Google's registries). A digest dated only by its build
-  date, or not at all, fails too, the output naming a build date as such.
-  Within the wait the old pin passes, unless `-advisories` names the
-  pinned digest with an advisory, which overrides the wait. A pin of one
-  platform's manifest is current while the tag's index lists it. Exit 2
-  for a `FROM` or image without tag and digest, a `FROM ${X}` whose `ARG`
-  has no pinned default, an advisory for a digest nothing pins or that the
-  tag still has, and a token realm that is not https on the registry's
-  own host or its known auth host (auth.docker.io for Docker Hub).
-  Anonymous pulls only; standard library only.
+  variable without default is listed as not checked, an image of an
+  `-own` prefix skipped), and asks the registry which digest each tag
+  names now. A pin behind its tag fails (exit 1) once the tag's digest is
+  past the dependency wait (`-wait`, 7 days), dated by Docker Hub's tag
+  API or a `tags/list` with upload times (Google's registries). A digest
+  dated only by its build date, or not at all, fails too, the output
+  naming a build date as such. Within the wait the old pin passes, unless
+  `-advisories` names the pinned digest with an advisory, which overrides
+  the wait. A pin of one platform's manifest is current while the tag's
+  index lists it. Exit 2 for a `FROM` or image without tag and digest, a
+  `FROM ${X}` whose `ARG` has no pinned default, an `ARG` line with more
+  than one name, an advisory for a digest nothing pins or that the tag
+  still has, and a token realm that is not https on the registry's own
+  host or its known auth host (auth.docker.io for Docker Hub). Anonymous
+  pulls only; standard library only.
 
 ## cmd/kit-vulngate v2.39.0 — 2026-11-07
 
