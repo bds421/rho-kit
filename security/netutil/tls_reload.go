@@ -314,11 +314,12 @@ func certEqual(a, b *certSnapshot) bool {
 // rotation of the underlying files is picked up without restart.
 //
 // The returned config sets ClientAuth based on opts (defaults to
-// RequireAndVerifyClientCert) and pins TLS 1.3. What the caller sets on it
-// afterwards (VerifyConnection, VerifyPeerCertificate, NextProtos, a
-// stricter MinVersion, ClientAuth) holds on every handshake too: each one
-// takes a clone of it with the current certificate and CA pool, not a
-// config of its own.
+// RequireAndVerifyClientCert) and pins TLS 1.3. What the caller sets on the
+// returned config itself, before it serves (VerifyConnection,
+// VerifyPeerCertificate, NextProtos, ClientAuth, MinVersion: any version
+// set applies, a lower one too), holds on every handshake: each one takes
+// a clone of that config with the current certificate and CA pool. Fields
+// set on a clone of the returned config are not seen.
 func ReloadingServerTLS(src CertificateSource, opts ...ServerTLSOption) *tls.Config {
 	if src == nil {
 		panic("netutil: ReloadingServerTLS requires a non-nil CertificateSource")
