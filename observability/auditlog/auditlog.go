@@ -507,14 +507,24 @@ func (l *Logger) Log(ctx context.Context, event Event) {
 // with a newer [WithNextChainKeys] key the head is already sealed by. A
 // head no configured key sealed refuses the append with
 // [ErrChainHeadUnknown].
+//
+// A success event appends inside the transaction [Join] put into ctx, when
+// the Store supports it; any other status appends on its own, so a change
+// that rolls back still leaves its refusal or failure on record. Once a
+// joined append took the chain lock, such an event from that ctx fails at
+// once with [ErrChainHeld] rather than wait for the lock.
 func (l *Logger) LogE(ctx context.Context, event Event) error {
 	if l.closed.Load() {
 		return ErrLoggerClosed
 	}
+	ctx, err := detached(ctx, event)
+	if err != nil {
+		return l.reportAppend(ctx, event, err)
+	}
 	if event.Action == RotationAction {
 		return fmt.Errorf("%w: action %q is reserved for rotation markers", ErrInvalidEvent, RotationAction)
 	}
-	event, err := l.prepareEvent(ctx, event)
+	event, err = l.prepareEvent(ctx, event)
 	if err != nil {
 		return err
 	}

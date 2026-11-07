@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,23 +48,59 @@ const chainLockKey int64 = 8_157_398_551_437_201_487
 //     verifies under [Logger.VerifyChain].
 //   - LastHMAC reads the tail HMAC for operator tooling.
 type Store struct {
-	pool *pgxpool.Pool
+	pool        *pgxpool.Pool
+	lockTimeout time.Duration
+}
+
+// DefaultLockTimeout is how long an append waits for the chain lock.
+const DefaultLockTimeout = 5 * time.Second
+
+// ErrNotReadCommitted refuses an append that joins a transaction whose
+// isolation is not READ COMMITTED: its snapshot may predate the newest
+// head, and chaining onto an older one would fork the chain.
+var ErrNotReadCommitted = errors.New("auditlog/postgres: a joined transaction must be READ COMMITTED")
+
+// Option configures a [Store].
+type Option func(*Store)
+
+// WithLockTimeout sets how long an append waits for the chain lock before
+// it fails (default [DefaultLockTimeout]); a joined transaction holds the
+// lock until it ends, so a waiting appender fails rather than piles up.
+// Panics on zero or less, which would wait without limit.
+func WithLockTimeout(d time.Duration) Option {
+	if d < time.Millisecond {
+		panic("auditlog/postgres: WithLockTimeout needs at least a millisecond")
+	}
+	return func(s *Store) { s.lockTimeout = d }
 }
 
 // New returns a Store wrapping the given pool. Panics on a nil pool —
 // pool absence would surface at the first append as a generic nil-deref;
 // failing fast at construction keeps the misconfiguration obvious.
-func New(pool *pgxpool.Pool) *Store {
+func New(pool *pgxpool.Pool, opts ...Option) *Store {
 	if pool == nil {
 		panic("auditlog/postgres: New pool must not be nil")
 	}
-	return &Store{pool: pool}
+	s := &Store{pool: pool, lockTimeout: DefaultLockTimeout}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // AppendChained runs build inside a transaction that holds the
 // audit-chain advisory lock. Every chain writer (append and retention)
 // takes the same lock, so the tail read needs no row lock and the table
-// can be granted to application roles as INSERT/SELECT only.
+// can be granted to application roles as INSERT/SELECT only. A writer
+// waits for the lock at most the lock timeout ([WithLockTimeout]).
+//
+// When ctx carries a transaction from [WithTx] (the Logger passes it for
+// success events only), the event is appended inside it and commits or
+// rolls back with the caller's change. That transaction must be READ
+// COMMITTED, so the head read after the lock is the newest committed one;
+// another isolation level is refused. The chain lock is then held until
+// the caller's transaction ends, so the append must be its last statement
+// before COMMIT; a failed append aborts it.
 func (s *Store) AppendChained(ctx context.Context, build func(head auditlog.Event) (auditlog.Event, error)) error {
 	if s == nil || s.pool == nil {
 		return errors.New("auditlog/postgres: store not initialized")
@@ -74,22 +111,75 @@ func (s *Store) AppendChained(ctx context.Context, build func(head auditlog.Even
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if joined, ok := auditlog.Joined(ctx); ok {
+		tx, ok := joined.(pgx.Tx)
+		if !ok {
+			return fmt.Errorf("auditlog/postgres: the joined transaction is a %T, not a pgx.Tx", joined)
+		}
+		return s.appendJoined(ctx, tx, build)
+	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("auditlog/postgres: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := s.lock(ctx, tx); err != nil {
+		return err
+	}
+	if err := appendLocked(ctx, tx, build); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("auditlog/postgres: commit: %w", err)
+	}
+	return nil
+}
 
+// WithTx returns a child ctx carrying tx, so [auditlog.Logger.LogE] appends a
+// success event inside it (see [Store.AppendChained]).
+func WithTx(ctx context.Context, tx pgx.Tx) context.Context {
+	return auditlog.Join(ctx, tx)
+}
+
+// appendJoined appends inside the caller's READ COMMITTED transaction and
+// puts its lock_timeout back once the chain lock is held.
+func (s *Store) appendJoined(ctx context.Context, tx pgx.Tx, build func(head auditlog.Event) (auditlog.Event, error)) error {
+	var isolation, timeout string
+	if err := tx.QueryRow(ctx, "SELECT current_setting('transaction_isolation'), current_setting('lock_timeout')").Scan(&isolation, &timeout); err != nil {
+		return fmt.Errorf("auditlog/postgres: read the transaction's settings: %w", err)
+	}
+	if isolation != "read committed" {
+		return fmt.Errorf("%w: the joined transaction is %s", ErrNotReadCommitted, isolation)
+	}
+	if err := s.lock(ctx, tx); err != nil {
+		return err
+	}
+	auditlog.MarkChainHeld(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true)", timeout); err != nil {
+		return fmt.Errorf("auditlog/postgres: restore lock_timeout: %w", err)
+	}
+	return appendLocked(ctx, tx, build)
+}
+
+// lock takes the chain lock in tx, waiting at most the lock timeout.
+func (s *Store) lock(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true)", strconv.FormatInt(s.lockTimeout.Milliseconds(), 10)); err != nil {
+		return fmt.Errorf("auditlog/postgres: set lock_timeout: %w", err)
+	}
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", chainLockKey); err != nil {
 		return fmt.Errorf("auditlog/postgres: advisory lock: %w", err)
 	}
+	return nil
+}
 
+// appendLocked chains build's event onto the head and inserts it; tx holds
+// the chain lock.
+func appendLocked(ctx context.Context, tx pgx.Tx, build func(head auditlog.Event) (auditlog.Event, error)) error {
 	head, err := selectHead(ctx, tx)
 	if err != nil {
 		return err
 	}
-
 	event, err := build(head)
 	if err != nil {
 		return err
@@ -97,15 +187,7 @@ func (s *Store) AppendChained(ctx context.Context, build func(head auditlog.Even
 	if err := auditlog.ValidateEvent(event); err != nil {
 		return err
 	}
-
-	if err := insertEvent(ctx, tx, event); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("auditlog/postgres: commit: %w", err)
-	}
-	return nil
+	return insertEvent(ctx, tx, event)
 }
 
 // Query implements the [auditlog.Store] contract: returns events

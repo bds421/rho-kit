@@ -125,8 +125,18 @@ need a role that may create the trusted `pg_trgm` extension (or the extension
 already installed on the search_path). The index migration runs outside a
 transaction (`CREATE INDEX CONCURRENTLY`) and the backfill commits in batches,
 so appends keep running. `search_text` is not in the HMAC input; `RangeChain`
-compares it with the event's content, so an edited row fails `VerifyChain`. Use `LogE` when the originating action must fail if the audit
-append fails. `Log` is best-effort and reports drops through logs,
+compares it with the event's content, so an edited row fails `VerifyChain`.
+Use `LogE` when the originating action must fail if the audit append fails;
+to keep a success entry only when the change commits, pass
+`postgres.WithTx(ctx, tx)`: the event is appended inside that READ COMMITTED
+transaction (another isolation is refused), and the chain lock is held until
+it ends, so append as the last statement before COMMIT. A denied or failed
+event always appends on its own and stays when the change rolls back; log it
+before the success entry or outside the change: after a joined append it
+fails at once with `ErrChainHeld`. An
+append waits for the chain lock at most `postgres.WithLockTimeout` (5 s), and
+a unique index on `prev_hmac` refuses a fork; its migration stops on a chain
+that already forked. `Log` is best-effort and reports drops through logs,
 `WithDroppedCounter`, and `WithOnDrop`.
 
 Use `httpx/middleware/auditlog` for request-level HTTP audit capture. Configure
