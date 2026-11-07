@@ -1,60 +1,100 @@
 package main
 
 import (
-	"flag"
+	"encoding/json"
 	"fmt"
+	"io"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// policy holds the deadlines counted from when a fix is available. The
-// defaults: an actively exploited vulnerability (CISA KEV) 72 hours,
-// critical 7 days, high 30, medium 90; a low one ships with the next
-// release, so any release with a fix available is late.
+// policy holds the deadlines counted from when a fix is available and the
+// third-party components. The default deadlines: an actively exploited
+// vulnerability (CISA KEV) 72 hours, critical 7 days, high 30, medium, low
+// and one without a severity 90; a known exploited one a third-party component
+// inherited 14 days after the package's fix (inheritedKev).
 type policy struct {
-	exploited time.Duration
-	severity  map[string]time.Duration
+	exploited          time.Duration
+	inheritedExploited time.Duration
+	severity           map[string]time.Duration
+	thirdParty         []component
 }
 
-// unknownSeverity is how a vulnerability without a severity is held.
-const unknownSeverity = "medium"
-
 func defaultPolicy() policy {
+	day := 24 * time.Hour
 	return policy{
-		exploited: 72 * time.Hour,
+		exploited:          72 * time.Hour,
+		inheritedExploited: 14 * day,
 		severity: map[string]time.Duration{
-			"critical": 7 * 24 * time.Hour,
-			"high":     30 * 24 * time.Hour,
-			"medium":   90 * 24 * time.Hour,
-			"low":      0,
+			"critical": 7 * day,
+			"high":     30 * day,
+			"medium":   90 * day,
+			"low":      90 * day,
+			"unknown":  90 * day,
 		},
 	}
 }
 
-// register binds one flag per deadline to p, defaulting to its values.
-func (p *policy) register(flags *flag.FlagSet) map[string]*time.Duration {
-	flags.DurationVar(&p.exploited, "kev", p.exploited, "deadline for an actively exploited (CISA KEV) vulnerability")
-	set := map[string]*time.Duration{}
-	for _, s := range []string{"critical", "high", "medium", "low"} {
-		d := p.severity[s]
-		set[s] = &d
-		flags.DurationVar(set[s], s, d, "deadline for a "+s+" vulnerability")
-	}
-	return set
+// policyFile is a repository's policy (-policy): deadlines ("7d" or a Go
+// duration such as "72h") by "kev", "inheritedKev" and severity, and the
+// third-party components.
+type policyFile struct {
+	Deadlines  map[string]string `json:"deadlines"`
+	ThirdParty []component       `json:"thirdParty"`
 }
 
-// apply copies the parsed severity flags into p and refuses negative ones.
-func (p *policy) apply(set map[string]*time.Duration) error {
-	if p.exploited < 0 {
-		return fmt.Errorf("-kev must not be negative")
+// readPolicy returns the defaults with the file's deadlines and
+// components; an unknown key or deadline, and a component without a name
+// or without image, target or path, are refused. A component no report
+// holds is fine: a gate may scan only some images (one proxy build).
+func readPolicy(r io.Reader) (policy, error) {
+	p := defaultPolicy()
+	var file policyFile
+	dec := json.NewDecoder(r)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&file); err != nil {
+		return p, fmt.Errorf("policy: %w", err)
 	}
-	for s, d := range set {
-		if *d < 0 {
-			return fmt.Errorf("-%s must not be negative", s)
+	for name, value := range file.Deadlines {
+		d, err := parseDeadline(value)
+		if err != nil {
+			return p, fmt.Errorf("policy: deadline %s: %w", name, err)
 		}
-		p.severity[s] = *d
+		switch name {
+		case "kev":
+			p.exploited = d
+			continue
+		case "inheritedKev":
+			p.inheritedExploited = d
+			continue
+		}
+		if _, ok := p.severity[name]; !ok {
+			return p, fmt.Errorf("policy: deadline %q is none of kev, inheritedKev, critical, high, medium, low, unknown", name)
+		}
+		p.severity[name] = d
 	}
-	return nil
+	for i, c := range file.ThirdParty {
+		if err := c.validate(); err != nil {
+			return p, fmt.Errorf("policy: third-party component %d: %w", i+1, err)
+		}
+	}
+	p.thirdParty = file.ThirdParty
+	return p, nil
+}
+
+// parseDeadline reads "<n>d" as n days, anything else as a Go duration.
+func parseDeadline(value string) (time.Duration, error) {
+	d, err := time.ParseDuration(value)
+	if days, ok := strings.CutSuffix(value, "d"); ok {
+		var n int
+		n, err = strconv.Atoi(days)
+		d = time.Duration(n) * 24 * time.Hour
+	}
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("%q is not \"<days>d\" or a duration of at least zero", value)
+	}
+	return d, nil
 }
 
 func (p policy) deadline(severity string, exploited bool) time.Duration {
@@ -64,7 +104,18 @@ func (p policy) deadline(severity string, exploited bool) time.Duration {
 	if d, ok := p.severity[strings.ToLower(severity)]; ok {
 		return d
 	}
-	return p.severity[unknownSeverity]
+	return p.severity["unknown"]
+}
+
+// componentOf is the third-party component a finding is in, empty when we
+// own it.
+func (p policy) componentOf(f finding) string {
+	for _, c := range p.thirdParty {
+		if c.holds(f) {
+			return c.Name
+		}
+	}
+	return ""
 }
 
 // rank orders severities, highest first.

@@ -1,5 +1,44 @@
 # Changelog
 
+## cmd/kit-vulngate v2.39.0 — 2026-11-07
+
+- **feat(cmd/kit-vulngate): third-party components and the previous
+  release.** `-policy` names a repository's third-party components: an
+  upstream image by repository (`"image"`), or a binary someone else
+  releases inside an image of ours by report name and file (`"target"`,
+  `"path"`, `path.Match` patterns). What no component holds is ours. A
+  component no report holds is fine (a gate may scan one image only).
+- **feat(cmd/kit-vulngate): a stateful baseline.** `-baseline` takes the
+  previous release's third-party findings (component, package and
+  vulnerability ID or alias, not the version), each `inherited` or `new`;
+  `-record` with `-release` writes this run's when the gate passes. An
+  inherited finding is tracked, as its deadline counts from when the
+  component ships the fix, which the reports cannot tell. Any other is
+  new: held to its deadline from the package's fix, and recorded with its
+  first day and due date, which every later gate holds it to until it is
+  gone; recording never makes it inherited. `-record` needs `-baseline`,
+  so a missing baseline never turns findings inherited; only the first
+  baseline (`-report -record -initial`, of what is deployed) or a reviewed
+  edit of the committed file marks an entry inherited. Without `-baseline`
+  every third-party finding is new, as strict as before.
+- **feat(cmd/kit-vulngate): an inherited known exploited finding fails**
+  once `inheritedKev` (default 14 days) has passed since the package's
+  fix; one whose fix date is unknown fails at once.
+- **feat(cmd/kit-vulngate): the baseline names its release.** The gate
+  prints it; `-previous` refuses a baseline of neither the previous
+  release nor this one (a rerun).
+- **feat(cmd/kit-vulngate): `-report` lists what is deployed** by the same
+  rules, with each finding's owner (`own` or the component) and deadline,
+  and exits 1 when one is past its deadline, for a monitor to notify.
+- **feat(cmd/kit-vulngate): deadlines come from the policy file**
+  (`"deadlines": {"kev": "72h", "inheritedKev": "14d", "critical": "7d",
+  …, "unknown": "90d"}`); an unknown key or a negative deadline exits 2.
+
+Breaking:
+- A low finding is held to 90 days, not to the next release.
+- `-kev`, `-critical`, `-high`, `-medium` and `-low` are gone (exit 2);
+  set the deadlines in the `-policy` file.
+
 ## v2.38.0 — 2026-11-06
 
 - **feat(httpx/middleware/ratelimit): KeyedLimiter.AllowN takes n requests
