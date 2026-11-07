@@ -14,9 +14,12 @@ type report struct {
 		Vulnerability          vulnerability   `json:"vulnerability"`
 		RelatedVulnerabilities []vulnerability `json:"relatedVulnerabilities"`
 		Artifact               struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
-			Type    string `json:"type"`
+			Name      string `json:"name"`
+			Version   string `json:"version"`
+			Type      string `json:"type"`
+			Locations []struct {
+				Path string `json:"path"`
+			} `json:"locations"`
 		} `json:"artifact"`
 	} `json:"matches"`
 	Source struct {
@@ -43,8 +46,17 @@ type vulnerability struct {
 // finding is one vulnerable package in one scanned target.
 type finding struct {
 	Target, ID, Severity, Package, Version, FixedIn string
+	// Aliases are the IDs of the related vulnerabilities (a CVE for a
+	// GHSA): the same finding under another name.
+	Aliases []string
+	// Paths are the files the package was found in (a Go binary, the apk
+	// database).
+	Paths []string
 	// Image is the scanned image, when the report or the caller names it.
-	Image     image
+	Image image
+	// Component is the third-party component the finding is in; empty for
+	// what we own.
+	Component string
 	Exploited bool
 	// FixedSince is when the earliest fix was published; zero when there
 	// is none or its date is unknown.
@@ -64,7 +76,11 @@ func readReport(r io.Reader, target string, im image) ([]finding, error) {
 	for _, m := range rep.Matches {
 		v := m.Vulnerability
 		f := finding{Target: target, Image: im, ID: v.ID, Severity: v.Severity, Package: m.Artifact.Name, Version: m.Artifact.Version, Exploited: len(v.KnownExploited) > 0}
+		for _, l := range m.Artifact.Locations {
+			f.Paths = append(f.Paths, l.Path)
+		}
 		for _, related := range m.RelatedVulnerabilities {
+			f.Aliases = append(f.Aliases, related.ID)
 			if rank(related.Severity) > rank(f.Severity) {
 				f.Severity = related.Severity
 			}

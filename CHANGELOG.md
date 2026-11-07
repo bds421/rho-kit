@@ -1,5 +1,34 @@
 # Changelog
 
+## cmd/kit-vulngate v2.38.1 — 2026-11-07
+
+- **feat(cmd/kit-vulngate): third-party components and the previous
+  release.** `-policy` names a repository's third-party components: an
+  upstream image by repository (`"image"`), or a binary someone else
+  releases inside an image of ours by report name and file
+  (`"target"`, `"path"`, `path.Match` patterns). What no component holds
+  is ours. `-baseline` takes the previous release's third-party findings
+  (component, package and vulnerability ID or alias, not the version), as
+  `-record` writes them when a gate passes. The gate fails a fixed finding
+  past its deadline in what we own, or in a component whose previous
+  release did not carry it; one the previous release carried is tracked,
+  its deadline counting from when the component ships the fix, which the
+  reports cannot tell. Without `-baseline` every third-party finding is
+  new, so the gate is as strict as before.
+- **feat(cmd/kit-vulngate): `-report` lists what is deployed.** Every
+  finding with its owner (`own` or the component) and its deadline; every
+  third-party finding is tracked, and it exits 1 only when one of ours is
+  past its deadline, for a monitor to notify. `-record` then writes the
+  deployed release's baseline.
+- **feat(cmd/kit-vulngate): deadlines come from the policy file**
+  (`"deadlines": {"kev": "72h", "critical": "7d", …, "unknown": "90d"}`);
+  an unknown key or a negative deadline exits 2.
+
+Breaking:
+- A low finding is held to 90 days, not to the next release.
+- `-kev`, `-critical`, `-high`, `-medium` and `-low` are gone; set the
+  deadlines in the `-policy` file.
+
 ## v2.38.0 — 2026-11-06
 
 - **feat(httpx/middleware/ratelimit): KeyedLimiter.AllowN takes n requests

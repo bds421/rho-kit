@@ -20,13 +20,17 @@ func parseImage(ref string) (image, bool) {
 	if m == nil {
 		return image{}, false
 	}
-	name := m[1]
+	return image{repository: repository(m[1]), digest: m[2]}, true
+}
+
+// repository is name[:tag] without its tag, Docker Hub's registry and
+// its library/ namespace.
+func repository(name string) string {
 	if slash := strings.LastIndex(name, "/"); strings.LastIndex(name, ":") > slash {
 		name = name[:strings.LastIndex(name, ":")]
 	}
 	for _, prefix := range []string{"index.docker.io/", "registry-1.docker.io/", "docker.io/"} {
 		name = strings.TrimPrefix(name, prefix)
 	}
-	name = strings.TrimPrefix(name, "library/")
-	return image{repository: name, digest: m[2]}, true
+	return strings.TrimPrefix(name, "library/")
 }
