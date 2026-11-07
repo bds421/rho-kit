@@ -17,8 +17,9 @@
   platform's manifest is current while the tag's index lists it. Exit 2
   for a `FROM` or image without tag and digest, a `FROM ${X}` whose `ARG`
   has no pinned default, an advisory for a digest nothing pins or that the
-  tag still has, and a token realm that is not the registry's own scheme
-  and domain (https). Anonymous pulls only; standard library only.
+  tag still has, and a token realm that is not https on the registry's
+  own host or its known auth host (auth.docker.io for Docker Hub).
+  Anonymous pulls only; standard library only.
 
 ## cmd/kit-vulngate v2.39.0 — 2026-11-07
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -81,9 +82,10 @@ func fakeRegistry(t *testing.T, img image) *registry {
 			http.NotFound(w, r)
 		}
 	})
-	srv = httptest.NewServer(mux)
+	srv = httptest.NewTLSServer(mux)
 	t.Cleanup(srv.Close)
 	reg := newRegistry()
+	reg.client = srv.Client()
 	reg.hosts = map[string]string{"docker.io": srv.URL, "registry.example": srv.URL}
 	reg.hub = srv.URL + "/hub"
 	return reg
@@ -210,15 +212,34 @@ func TestAPlatformManifestPinIsComparedWithTheIndex(t *testing.T) {
 	}
 }
 
-// A token realm must use the registry's scheme and domain.
+// A token realm must be https on the registry's own host or its known
+// auth host; a challenge elsewhere stops the run.
 func TestATokenRealmElsewhereIsRefused(t *testing.T) {
 	file := dockerfile(t, "FROM registry.example/team/base:1.0@"+oldDigest+"\n")
-	for name, realm := range map[string]string{
-		"another domain": "http://auth.example.invalid/token",
-		"another scheme": "https://127.0.0.1/token",
+	if code, out := basepin(t, fakeRegistry(t, image{digest: oldDigest, realm: "https://auth.example.invalid/token"}), file); code != 2 || !strings.Contains(out, "token realm") {
+		t.Errorf("exit %d\n%s", code, out)
+	}
+	for _, c := range []struct {
+		realm, endpoint string
+		allowed         bool
+	}{
+		{"https://auth.docker.io/token", "https://registry-1.docker.io", true},
+		{"https://gcr.io/v2/token", "https://gcr.io", true},
+		{"https://evil.docker.io/token", "https://registry-1.docker.io", false},
+		{"https://auth.example.co.uk/token", "https://registry.example.co.uk", false},
+		{"https://127.0.0.1/token", "https://registry-1.docker.io", false},
+		{"https://[::1]/token", "https://gcr.io", false},
+		{"https://127.0.0.1:5000/token", "https://127.0.0.1:5000", true},
+		{"https://127.0.0.1:6000/token", "https://127.0.0.1:5000", false},
+		{"http://gcr.io/v2/token", "https://gcr.io", false},
+		{"http://auth.docker.io/token", "https://registry-1.docker.io", false},
+		{"https://auth.docker.io:8443/token", "https://registry-1.docker.io", false},
+		{"https://u:p@gcr.io/v2/token", "https://gcr.io", false},
 	} {
-		if code, out := basepin(t, fakeRegistry(t, image{digest: oldDigest, realm: realm}), file); code != 2 || !strings.Contains(out, "token realm") {
-			t.Errorf("%s: exit %d\n%s", name, code, out)
+		realm, _ := url.Parse(c.realm)
+		endpoint, _ := url.Parse(c.endpoint)
+		if got := realmAllowed(realm, endpoint); got != c.allowed {
+			t.Errorf("realm %s for %s: allowed %v", c.realm, c.endpoint, got)
 		}
 	}
 }

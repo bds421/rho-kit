@@ -79,8 +79,8 @@ func (r *registry) token(p pin, challenge string) error {
 	}
 	realm, err := url.Parse(values["realm"])
 	endpoint, _ := url.Parse(r.endpoint(p.Host))
-	if err != nil || realm.Scheme != endpoint.Scheme || !sameFamily(realm.Hostname(), endpoint.Hostname()) {
-		return fmt.Errorf("%s: token realm %q is not https on the registry's own domain", p.Host, values["realm"])
+	if err != nil || !realmAllowed(realm, endpoint) {
+		return fmt.Errorf("%s: token realm %q is not https on the registry or its known auth host", p.Host, values["realm"])
 	}
 	q := url.Values{"service": {values["service"]}, "scope": {"repository:" + p.Repository + ":pull"}}
 	resp, err := r.client.Get(values["realm"] + "?" + q.Encode())
@@ -153,14 +153,23 @@ func (r *registry) platforms(p pin, digest string) []string {
 	return out
 }
 
-// sameFamily tells whether two hosts share their last two labels
-// (registry-1.docker.io and auth.docker.io), or are the same.
-func sameFamily(a, b string) bool {
-	if a == b {
+// authHosts names the token host of a registry endpoint whose realm is
+// not on the endpoint itself (gcr.io, ghcr.io, quay.io answer on their own
+// host).
+var authHosts = map[string]string{"registry-1.docker.io": "auth.docker.io"}
+
+// realmAllowed keeps a challenge from steering the tool to another host:
+// the realm is https on the endpoint's own host and port or on its known
+// auth host.
+func realmAllowed(realm, endpoint *url.URL) bool {
+	if realm.Scheme != "https" || realm.User != nil {
+		return false
+	}
+	if strings.EqualFold(realm.Host, endpoint.Host) {
 		return true
 	}
-	la, lb := strings.Split(a, "."), strings.Split(b, ".")
-	return len(la) >= 2 && len(lb) >= 2 && la[len(la)-2] == lb[len(lb)-2] && la[len(la)-1] == lb[len(lb)-1]
+	auth, ok := authHosts[strings.ToLower(endpoint.Hostname())]
+	return ok && realm.Port() == "" && strings.EqualFold(realm.Hostname(), auth)
 }
 
 func (r *registry) hubPushed(p pin, digest string) time.Time {
