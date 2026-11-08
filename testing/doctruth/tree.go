@@ -72,7 +72,8 @@ var tableCell = regexp.MustCompile("`([^`]+)`")
 
 // tablePaths reads a package table: a row's first cell names a package
 // (`internal/a/b`), siblings beside it (`, c` is internal/a/c) and braces
-// several at once (`internal/a/{b,c}`).
+// several at once (`internal/a/{b,c}`). A template cell (`<`, `*`) and a
+// row without a closed cell name nothing.
 func tablePaths(section string) [][2]string {
 	var paths [][2]string
 	for _, line := range strings.Split(section, "\n") {
@@ -80,11 +81,17 @@ func tablePaths(section string) [][2]string {
 			continue
 		}
 		cells := tableCell.FindAllStringSubmatch(strings.SplitN(line[1:], "|", 2)[0], -1)
+		if len(cells) == 0 || strings.ContainsAny(cells[0][1], "<*") {
+			continue
+		}
 		first := cells[0][1]
 		for _, p := range expandBraces(first) {
 			paths = append(paths, [2]string{p, ""})
 		}
 		for _, c := range cells[1:] {
+			if strings.ContainsAny(c[1], "<*") {
+				continue
+			}
 			paths = append(paths, [2]string{path.Dir(first) + "/" + c[1], ""})
 		}
 	}

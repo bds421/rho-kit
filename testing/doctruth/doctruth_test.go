@@ -120,3 +120,11 @@ func TestAMissingSectionIsAnError(t *testing.T) {
 		t.Fatal("no error")
 	}
 }
+
+func TestATableRowWithoutAPathNamesNothing(t *testing.T) {
+	section := "| `internal/a |\n| `internal/<module>` | a template |\n| `cmd/*`, `<x>` | commands |\n| `internal/b`, `*` | b |\n"
+	got := tablePaths(section)
+	if !slices.Equal(got, [][2]string{{"internal/b", ""}}) {
+		t.Fatal(got)
+	}
+}
