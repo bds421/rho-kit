@@ -801,14 +801,7 @@ func (l *Logger) Verify(ctx context.Context, v Verification) (Head, error) {
 			return Head{}, ErrLoggerClosed
 		}
 	}
-	verifier, err := newChainVerifier(keys, sealing, v)
-	if err != nil {
-		return Head{}, err
-	}
-	if err := l.store.RangeChain(ctx, verifier.step); err != nil {
-		return Head{}, err
-	}
-	return verifier.finish()
+	return verifyStore(ctx, l.store, keys, sealing, v)
 }
 
 // revealChainKeys copies every chain key out of its [secret.String] in

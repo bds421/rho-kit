@@ -54,7 +54,7 @@ func TestRollingRotation_OldReplicaFollowsTheNewKey(t *testing.T) {
 	for name, verifier := range map[string]*Logger{"old replica": old, "new replica": rotated} {
 		head, err := verifier.Verify(ctx, Verification{})
 		require.NoError(t, err, name)
-		assert.Equal(t, Head{HMAC: events[7].HMAC, Events: 8, KeyID: "2"}, head, name)
+		assert.Equal(t, Head{HMAC: events[7].HMAC, Events: 8, KeyID: "2", At: events[7].Timestamp}, head, name)
 	}
 	_, err := VerifyChainKeys(events, bothKeys, Verification{})
 	require.NoError(t, err)

@@ -670,21 +670,33 @@ stops appends the same way; whoever can write the store can already stall
 appends through the chain lock. Replicas on kit versions without this check
 still break the chain: upgrade every replica before rotating.
 
-**Head anchor.** `Logger.Verify(ctx, Verification{Watermark, Anchor})`
+**Head anchor.** `Logger.Verify(ctx, Verification{Watermark, Removed,
+PrunedBefore, Anchor})` (or `VerifyStore` with the chain keys alone)
 returns the `Head` it verified: the newest event's HMAC, its position
-(`Events`) and the ID of the key that sealed it. Kept whole where store
-writers cannot reach it and passed back as `Anchor`, the chain must still
-contain that event, sealed by that key and, without a watermark, at that
-position, and no event from it on may carry an older key. When retention
-removed exactly up to the anchored event, its HMAC is the watermark: the
-anchor then stands for the watermark, and every event after it still owes
-the anchored key or a newer one. When retention removed the anchored event
-and later ones, verification returns `ErrAnchorPruned` (not
-`ErrChainBroken`) as long as no remaining event carries a key older than
-the anchored one. The head of an empty chain names the sealing key, the
-one that seals the next event. With a watermark the position is not
-checked, since retention shifts positions; the database sequence is
-covered by no HMAC either.
+(`Events`), the ID of the key that sealed it and the latest write time
+of the events up to it (`At`, so a backdated newest event cannot make the
+head look older than what came before it); `MarshalText` writes it as one word, `events:keyID:hmac:at`, and
+`UnmarshalText` reads it back. Kept whole where
+store writers cannot reach it and passed back as `Anchor`, the chain must
+still contain that event, sealed by that key and at that position, and no
+event from it on may carry an older key. Past a watermark the position is
+checked only with `Removed`, the number of events retention removed in
+all, kept with the watermark: positions then count from the chain's first
+event ever. When retention removed exactly up to the anchored event, its
+HMAC is the watermark: the anchor then stands for the watermark (at
+position `Removed`), and every event after it still owes the anchored key
+or a newer one. When the anchored event is gone past a watermark,
+verification returns `ErrAnchorPruned` (not `ErrChainBroken`) as long as
+no remaining event carries a key older than the anchored one and, with
+`Removed`, the anchor's position is among the removed events; an anchor
+past them was cut with the tail and fails with `ErrChainBroken`. With
+`PrunedBefore`, the earlier of the recorded retention cut and now minus
+the retention period, a gone anchor also needs its `At` before it: one
+without a time, or written since, fails with `ErrChainBroken`, so a sweep
+within the retention period (a forged or mis-made record, even sealed with
+the retention run's key) does not pass as retention. The head
+of an empty chain names the sealing key, the one that seals the next
+event. The database sequence is covered by no HMAC.
 
 **What is guaranteed.**
 
@@ -692,8 +704,10 @@ covered by no HMAC either.
   event between the retention watermark and the newest event without
   verification failing, except removing the newest events (truncating the
   tail): without an anchor that is never detected; with one, removing the
-  anchored event or any before it is, unless the watermark is moved with it,
-  which looks the same as retention (the store writer owns the watermark).
+  anchored event or any before it is, unless the watermark (and `Removed`,
+  if given) is moved with it, which looks the same as retention. Keep the
+  watermark and `Removed` where the store writer cannot change them (sealed
+  with a key only the retention run holds) to rule that out.
 - Without an anchor, verification proves only that the stored events form
   one chain under the listed keys with the rotation rules: whoever holds
   any listed key can replace the tail from any point sealed by that key
@@ -708,10 +722,11 @@ covered by no HMAC either.
   so the retired key is older than the anchored one.
 - An anchored event that retention has since removed together with later
   events fails verification with `ErrAnchorPruned`: the remaining chain
-  verified from the watermark, but the anchor no longer proves the tail,
-  since cutting the newest events including the anchored one looks the
-  same. Verify with the anchor before every retention run and keep the new
-  head, so the kept anchor stays newer than the retention cut.
+  verified from the watermark, but the anchor no longer proves the tail.
+  Without `Removed`, cutting the newest events including the anchored one
+  looks the same; with it, a cut past the removed events is
+  `ErrChainBroken`. Verify with the anchor before every retention run and
+  keep the new head, so the kept anchor stays newer than the retention cut.
 
 **Canonical encoding.**
 [`canonicalEvent`](../../observability/auditlog/chain.go) serialises

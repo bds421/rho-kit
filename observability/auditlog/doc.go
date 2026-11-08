@@ -75,14 +75,19 @@
 // Keep all of it where whoever writes the store cannot change it, and pass
 // it back as [Verification.Anchor]: the chain must still contain that event,
 // sealed by that key, and no event from it on may carry an older key, so a
-// truncated or rewritten tail fails with [ErrChainBroken]. When retention
+// truncated or rewritten tail fails with [ErrChainBroken]. [Head.MarshalText]
+// writes the head as one word for operators to keep. When retention
 // removed exactly up to the anchored event, the watermark stands for it and
 // the same key rule holds. When retention removed it and later events too,
 // verification fails with [ErrAnchorPruned]: the events from the watermark
-// on verified, but the anchor proves nothing any more, since removing the
-// newest events including the anchored one looks the same (an event with a
-// key older than the anchored one still fails with [ErrChainBroken]). Verify
-// with the anchor before every retention run. Without an anchor,
+// on verified, but the anchor proves nothing any more. Removing the newest
+// events including the anchored one looks the same unless
+// [Verification.Removed] gives how many events retention removed in all:
+// then an anchor past those fails with [ErrChainBroken], as does an event
+// with a key older than the anchored one and, with
+// [Verification.PrunedBefore], an anchor written since the retention cut. Verify with the anchor before
+// every retention run. Tooling that holds only the chain keys verifies
+// with [VerifyStore]. Without an anchor,
 // verification shows only that the stored events form one chain under the
 // listed keys: removing the newest events goes unnoticed, and whoever holds
 // any listed key can replace the tail from a point that key sealed (a
