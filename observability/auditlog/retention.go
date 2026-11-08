@@ -2,101 +2,52 @@ package auditlog
 
 import (
 	"context"
-	"encoding/hex"
-	"log/slog"
+	"errors"
 	"time"
-
-	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
-// RetentionStore extends Store with the ability to delete old events.
+// RetentionStore is a [Store] that removes the oldest events by a [Cut] and
+// keeps the sealed [RetentionRecord] of what it removed.
 type RetentionStore interface {
 	Store
-	// DeleteBefore removes a contiguous head of the seq-ordered chain
-	// consisting of events older than before. It never deletes interior
-	// rows (which would permanently break chain verification with no
-	// watermark recovery). Returns the number of deleted events and the
-	// HMAC of the newest deleted event (the watermark for
-	// [VerifyChainFrom]). Watermark is nil/empty when nothing was deleted.
-	//
-	// Note: a backfilled event with an old occurred_at but a high seq is
-	// NOT deleted until it becomes part of the contiguous head — this is
-	// intentional so retention cannot create interior chain holes.
-	DeleteBefore(ctx context.Context, before time.Time) (deleted int64, watermark []byte, err error)
+	// RetentionRecord returns the record, zero when nothing was removed
+	// yet, or [ErrRecordUnsealed] when its seal does not hold under key.
+	RetentionRecord(ctx context.Context, key []byte) (RetentionRecord, error)
+	// ApplyCut removes the events c names, in one transaction with the
+	// record that then replaces the stored one, sealed with key; it
+	// returns how many it removed. It refuses with [ErrCutRefused] unless
+	// the oldest events are still exactly those c names and one stays, and
+	// with [ErrRetentionTooShort] when c.Before is less than minimum
+	// before now. The stored record must hold under key.
+	ApplyCut(ctx context.Context, c Cut, key []byte, minimum time.Duration, now time.Time) (int64, error)
 }
 
-// RetentionOption configures [RetentionJob].
-type RetentionOption func(*retentionJobConfig)
+// ErrNotRetentionStore is returned by [Logger.Prune] when the Logger's
+// store cannot remove events.
+var ErrNotRetentionStore = errors.New("auditlog: the store is no RetentionStore")
 
-type retentionJobConfig struct {
-	// onWatermark, when non-nil, is invoked with the HMAC of the newest
-	// deleted event after a successful non-empty prune. Operators should
-	// persist this value and pass it to [Logger.VerifyChainFrom].
-	onWatermark func([]byte)
-}
-
-// WithRetentionWatermarkSink registers a callback that receives the
-// retention watermark (HMAC of the newest deleted event) after each
-// non-empty DeleteBefore. Use it to persist the watermark so
-// [VerifyChainFrom] can re-anchor the chain after pruning.
-func WithRetentionWatermarkSink(fn func(watermark []byte)) RetentionOption {
-	if fn == nil {
-		panic("auditlog: WithRetentionWatermarkSink requires non-nil callback")
+// Prune is retention for an installation whose one role holds the chain
+// keys and may remove events: it verifies the chain from the sealed record,
+// computes the cut of what was written more than retention before now, and
+// has the Logger's store apply it. Retention below minimum is refused with
+// [ErrRetentionTooShort]. To keep the chain keys away from the role that
+// removes events, compute and sign the cut with one role and apply it with
+// the other ([Cut.Encode], [DecodeCut], [RetentionStore.ApplyCut]).
+func (l *Logger) Prune(ctx context.Context, key []byte, retention, minimum time.Duration, now time.Time) (int64, error) {
+	store, ok := l.store.(RetentionStore)
+	if !ok {
+		return 0, ErrNotRetentionStore
 	}
-	return func(c *retentionJobConfig) { c.onWatermark = fn }
-}
-
-// RetentionJob returns a function suitable for cron scheduling that deletes
-// audit events older than the retention period. The function logs the number
-// of deleted events and the watermark HMAC (hex) needed by
-// [VerifyChainFrom].
-//
-// Interaction with chain verification: deleting the oldest events leaves the
-// new head with a non-empty PrevHMAC (it still links to a now-deleted
-// record). The genesis-anchored [VerifyChain] / [Logger.VerifyChain] reject
-// such a chain with [ErrChainBroken]. Operators who run retention AND rely on
-// tamper-evidence must verify with the retention-aware [VerifyChainFrom] /
-// [Logger.VerifyChainFrom], passing the HMAC of the last-deleted event as the
-// watermark. Persist that watermark via [WithRetentionWatermarkSink] (or from
-// the job's log line) alongside the surviving records when the retention
-// sweep runs.
-func RetentionJob(store RetentionStore, retention time.Duration, logger *slog.Logger, opts ...RetentionOption) func(ctx context.Context) error {
-	if store == nil {
-		panic("auditlog: RetentionJob requires a non-nil store")
+	if retention <= 0 || retention < minimum {
+		return 0, ErrRetentionTooShort
 	}
-	if retention <= 0 {
-		panic("auditlog: RetentionJob requires a positive retention duration")
+	record, err := store.RetentionRecord(ctx, key)
+	if err != nil {
+		return 0, err
 	}
-	if logger == nil {
-		logger = slog.Default()
+	c, err := l.ComputeCut(ctx, record.Verification(retention, minimum, now), now.Add(-retention), now)
+	if err != nil {
+		return 0, err
 	}
-	cfg := retentionJobConfig{}
-	for _, opt := range opts {
-		if opt == nil {
-			panic("auditlog: RetentionJob option must not be nil")
-		}
-		opt(&cfg)
-	}
-	return func(ctx context.Context) error {
-		cutoff := time.Now().Add(-retention)
-		deleted, watermark, err := store.DeleteBefore(ctx, cutoff)
-		if err != nil {
-			logger.Error("audit retention cleanup failed",
-				redact.Error(err),
-				"cutoff", cutoff,
-			)
-			return err
-		}
-		if deleted > 0 {
-			logger.Info("audit retention cleanup completed",
-				"deleted", deleted,
-				"cutoff", cutoff,
-				"watermark_hmac", hex.EncodeToString(watermark),
-			)
-			if cfg.onWatermark != nil && len(watermark) > 0 {
-				cfg.onWatermark(append([]byte(nil), watermark...))
-			}
-		}
-		return nil
-	}
+	return store.ApplyCut(ctx, c, key, minimum, now)
 }

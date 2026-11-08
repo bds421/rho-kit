@@ -34,31 +34,15 @@ func TestStore_NilReceiverReturnsError(t *testing.T) {
 	_, err = s.LastHMAC(ctx)
 	assert.Error(t, err)
 
-	_, _, err = s.DeleteBefore(ctx, time.Now())
+	_, err = s.RetentionRecord(ctx, nil)
+	assert.Error(t, err)
+
+	_, err = s.ApplyCut(ctx, auditlog.Cut{}, nil, 0, time.Now())
 	assert.Error(t, err)
 }
 
-func TestStore_DeleteBeforeNilPoolReturnsError(t *testing.T) {
-	s := &Store{pool: nil}
-	n, _, err := s.DeleteBefore(context.Background(), time.Now())
-	assert.Error(t, err)
-	assert.Zero(t, n)
-}
-
-func TestStore_DeleteBeforeHonorsCancelledContext(t *testing.T) {
-	s := &Store{pool: nil}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	n, _, err := s.DeleteBefore(ctx, time.Now())
-	// nil pool short-circuits first; either way DeleteBefore must not panic
-	// and must surface a non-nil error with a zero count.
-	assert.Error(t, err)
-	assert.Zero(t, n)
-}
-
-// TestStore_SatisfiesRetentionStore is a compile-time guard mirrored as a
-// test so the documented auditlog.RetentionJob(store, ...) wiring keeps
-// working with the production *Store.
+// TestStore_SatisfiesRetentionStore keeps Logger.Prune working over the
+// production *Store.
 func TestStore_SatisfiesRetentionStore(t *testing.T) {
 	var _ auditlog.RetentionStore = (*Store)(nil)
 }

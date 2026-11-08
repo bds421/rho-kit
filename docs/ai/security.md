@@ -114,7 +114,10 @@ logger := auditlog.New(store,
     auditlog.WithCursorKeys(cursorKey2, cursorKey1), // drop cursorKey1 once old cursors expired
 )
 _ = logger.RecordRotation(ctx)
-head, err := logger.Verify(ctx, auditlog.Verification{Watermark: watermark, Removed: removed, PrunedBefore: cut, Anchor: lastHead})
+record, err := store.RetentionRecord(ctx, retentionKey) // sealed by the sweeps (Logger.Prune or ApplyCut)
+v := record.Verification(period, minimum, time.Now())
+v.Anchor = lastHead
+head, err := logger.Verify(ctx, v)
 // keep the whole head (head.MarshalText: events:keyID:hmac:at) as the next anchor, out of reach of whoever writes the store
 ```
 
@@ -127,12 +130,15 @@ may carry a key older than the anchored one: take an anchor right
 after every rotation, and verify with the anchor before every retention run:
 once retention removed the anchored event and later ones, verification
 returns `auditlog.ErrAnchorPruned`, since the anchor no longer proves the
-tail. Pass `Removed`, the number of events retention removed in all, kept
-with the watermark out of the store writer's reach: positions then count
-from the first event ever, and an anchor past the removed events that is
-gone fails with `auditlog.ErrChainBroken` instead, as a cut tail. Pass
-`PrunedBefore` (the earlier of the recorded retention cut and now minus the
-retention period) so a gone anchor written since fails the same way.
+tail. The sealed `auditlog.RetentionRecord` gives the watermark, `Removed`
+(positions then count from the first event ever, and a gone anchor past the
+removed events fails with `auditlog.ErrChainBroken`, as a cut tail) and
+`PrunedBefore` (the earlier of the recorded cut and now minus the longer of
+period and minimum, so a gone anchor written since fails the same way).
+Retention runs as `logger.Prune(ctx, retentionKey, period, minimum, now)`
+where one role holds the chain keys and may delete, or as `ComputeCut` plus
+`Cut.Encode` in the verifying role and `DecodeCut` plus `ApplyCut` in the
+removing one.
 Operator tooling that holds only the chain keys verifies with
 `auditlog.VerifyStore`. Keep a retired chain key listed while events it
 sealed are kept.

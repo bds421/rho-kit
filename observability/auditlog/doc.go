@@ -133,9 +133,20 @@
 //
 // # Retention
 //
-// Use [RetentionJob] with the cron scheduler to clean up old events.
-// In a bridge-module app, fetch the scheduler from infra:
+// Retention removes the oldest contiguous events written before a cut and
+// keeps a [RetentionRecord] of what it removed, sealed with a retention key
+// the caller provides, so the rest of the chain verifies from its
+// watermark and a removed anchor is told from a cut tail
+// ([RetentionRecord.Verification]). The caller chooses the period and its
+// minimum. With one role that holds the chain keys and may remove events,
+// schedule [Logger.Prune] over a [RetentionStore]:
 //
-//	cron.Scheduler(infra).Add("audit-retention", "@daily",
-//	    auditlog.RetentionJob(store, 365*24*time.Hour, logger))
+//	removed, err := logger.Prune(ctx, retentionKey, period, minimum, time.Now())
+//
+// To keep the chain keys from the role that removes events, a verifying
+// role runs [ComputeCut] and signs it ([Cut.Encode], Ed25519 through
+// [NewEd25519CutSigner] or a [CutSigner] of its own); the removing role
+// holds only the public key and the retention key, reads it back with
+// [DecodeCut] and applies it with [RetentionStore.ApplyCut], which removes
+// the events only while they are still exactly the ones the cut names.
 package auditlog

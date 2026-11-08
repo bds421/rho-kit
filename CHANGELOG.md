@@ -1,5 +1,33 @@
 # Changelog
 
+## observability v2.43.0, observability/auditlog/postgres v2.43.0 — 2026-11-09
+
+- **feat(observability/auditlog): one retention mechanism with a sealed
+  record.** `ComputeCut` (and `Logger.ComputeCut`) verifies the chain and
+  returns the `Cut` of the oldest contiguous events written before a given
+  time; the newest event always stays. `Cut.Encode` / `DecodeCut` sign it
+  for the role that removes events (`CutSigner` / `CutVerifier`, Ed25519
+  through `NewEd25519CutSigner` / `NewEd25519CutVerifier`, a lifetime the
+  caller sets). `RetentionRecord{Watermark, Removed, PrunedBefore,
+  PrunedAt}` is sealed with a retention key the caller provides;
+  `RetentionRecord.Verification(period, minimum, now)` turns it into the
+  `Verification` to verify with. `Logger.Prune` is the one-role path:
+  verify from the record, cut, apply. Retention below the caller's minimum
+  fails with `ErrRetentionTooShort`, a record without its seal with
+  `ErrRecordUnsealed`, a cut that no longer matches with `ErrCutRefused`.
+- **feat(observability/auditlog): past a watermark the first remaining
+  event must not be older than `Verification.PrunedBefore`.**
+- **feat(observability/auditlog/postgres): `Store.ApplyCut` and
+  `Store.RetentionRecord`.** ApplyCut removes a cut and replaces the sealed
+  record in `audit_log_retention` (migration `20261109000001`) in one
+  transaction, under the chain lock and with the rows locked, and joins a
+  `WithTx` transaction.
+
+Breaking: `RetentionStore` is `RetentionRecord` plus `ApplyCut`;
+`Store.DeleteBefore`, `RetentionJob` and `WithRetentionWatermarkSink` are
+gone, since they removed events without a record the chain could verify
+from. Schedule `Logger.Prune`, or `ComputeCut` and `ApplyCut` in two roles.
+
 ## observability v2.42.0 — 2026-11-08
 
 - **feat(observability/auditlog): `Verification.Removed` tells a pruned

@@ -14,9 +14,16 @@ import (
 type MemoryStore struct {
 	mu     sync.RWMutex
 	events []Event
+	// record and seal are the retention record and its seal; seal is nil
+	// while nothing was removed.
+	record RetentionRecord
+	seal   []byte
 }
 
-var _ Store = (*MemoryStore)(nil)
+var (
+	_ Store          = (*MemoryStore)(nil)
+	_ RetentionStore = (*MemoryStore)(nil)
+)
 
 // NewMemoryStore creates an empty in-memory audit store.
 func NewMemoryStore() *MemoryStore {
@@ -242,7 +249,7 @@ func (m *MemoryStore) Events() []Event {
 func (m *MemoryStore) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.events = nil
+	m.events, m.record, m.seal = nil, RetentionRecord{}, nil
 }
 
 func matchesFilter(e Event, f Filter) bool {

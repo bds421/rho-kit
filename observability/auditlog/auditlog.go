@@ -762,7 +762,7 @@ func (l *Logger) VerifyChain(ctx context.Context) error {
 // requiring a genesis (empty/zero) PrevHMAC on the first (oldest) event.
 //
 // A watermark is the HMAC of the last event removed from the head of the
-// chain by a retention sweep (see [RetentionJob]). After the first
+// chain by a retention sweep ([RetentionRecord.Watermark]). After the first
 // retention run the surviving oldest event's PrevHMAC points at a
 // now-deleted record, which [Logger.VerifyChain] rejects as
 // [ErrChainBroken] forever; passing that deleted record's HMAC here lets
@@ -787,21 +787,34 @@ func (l *Logger) VerifyChainFrom(ctx context.Context, watermark []byte) error {
 // to keep as the next [Verification.Anchor]. Returns [ErrLoggerClosed] if
 // the logger has been closed.
 func (l *Logger) Verify(ctx context.Context, v Verification) (Head, error) {
+	keys, sealing, err := l.chainKeysForVerify()
+	if err != nil {
+		return Head{}, err
+	}
+	defer clearKeys(keys)
+	return verifyStore(ctx, l.store, keys, sealing, v)
+}
+
+// chainKeysForVerify reveals every chain key for one verification; the
+// caller clears them with clearKeys.
+func (l *Logger) chainKeysForVerify() ([]ChainKey, int, error) {
 	if l.closed.Load() {
-		return Head{}, ErrLoggerClosed
+		return nil, 0, ErrLoggerClosed
 	}
 	keys, sealing := l.revealChainKeys()
-	defer func() {
-		for _, k := range keys {
-			clear(k.Key)
-		}
-	}()
 	for _, k := range keys {
 		if len(k.Key) == 0 {
-			return Head{}, ErrLoggerClosed
+			clearKeys(keys)
+			return nil, 0, ErrLoggerClosed
 		}
 	}
-	return verifyStore(ctx, l.store, keys, sealing, v)
+	return keys, sealing, nil
+}
+
+func clearKeys(keys []ChainKey) {
+	for _, k := range keys {
+		clear(k.Key)
+	}
 }
 
 // revealChainKeys copies every chain key out of its [secret.String] in

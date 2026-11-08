@@ -100,11 +100,14 @@ func TestPostgres_RetentionPastTheAnchor(t *testing.T) {
 	logAt(start.Add(3 * time.Minute))
 	logAt(time.Now())
 
-	deleted, watermark, err := store.DeleteBefore(ctx, start.Add(30*time.Minute))
+	now := time.Now()
+	c, err := l.ComputeCut(ctx, auditlog.Verification{}, start.Add(30*time.Minute), now)
+	require.NoError(t, err)
+	deleted, err := store.ApplyCut(ctx, c, testRetentionKey, 0, now)
 	require.NoError(t, err)
 	require.EqualValues(t, 4, deleted, "retention removed the anchored event and two after it")
 
-	_, err = l.Verify(ctx, auditlog.Verification{Watermark: watermark, Anchor: anchor})
+	_, err = l.Verify(ctx, auditlog.Verification{Watermark: c.Watermark, Anchor: anchor})
 	require.ErrorIs(t, err, auditlog.ErrAnchorPruned)
 	assert.NotErrorIs(t, err, auditlog.ErrChainBroken)
 }

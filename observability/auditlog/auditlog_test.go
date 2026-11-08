@@ -881,11 +881,9 @@ func TestVerifyChain_RejectsTruncatedChain(t *testing.T) {
 }
 
 // TestVerifyChain_RetentionTruncatedHeadRejectedByGenesisCheck pins the
-// pre-fix behaviour: once RetentionJob deletes the oldest events the new
-// head carries a non-empty PrevHMAC, so the genesis-anchored VerifyChain
-// rejects an otherwise-intact chain. This is the bug RetentionJob causes:
-// retention and tamper-evidence are documented features yet mutually
-// exclusive under the plain VerifyChain entry points.
+// watermark: once retention removed the oldest events the new head carries
+// a non-empty PrevHMAC, so the genesis-anchored VerifyChain rejects an
+// otherwise-intact chain and only the watermark lets it verify.
 func TestVerifyChain_RetentionTruncatedHeadRejectedByGenesisCheck(t *testing.T) {
 	store := NewMemoryStore()
 	l := newTestLogger(store)
@@ -1193,84 +1191,6 @@ func TestQuery_RoundTripsSignedCursors(t *testing.T) {
 		}
 	}
 	assert.Len(t, collected, 5)
-}
-
-func TestRetentionJobPanicsOnInvalidConfig(t *testing.T) {
-	assert.Panics(t, func() {
-		RetentionJob(nil, time.Hour, nil)
-	})
-	assert.Panics(t, func() {
-		RetentionJob(&retentionCaptureStore{}, 0, nil)
-	})
-	assert.Panics(t, func() {
-		RetentionJob(&retentionCaptureStore{}, -time.Hour, nil)
-	})
-}
-
-func TestRetentionJobDeletesBeforeCutoff(t *testing.T) {
-	store := &retentionCaptureStore{}
-	retention := time.Hour
-	job := RetentionJob(store, retention, nil)
-
-	beforeRun := time.Now().Add(-retention)
-	require.NoError(t, job(context.Background()))
-	afterRun := time.Now().Add(-retention)
-
-	assert.Equal(t, 1, store.deleteCalls)
-	assert.False(t, store.before.Before(beforeRun.Add(-time.Second)))
-	assert.False(t, store.before.After(afterRun.Add(time.Second)))
-}
-
-func TestRetentionJobLogRedactsCleanupError(t *testing.T) {
-	storeErr := errors.New("delete failed token=tenant-secret")
-	store := &retentionCaptureStore{deleteErr: storeErr}
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	job := RetentionJob(store, time.Hour, logger)
-
-	err := job(context.Background())
-
-	require.ErrorIs(t, err, storeErr)
-	got := logs.String()
-	assert.Contains(t, got, "audit retention cleanup failed")
-	assert.Contains(t, got, "<redacted error")
-	assert.NotContains(t, got, "tenant-secret")
-}
-
-type retentionCaptureStore struct {
-	before      time.Time
-	deleteCalls int
-	deleteErr   error
-}
-
-func (s *retentionCaptureStore) Append(context.Context, Event) error {
-	return nil
-}
-
-func (s *retentionCaptureStore) AppendChained(_ context.Context, build func(head Event) (Event, error)) error {
-	_, err := build(Event{})
-	return err
-}
-
-func (s *retentionCaptureStore) Query(context.Context, Filter, string, int) ([]Event, string, error) {
-	return nil, "", nil
-}
-
-func (s *retentionCaptureStore) LastHMAC(context.Context) ([]byte, error) {
-	return nil, nil
-}
-
-func (s *retentionCaptureStore) RangeChain(context.Context, func(Event) error) error {
-	return nil
-}
-
-func (s *retentionCaptureStore) DeleteBefore(_ context.Context, before time.Time) (int64, []byte, error) {
-	s.before = before
-	s.deleteCalls++
-	if s.deleteErr != nil {
-		return 0, nil, s.deleteErr
-	}
-	return 0, nil, nil
 }
 
 func TestClose_ZeroesKeysAndRejectsSubsequentUse(t *testing.T) {
