@@ -2,6 +2,7 @@ package doctruth
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -86,5 +87,46 @@ func TestTheReleaseGOOSAndTagsChooseTheFiles(t *testing.T) {
 	f := checkHosts(t, o)
 	if len(f) != 2 {
 		t.Fatal(f)
+	}
+}
+
+func TestAWorkspaceBesideTheModuleStillScansIt(t *testing.T) {
+	root := hostsRepository(t, map[string]string{
+		"go.work":              "go 1.26\n\nuse (\n\t.\n\t./other\n)\n",
+		"other/go.mod":         "module example.invalid/other\n\ngo 1.26\n",
+		"other/o.go":           "package other\n",
+		"internal/attest/n.go": "package attest\n\nconst N = \"https://new.io/x\"\n",
+	})
+	f := checkHosts(t, hostOptions(root))
+	if len(f) != 1 {
+		t.Fatal(f)
+	}
+}
+
+func TestACommentInAFencedBlockDoesNotEndTheSection(t *testing.T) {
+	doc := "## Outbound hosts\n\n```sh\n# a comment\n```\n\n### Detail\n\n`a.io`\n\n## Next\n\n`b.io`\n"
+	section := headedSection(doc, "Outbound hosts")
+	if !strings.Contains(section, "`a.io`") || strings.Contains(section, "`b.io`") {
+		t.Fatal(section)
+	}
+}
+
+func TestAnEmbeddedFileIsScanned(t *testing.T) {
+	root := hostsRepository(t, map[string]string{
+		"internal/attest/e.go":          "package attest\n\nimport _ \"embed\"\n\n//go:embed defaults.json\nvar defaults string\n",
+		"internal/attest/defaults.json": "{\"url\": \"https://embedded.io/x\"}\n",
+	})
+	f := checkHosts(t, hostOptions(root))
+	if len(f) != 1 || !strings.HasPrefix(f[0], "embedded.io") {
+		t.Fatal(f)
+	}
+}
+
+func TestAFailingGoListSaysWhy(t *testing.T) {
+	o := hostOptions(hostsRepository(t, nil))
+	o.Packages = []string{"./nowhere/..."}
+	o.Tags = []string{"bad tag"}
+	if _, err := CheckHosts(o); err == nil || !strings.Contains(err.Error(), "go list") || strings.HasSuffix(err.Error(), "exit status 1") {
+		t.Fatal(err)
 	}
 }

@@ -1,6 +1,7 @@
 package doctruth
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,10 +15,10 @@ import (
 // HostOptions says which hosts a repository declares it dials and where its
 // documentation lists them.
 //
-// The scan reads the https:// literals in the Go files the commands are
-// built from (go list -deps, so no test file or test-only package). A host
-// a dependency dials by default, or one dialed without an https:// literal,
-// is not seen: name it in Unnamed.
+// The scan reads the https:// literals in the Go, cgo and embedded files the
+// commands are built from (go list -deps, so no test file or test-only
+// package). A host a dependency dials by default, or one dialed without an
+// https:// literal, is not seen: name it in Unnamed.
 type HostOptions struct {
 	// Root is the repository root, the directory go list runs in.
 	Root string
@@ -126,7 +127,7 @@ func shippedHosts(o HostOptions) (map[string]string, error) {
 		}
 		modules = []string{strings.TrimSpace(out)}
 	}
-	args := []string{"list", "-deps", "-tags", strings.Join(o.Tags, ","), "-f", "{{if .Module}}{{.Module.Path}}\t{{.Dir}}\t{{join .GoFiles \" \"}}{{end}}"}
+	args := []string{"list", "-deps", "-tags", strings.Join(o.Tags, ","), "-f", "{{if .Module}}{{.Module.Path}}\t{{.Dir}}\t{{join .GoFiles \" \"}} {{join .CgoFiles \" \"}} {{join .EmbedFiles \" \"}}{{end}}"}
 	out, err := goCmd(o.Root, o.GOOS, append(args, o.Packages...)...)
 	if err != nil {
 		return nil, err
@@ -153,29 +154,45 @@ func shippedHosts(o HostOptions) (map[string]string, error) {
 	return hosts, nil
 }
 
+// goCmd runs go in dir as the release builds: outside any workspace, where
+// go list -m names the one module at dir.
 func goCmd(dir, goos string, args ...string) (string, error) {
 	cmd := exec.Command("go", args...) // #nosec G204 -- go over the repository root
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
 	if goos != "" {
-		cmd.Env = append(os.Environ(), "GOOS="+goos)
+		cmd.Env = append(cmd.Env, "GOOS="+goos)
 	}
 	out, err := cmd.Output()
 	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return "", fmt.Errorf("go %s: %w: %s", strings.Join(args[:2], " "), err, strings.TrimSpace(string(exit.Stderr)))
+		}
 		return "", fmt.Errorf("go %s: %w", strings.Join(args[:2], " "), err)
 	}
 	return string(out), nil
 }
 
 // headedSection is the part of doc under a heading named name, up to the
-// next heading.
+// next heading of its level or higher outside a fenced block.
 func headedSection(doc, name string) string {
-	start := regexp.MustCompile(`(?m)^#+ ` + regexp.QuoteMeta(name) + `\n`).FindStringIndex(doc)
-	if start == nil {
-		return ""
+	var section []string
+	level, fenced := 0, false
+	for _, line := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(line, "```") {
+			fenced = !fenced
+		}
+		hashes := len(line) - len(strings.TrimLeft(line, "#"))
+		heading := !fenced && hashes > 0 && strings.HasPrefix(line[hashes:], " ")
+		switch {
+		case level == 0 && heading && strings.TrimSpace(line[hashes:]) == name:
+			level = hashes
+		case level > 0 && heading && hashes <= level:
+			return strings.Join(section, "\n")
+		case level > 0:
+			section = append(section, line)
+		}
 	}
-	rest := doc[start[1]:]
-	if end := regexp.MustCompile(`(?m)^#`).FindStringIndex(rest); end != nil {
-		rest = rest[:end[0]]
-	}
-	return rest
+	return strings.Join(section, "\n")
 }

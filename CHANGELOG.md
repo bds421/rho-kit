@@ -4,12 +4,13 @@
 
 - **feat(testing/doctruth): the hosts a repository dials stay declared and
   documented.** `doctruth.RunHosts(t, HostOptions{Root, Declared, NotDialed,
-  Document})` reads the https:// literals in the Go files the commands are
-  built from (`go list -deps`, with the release's `GOOS` and `Tags`, in the
-  repository's `Modules`): each host must be declared (a name or
-  `*.domain`) or named as not dialed, and each declared host must be listed
-  in the document's "Outbound hosts" section. A host a dependency dials by
-  default goes in `Unnamed`; a dial without an https:// literal is not seen.
+  Document})` reads the https:// literals in the Go, cgo and embedded files
+  the commands are built from (`go list -deps` outside any workspace, with
+  the release's `GOOS` and `Tags`, in the repository's `Modules`): each
+  host must be declared (a name or `*.domain`) or named as not dialed, and
+  each declared host must be listed in the document's "Outbound hosts"
+  section. A host a dependency dials by default goes in `Unnamed`; a dial
+  without an https:// literal is not seen.
 
 ## testing/doctruth v2.40.1 — 2026-11-08
 
