@@ -207,3 +207,36 @@ func TestPostgres_PrevHMACMigrationRefusesAForkAndRepairsAnInvalidIndex(t *testi
 	assert.True(t, unique)
 	assert.True(t, valid)
 }
+
+// Retention in the caller's transaction rolls back with it, and commits with
+// what the caller recorded beside it.
+func TestPostgres_DeleteBeforeJoinsTheCallersTransaction(t *testing.T) {
+	ctx := context.Background()
+	pool := openAndMigrate(t, startPostgres(t))
+	logger := newLogger(t, pool)
+	defer func() { _ = logger.Close() }()
+	for _, action := range []string{"a.one", "a.two", "a.three"} {
+		require.NoError(t, logger.LogE(ctx, event(action, auditlog.StatusSuccess)))
+	}
+	cut := time.Now()
+	require.NoError(t, logger.LogE(ctx, event("a.four", auditlog.StatusSuccess)))
+	store := postgresstore.New(pool)
+	errLater := errors.New("recording the watermark fails")
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		n, _, err := store.DeleteBefore(postgresstore.WithTx(ctx, tx), cut)
+		require.NoError(t, err)
+		require.EqualValues(t, 3, n)
+		return errLater
+	})
+	require.ErrorIs(t, err, errLater)
+	assert.Len(t, actions(t, logger), 4, "the removal rolled back with the caller")
+
+	var watermark []byte
+	require.NoError(t, pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		_, mark, err := store.DeleteBefore(postgresstore.WithTx(ctx, tx), cut)
+		watermark = mark
+		return err
+	}))
+	assert.Equal(t, []string{"a.four"}, actions(t, logger))
+	require.NoError(t, logger.VerifyChainFrom(ctx, watermark))
+}

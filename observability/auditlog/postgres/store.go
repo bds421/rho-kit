@@ -383,6 +383,10 @@ func (s *Store) LastHMAC(ctx context.Context) ([]byte, error) {
 // verification. Deleting the head leaves the surviving oldest event with
 // a PrevHMAC that links to a now-removed row; operators must verify with
 // the returned watermark via [auditlog.VerifyChainFrom].
+//
+// When ctx carries a transaction from [WithTx], the rows are removed inside
+// it and the chain lock is held until it ends, so the caller records the
+// watermark in the same transaction and both commit or roll back together.
 func (s *Store) DeleteBefore(ctx context.Context, before time.Time) (int64, []byte, error) {
 	if s == nil || s.pool == nil {
 		return 0, nil, errors.New("auditlog/postgres: store not initialized")
@@ -391,12 +395,32 @@ func (s *Store) DeleteBefore(ctx context.Context, before time.Time) (int64, []by
 		return 0, nil, err
 	}
 	cutoff := before.UTC()
+	if joined, ok := auditlog.Joined(ctx); ok {
+		tx, ok := joined.(pgx.Tx)
+		if !ok {
+			return 0, nil, fmt.Errorf("auditlog/postgres: the joined transaction is a %T, not a pgx.Tx", joined)
+		}
+		return deleteBefore(ctx, tx, cutoff)
+	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return 0, nil, fmt.Errorf("auditlog/postgres: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	n, watermark, err := deleteBefore(ctx, tx, cutoff)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, nil, fmt.Errorf("auditlog/postgres: commit: %w", err)
+	}
+	return n, watermark, nil
+}
+
+// deleteBefore removes the contiguous head older than cutoff inside tx,
+// holding the chain lock until tx ends.
+func deleteBefore(ctx context.Context, tx pgx.Tx, cutoff time.Time) (int64, []byte, error) {
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", chainLockKey); err != nil {
 		return 0, nil, fmt.Errorf("auditlog/postgres: advisory lock: %w", err)
 	}
@@ -443,9 +467,6 @@ func (s *Store) DeleteBefore(ctx context.Context, before time.Time) (int64, []by
 			return 0, nil, fmt.Errorf("auditlog/postgres: delete before: %w", err)
 		}
 		n = tag.RowsAffected()
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, nil, fmt.Errorf("auditlog/postgres: commit: %w", err)
 	}
 	if n == 0 {
 		return 0, nil, nil
