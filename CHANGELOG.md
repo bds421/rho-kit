@@ -1,5 +1,18 @@
 # Changelog
 
+## testing/doctruth v2.40.0 — 2026-11-08
+
+- **feat(testing/doctruth): a repository's docs stay true to its tree, as
+  a test.** `doctruth.Run(t, Options{Root, OtherRepositories})` fails when
+  the architecture document's package section (a folder tree in code blocks
+  or a package table) names a folder that does not exist or leaves out a Go
+  package under cmd/ and internal/ (test fixtures and gen/ exempt), and
+  when a backticked repository path in the architecture, security, ADR,
+  README or top-level deploy documents does not resolve. A path git ignores
+  counts as resolved; a line, the line after it, or a section naming one of
+  `OtherRepositories` cites that repository and is skipped; `vX.Y.Z`, `<` and
+  `{` mark patterns. `Check` returns the findings for other callers.
+
 ## security v2.39.0 — 2026-11-07
 
 - **fix(security/netutil): `ReloadingServerTLS` keeps the caller's checks

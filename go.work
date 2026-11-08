@@ -112,5 +112,6 @@ use (
 	./runtime
 	./security
 	./testing/integrationtest
+	./testing/doctruth
 	./testing/kittest
 )
