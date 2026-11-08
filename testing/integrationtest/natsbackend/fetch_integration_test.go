@@ -12,23 +12,14 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	natsmodule "github.com/testcontainers/testcontainers-go/modules/nats"
 
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
 )
 
-// nats:2.11-alpine, pinned so the pull protocol under test cannot move.
-const pinnedNATS = "nats:2.11-alpine@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00"
-
 func pullFixture(t *testing.T) (jetstream.JetStream, func(n, size int)) {
 	t.Helper()
 	ctx := context.Background()
-	c, err := natsmodule.Run(ctx, pinnedNATS)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = testcontainers.TerminateContainer(c) })
-	url, err := c.ConnectionString(ctx)
-	require.NoError(t, err)
+	url := startNATS(t)
 	nc, err := nats.Connect(url)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)

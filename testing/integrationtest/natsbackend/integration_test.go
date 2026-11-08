@@ -14,15 +14,27 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/nats"
+	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
+// pinnedNATS is nats:2.11-alpine, pinned so the protocol under test cannot move.
+const pinnedNATS = "nats:2.11-alpine@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00"
+
+// startNATS runs pinnedNATS and returns its client URL once the server is ready.
 func startNATS(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
-	c, err := nats.Run(ctx, "nats:2.11-alpine")
+	// The client port listens before the server accepts clients, and
+	// /healthz answers only once the server and JetStream are ready.
+	c, err := nats.Run(ctx, pinnedNATS,
+		nats.WithArgument("http_port", "8222"),
+		testcontainers.WithAdditionalWaitStrategy(
+			wait.ForHTTP("/healthz").WithPort("8222/tcp"),
+		),
+	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = testcontainers.TerminateContainer(c) })
 
