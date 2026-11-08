@@ -133,11 +133,13 @@ func shippedHosts(o HostOptions) (map[string]string, error) {
 		return nil, err
 	}
 	hosts := map[string]string{}
+	built := map[string]bool{}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		fields := strings.SplitN(line, "\t", 3)
 		if len(fields) < 3 || !slices.Contains(modules, fields[0]) {
 			continue
 		}
+		built[fields[0]] = true
 		for _, f := range strings.Fields(fields[2]) {
 			path := filepath.Join(fields[1], f)
 			b, err := os.ReadFile(path) // #nosec G304 -- a source file go list names
@@ -149,6 +151,11 @@ func shippedHosts(o HostOptions) (map[string]string, error) {
 					hosts[m[1]] = path
 				}
 			}
+		}
+	}
+	for _, m := range modules {
+		if !built[m] {
+			return nil, fmt.Errorf("no package of %s is built from %s", m, strings.Join(o.Packages, " "))
 		}
 	}
 	return hosts, nil

@@ -1,5 +1,11 @@
 # Changelog
 
+## testing/doctruth v2.41.1 — 2026-11-08
+
+- **fix(testing/doctruth): a module RunHosts scans must be built from the
+  packages.** A misspelt or renamed `Modules` entry matched no package and
+  left the scan empty, so the check passed; it is now an error.
+
 ## testing/doctruth v2.41.0 — 2026-11-08
 
 - **feat(testing/doctruth): the hosts a repository dials stay declared and

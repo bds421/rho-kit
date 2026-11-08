@@ -130,3 +130,11 @@ func TestAFailingGoListSaysWhy(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAModuleNothingIsBuiltFromIsAnError(t *testing.T) {
+	o := hostOptions(hostsRepository(t, nil))
+	o.Modules = []string{"example.invalid/svc", "example.invalid/misspelt"}
+	if _, err := CheckHosts(o); err == nil || !strings.Contains(err.Error(), "example.invalid/misspelt") {
+		t.Fatal(err)
+	}
+}
