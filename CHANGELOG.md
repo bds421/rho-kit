@@ -1,5 +1,23 @@
 # Changelog
 
+## observability v2.42.0 — 2026-11-08
+
+- **feat(observability/auditlog): `Verification.Removed` tells a pruned
+  anchor from a cut tail.** Given how many events retention removed in all,
+  kept with the watermark out of the store writer's reach, positions count
+  from the chain's first event ever: `Head.Events` includes the removed
+  events, the anchor must sit at its position past a watermark too, and an
+  anchor that is gone is `ErrAnchorPruned` only when its position is among
+  the removed events; past them the tail was cut, `ErrChainBroken`.
+  Without `Removed` verification behaves as before.
+- **feat(observability/auditlog): `VerifyStore`.** Anchored verification
+  with the chain keys alone, for operator tooling that neither appends nor
+  lists and so holds no cursor key.
+- **feat(observability/auditlog): `Head` as text.** `MarshalText` writes a
+  head as one word, `events:keyID:hmac` in hex, and `UnmarshalText` reads
+  it back (`ErrInvalidHead` otherwise), so operators keep and pass back the
+  whole anchor.
+
 ## testing/doctruth v2.41.1 — 2026-11-08
 
 - **fix(testing/doctruth): a module RunHosts scans must be built from the

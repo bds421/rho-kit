@@ -114,8 +114,8 @@ logger := auditlog.New(store,
     auditlog.WithCursorKeys(cursorKey2, cursorKey1), // drop cursorKey1 once old cursors expired
 )
 _ = logger.RecordRotation(ctx)
-head, err := logger.Verify(ctx, auditlog.Verification{Watermark: watermark, Anchor: lastHead})
-// keep the whole head (HMAC, Events, KeyID) as the next anchor, out of reach of whoever writes the store
+head, err := logger.Verify(ctx, auditlog.Verification{Watermark: watermark, Removed: removed, Anchor: lastHead})
+// keep the whole head (head.MarshalText: events:keyID:hmac) as the next anchor, out of reach of whoever writes the store
 ```
 
 Without an anchor, verification shows only that the stored events form one
@@ -127,7 +127,13 @@ may carry a key older than the anchored one: take an anchor right
 after every rotation, and verify with the anchor before every retention run:
 once retention removed the anchored event and later ones, verification
 returns `auditlog.ErrAnchorPruned`, since the anchor no longer proves the
-tail. Keep a retired chain key listed while events it sealed are kept.
+tail. Pass `Removed`, the number of events retention removed in all, kept
+with the watermark out of the store writer's reach: positions then count
+from the first event ever, and an anchor past the removed events that is
+gone fails with `auditlog.ErrChainBroken` instead, as a cut tail.
+Operator tooling that holds only the chain keys verifies with
+`auditlog.VerifyStore`. Keep a retired chain key listed while events it
+sealed are kept.
 
 ## Envelope Encryption
 

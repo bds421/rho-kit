@@ -38,12 +38,16 @@ var ErrChainHeadUnknown = errors.New("auditlog: the chain head is sealed by no c
 // ErrAnchorPruned is returned by verification when the anchored event is no
 // longer in the chain, a retention watermark is set and no remaining event
 // carries a key older than the anchored one: retention most likely removed
-// the anchored event together with later ones. Every remaining event still
-// verified from the watermark on, but the anchor no longer proves the tail:
-// removing the newest events including the anchored one looks the same.
+// the anchored event together with later ones, and certainly so when
+// [Verification.Removed] puts the anchor among the removed events. Every
+// remaining event still verified from the watermark on, but the anchor no
+// longer proves the tail: without Removed, removing the newest events
+// including the anchored one looks the same.
 // Verify with the anchor before each retention run so the kept anchor stays
 // newer than the retention cut.
 var ErrAnchorPruned = errors.New("auditlog: retention removed the anchored event")
+
+var errRemovedWithoutWatermark = errors.New("auditlog: Verification.Removed must not be negative and needs a watermark")
 
 var keyIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 
@@ -58,31 +62,26 @@ type Verification struct {
 	// Watermark is the HMAC of the last event a retention sweep removed
 	// (see [RetentionJob]); empty requires a genesis head.
 	Watermark []byte
+	// Removed is how many events retention removed in all, through the
+	// watermark (the sum of what [RetentionStore.DeleteBefore] returned),
+	// kept with the watermark where whoever can write the store cannot
+	// change it; it needs a watermark. With it, positions count from the
+	// chain's first event ever: [Head.Events] includes the removed events,
+	// and an anchor must sit at its position past a watermark too.
+	Removed int
 	// Anchor is the [Head] an earlier verification returned, kept where
 	// whoever can write the store cannot change it. The chain must still
 	// contain that event, sealed by the key the anchor names and, without a
-	// watermark, at the same position; no event from it on may carry an
-	// older key. So a tail cut or rewritten since fails. When the anchored
-	// event is the watermark, retention removed exactly up to it and the
-	// anchor stands for the watermark; when retention removed it and later
-	// events, verification returns [ErrAnchorPruned]. The zero Head skips
-	// the check.
+	// watermark or with Removed, at the same position; no event from it on
+	// may carry an older key. So a tail cut or rewritten since fails. When
+	// the anchored event is the watermark, retention removed exactly up to
+	// it and the anchor stands for the watermark. When retention removed it
+	// and later events, verification returns [ErrAnchorPruned]: with
+	// Removed only when the anchor's position is among the removed events,
+	// otherwise the tail from it was cut and verification fails with
+	// [ErrChainBroken]; without Removed the two look the same. The zero
+	// Head skips the check.
 	Anchor Head
-}
-
-// Head is the newest event a successful verification walked; keep all of
-// it as the next [Verification.Anchor].
-type Head struct {
-	// HMAC is the newest event's HMAC: the watermark when no event follows
-	// it, and empty for an empty chain.
-	HMAC []byte
-	// Events is the number of events verified, so the newest event's
-	// position.
-	Events int
-	// KeyID names the chain key that sealed the newest event, or the key
-	// that seals the next one when no event was walked; empty for the
-	// unkeyed [WithChainKey] key.
-	KeyID string
 }
 
 type namedKey struct {
@@ -224,6 +223,9 @@ func newChainVerifier(keys []ChainKey, sealing int, v Verification) (*chainVerif
 			return nil, fmt.Errorf("%w: chain key must be at least %d bytes", ErrNoChainKey, MinChainKeyLen)
 		}
 	}
+	if v.Removed < 0 || (v.Removed > 0 && len(v.Watermark) == 0) {
+		return nil, errRemovedWithoutWatermark
+	}
 	c := &chainVerifier{keys: keys, sealing: sealing, v: v, floor: len(keys) - 1, anchorKey: -1, last: -1, oldest: -1}
 	if len(v.Anchor.HMAC) == 0 {
 		return c, nil
@@ -234,6 +236,9 @@ func newChainVerifier(keys []ChainKey, sealing int, v Verification) (*chainVerif
 			// Retention may have removed the anchored event; every event
 			// walked then chains from it and still owes it the anchored key.
 			c.anchored = constantTimeEqualHMAC(v.Anchor.HMAC, v.Watermark)
+			if c.anchored && v.Removed > 0 && v.Anchor.Events != v.Removed {
+				return nil, fmt.Errorf("%w: the anchored event is the watermark, event[%d], not event[%d]", ErrChainBroken, v.Removed-1, v.Anchor.Events-1)
+			}
 			return c, nil
 		}
 	}
@@ -297,8 +302,8 @@ func (c *chainVerifier) checkAnchor(event Event, sealer int) error {
 	if sealer != c.anchorKey {
 		return fmt.Errorf("%w: the anchored event[%d] is sealed by chain key %q, not the anchored key %q", ErrChainBroken, i, c.keys[sealer].ID, c.v.Anchor.KeyID)
 	}
-	if len(c.v.Watermark) == 0 && i != c.v.Anchor.Events-1 {
-		return fmt.Errorf("%w: the anchored event is event[%d], not event[%d]", ErrChainBroken, i, c.v.Anchor.Events-1)
+	if at := c.v.Removed + i; (len(c.v.Watermark) == 0 || c.v.Removed > 0) && at != c.v.Anchor.Events-1 {
+		return fmt.Errorf("%w: the anchored event is event[%d], not event[%d]", ErrChainBroken, at, c.v.Anchor.Events-1)
 	}
 	c.anchored = true
 	return nil
@@ -319,13 +324,15 @@ func (c *chainVerifier) sealer(event Event) (int, bool) {
 func (c *chainVerifier) finish() (Head, error) {
 	if c.anchorKey >= 0 && !c.anchored {
 		// Past a watermark the anchored event may be gone to retention; an
-		// event older than the anchored key still proves a rewritten tail.
-		if len(c.v.Watermark) > 0 && c.oldest <= c.anchorKey {
+		// event older than the anchored key still proves a rewritten tail,
+		// and so does an anchor past the events retention removed.
+		removed := c.v.Removed == 0 || c.v.Anchor.Events <= c.v.Removed
+		if len(c.v.Watermark) > 0 && c.oldest <= c.anchorKey && removed {
 			return Head{}, fmt.Errorf("%w: the anchored event is before the watermark; re-anchor", ErrAnchorPruned)
 		}
 		return Head{}, fmt.Errorf("%w: the anchored head is no longer in the chain: its tail was truncated or rewritten", ErrChainBroken)
 	}
-	head := Head{HMAC: c.prev, Events: c.index}
+	head := Head{HMAC: c.prev, Events: c.v.Removed + c.index}
 	if c.index == 0 {
 		// The sealing key seals the next event, so an anchor kept from an
 		// empty chain still refuses an older one after it.
