@@ -35,8 +35,8 @@ require (
 	github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 v2.38.0
 	github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.38.0
 	github.com/bds421/rho-kit/infra/v2 v2.38.0
-	github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.39.0
-	github.com/bds421/rho-kit/observability/v2 v2.39.0
+	github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.43.0
+	github.com/bds421/rho-kit/observability/v2 v2.43.0
 	github.com/bds421/rho-kit/runtime/v2 v2.38.0
 	github.com/bds421/rho-kit/security/v2 v2.38.0
 	github.com/bds421/rho-kit/testing/kittest/v2 v2.38.0
