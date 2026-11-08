@@ -35,6 +35,9 @@ type HostOptions struct {
 	// Declared are the hosts the repository declares it dials: a name, or
 	// "*.domain" for any host under it.
 	Declared []string
+	// SkipFiles are path globs, relative to Root, of built files that hold
+	// data rather than defaults (an embedded schema's examples): not scanned.
+	SkipFiles []string
 	// Unnamed are hosts dialed that no scanned literal names (a dependency's
 	// default), each with where it comes from.
 	Unnamed map[string]string
@@ -142,6 +145,9 @@ func shippedHosts(o HostOptions) (map[string]string, error) {
 		built[fields[0]] = true
 		for _, f := range strings.Fields(fields[2]) {
 			path := filepath.Join(fields[1], f)
+			if skipped(o, path) {
+				continue
+			}
 			b, err := os.ReadFile(path) // #nosec G304 -- a source file go list names
 			if err != nil {
 				return nil, err
@@ -202,4 +208,21 @@ func headedSection(doc, name string) string {
 		}
 	}
 	return strings.Join(section, "\n")
+}
+
+// skipped compares against the resolved root, as go list reports resolved
+// directories.
+func skipped(o HostOptions, path string) bool {
+	root, err := filepath.EvalSymlinks(o.Root)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(o.SkipFiles, func(glob string) bool {
+		match, _ := filepath.Match(glob, filepath.ToSlash(rel))
+		return match
+	})
 }

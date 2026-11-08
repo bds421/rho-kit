@@ -5,6 +5,9 @@
 - **fix(testing/doctruth): a module RunHosts scans must be built from the
   packages.** A misspelt or renamed `Modules` entry matched no package and
   left the scan empty, so the check passed; it is now an error.
+- **feat(testing/doctruth): `HostOptions.SkipFiles`.** Path globs, relative
+  to Root, of built files that hold data rather than defaults (an embedded
+  schema's examples) are not scanned.
 
 ## testing/doctruth v2.41.0 — 2026-11-08
 
