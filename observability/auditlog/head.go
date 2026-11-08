@@ -22,10 +22,12 @@ type Head struct {
 	// that seals the next one when no event was walked; empty for the
 	// unkeyed [WithChainKey] key.
 	KeyID string
-	// At is when the newest event was written, as its HMAC covers it; zero
-	// when no event was walked. As an anchor it lets
-	// [Verification.PrunedBefore] tell whether retention can have removed
-	// the anchored event.
+	// At is the latest write time of the walked events up to the newest,
+	// as their HMACs cover them; zero when no event was walked. A backdated
+	// newest event leaves it at the time of what was written before. As an
+	// anchor it lets [Verification.PrunedBefore] tell whether retention,
+	// which removes a contiguous oldest part all written before its cut
+	// ([RetentionStore.DeleteBefore]), can have removed the anchored event.
 	At time.Time
 }
 

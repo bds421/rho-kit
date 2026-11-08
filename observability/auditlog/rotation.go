@@ -291,7 +291,12 @@ func (c *chainVerifier) step(event Event) error {
 	}
 	c.floor, c.last = sealer, sealer
 	c.oldest = max(c.oldest, sealer)
-	c.prev, c.prevAt = event.HMAC, event.Timestamp
+	c.prev = event.HMAC
+	// The latest time so far, not the newest event's own: a backdated event
+	// cannot make the head look older than what was written before it.
+	if event.Timestamp.After(c.prevAt) {
+		c.prevAt = event.Timestamp
+	}
 	c.index++
 	return nil
 }

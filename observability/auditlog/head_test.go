@@ -160,3 +160,22 @@ func TestVerify_TheHeadCarriesItsEventsTime(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, head.At.IsZero(), "no event walked")
 }
+
+func TestVerify_ABackdatedHeadDoesNotPassACutTailAsRetention(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	store := NewMemoryStore()
+	l := unkeyed(store, testChainKey)
+	for _, at := range []time.Time{now.Add(-800 * 24 * time.Hour), now.Add(-700 * 24 * time.Hour), now.Add(-time.Hour), now.Add(-900 * 24 * time.Hour), now.Add(-time.Minute), now} {
+		require.NoError(t, l.LogE(context.Background(), Event{Actor: "a", Action: "x", Resource: "r", Status: "success", Timestamp: at}))
+	}
+	events := store.Events()
+	keys := []ChainKey{{Key: testChainKey}}
+	anchor, err := VerifyChainKeys(events[:4], keys, Verification{})
+	require.NoError(t, err)
+	assert.True(t, anchor.At.Equal(events[2].Timestamp), "the backdated head keeps the time written before it")
+
+	cutTail := Verification{Watermark: events[4].HMAC, Removed: 5, PrunedBefore: now.Add(-365 * 24 * time.Hour), Anchor: anchor}
+	_, err = VerifyChainKeys(events[5:], keys, cutTail)
+	require.ErrorIs(t, err, ErrChainBroken, "a sweep through the backdated head passes as retention")
+	assert.NotErrorIs(t, err, ErrAnchorPruned)
+}

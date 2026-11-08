@@ -673,8 +673,9 @@ still break the chain: upgrade every replica before rotating.
 **Head anchor.** `Logger.Verify(ctx, Verification{Watermark, Removed,
 PrunedBefore, Anchor})` (or `VerifyStore` with the chain keys alone)
 returns the `Head` it verified: the newest event's HMAC, its position
-(`Events`), the ID of the key that sealed it and when it was written
-(`At`); `MarshalText` writes it as one word, `events:keyID:hmac:at`, and
+(`Events`), the ID of the key that sealed it and the latest write time
+of the events up to it (`At`, so a backdated newest event cannot make the
+head look older than what came before it); `MarshalText` writes it as one word, `events:keyID:hmac:at`, and
 `UnmarshalText` reads it back. Kept whole where
 store writers cannot reach it and passed back as `Anchor`, the chain must
 still contain that event, sealed by that key and at that position, and no

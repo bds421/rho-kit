@@ -19,7 +19,9 @@
   (the earlier of the recorded cut and now minus the retention period);
   without a time, or written since, it fails with `ErrChainBroken`.
 - **feat(observability/auditlog): `Head` carries its event's time and is
-  text.** `Head.At` is when the newest walked event was written.
+  text.** `Head.At` is the latest write time of the walked events up
+  to the newest (a backdated newest event keeps the time written before it,
+  as retention removes only a contiguous oldest part written before its cut).
   `MarshalText` writes a head as one word, `events:keyID:hmac:at` (HMAC in
   hex, at in Unix microseconds, empty only when no event was walked), and
   `UnmarshalText` reads it back (`ErrInvalidHead` otherwise), so operators
