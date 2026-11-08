@@ -80,7 +80,7 @@ func unresolvedCitations(o Options) ([]string, error) {
 // elsewhere tells whether a line cites another repository's files; a
 // name may break across the line before.
 func (o Options) elsewhere(section, previous, line string) bool {
-	return o.OtherRepositories != nil && o.OtherRepositories.MatchString(section+"\n"+previous+" "+line)
+	return o.OtherRepositories != nil && o.OtherRepositories.MatchString(section+"\n"+previous+" "+strings.TrimLeft(line, " \t"))
 }
 
 func unresolvedIn(o Options, doc string, tops map[string]bool) ([]string, error) {

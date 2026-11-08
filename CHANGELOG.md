@@ -1,5 +1,12 @@
 # Changelog
 
+## testing/doctruth v2.40.1 — 2026-11-08
+
+- **fix(testing/doctruth): a repository name broken before an indented line
+  matches.** The continuation of a list item starts with its indent, so
+  "the account" and "  platform's" did not join as "account platform"; the
+  line is joined without its indent.
+
 ## testing/doctruth v2.40.0 — 2026-11-08
 
 - **feat(testing/doctruth): a repository's docs stay true to its tree, as

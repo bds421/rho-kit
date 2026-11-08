@@ -100,7 +100,7 @@ func TestACitedPathThatIsGoneFails(t *testing.T) {
 		".gitignore":           "dist/\n",
 		"docs/adr/0001-x.md": "# 1. X\n\n`internal/store` exists, `internal/gone.go` not.\n" +
 			"A build output `dist/stats.html`, a tag `cmd/tool/vX.Y.Z`.\n" +
-			"The other\nservice's `internal/theirs.go`.\n\n" +
+			"- The other\n  service's `internal/theirs.go`.\n\n" +
 			"**In the other service**\n\n- `internal/theirs/a.go`\n\n## Back here\n\n`cmd/missing`\n",
 		"deploy/sub/NOTES.md": "`internal/not-a-document`\n",
 	}, "cmd/tool", "internal/store", "internal/billing", "internal/store/wire", "internal/store/wire/entity", "internal/store/wire/report"))
