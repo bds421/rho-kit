@@ -13,7 +13,8 @@ import (
 
 // RetentionRecord reads the sealed record of what [Store.ApplyCut] removed
 // from audit_log_retention: zero when nothing was removed yet,
-// [auditlog.ErrRecordUnsealed] when its seal does not hold under key. A
+// [auditlog.ErrRecordUnsealed] when its seal does not hold under key, an
+// error for a key too short to seal. A
 // role that only reads the chain may read it.
 func (s *Store) RetentionRecord(ctx context.Context, key []byte) (auditlog.RetentionRecord, error) {
 	if s == nil || s.pool == nil {
@@ -117,8 +118,7 @@ func readRecord(ctx context.Context, q rowQuerier, key []byte, lock bool) (audit
 	var seal []byte
 	err := q.QueryRow(ctx, query).Scan(&r.Watermark, &r.Removed, &r.PrunedBefore, &r.PrunedAt, &seal)
 	if errors.Is(err, pgx.ErrNoRows) {
-		_, err := r.Seal(key)
-		return auditlog.RetentionRecord{}, err
+		return auditlog.RetentionRecord{}, nil
 	}
 	if err != nil {
 		return auditlog.RetentionRecord{}, fmt.Errorf("auditlog/postgres: read the retention record: %w", err)

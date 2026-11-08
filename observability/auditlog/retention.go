@@ -12,6 +12,8 @@ type RetentionStore interface {
 	Store
 	// RetentionRecord returns the record, zero when nothing was removed
 	// yet, or [ErrRecordUnsealed] when its seal does not hold under key.
+	// Only a stored record needs the key: a verifier without it fails once
+	// the first sweep wrote one.
 	RetentionRecord(ctx context.Context, key []byte) (RetentionRecord, error)
 	// ApplyCut removes the events c names, in one transaction with the
 	// record that then replaces the stored one, sealed with key; it

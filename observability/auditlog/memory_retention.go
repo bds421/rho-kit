@@ -53,9 +53,6 @@ func (m *MemoryStore) ApplyCut(ctx context.Context, c Cut, key []byte, minimum t
 
 func (m *MemoryStore) sealedRecord(key []byte) (RetentionRecord, error) {
 	if m.seal == nil {
-		if _, err := m.record.Seal(key); err != nil {
-			return RetentionRecord{}, err
-		}
 		return RetentionRecord{}, nil
 	}
 	if err := m.record.CheckSeal(key, m.seal); err != nil {
