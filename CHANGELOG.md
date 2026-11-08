@@ -1,6 +1,6 @@
 # Changelog
 
-## observability v2.43.0, observability/auditlog/postgres v2.43.0 — 2026-11-09
+## observability v2.43.0, observability/auditlog/postgres v2.43.0 — 2026-11-08
 
 - **feat(observability/auditlog): one retention mechanism with a sealed
   record.** `ComputeCut` (and `Logger.ComputeCut`) verifies the chain and
