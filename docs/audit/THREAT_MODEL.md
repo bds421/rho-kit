@@ -72,7 +72,7 @@ is a single-tenant breach; disclosure of `[5]` is catastrophic.
 | 3 | **Authentication tokens** — JWTs / PASETOs in flight, OAuth client secrets, refresh tokens | Headers / cookies; never persisted by the kit | Token TTL | Per-user |
 | 4 | **Session secrets** — CSRF HMAC keys, signed-request HMAC keys, idempotency owner tokens | `core/secret`-wrapped config; never logged | Process / config rotation | Per-deployment |
 | 5 | **Long-lived signing & encryption keys** — JWKS private keys, envelope KEKs, audit-log HMAC keys | KMS / Vault / mounted secret files; the kit only sees handles or short-lived material | Months → years | Catastrophic if leaked |
-| 6 | **Audit trail** — `observability/auditlog` records: who did what to which tenant's data and when | Append-only DB with HMAC chain | Retention policy (default 90d) | Compliance / forensic |
+| 6 | **Audit trail** — `observability/auditlog` records: who did what to which tenant's data and when | Append-only DB with HMAC chain | Retention period and its minimum set by the caller | Compliance / forensic |
 | 7 | **LLM / external API cost budgets** — per-tenant or global spend caps for paid backends | Application-level — kit provides primitives, services own the policy | Hour / day / month | Operational / financial |
 | 8 | **Operational state** — message broker offsets, outbox claims, leader-election leases, idempotency keys, distributed locks | Broker / DB / Redis | Bounded by feature | Liveness |
 
@@ -705,9 +705,22 @@ event. The database sequence is covered by no HMAC.
   verification failing, except removing the newest events (truncating the
   tail): without an anchor that is never detected; with one, removing the
   anchored event or any before it is, unless the watermark (and `Removed`,
-  if given) is moved with it, which looks the same as retention. Keep the
-  watermark and `Removed` where the store writer cannot change them (sealed
-  with a key only the retention run holds) to rule that out.
+  if given) is moved with it, which looks the same as retention. The
+  `RetentionRecord` (watermark, `Removed`, cut, time) is sealed with a
+  retention key the store writer does not hold, so without that key such a
+  move fails with `ErrRecordUnsealed`.
+- Retention removes only a cut computed from the verified chain
+  (`ComputeCut`): the oldest contiguous events written before its `Before`,
+  never the newest. The store removes them only while the oldest rows are
+  still exactly the cut's HMACs (`Cut.Holds`, rows locked) and writes the
+  sealed record in the same transaction. Split between roles, the verifying
+  role signs the cut (Ed25519 by default) and the removing role holds only
+  the public key and the retention key: it cannot make a cut of its own,
+  nor apply one after the chain moved or after its lifetime. Whoever holds
+  the retention key can still write a record of its own; the anchor and
+  `PrunedBefore` (never within the caller's minimum before now, and the
+  first remaining event not older than it) bound what that passes off as
+  retention.
 - Without an anchor, verification proves only that the stored events form
   one chain under the listed keys with the rotation rules: whoever holds
   any listed key can replace the tail from any point sealed by that key

@@ -1,17 +1,10 @@
 -- +goose Up
 -- Retention: this is a tamper-evident, append-only HMAC chain. Rows are
--- never updated in place and there is no per-row TTL. The kit DOES ship
--- a retention path — Store.DeleteBefore(ctx, cutoff) prunes the head of
--- the chain (driven by auditlog.RetentionJob on a schedule). Pruning the
--- head necessarily invalidates the plain VerifyChain, because the
--- surviving oldest event's prev_hmac points at a now-deleted record; use
--- the watermark-aware Logger.VerifyChainFrom / VerifyChainFrom after any
--- prune. A manual DELETE that is NOT a contiguous head prune (e.g.
--- deleting interior rows) silently breaks chain verification with no
--- watermark recovery — operators MUST only prune the oldest contiguous
--- range and record the surviving head's prev_hmac as the watermark. For
--- very large deployments, prefer native range partitioning by
--- occurred_at and DETACH/DROP whole partitions (still head-only).
+-- never updated in place and there is no per-row TTL. Retention removes
+-- only the oldest contiguous events, by a cut computed from the verified
+-- chain (auditlog.ComputeCut) and applied by Store.ApplyCut, which keeps
+-- the sealed record (audit_log_retention) the rest of the chain verifies
+-- from. Any other DELETE breaks verification.
 CREATE TABLE IF NOT EXISTS audit_log_events (
     id            VARCHAR(36) PRIMARY KEY,
     -- seq is the monotonic append-order index produced by Postgres at

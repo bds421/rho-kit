@@ -171,7 +171,7 @@ func VerifyChain(events []Event, chainKey []byte) error {
 // PrevHMAC.
 //
 // A watermark is the HMAC of the last event that was removed from the
-// head of the chain by a retention sweep (see [RetentionJob]). Passing
+// head of the chain by a retention sweep ([RetentionRecord.Watermark]). Passing
 // the watermark lets verification accept the new oldest event whose
 // PrevHMAC links to that now-deleted record, which the genesis-anchored
 // [VerifyChain] would otherwise reject as [ErrChainBroken] forever after
@@ -189,10 +189,6 @@ func VerifyChain(events []Event, chainKey []byte) error {
 //     still enforced. An attacker who truncates the head to an arbitrary
 //     point cannot supply a matching watermark without the chain key, and
 //     cannot alter content without breaking a per-event HMAC.
-//
-// Operators who wire the documented @daily retention job and also want
-// tamper-evidence should persist the watermark (the deleted tail HMAC)
-// alongside the surviving records and feed it here.
 //
 // VerifyChainFrom treats an empty slice as a valid (degenerate) chain
 // regardless of the watermark.

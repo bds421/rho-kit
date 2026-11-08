@@ -61,10 +61,10 @@ type HeadReader interface {
 // Verification anchors a chain verification.
 type Verification struct {
 	// Watermark is the HMAC of the last event a retention sweep removed
-	// (see [RetentionJob]); empty requires a genesis head.
+	// ([RetentionRecord.Watermark]); empty requires a genesis head.
 	Watermark []byte
 	// Removed is how many events retention removed in all, through the
-	// watermark (the sum of what [RetentionStore.DeleteBefore] returned),
+	// watermark ([RetentionRecord.Removed]),
 	// kept with the watermark where whoever can write the store cannot
 	// change it; it needs a watermark. With it, positions count from the
 	// chain's first event ever: [Head.Events] includes the removed events,
@@ -76,7 +76,9 @@ type Verification struct {
 	// counts as pruned only when its [Head.At] is before PrunedBefore; an
 	// anchor without a time, or written since, fails with [ErrChainBroken],
 	// so a sweep within the retention period, from a forged or mis-made
-	// record, cannot pass as retention. Zero skips the check.
+	// record, cannot pass as retention. Retention removes only events
+	// written before its cut, so past a watermark the first remaining event
+	// must not be older than PrunedBefore either. Zero skips the check.
 	PrunedBefore time.Time
 	// Anchor is the [Head] an earlier verification returned, kept where
 	// whoever can write the store cannot change it. The chain must still
@@ -222,6 +224,8 @@ type chainVerifier struct {
 	oldest    int // index of the oldest key any walked event carries
 	sealing   int // index of the key that seals the next event
 	index     int
+	// observe, when set, sees each event once it verified.
+	observe func(Event)
 }
 
 func newChainVerifier(keys []ChainKey, sealing int, v Verification) (*chainVerifier, error) {
@@ -272,6 +276,9 @@ func (c *chainVerifier) step(event Event) error {
 	if sealer < 0 {
 		return fmt.Errorf("%w: event[%d] HMAC does not match canonical content", ErrChainBroken, i)
 	}
+	if i == 0 && len(c.v.Watermark) > 0 && event.Timestamp.Before(c.v.PrunedBefore) {
+		return fmt.Errorf("%w: event[0] was written before the retention cut", ErrChainBroken)
+	}
 	id := c.keys[sealer].ID
 	if err := c.checkAnchor(event, sealer); err != nil {
 		return err
@@ -298,6 +305,9 @@ func (c *chainVerifier) step(event Event) error {
 		c.prevAt = event.Timestamp
 	}
 	c.index++
+	if c.observe != nil {
+		c.observe(event)
+	}
 	return nil
 }
 

@@ -27,7 +27,7 @@ type Head struct {
 	// newest event leaves it at the time of what was written before. As an
 	// anchor it lets [Verification.PrunedBefore] tell whether retention,
 	// which removes a contiguous oldest part all written before its cut
-	// ([RetentionStore.DeleteBefore]), can have removed the anchored event.
+	// ([Cut]), can have removed the anchored event.
 	At time.Time
 }
 

@@ -2,7 +2,7 @@
 -- Retention: this is a tamper-evident, append-only per-tenant hash chain
 -- (prev_hash + seq + signature). Unlike outbox (DeletePublishedBefore /
 -- DeleteFailedBefore), idempotency (DeleteExpired), and auditlog
--- (DeleteBefore), the actionlog store ships NO Delete/Prune method — by
+-- (ApplyCut), the actionlog store ships NO Delete/Prune method — by
 -- design, because any row deletion or reordering breaks the per-tenant
 -- chain on the next VerifyChain call (there is no watermark-recovery
 -- equivalent here). The table therefore grows unbounded for the life of
