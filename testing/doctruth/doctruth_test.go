@@ -100,14 +100,14 @@ func TestACitedPathThatIsGoneFails(t *testing.T) {
 		".gitignore":           "dist/\n",
 		"docs/adr/0001-x.md": "# 1. X\n\n`internal/store` exists, `internal/gone.go` not.\n" +
 			"A build output `dist/stats.html`, a tag `cmd/tool/vX.Y.Z`.\n" +
-			"The other service's `internal/theirs.go`.\n\n" +
+			"The other\nservice's `internal/theirs.go`.\n\n" +
 			"**In the other service**\n\n- `internal/theirs/a.go`\n\n## Back here\n\n`cmd/missing`\n",
 		"deploy/sub/NOTES.md": "`internal/not-a-document`\n",
 	}, "cmd/tool", "internal/store", "internal/billing", "internal/store/wire", "internal/store/wire/entity", "internal/store/wire/report"))
 	f := check(t, Options{Root: root, OtherRepositories: regexp.MustCompile(`(?i)other service`)})
 	want := []string{
 		"docs/adr/0001-x.md:3 cites internal/gone.go, which does not exist",
-		"docs/adr/0001-x.md:13 cites cmd/missing, which does not exist",
+		"docs/adr/0001-x.md:14 cites cmd/missing, which does not exist",
 	}
 	if !slices.Equal(f, want) {
 		t.Fatalf("got %q, want %q", f, want)
