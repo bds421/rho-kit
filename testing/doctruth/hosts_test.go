@@ -130,3 +130,26 @@ func TestAFailingGoListSaysWhy(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAModuleNothingIsBuiltFromIsAnError(t *testing.T) {
+	o := hostOptions(hostsRepository(t, nil))
+	o.Modules = []string{"example.invalid/svc", "example.invalid/misspelt"}
+	if _, err := CheckHosts(o); err == nil || !strings.Contains(err.Error(), "example.invalid/misspelt") {
+		t.Fatal(err)
+	}
+}
+
+func TestSkippedFilesAreNotScanned(t *testing.T) {
+	root := hostsRepository(t, map[string]string{
+		"internal/attest/e.go":           "package attest\n\nimport _ \"embed\"\n\n//go:embed schemas/*.json\nvar schemas string\n",
+		"internal/attest/schemas/a.json": "{\"example\": \"https://registry.io/x\"}\n",
+	})
+	o := hostOptions(root)
+	if f := checkHosts(t, o); len(f) != 1 {
+		t.Fatal(f)
+	}
+	o.SkipFiles = []string{"internal/attest/schemas/*.json"}
+	if f := checkHosts(t, o); len(f) > 0 {
+		t.Fatal(f)
+	}
+}
