@@ -13,10 +13,17 @@
 - **feat(observability/auditlog): `VerifyStore`.** Anchored verification
   with the chain keys alone, for operator tooling that neither appends nor
   lists and so holds no cursor key.
-- **feat(observability/auditlog): `Head` as text.** `MarshalText` writes a
-  head as one word, `events:keyID:hmac` in hex, and `UnmarshalText` reads
-  it back (`ErrInvalidHead` otherwise), so operators keep and pass back the
-  whole anchor.
+- **feat(observability/auditlog): `Verification.PrunedBefore` keeps a
+  sweep within the retention period from passing as retention.** An anchor
+  that is gone counts as pruned only when its time is before PrunedBefore
+  (the earlier of the recorded cut and now minus the retention period);
+  without a time, or written since, it fails with `ErrChainBroken`.
+- **feat(observability/auditlog): `Head` carries its event's time and is
+  text.** `Head.At` is when the newest walked event was written.
+  `MarshalText` writes a head as one word, `events:keyID:hmac:at` (HMAC in
+  hex, at in Unix microseconds, empty only when no event was walked), and
+  `UnmarshalText` reads it back (`ErrInvalidHead` otherwise), so operators
+  keep and pass back the whole anchor.
 
 ## testing/doctruth v2.41.1 — 2026-11-08
 

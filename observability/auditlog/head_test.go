@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,7 +26,7 @@ func TestVerify_RemovedCountsPositionsFromTheFirstEventEver(t *testing.T) {
 	v := Verification{Watermark: events[1].HMAC, Removed: 2}
 	head, err := VerifyChainKeys(events[2:], bothKeys, v)
 	require.NoError(t, err)
-	assert.Equal(t, Head{HMAC: events[4].HMAC, Events: 5, KeyID: "2"}, head)
+	assert.Equal(t, Head{HMAC: events[4].HMAC, Events: 5, KeyID: "2", At: events[4].Timestamp}, head)
 
 	v.Anchor = Head{HMAC: events[3].HMAC, Events: 4, KeyID: "2"}
 	_, err = VerifyChainKeys(events[2:], bothKeys, v)
@@ -88,9 +89,10 @@ func TestVerifyStore_NeedsOnlyTheChainKeys(t *testing.T) {
 }
 
 func TestHead_TextRoundTrips(t *testing.T) {
+	at := time.Date(2026, 11, 8, 6, 0, 0, 123456000, time.UTC)
 	for _, h := range []Head{
-		{HMAC: bytes.Repeat([]byte{0xab}, hmacSize), Events: 12, KeyID: "k-2"},
-		{HMAC: bytes.Repeat([]byte{1}, hmacSize), Events: 3},
+		{HMAC: bytes.Repeat([]byte{0xab}, hmacSize), Events: 12, KeyID: "k-2", At: at},
+		{HMAC: bytes.Repeat([]byte{1}, hmacSize), Events: 3, At: at},
 		{Events: 0, KeyID: "2"},
 		{},
 	} {
@@ -101,14 +103,60 @@ func TestHead_TextRoundTrips(t *testing.T) {
 		assert.Equal(t, h.Events, back.Events)
 		assert.Equal(t, h.KeyID, back.KeyID)
 		assert.True(t, bytes.Equal(h.HMAC, back.HMAC))
+		assert.True(t, h.At.Equal(back.At), string(text))
 	}
-	text, _ := Head{HMAC: []byte{0xab, 0xcd}, Events: 7, KeyID: "2"}.MarshalText()
-	assert.Equal(t, "7:2:abcd", string(text))
+	text, _ := Head{HMAC: []byte{0xab, 0xcd}, Events: 7, KeyID: "2", At: time.UnixMicro(1793340000000123)}.MarshalText()
+	assert.Equal(t, "7:2:abcd:1793340000000123", string(text))
 }
 
 func TestHead_UnmarshalTextRefusesWhatItDidNotWrite(t *testing.T) {
-	for _, text := range []string{"", "7:2", "7:2:ab:cd", "x:2:ab", "-1:2:ab", "07:2:ab", "7:k.y:ab", "7:2:zz", "7:2:"} {
+	for _, text := range []string{"", "7:2:abcd", "7:2:ab:1:x", "x:2:ab:1", "-1:2:ab:1", "07:2:ab:1", "7:k.y:ab:1", "7:2:zz:1", "7:2::1", "7:2:ab:01", "7:2:ab:t"} {
 		var h Head
 		assert.ErrorIs(t, h.UnmarshalText([]byte(text)), ErrInvalidHead, text)
 	}
+}
+
+// timedEvents is a chain of four events written a day apart, the newest now.
+func timedEvents(t *testing.T, now time.Time) []Event {
+	t.Helper()
+	store := NewMemoryStore()
+	l := unkeyed(store, testChainKey)
+	for i := 3; i >= 0; i-- {
+		require.NoError(t, l.LogE(context.Background(), Event{Actor: "a", Action: "x", Resource: "r", Status: "success", Timestamp: now.Add(-time.Duration(i) * 24 * time.Hour)}))
+	}
+	return store.Events()
+}
+
+func TestVerify_PrunedBeforeTellsRetentionFromARecentCut(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	events := timedEvents(t, now)
+	keys := []ChainKey{{Key: testChainKey}}
+	anchor := Head{HMAC: events[1].HMAC, Events: 2, At: events[1].Timestamp}
+	v := Verification{Watermark: events[2].HMAC, Removed: 3, Anchor: anchor}
+
+	v.PrunedBefore = now.Add(-36 * time.Hour)
+	_, err := VerifyChainKeys(events[3:], keys, v)
+	require.ErrorIs(t, err, ErrAnchorPruned, "retention removed what was written before its cut")
+
+	v.PrunedBefore = events[1].Timestamp
+	_, err = VerifyChainKeys(events[3:], keys, v)
+	require.ErrorIs(t, err, ErrChainBroken, "an anchor written at the cut")
+	assert.NotErrorIs(t, err, ErrAnchorPruned)
+	assert.Contains(t, err.Error(), "no retention can have removed it")
+
+	v.PrunedBefore, v.Anchor.At = now.Add(-36*time.Hour), time.Time{}
+	_, err = VerifyChainKeys(events[3:], keys, v)
+	assert.ErrorIs(t, err, ErrChainBroken, "an anchor without its time")
+}
+
+func TestVerify_TheHeadCarriesItsEventsTime(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	events := timedEvents(t, now)
+	head, err := VerifyChainKeys(events, []ChainKey{{Key: testChainKey}}, Verification{})
+	require.NoError(t, err)
+	assert.True(t, head.At.Equal(events[3].Timestamp))
+
+	head, err = VerifyChainKeys(nil, []ChainKey{{Key: testChainKey}}, Verification{Watermark: events[3].HMAC, Removed: 4})
+	require.NoError(t, err)
+	assert.True(t, head.At.IsZero(), "no event walked")
 }

@@ -671,10 +671,11 @@ appends through the chain lock. Replicas on kit versions without this check
 still break the chain: upgrade every replica before rotating.
 
 **Head anchor.** `Logger.Verify(ctx, Verification{Watermark, Removed,
-Anchor})` (or `VerifyStore` with the chain keys alone) returns the `Head`
-it verified: the newest event's HMAC, its position (`Events`) and the ID
-of the key that sealed it; `MarshalText` writes it as one word,
-`events:keyID:hmac`, and `UnmarshalText` reads it back. Kept whole where
+PrunedBefore, Anchor})` (or `VerifyStore` with the chain keys alone)
+returns the `Head` it verified: the newest event's HMAC, its position
+(`Events`), the ID of the key that sealed it and when it was written
+(`At`); `MarshalText` writes it as one word, `events:keyID:hmac:at`, and
+`UnmarshalText` reads it back. Kept whole where
 store writers cannot reach it and passed back as `Anchor`, the chain must
 still contain that event, sealed by that key and at that position, and no
 event from it on may carry an older key. Past a watermark the position is
@@ -687,7 +688,12 @@ or a newer one. When the anchored event is gone past a watermark,
 verification returns `ErrAnchorPruned` (not `ErrChainBroken`) as long as
 no remaining event carries a key older than the anchored one and, with
 `Removed`, the anchor's position is among the removed events; an anchor
-past them was cut with the tail and fails with `ErrChainBroken`. The head
+past them was cut with the tail and fails with `ErrChainBroken`. With
+`PrunedBefore`, the earlier of the recorded retention cut and now minus
+the retention period, a gone anchor also needs its `At` before it: one
+without a time, or written since, fails with `ErrChainBroken`, so a sweep
+within the retention period (a forged or mis-made record, even sealed with
+the retention run's key) does not pass as retention. The head
 of an empty chain names the sealing key, the one that seals the next
 event. The database sequence is covered by no HMAC.
 

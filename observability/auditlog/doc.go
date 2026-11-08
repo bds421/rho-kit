@@ -84,7 +84,8 @@
 // events including the anchored one looks the same unless
 // [Verification.Removed] gives how many events retention removed in all:
 // then an anchor past those fails with [ErrChainBroken], as does an event
-// with a key older than the anchored one. Verify with the anchor before
+// with a key older than the anchored one and, with
+// [Verification.PrunedBefore], an anchor written since the retention cut. Verify with the anchor before
 // every retention run. Tooling that holds only the chain keys verifies
 // with [VerifyStore]. Without an anchor,
 // verification shows only that the stored events form one chain under the

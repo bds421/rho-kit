@@ -294,7 +294,7 @@ func TestVerify_AnchoredRotatedChainPasses(t *testing.T) {
 	logOne(t, l, "later")
 	head, err := l.Verify(ctx, Verification{Anchor: anchor})
 	require.NoError(t, err)
-	assert.Equal(t, Head{HMAC: store.Events()[3].HMAC, Events: 4, KeyID: "2"}, head)
+	assert.Equal(t, Head{HMAC: store.Events()[3].HMAC, Events: 4, KeyID: "2", At: store.Events()[3].Timestamp}, head)
 }
 
 func TestVerify_AnchoredKeyMustBeListed(t *testing.T) {

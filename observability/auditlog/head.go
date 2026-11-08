@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Head is the newest event a successful verification walked; keep all of
@@ -21,22 +22,32 @@ type Head struct {
 	// that seals the next one when no event was walked; empty for the
 	// unkeyed [WithChainKey] key.
 	KeyID string
+	// At is when the newest event was written, as its HMAC covers it; zero
+	// when no event was walked. As an anchor it lets
+	// [Verification.PrunedBefore] tell whether retention can have removed
+	// the anchored event.
+	At time.Time
 }
 
 // ErrInvalidHead is returned by [Head.UnmarshalText] for text that is not
 // a head [Head.MarshalText] wrote.
 var ErrInvalidHead = errors.New("auditlog: not a chain head")
 
-// MarshalText writes the head as one word, events:keyID:hmac in hex, for
+// MarshalText writes the head as one word, events:keyID:hmac:at, the HMAC in
+// hex and at in Unix microseconds (empty only when no event was walked), for
 // operators to keep off the host and pass back.
 func (h Head) MarshalText() ([]byte, error) {
-	return []byte(strconv.Itoa(h.Events) + ":" + h.KeyID + ":" + hex.EncodeToString(h.HMAC)), nil
+	at := ""
+	if !h.At.IsZero() {
+		at = strconv.FormatInt(h.At.UnixMicro(), 10)
+	}
+	return []byte(strconv.Itoa(h.Events) + ":" + h.KeyID + ":" + hex.EncodeToString(h.HMAC) + ":" + at), nil
 }
 
 // UnmarshalText reads a head [Head.MarshalText] wrote.
 func (h *Head) UnmarshalText(text []byte) error {
 	parts := strings.Split(string(text), ":")
-	if len(parts) != 3 {
+	if len(parts) != 4 {
 		return ErrInvalidHead
 	}
 	events, err := strconv.Atoi(parts[0])
@@ -46,11 +57,19 @@ func (h *Head) UnmarshalText(text []byte) error {
 	if parts[1] != "" && !keyIDPattern.MatchString(parts[1]) {
 		return ErrInvalidHead
 	}
+	var at time.Time
+	if parts[3] != "" {
+		micros, err := strconv.ParseInt(parts[3], 10, 64)
+		if err != nil || strconv.FormatInt(micros, 10) != parts[3] {
+			return ErrInvalidHead
+		}
+		at = time.UnixMicro(micros).UTC()
+	}
 	mac, err := hex.DecodeString(parts[2])
 	if err != nil || (events > 0 && len(mac) == 0) {
 		return ErrInvalidHead
 	}
-	*h = Head{HMAC: mac, Events: events, KeyID: parts[1]}
+	*h = Head{HMAC: mac, Events: events, KeyID: parts[1], At: at}
 	return nil
 }
 
