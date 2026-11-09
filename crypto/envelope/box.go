@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"strings"
 )
 
 // Box seals values for one purpose, each bound to what it belongs to: a
@@ -17,16 +16,8 @@ import (
 //	uvarint(len(binding[0])) ‖ binding[0] ‖ … ‖ uvarint(len(binding[n-1])) ‖ binding[n-1]
 //
 // so every element keeps its boundary: Seal(x, "a/b") and Seal(x, "a", "b")
-// are bound to different data.
-//
-// Before v2.37.0 the caller AAD was purpose and binding joined by "/",
-// which made those two calls interchangeable. Open still accepts values
-// sealed that way, after the current layout fails; the KEK is called once
-// either way. A legacy AAD starts with the purpose, which NewBox refuses
-// to start with a NUL byte, so no legacy AAD equals a current one: a value
-// sealed now never opens under the joined form, and a legacy value never
-// opens under the current form for another binding. Reseal legacy values
-// (Open, then Seal) to give them the unambiguous binding.
+// are bound to different data. A value sealed under any other caller AAD,
+// such as purpose and binding joined by "/" before v2.37.0, does not open.
 type Box struct {
 	enc     *Encryptor
 	purpose string
@@ -52,10 +43,9 @@ func (b *Box) Seal(ctx context.Context, plain []byte, binding ...string) ([]byte
 	return b.enc.Encrypt(ctx, plain, b.aad(binding))
 }
 
-// Open decrypts what Seal sealed with the same binding, including values
-// sealed before v2.37.0 (see [Box]).
+// Open decrypts what Seal sealed with the same binding.
 func (b *Box) Open(ctx context.Context, sealed []byte, binding ...string) ([]byte, error) {
-	return b.enc.decryptFirst(ctx, sealed, b.aad(binding), b.legacyAAD(binding))
+	return b.enc.Decrypt(ctx, sealed, b.aad(binding))
 }
 
 func (b *Box) aad(binding []string) []byte {
@@ -75,10 +65,6 @@ func (b *Box) aad(binding []string) []byte {
 func appendLengthPrefixed(out []byte, s string) []byte {
 	out = binary.AppendUvarint(out, uint64(len(s)))
 	return append(out, s...)
-}
-
-func (b *Box) legacyAAD(binding []string) []byte {
-	return []byte(strings.Join(append([]string{b.purpose}, binding...), "/"))
 }
 
 // ErrNilBox is returned by SealJSON and OpenJSON without a Box.

@@ -1,3 +1,7 @@
+// Only version 3 reads: a blob of any other version, such as v2 with its
+// uint8 kL and `callerAAD || domainSep` body AAD, fails with
+// ErrUnsupportedVer. Seal a value anew (Decrypt, then Encrypt) while the
+// release that reads its version is still deployed.
 // Package envelope implements envelope encryption: a fresh AES-256-GCM
 // DEK is generated per Encrypt call, wrapped under a KEK (the
 // key-encryption-key — typically a KMS-managed master key), and emitted
@@ -31,13 +35,14 @@
 //	  - n: AES-GCM nonce (12 bytes).
 //	  - ct+tag: AES-256-GCM(plaintext, AAD := domainSep || varint(len(callerAAD)) || callerAAD).
 //
-// v2 blobs continue to decrypt: the version byte selects parser and
-// AAD layout. v2 used uint8 kL and `callerAAD || domainSep` for the
-// body AAD; v3 length-prefixes both keyID (uint16) and caller AAD
-// (uvarint) and puts the domain separator first.
+// Version 3 is the only one that reads: a blob of any other version,
+// such as v2 with its uint8 kL and `callerAAD || domainSep` body AAD,
+// fails with ErrUnsupportedVer. Seal a value anew (Decrypt, then
+// Encrypt) while a release that still reads its version is deployed.
 //
-// AAD binding (v3): the AAD passed to the body GCM is the v3 domain
-// separator followed by a varint length-prefixed caller AAD. The wrap
+// AAD binding: the AAD passed to the body GCM is the domain separator
+// followed by a varint length-prefixed caller AAD, so no two caller
+// AADs share a MAC pre-image. The wrap
 // header (keyID, wDEK) is NOT included in the body AAD — this is what
 // makes [Encryptor.Rewrap] work without re-encrypting the plaintext.
 // Tampering with the wrap header is detected by the KEK's own AEAD tag
@@ -45,10 +50,6 @@
 // by the KEK or recovers a wrong DEK that fails the body's GCM-Open.
 // Tampering with keyID is detected the same way (unknown keyID
 // rejected by KEK, or wrong DEK fails body open).
-//
-// v3 also closes a collision in the v2 AAD derivation: two callers
-// could craft AADs whose concatenated MAC pre-image was identical
-// once the v2 suffix was appended. v3's length prefix removes that.
 //
 // KMS EncryptionContext vs caller AAD: KMS-backed KEK adapters
 // (awskms, azurekeyvault, gcpkms, vaulttransit) treat the

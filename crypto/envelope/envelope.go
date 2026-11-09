@@ -16,17 +16,9 @@ import (
 // blobMagic is the 3-byte header prefix that identifies an envelope blob.
 var blobMagic = [3]byte{'E', 'N', 'V'}
 
-// Blob format versions. v3 length-prefixes the caller-supplied AAD
-// and a 16-bit keyID length so two distinct caller-AAD inputs cannot
-// collide once concatenated with the domain separator. v2 is accepted
-// on the read path for blobs written before the upgrade.
-const (
-	blobVersionV2 uint8 = 2
-	blobVersionV3 uint8 = 3
-)
-
-// blobVersion is the version Encrypt writes by default.
-const blobVersion = blobVersionV3
+// blobVersion is the one blob format version Encrypt writes and Decrypt
+// and Rewrap read; any other version fails with ErrUnsupportedVer.
+const blobVersion uint8 = 3
 
 // dekLen is the AES-256 DEK length in bytes.
 const dekLen = 32
@@ -40,17 +32,11 @@ const gcmTagLen = 16
 // minBodyLen is iv(12) || ct || tag(16); bodies shorter than this cannot be well-formed.
 const minBodyLen = nonceLen + gcmTagLen
 
-// aadDomainSepV2 is the fixed AAD suffix used in v2 blobs. v2 readers
-// continue to use this so legacy blobs decrypt unchanged.
-var aadDomainSepV2 = []byte("rho-kit/envelope/v2")
-
-// aadDomainSepV3 is the fixed AAD prefix used in v3 blobs. The v3
-// body AAD is `aadDomainSepV3 || uvarint(len(callerAAD)) || callerAAD`
-// — putting the separator FIRST and length-prefixing the caller AAD
-// removes the v2 collision in which caller AADs that happened to end
-// with bytes resembling the separator could be canonicalised to the
-// same MAC input.
-var aadDomainSepV3 = []byte("rho-kit/envelope/v3")
+// aadDomainSep is the fixed AAD prefix of the blob body. The body AAD is
+// `aadDomainSep || uvarint(len(callerAAD)) || callerAAD`: the separator
+// first and the caller AAD length-prefixed, so no two caller AADs share
+// a MAC input.
+var aadDomainSep = []byte("rho-kit/envelope/v3")
 
 // Sentinel errors. Verify-style checks all wrap one of these so callers
 // can branch without parsing the underlying error message.
@@ -152,7 +138,7 @@ func (e *Encryptor) Encrypt(ctx context.Context, plaintext, aad []byte) ([]byte,
 	// in its body segment ("iv ‖ ct ‖ tag"). No separate nonce write
 	// is needed — the format on disk is identical to the pre-Tink
 	// implementation that called gcm.Seal(nonce, …).
-	sealed, err := bodyAEAD.Encrypt(plaintext, combineAAD(blobVersion, aad))
+	sealed, err := bodyAEAD.Encrypt(plaintext, combineAAD(aad))
 	if err != nil {
 		return nil, fmt.Errorf("envelope: seal body: %w", err)
 	}
@@ -167,17 +153,10 @@ func (e *Encryptor) Encrypt(ctx context.Context, plaintext, aad []byte) ([]byte,
 // authenticates+decrypts the payload. aad must match what was passed
 // to [Encryptor.Encrypt].
 func (e *Encryptor) Decrypt(ctx context.Context, blob, aad []byte) ([]byte, error) {
-	return e.decryptFirst(ctx, blob, aad)
-}
-
-// decryptFirst unwraps the DEK once and opens the body with the first of
-// aads that authenticates it, so a reader accepting an older AAD layout
-// costs no second KEK call.
-func (e *Encryptor) decryptFirst(ctx context.Context, blob []byte, aads ...[]byte) ([]byte, error) {
 	if err := e.validate(ctx); err != nil {
 		return nil, err
 	}
-	version, keyID, wrapped, body, err := parseBlob(blob)
+	keyID, wrapped, body, err := parseBlob(blob)
 	if err != nil {
 		return nil, err
 	}
@@ -203,12 +182,11 @@ func (e *Encryptor) decryptFirst(ctx context.Context, blob []byte, aads ...[]byt
 	// fails closed on tampered ciphertext, swapped wrap headers
 	// (wrong DEK), or AAD mismatch — see package doc for the
 	// rationale on why the wrap header is excluded from the body AAD.
-	for _, aad := range aads {
-		if pt, err := bodyAEAD.Decrypt(body, combineAAD(version, aad)); err == nil {
-			return pt, nil
-		}
+	pt, err := bodyAEAD.Decrypt(body, combineAAD(aad))
+	if err != nil {
+		return nil, ErrAuthFailed
 	}
-	return nil, ErrAuthFailed
+	return pt, nil
 }
 
 // Rewrap re-encrypts the embedded DEK under the current KEK version
@@ -217,7 +195,7 @@ func (e *Encryptor) decryptFirst(ctx context.Context, blob []byte, aads ...[]byt
 // preserved unchanged — Rewrap does NOT need the caller's AAD because
 // it does not decrypt or re-encrypt the body, only the wrapped DEK.
 //
-// In v2 of the format, the wrap header (keyID + wrapped DEK) is
+// The wrap header (keyID + wrapped DEK) is
 // deliberately NOT bound to the body GCM AAD. This makes a true rewrap
 // possible: unwrap the DEK with the old key, wrap that same DEK under
 // the active key, and emit a new blob with the new wrap header and
@@ -229,7 +207,7 @@ func (e *Encryptor) Rewrap(ctx context.Context, blob []byte) ([]byte, error) {
 	if err := e.validate(ctx); err != nil {
 		return nil, err
 	}
-	version, keyID, wrapped, body, err := parseBlob(blob)
+	keyID, wrapped, body, err := parseBlob(blob)
 	if err != nil {
 		return nil, err
 	}
@@ -261,14 +239,7 @@ func (e *Encryptor) Rewrap(ctx context.Context, blob []byte) ([]byte, error) {
 	if len(newWrapped) > 0xFFFF {
 		return nil, fmt.Errorf("envelope: wrapped DEK exceeds 64 KiB")
 	}
-	// Re-emit a header of the SAME version as the input blob. The body
-	// is left untouched and stays sealed under its original-version AAD,
-	// so flipping the header version (e.g. v2 -> v3) would make Decrypt
-	// derive a different AAD and fail closed, corrupting the record.
-	newHeader, err := buildHeaderVersion(version, newKeyID, newWrapped)
-	if err != nil {
-		return nil, err
-	}
+	newHeader := buildHeader(newKeyID, newWrapped)
 
 	out := make([]byte, 0, len(newHeader)+len(body))
 	out = append(out, newHeader...)
@@ -276,139 +247,63 @@ func (e *Encryptor) Rewrap(ctx context.Context, blob []byte) ([]byte, error) {
 	return out, nil
 }
 
-// buildHeader serialises the current (v3) header. It is a thin wrapper
-// over buildHeaderVersion for the default Encrypt write path; v2 cannot
-// fail validation here because the only caller (Encrypt) writes v3.
+// buildHeader serialises the header: magic, version, uint16 keyID
+// length, keyID bytes, uint16 wrapped-DEK length, wrapped DEK. The 16-bit
+// keyID length leaves room for fully-qualified GCP and Azure key
+// resources.
 func buildHeader(keyID string, wrappedDEK []byte) []byte {
-	out, err := buildHeaderVersion(blobVersion, keyID, wrappedDEK)
-	if err != nil {
-		// blobVersion is a constant and v3 imposes no extra constraints
-		// beyond the validation Encrypt already performed, so this is
-		// unreachable for the default write path.
-		panic(err)
-	}
+	out := make([]byte, 0, 3+1+2+len(keyID)+2+len(wrappedDEK))
+	out = append(out, blobMagic[:]...)
+	out = append(out, blobVersion)
+	var kp [2]byte
+	binary.BigEndian.PutUint16(kp[:], uint16(len(keyID)))
+	out = append(out, kp[:]...)
+	out = append(out, []byte(keyID)...)
+	var lp [2]byte
+	binary.BigEndian.PutUint16(lp[:], uint16(len(wrappedDEK)))
+	out = append(out, lp[:]...)
+	out = append(out, wrappedDEK...)
 	return out
 }
 
-// buildHeaderVersion serialises a header for the given blob version.
-//
-// v3: magic, version, uint16 keyID length, keyID bytes, uint16
-// wrapped-DEK length, wrapped DEK. Bumping keyID's length prefix from
-// uint8 (v2) to uint16 (v3) gives room for fully-qualified GCP and
-// Azure key resources without touching the wrapped-DEK length prefix
-// that already used 16 bits.
-//
-// v2: magic, version, uint8 keyID length, keyID bytes, uint16
-// wrapped-DEK length, wrapped DEK. Rewrap must be able to re-emit a v2
-// header so a legacy v2 blob (whose body is sealed under the v2 AAD)
-// stays decryptable after key rotation; emitting a v3 header would
-// change the AAD derivation and permanently corrupt the record.
-func buildHeaderVersion(version uint8, keyID string, wrappedDEK []byte) ([]byte, error) {
-	switch version {
-	case blobVersionV2:
-		if len(keyID) > 0xFF {
-			return nil, fmt.Errorf("envelope: keyID exceeds v2 uint8 length prefix")
-		}
-		out := make([]byte, 0, 3+1+1+len(keyID)+2+len(wrappedDEK))
-		out = append(out, blobMagic[:]...)
-		out = append(out, blobVersionV2)
-		out = append(out, byte(len(keyID)))
-		out = append(out, []byte(keyID)...)
-		var lp [2]byte
-		binary.BigEndian.PutUint16(lp[:], uint16(len(wrappedDEK)))
-		out = append(out, lp[:]...)
-		out = append(out, wrappedDEK...)
-		return out, nil
-	case blobVersionV3:
-		out := make([]byte, 0, 3+1+2+len(keyID)+2+len(wrappedDEK))
-		out = append(out, blobMagic[:]...)
-		out = append(out, blobVersionV3)
-		var kp [2]byte
-		binary.BigEndian.PutUint16(kp[:], uint16(len(keyID)))
-		out = append(out, kp[:]...)
-		out = append(out, []byte(keyID)...)
-		var lp [2]byte
-		binary.BigEndian.PutUint16(lp[:], uint16(len(wrappedDEK)))
-		out = append(out, lp[:]...)
-		out = append(out, wrappedDEK...)
-		return out, nil
-	default:
-		return nil, fmt.Errorf("envelope: buildHeaderVersion: unknown version %d", version)
-	}
-}
-
-// parseBlob splits a blob into (version, keyID, wrappedDEK, body) where
-// body is nonce || ciphertext+tag. Both v2 and v3 layouts parse; the
-// returned version selects the AAD derivation. Returns ErrMalformed for
-// layout errors and ErrUnsupportedVer for unknown versions.
-func parseBlob(blob []byte) (version uint8, keyID string, wrappedDEK, body []byte, err error) {
+// parseBlob splits a blob into (keyID, wrappedDEK, body) where body is
+// nonce || ciphertext+tag. Returns ErrMalformed for layout errors and
+// ErrUnsupportedVer for any version but the current one.
+func parseBlob(blob []byte) (keyID string, wrappedDEK, body []byte, err error) {
 	if len(blob) < 3+1+1 {
-		return 0, "", nil, nil, ErrTruncated
+		return "", nil, nil, ErrTruncated
 	}
 	if blob[0] != blobMagic[0] || blob[1] != blobMagic[1] || blob[2] != blobMagic[2] {
-		return 0, "", nil, nil, ErrMalformed
+		return "", nil, nil, ErrMalformed
 	}
-	v := blob[3]
-	switch v {
-	case blobVersionV2:
-		return parseBlobV2(blob)
-	case blobVersionV3:
-		return parseBlobV3(blob)
-	default:
-		return 0, "", nil, nil, ErrUnsupportedVer
+	if blob[3] != blobVersion {
+		return "", nil, nil, ErrUnsupportedVer
 	}
-}
-
-func parseBlobV2(blob []byte) (uint8, string, []byte, []byte, error) {
-	kL := int(blob[4])
-	off := 5
-	if len(blob) < off+kL+2 {
-		return 0, "", nil, nil, ErrTruncated
-	}
-	keyID := string(blob[off : off+kL])
-	if err := validateKeyID(keyID); err != nil {
-		return 0, "", nil, nil, ErrMalformed
-	}
-	off += kL
-	wL := int(binary.BigEndian.Uint16(blob[off : off+2]))
-	off += 2
-	if len(blob) < off+wL {
-		return 0, "", nil, nil, ErrTruncated
-	}
-	wrappedDEK := blob[off : off+wL]
-	if len(wrappedDEK) == 0 {
-		return 0, "", nil, nil, ErrMalformed
-	}
-	off += wL
-	return blobVersionV2, keyID, wrappedDEK, blob[off:], nil
-}
-
-func parseBlobV3(blob []byte) (uint8, string, []byte, []byte, error) {
 	off := 4
 	if len(blob) < off+2 {
-		return 0, "", nil, nil, ErrTruncated
+		return "", nil, nil, ErrTruncated
 	}
 	kL := int(binary.BigEndian.Uint16(blob[off : off+2]))
 	off += 2
 	if len(blob) < off+kL+2 {
-		return 0, "", nil, nil, ErrTruncated
+		return "", nil, nil, ErrTruncated
 	}
-	keyID := string(blob[off : off+kL])
+	keyID = string(blob[off : off+kL])
 	if err := validateKeyID(keyID); err != nil {
-		return 0, "", nil, nil, ErrMalformed
+		return "", nil, nil, ErrMalformed
 	}
 	off += kL
 	wL := int(binary.BigEndian.Uint16(blob[off : off+2]))
 	off += 2
 	if len(blob) < off+wL {
-		return 0, "", nil, nil, ErrTruncated
+		return "", nil, nil, ErrTruncated
 	}
-	wrappedDEK := blob[off : off+wL]
+	wrappedDEK = blob[off : off+wL]
 	if len(wrappedDEK) == 0 {
-		return 0, "", nil, nil, ErrMalformed
+		return "", nil, nil, ErrMalformed
 	}
 	off += wL
-	return blobVersionV3, keyID, wrappedDEK, blob[off:], nil
+	return keyID, wrappedDEK, blob[off:], nil
 }
 
 func validateKeyID(keyID string) error {
@@ -429,39 +324,21 @@ func validateKeyID(keyID string) error {
 	return nil
 }
 
-// combineAAD derives the body GCM AAD for the given blob version.
-//
-// v2 (legacy): `callerAAD || aadDomainSepV2` — kept on the read path
-// so blobs written before the v3 upgrade decrypt unchanged.
-//
-// v3 (current): `aadDomainSepV3 || uvarint(len(callerAAD)) || callerAAD`.
-// Putting the separator first and length-prefixing the caller AAD
-// eliminates the v2 collision in which two callers could craft inputs
-// whose concatenated MAC pre-image was identical (e.g. `"abc" + "xyz"`
-// versus `"abcxyz" + ""`). The varint length is unbounded so a 4 GiB
-// AAD is representable, but the underlying AEAD interface treats AAD
-// as a byte slice so any practical caller stays well inside an int.
+// combineAAD derives the body GCM AAD:
+// `aadDomainSep || uvarint(len(callerAAD)) || callerAAD`. The length
+// prefix keeps two caller AADs from sharing a MAC pre-image (e.g.
+// `"abc" + "xyz"` versus `"abcxyz" + ""`).
 //
 // The wrap header is intentionally not part of this AAD; see
 // [Encryptor.Rewrap] for the rationale.
-func combineAAD(version uint8, callerAAD []byte) []byte {
-	switch version {
-	case blobVersionV2:
-		out := make([]byte, 0, len(callerAAD)+len(aadDomainSepV2))
-		out = append(out, callerAAD...)
-		out = append(out, aadDomainSepV2...)
-		return out
-	case blobVersionV3:
-		var lp [binary.MaxVarintLen64]byte
-		n := binary.PutUvarint(lp[:], uint64(len(callerAAD)))
-		out := make([]byte, 0, len(aadDomainSepV3)+n+len(callerAAD))
-		out = append(out, aadDomainSepV3...)
-		out = append(out, lp[:n]...)
-		out = append(out, callerAAD...)
-		return out
-	default:
-		panic(fmt.Sprintf("envelope: combineAAD: unknown version %d", version))
-	}
+func combineAAD(callerAAD []byte) []byte {
+	var lp [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(lp[:], uint64(len(callerAAD)))
+	out := make([]byte, 0, len(aadDomainSep)+n+len(callerAAD))
+	out = append(out, aadDomainSep...)
+	out = append(out, lp[:n]...)
+	out = append(out, callerAAD...)
+	return out
 }
 
 // zeroBytes wipes b in place. It is used in defer to scrub key material

@@ -53,17 +53,13 @@ func TestABoxKeepsEachBindingElementApart(t *testing.T) {
 	assert.Equal(t, "plain", string(plain))
 }
 
-func TestABoxOpensValuesSealedWithTheJoinedBinding(t *testing.T) {
+func TestABoxRefusesValuesSealedWithTheJoinedBinding(t *testing.T) {
 	ctx := context.Background()
 	kek := newKEK(t, "box-1")
-	box := envelope.NewBox(kek, "billing/card/v1")
-	legacy, err := envelope.NewEncryptor(kek).Encrypt(ctx, []byte("plain"), []byte("billing/card/v1/t1/c1"))
+	joined, err := envelope.NewEncryptor(kek).Encrypt(ctx, []byte("plain"), []byte("billing/card/v1/t1/c1"))
 	require.NoError(t, err)
 
-	plain, err := box.Open(ctx, legacy, "t1", "c1")
-	require.NoError(t, err)
-	assert.Equal(t, "plain", string(plain))
-	_, err = box.Open(ctx, legacy, "t2", "c1")
+	_, err = envelope.NewBox(kek, "billing/card/v1").Open(ctx, joined, "t1", "c1")
 	assert.ErrorIs(t, err, envelope.ErrAuthFailed)
 }
 
