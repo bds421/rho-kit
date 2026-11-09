@@ -2,19 +2,21 @@ package health
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
 
 var errHealthCheckRedirectBlocked = errors.New("health: readiness redirects are disabled")
 
-// HealthCheckOptions tunes [RunHealthCheckOptions]. Zero values fall back
-// to sensible defaults: localhost host, /ready path, 2-second timeout.
+// HealthCheckOptions tunes [CheckHealth]. Zero values fall back to sensible
+// defaults: localhost host, /ready path, 2-second timeout, plain HTTP.
 type HealthCheckOptions struct {
 	// Host overrides the bind host. Defaults to "localhost". Use the
 	// container's hostname if the readiness endpoint is bound on a
@@ -27,6 +29,12 @@ type HealthCheckOptions struct {
 	Path string
 	// Timeout caps the entire probe. Defaults to 2 seconds.
 	Timeout time.Duration
+	// TLS, when set, makes the probe use HTTPS with this client
+	// configuration: Certificates (or GetClientCertificate) for a
+	// listener that requires a client certificate, RootCAs for the
+	// listener's CA and ServerName for the name its certificate carries
+	// when that is not Host.
+	TLS *tls.Config
 }
 
 // RunHealthCheck performs an HTTP GET against the local readiness endpoint
@@ -37,9 +45,22 @@ func RunHealthCheck(port int) {
 	RunHealthCheckOptions(HealthCheckOptions{Port: port})
 }
 
-// RunHealthCheckOptions is the variant that accepts an options struct.
-// Use this when the readiness endpoint is on a non-default path or host.
+// RunHealthCheckOptions is [RunHealthCheck] with options: it runs
+// [CheckHealth] and exits the process with 0 or 1.
 func RunHealthCheckOptions(opts HealthCheckOptions) {
+	if err := CheckHealth(context.Background(), opts); err != nil {
+		fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// CheckHealth GETs the readiness endpoint once and returns nil only for
+// HTTP 200. Redirects are refused.
+func CheckHealth(ctx context.Context, opts HealthCheckOptions) error {
+	if opts.Port <= 0 || opts.Port > 65535 {
+		return fmt.Errorf("health: port %d out of range", opts.Port)
+	}
 	host := opts.Host
 	if host == "" {
 		host = "localhost"
@@ -52,37 +73,41 @@ func RunHealthCheckOptions(opts HealthCheckOptions) {
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}
+	scheme := "http"
+	if opts.TLS != nil {
+		scheme = "https"
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("http://%s:%d%s", host, opts.Port, path)
+	url := scheme + "://" + net.JoinHostPort(host, strconv.Itoa(opts.Port)) + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-	client := healthCheckHTTPClient(timeout)
-
-	resp, err := client.Do(req)
+	resp, err := healthCheckHTTPClient(timeout, opts.TLS).Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "health check failed: HTTP %d\n", resp.StatusCode)
-		os.Exit(1)
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	os.Exit(0)
+	return nil
 }
 
-func healthCheckHTTPClient(timeout time.Duration) *http.Client {
+func healthCheckHTTPClient(timeout time.Duration, tlsConfig *tls.Config) *http.Client {
+	tr := healthCheckTransport()
+	// The probe is local: a proxy from the environment must not see it.
+	tr.Proxy = nil
+	if tlsConfig != nil {
+		tr.TLSClientConfig = tlsConfig.Clone()
+	}
 	return &http.Client{
 		Timeout:       timeout,
-		Transport:     healthCheckTransport(),
+		Transport:     tr,
 		CheckRedirect: blockHealthCheckRedirect,
 	}
 }
@@ -92,7 +117,6 @@ func healthCheckTransport() *http.Transport {
 		return tr.Clone()
 	}
 	return &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,

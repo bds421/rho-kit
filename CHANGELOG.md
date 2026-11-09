@@ -1,5 +1,15 @@
 # Changelog
 
+## observability v2.44.0 — 2026-11-09
+
+- **feat(observability/health): the probe speaks mTLS.**
+  `HealthCheckOptions.TLS` makes the probe use HTTPS with that client
+  configuration (a client certificate, the listener's CA, a server name),
+  for a readiness endpoint that requires a client certificate.
+  `CheckHealth(ctx, opts)` runs one probe and returns its error;
+  `RunHealthCheckOptions` wraps it and exits. The probe no longer goes
+  through a proxy from the environment.
+
 ## crypto v2.39.0 — 2026-11-09
 
 - **feat(crypto/envelope): only the current formats open.** `Decrypt` and
