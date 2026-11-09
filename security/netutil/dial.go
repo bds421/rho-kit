@@ -2,6 +2,7 @@ package netutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -19,6 +20,16 @@ const (
 	maxDialAttempts = 6
 )
 
+var (
+	// ErrBlocked is the guard refusing a target: a malformed one, one whose
+	// every address is private or reserved, or one with no address of the
+	// dialed family.
+	ErrBlocked = errors.New("ssrf: blocked")
+	// ErrUnresolved is a target name that resolved to no address, which may
+	// pass.
+	ErrUnresolved = errors.New("ssrf: dns resolution failed")
+)
+
 type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
 // permitted resolves host and keeps every address the guard accepts, IPv6
@@ -28,23 +39,23 @@ type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 // reaches an IPv4-only name without DNS64.
 func permitted(ctx context.Context, host string, resolver DNSResolver, cfg options) ([]netip.Addr, error) {
 	if err := validateResolveHost(host); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrBlocked, err)
 	}
 	if literal, err := netip.ParseAddr(host); err == nil {
 		if kept := cfg.keep([]netip.Addr{literal.Unmap()}, host); len(kept) > 0 {
 			return kept, nil
 		}
-		return nil, fmt.Errorf("ssrf: host is private/reserved")
+		return nil, fmt.Errorf("%w: private/reserved address", ErrBlocked)
 	}
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
 	resolved, err := resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return nil, fmt.Errorf("ssrf: dns resolution failed")
+		return nil, ErrUnresolved
 	}
 	if len(resolved) == 0 {
-		return nil, fmt.Errorf("ssrf: dns resolution returned no addresses")
+		return nil, fmt.Errorf("%w: no addresses", ErrUnresolved)
 	}
 	addrs := make([]netip.Addr, 0, len(resolved))
 	for _, r := range resolved {
@@ -55,7 +66,7 @@ func permitted(ctx context.Context, host string, resolver DNSResolver, cfg optio
 	if kept := cfg.keep(addrs, host); len(kept) > 0 {
 		return kept, nil
 	}
-	return nil, fmt.Errorf("ssrf: all resolved IPs are private/reserved")
+	return nil, fmt.Errorf("%w: every resolved address is private/reserved", ErrBlocked)
 }
 
 func (o options) keep(addrs []netip.Addr, host string) []netip.Addr {
@@ -112,7 +123,7 @@ func dialWithin(ctx context.Context, network string, addrs []netip.Addr, port st
 		}
 	}
 	if len(tried) == 0 {
-		return nil, fmt.Errorf("ssrf: no permitted address of the %s family", network)
+		return nil, fmt.Errorf("%w: no permitted address of the %s family", ErrBlocked, network)
 	}
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
@@ -141,4 +152,25 @@ func familyMatches(a netip.Addr, network string) bool {
 		return a.Is6()
 	}
 	return true
+}
+
+// SSRFSafeDialer dials a host:port through the guard on every call: it
+// resolves the host, keeps the permitted addresses and connects to the
+// first that answers (see [SSRFSafeDynamicTransport]), so DNS cannot be
+// rebound to an internal address between the check and the connection. A
+// refused target fails with [ErrBlocked], an unresolved one with
+// [ErrUnresolved]; a failed connection returns the dial's own error.
+func SSRFSafeDialer(resolver DNSResolver, opts ...Option) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	cfg := collectOptions(opts)
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid dial address", ErrBlocked)
+		}
+		addrs, err := permitted(ctx, host, resolver, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("ssrf: resolve target: %w", err)
+		}
+		return dialFirst(ctx, network, addrs, port)
+	}
 }

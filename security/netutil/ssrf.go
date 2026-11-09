@@ -440,17 +440,7 @@ func validatePortValue(port string) error {
 func SSRFSafeDynamicTransport(resolver DNSResolver, opts ...Option) *http.Transport {
 	cfg := collectOptions(opts)
 	return &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, fmt.Errorf("ssrf: invalid dial address")
-			}
-			addrs, err := permitted(ctx, host, resolver, cfg)
-			if err != nil {
-				return nil, fmt.Errorf("ssrf: resolve target: %w", err)
-			}
-			return dialFirst(ctx, network, addrs, port)
-		},
+		DialContext: SSRFSafeDialer(resolver, opts...),
 		TLSClientConfig: &tls.Config{
 			MinVersion: cfg.minTLSVersion,
 			// ServerName intentionally left empty — Go's http.Transport
