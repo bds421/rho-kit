@@ -16,7 +16,7 @@ func TestHealthCheckHTTPClient_BlocksRedirects(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := healthCheckHTTPClient(2 * time.Second).Get(srv.URL)
+	resp, err := healthCheckHTTPClient(2*time.Second, nil).Get(srv.URL)
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
@@ -32,7 +32,7 @@ func TestHealthCheckHTTPClient_HandlesReplacedDefaultTransport(t *testing.T) {
 		return nil, errors.New("global default transport used")
 	})
 
-	client := healthCheckHTTPClient(2 * time.Second)
+	client := healthCheckHTTPClient(2*time.Second, nil)
 	if _, ok := client.Transport.(*http.Transport); !ok {
 		t.Fatalf("transport = %T, want *http.Transport fallback", client.Transport)
 	}
