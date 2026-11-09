@@ -172,3 +172,33 @@ func TestDialWithin_SynthesisOnlyWhereTheHostHasNoIPv4Route(t *testing.T) {
 		})
 	}
 }
+
+func TestSSRFSafeDialer_NamesWhyItDidNotConnect(t *testing.T) {
+	ctx := context.Background()
+	blocked := SSRFSafeDialer(&mockDNSResolver{ips: addrsOf("10.0.0.1", "127.0.0.1")})
+	_, err := blocked(ctx, "tcp", "internal.example.com:443")
+	assert.ErrorIs(t, err, ErrBlocked)
+	_, err = blocked(ctx, "tcp", "169.254.169.254:80")
+	assert.ErrorIs(t, err, ErrBlocked)
+	_, err = blocked(ctx, "tcp", "no-port.example.com")
+	assert.ErrorIs(t, err, ErrBlocked)
+	_, err = blocked(ctx, "tcp", "bad host:443")
+	assert.ErrorIs(t, err, ErrBlocked)
+	_, err = SSRFSafeDialer(&mockDNSResolver{ips: addrsOf("::1")}, WithAllowPrivateIPs())(ctx, "tcp4", "v6only.example.com:80")
+	assert.ErrorIs(t, err, ErrBlocked)
+	_, err = SSRFSafeDialer(&mockDNSResolver{err: &net.DNSError{Err: "no such host", IsNotFound: true}})(ctx, "tcp", "gone.example.com:443")
+	assert.ErrorIs(t, err, ErrUnresolved)
+	_, err = SSRFSafeDialer(&mockDNSResolver{})(ctx, "tcp", "empty.example.com:443")
+	assert.ErrorIs(t, err, ErrUnresolved)
+}
+
+func TestSSRFSafeDialer_ConnectsToAPermittedAddress(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	require.NoError(t, err)
+	conn, err := SSRFSafeDialer(&mockDNSResolver{ips: addrsOf("127.0.0.1")}, WithAllowPrivateIPs())(context.Background(), "tcp", "receiver.example.com:"+port)
+	require.NoError(t, err)
+	_ = conn.Close()
+}
