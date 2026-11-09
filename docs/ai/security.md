@@ -592,8 +592,11 @@ resp, err := client.Get("https://" + userHost + "/webhook")
 ```
 
 `IsPrivateIP` covers: RFC 1918, loopback, link-local, CGNAT, Teredo, 6to4, NAT64.
+The transport tries every permitted address, IPv6 and IPv4 alternating, the
+next when one does not answer; on an IPv6-only host pass `WithNAT64(prefix)`
+to reach IPv4-only names through the gateway.
 
-**Important:** Create a new `SSRFSafeTransport` per request — the resolved IP may go stale.
+**Important:** Create a new `SSRFSafeTransport` per request — the resolved addresses may go stale.
 The transport is pinned to the host it resolved at construction and rejects
 later requests that try to dial a different host through the same client.
 

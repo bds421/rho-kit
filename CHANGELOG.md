@@ -1,5 +1,18 @@
 # Changelog
 
+## security v2.40.0 — unreleased
+
+- **fix(security/netutil): the SSRF transports dial every permitted
+  address.** `SSRFSafeTransport`, `SSRFSafeClient` and the dynamic
+  transport resolve once, keep every address the guard permits and try
+  them IPv6 and IPv4 alternating (RFC 8305), starting with the family of
+  the first answer, the next one when an address does not answer. A host
+  whose path over one family is broken is reached over the other; before,
+  only the first permitted address was dialed. With `WithNAT64` each
+  permitted IPv4 address is also tried through the prefix, IPv6 first, so
+  an IPv6-only host reaches an IPv4-only name without DNS64.
+  `ResolveAndValidate` returns the first address of that order.
+
 ## observability v2.43.0, observability/auditlog/postgres v2.43.0 — 2026-11-08
 
 - **feat(observability/auditlog): one retention mechanism with a sealed
