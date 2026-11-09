@@ -33,7 +33,7 @@ Each adapter is a separate go.mod so the heavy SDK only lands in services that u
 
 - **Reusing AAD across blobs** — AAD is bound to the ciphertext; mixing AADs is a confused-deputy class of bug. Use a stable, blob-specific AAD (e.g. `"users/v1/" + userID`).
 - **Storing the AAD inside the blob** — the v3 length-prefixed format stores ciphertext + wrapped DEK; AAD is supplied at decrypt time. If you can't reconstruct the AAD without the blob, you've defeated the binding.
-- **Keeping pre-v3 blobs or pre-v2.37.0 Box values** — they no longer open (`ErrUnsupportedVer`, `ErrAuthFailed`). Seal each anew (open, then seal) with a release before crypto v2.39.0.
+- **Keeping pre-v3 blobs or pre-v2.37.0 Box values** — they no longer open (`ErrUnsupportedVer`, `ErrAuthFailed`). Seal each anew (open, then seal) with crypto v2.38.0 first.
 - **Not understanding wrapping-version selection** — Azure Key Vault and
   Vault Transit can pin wrapping with `Config.KeyVersion`; otherwise the
   provider's current primary version is used. GCP KMS requires the parent

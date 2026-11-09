@@ -316,7 +316,7 @@ func TestDecrypt_RejectsEmptyHeaderFields(t *testing.T) {
 func TestDecryptAndRewrap_RejectInvalidDEKLengthWithStableError(t *testing.T) {
 	enc := envelope.NewEncryptor(fakeKEK{keyID: "v1", wrapped: []byte("wrapped"), unwrapDEK: make([]byte, 16)})
 	blob := []byte{'E', 'N', 'V', 3, 0, 2, 'v', '1', 0, 7, 'w', 'r', 'a', 'p', 'p', 'e', 'd'}
-	blob = append(blob, make([]byte, 12)...)
+	blob = append(blob, make([]byte, 28)...)
 
 	for name, run := range map[string]func() error{
 		"decrypt": func() error {
@@ -333,6 +333,7 @@ func TestDecryptAndRewrap_RejectInvalidDEKLengthWithStableError(t *testing.T) {
 			require.Error(t, err)
 			assert.NotContains(t, err.Error(), "16")
 			assert.NotContains(t, err.Error(), "32")
+			assert.Contains(t, err.Error(), "invalid DEK length")
 		})
 	}
 }

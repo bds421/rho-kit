@@ -1,7 +1,3 @@
-// Only version 3 reads: a blob of any other version, such as v2 with its
-// uint8 kL and `callerAAD || domainSep` body AAD, fails with
-// ErrUnsupportedVer. Seal a value anew (Decrypt, then Encrypt) while the
-// release that reads its version is still deployed.
 // Package envelope implements envelope encryption: a fresh AES-256-GCM
 // DEK is generated per Encrypt call, wrapped under a KEK (the
 // key-encryption-key — typically a KMS-managed master key), and emitted
