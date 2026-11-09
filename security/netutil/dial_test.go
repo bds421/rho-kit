@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -107,4 +109,66 @@ func TestSSRFSafeTransport_DeliversToAnIPv6Receiver(t *testing.T) {
 func TestDialFirst_KeepsToTheRequestedFamily(t *testing.T) {
 	_, err := dialFirst(context.Background(), "tcp4", []netip.Addr{netip.MustParseAddr("::1")}, "80")
 	assert.ErrorContains(t, err, "no permitted address of the tcp4 family")
+}
+
+func TestPermitted_TheNAT64PrefixAloneKeepsAnIPv4AnswerFirst(t *testing.T) {
+	resolver := &mockDNSResolver{ips: addrsOf("93.184.216.34", "2606:2800:220:1::1")}
+	got, err := permitted(context.Background(), "example.com", resolver, collectOptions([]Option{WithNAT64(WellKnownNAT64)}))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"93.184.216.34", "2606:2800:220:1::1"}, strs(got))
+}
+
+// hanging records the addresses dialed and answers none before its
+// attempt's deadline.
+type hanging struct {
+	mu     sync.Mutex
+	dialed []string
+}
+
+func (h *hanging) dial(ctx context.Context, _, addr string) (net.Conn, error) {
+	h.mu.Lock()
+	h.dialed = append(h.dialed, addr)
+	h.mu.Unlock()
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestDialWithin_ManyAddressesThatHangEndWithinTheBudget(t *testing.T) {
+	var addrs []netip.Addr
+	for i := range 20 {
+		addrs = append(addrs, netip.AddrFrom4([4]byte{93, 184, 216, byte(i + 1)}))
+	}
+	h := &hanging{}
+	const budget = 120 * time.Millisecond
+	start := time.Now()
+	_, err := dialWithin(context.Background(), "tcp", addrs, "443", budget, h.dial)
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), budget+100*time.Millisecond)
+	assert.Len(t, h.dialed, maxDialAttempts, "only the first addresses are tried")
+}
+
+func TestDialWithin_SynthesisOnlyWhereTheHostHasNoIPv4Route(t *testing.T) {
+	resolver := &mockDNSResolver{ips: addrsOf("93.184.216.34")}
+	for name, tt := range map[string]struct {
+		opts  []Option
+		first string
+	}{
+		"IPv6-only host":              {[]Option{WithNAT64(WellKnownNAT64), WithSynthesizedNAT64()}, "[64:ff9b::5db8:d822]:443"},
+		"dual-stack host, DNS64 only": {[]Option{WithNAT64(WellKnownNAT64)}, "93.184.216.34:443"},
+		"dual-stack host":             {nil, "93.184.216.34:443"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			addrs, err := permitted(context.Background(), "example.com", resolver, collectOptions(tt.opts))
+			require.NoError(t, err)
+			h := &hanging{}
+			_, _ = dialWithin(context.Background(), "tcp", addrs, "443", 20*time.Millisecond, h.dial)
+			require.NotEmpty(t, h.dialed)
+			assert.Equal(t, tt.first, h.dialed[0])
+			if len(tt.opts) < 2 {
+				for _, a := range h.dialed {
+					assert.NotContains(t, a, "64:ff9b::", "no address through the prefix")
+				}
+			}
+		})
+	}
 }

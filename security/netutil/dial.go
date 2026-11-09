@@ -12,9 +12,14 @@ import (
 )
 
 const (
-	dialTimeout    = 10 * time.Second
-	minDialTimeout = 3 * time.Second
+	// dialTimeout bounds one dial over every address it tries.
+	dialTimeout = 10 * time.Second
+	// maxDialAttempts caps the addresses one dial tries, so a name with
+	// many addresses that do not answer cannot hold it longer.
+	maxDialAttempts = 6
 )
+
+type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
 // permitted resolves host and keeps every address the guard accepts, IPv6
 // and IPv4 alternating (RFC 8305 section 4), starting with the family of
@@ -91,17 +96,32 @@ func interleave(first, second []netip.Addr) []netip.Addr {
 	return out
 }
 
-// dialFirst connects to the first of addrs that answers, in their order,
-// each attempt with a share of the dial timeout, so a family whose path is
-// broken falls back to the other.
+// dialFirst connects to the first of addrs that answers, in their order, so
+// a family whose path is broken falls back to the other. It tries at most
+// maxDialAttempts addresses of the network's family within one budget,
+// each attempt with an equal share of it.
 func dialFirst(ctx context.Context, network string, addrs []netip.Addr, port string) (net.Conn, error) {
-	dialer := &net.Dialer{Timeout: max(dialTimeout/time.Duration(len(addrs)), minDialTimeout)}
-	var lastErr error
+	return dialWithin(ctx, network, addrs, port, dialTimeout, (&net.Dialer{}).DialContext)
+}
+
+func dialWithin(ctx context.Context, network string, addrs []netip.Addr, port string, budget time.Duration, dial dialFunc) (net.Conn, error) {
+	var tried []netip.Addr
 	for _, a := range addrs {
-		if !familyMatches(a, network) {
-			continue
+		if familyMatches(a, network) && len(tried) < maxDialAttempts {
+			tried = append(tried, a)
 		}
-		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(a.String(), port))
+	}
+	if len(tried) == 0 {
+		return nil, fmt.Errorf("ssrf: no permitted address of the %s family", network)
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	share := budget / time.Duration(len(tried))
+	var lastErr error
+	for _, a := range tried {
+		attempt, cancelAttempt := context.WithTimeout(ctx, share)
+		conn, err := dial(attempt, network, net.JoinHostPort(a.String(), port))
+		cancelAttempt()
 		if err == nil {
 			return conn, nil
 		}
@@ -109,9 +129,6 @@ func dialFirst(ctx context.Context, network string, addrs []netip.Addr, port str
 		if ctx.Err() != nil {
 			break
 		}
-	}
-	if lastErr == nil {
-		return nil, fmt.Errorf("ssrf: no permitted address of the %s family", network)
 	}
 	return nil, lastErr
 }

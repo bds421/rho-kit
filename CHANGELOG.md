@@ -6,7 +6,8 @@
   address.** `SSRFSafeTransport`, `SSRFSafeClient` and the dynamic
   transport resolve once, keep every address the guard permits and try
   them IPv6 and IPv4 alternating (RFC 8305), starting with the family of
-  the first answer, the next one when an address does not answer. A host
+  the first answer, the next one when an address does not answer, at most
+  six addresses within one 10-second dial budget. A host
   whose path over one family is broken is reached over the other; before,
   only the first permitted address was dialed. `ResolveAndValidate`
   returns the first address of that order.
