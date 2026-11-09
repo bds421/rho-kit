@@ -345,7 +345,7 @@ row you start from:
 - **Never** use `idempotency.NewMemoryStore()` in production — it only works on a single instance. Use `data/idempotency/redisstore.New()` or `data/idempotency/pgstore.New()` for multi-instance deployments.
 - **Never** hand-roll tenant-scoped Redis/cache/idempotency keys with a literal `tenant:` prefix — use `core/tenant.Key` or the tenant wrappers.
 - **Never** introduce a direct external Go dependency without updating `docs/audit/dependency-allowlist.txt` and passing `make check-dependency-allowlist`.
-- **Never** store `SSRFSafeTransport` long-term — the resolved IP may go stale. Create a new transport per request.
+- **Never** store `SSRFSafeTransport` long-term — the resolved addresses may go stale. Create a new transport per request.
 - Always pair `Locker.Acquire` with `handle.Release` (or use `Locker.WithLock` to defer release). Re-Acquiring the same key returns a fresh handle; failing to release leaks the lock until TTL.
 - **Never** pass zero/negative values to `NewLimiter`, `NewKeyedLimiter`, `Timeout`, or `MaxBodySize` — they panic on misconfiguration.
 

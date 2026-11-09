@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -13,8 +12,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-
-	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Option configures SSRF validation behavior.
@@ -24,6 +21,7 @@ type options struct {
 	allowPrivateIPs bool
 	allowedNetworks []netip.Prefix
 	nat64           NAT64Prefix
+	synthesizeNAT64 bool
 	requestTimeout  time.Duration
 	minTLSVersion   uint16
 }
@@ -105,7 +103,8 @@ type DNSResolver interface {
 	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
 }
 
-// ResolveAndValidate resolves the hostname and returns the first non-private IP as a string.
+// ResolveAndValidate resolves the hostname and returns the first permitted
+// address, in the order the SSRF transports dial them (see [SSRFSafeTransport]).
 // Pass nil for resolver to use net.DefaultResolver.
 //
 // By default all private/reserved IPs are rejected. Pass [WithAllowPrivateIPs]
@@ -115,45 +114,11 @@ type DNSResolver interface {
 // when dialing, to prevent DNS rebinding attacks. Prefer SSRFSafeTransport
 // which enforces this by construction.
 func ResolveAndValidate(ctx context.Context, host string, resolver DNSResolver, opts ...Option) (string, error) {
-	cfg := collectOptions(opts)
-	if err := validateResolveHost(host); err != nil {
+	addrs, err := permitted(ctx, host, resolver, collectOptions(opts))
+	if err != nil {
 		return "", err
 	}
-
-	if ip := net.ParseIP(host); ip != nil {
-		if cfg.allowPrivateIPs {
-			slog.Warn("ssrf: private IP filtering disabled — do not use in production", redact.String("host", host))
-			return ip.String(), nil
-		}
-		if cfg.refused(ip) {
-			return "", fmt.Errorf("ssrf: host is private/reserved")
-		}
-		return ip.String(), nil
-	}
-
-	if resolver == nil {
-		resolver = net.DefaultResolver
-	}
-	ips, err := resolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return "", fmt.Errorf("ssrf: dns resolution failed")
-	}
-	if len(ips) == 0 {
-		return "", fmt.Errorf("ssrf: dns resolution returned no addresses")
-	}
-
-	if cfg.allowPrivateIPs {
-		slog.Warn("ssrf: private IP filtering disabled — do not use in production", redact.String("host", host))
-		return ips[0].IP.String(), nil
-	}
-
-	for _, ip := range ips {
-		if cfg.refused(ip.IP) {
-			continue
-		}
-		return ip.IP.String(), nil
-	}
-	return "", fmt.Errorf("ssrf: all resolved IPs are private/reserved")
+	return addrs[0].String(), nil
 }
 
 func validateResolveHost(host string) error {
@@ -264,14 +229,18 @@ func IsPrivateIP(ip net.IP) bool {
 	return false
 }
 
-// SSRFSafeTransport resolves the hostname, validates the IP is not private,
-// and returns an http.Transport that dials the pre-validated IP directly.
+// SSRFSafeTransport resolves the hostname, keeps every address the guard
+// permits and returns an http.Transport that dials those addresses directly:
+// IPv6 and IPv4 alternating (RFC 8305), the next one when an address does
+// not answer, so a host whose path over one family is broken is reached
+// over the other. With [WithNAT64] an IPv4 address is also tried through
+// the NAT64 prefix. The returned string is the first address it dials.
 // TLS ServerName (SNI) is preserved so HTTPS works correctly.
 //
 // This prevents DNS rebinding attacks by design — the Go HTTP stack cannot
 // re-resolve the hostname at dial time because we override DialContext.
 //
-// The returned transport captures the resolved IP at creation time. It is
+// The returned transport captures the resolved addresses at creation time. It is
 // intended for short-lived use (one request or a small batch). Do not store
 // it long-term — if the server's IP changes, the transport will dial a stale
 // address. Create a new transport per request for maximum correctness.
@@ -283,11 +252,11 @@ func IsPrivateIP(ip net.IP) bool {
 // Redirects could target internal IPs, bypassing SSRF protection. Use
 // [SSRFSafeClient] instead, which disables redirects automatically.
 func SSRFSafeTransport(ctx context.Context, host string, resolver DNSResolver, opts ...Option) (*http.Transport, string, error) {
-	ip, err := ResolveAndValidate(ctx, host, resolver, opts...)
+	cfg := collectOptions(opts)
+	addrs, err := permitted(ctx, host, resolver, cfg)
 	if err != nil {
 		return nil, "", err
 	}
-	cfg := collectOptions(opts)
 	return &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			dialHost, port, err := net.SplitHostPort(addr)
@@ -297,7 +266,7 @@ func SSRFSafeTransport(ctx context.Context, host string, resolver DNSResolver, o
 			if !sameDialHost(dialHost, host) {
 				return nil, fmt.Errorf("ssrf: transport pinned to host cannot dial different host")
 			}
-			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip, port))
+			return dialFirst(ctx, network, addrs, port)
 		},
 		TLSClientConfig: &tls.Config{
 			ServerName: host,
@@ -306,7 +275,7 @@ func SSRFSafeTransport(ctx context.Context, host string, resolver DNSResolver, o
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 		DisableKeepAlives:     true,
-	}, ip, nil
+	}, addrs[0].String(), nil
 }
 
 func sameDialHost(a, b string) bool {
@@ -314,7 +283,7 @@ func sameDialHost(a, b string) bool {
 }
 
 // SSRFSafeClient returns an *http.Client that resolves and validates the
-// target host, pins the resolved IP, and refuses to follow redirects.
+// target host, pins the permitted addresses, and refuses to follow redirects.
 // This is the recommended way to make outbound requests to user-supplied URLs.
 // Pass [WithAllowPrivateIPs] to permit localhost and private IPs (local
 // development only).
@@ -469,20 +438,21 @@ func validatePortValue(port string) error {
 // Pass [WithAllowPrivateIPs] to permit localhost and private IPs (local
 // development only).
 func SSRFSafeDynamicTransport(resolver DNSResolver, opts ...Option) *http.Transport {
+	cfg := collectOptions(opts)
 	return &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, fmt.Errorf("ssrf: invalid dial address")
 			}
-			ip, err := ResolveAndValidate(ctx, host, resolver, opts...)
+			addrs, err := permitted(ctx, host, resolver, cfg)
 			if err != nil {
 				return nil, fmt.Errorf("ssrf: resolve target: %w", err)
 			}
-			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip, port))
+			return dialFirst(ctx, network, addrs, port)
 		},
 		TLSClientConfig: &tls.Config{
-			MinVersion: collectOptions(opts).minTLSVersion,
+			MinVersion: cfg.minTLSVersion,
 			// ServerName intentionally left empty — Go's http.Transport
 			// derives it from the request URL, which is correct for
 			// dynamic / redirect-following clients.
