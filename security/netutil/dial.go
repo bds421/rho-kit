@@ -26,7 +26,7 @@ var (
 	// dialed family.
 	ErrBlocked = errors.New("ssrf: blocked")
 	// ErrUnresolved is a target name that resolved to no address, which may
-	// pass.
+	// succeed on a later try.
 	ErrUnresolved = errors.New("ssrf: dns resolution failed")
 )
 

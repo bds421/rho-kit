@@ -597,6 +597,10 @@ next when one does not answer; on an IPv6-only host `WithNAT64(prefix)` accepts
 DNS64 answers, and `WithSynthesizedNAT64()` also reaches IPv4-only names
 through the gateway without DNS64.
 
+A client that is not net/http dials through `SSRFSafeDialer(resolver, ...opts)`, a
+DialContext that checks the target on every call; a refusal wraps `ErrBlocked`, an
+unresolved name `ErrUnresolved` (retry it), so test them with `errors.Is`.
+
 **Important:** Create a new `SSRFSafeTransport` per request — the resolved addresses may go stale.
 The transport is pinned to the host it resolved at construction and rejects
 later requests that try to dial a different host through the same client.

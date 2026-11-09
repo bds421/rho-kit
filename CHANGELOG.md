@@ -1,6 +1,21 @@
 # Changelog
 
-## security v2.40.0 — unreleased
+## security v2.41.0 — unreleased
+
+- **feat(security/netutil): `SSRFSafeDialer`.** A DialContext that resolves
+  and checks the target on every call and dials it as the dynamic
+  transport does (which now uses it), for a client that is not net/http.
+- **feat(security/netutil): `ErrBlocked` and `ErrUnresolved`.** Every
+  refusal of the guard wraps `ErrBlocked` (a malformed host or dial
+  address, a private/reserved literal, every resolved address
+  private/reserved, no address of the dialed family); a DNS failure or an
+  empty answer wraps `ErrUnresolved`, which a later try may pass. Test them
+  with `errors.Is`; the texts changed: "ssrf: host is private/reserved" is
+  now "ssrf: blocked: private/reserved address", "ssrf: all resolved IPs
+  are private/reserved" is "ssrf: blocked: every resolved address is
+  private/reserved".
+
+## security v2.40.0 — 2026-11-09
 
 - **fix(security/netutil): the SSRF transports dial every permitted
   address.** `SSRFSafeTransport`, `SSRFSafeClient` and the dynamic
