@@ -1,6 +1,6 @@
 # Changelog
 
-## crypto v2.39.0 — unreleased
+## crypto v2.39.0 — 2026-11-09
 
 - **feat(crypto/envelope): only the current formats open.** `Decrypt` and
   `Rewrap` read only v3 blobs; a v2 blob fails with `ErrUnsupportedVer`.
