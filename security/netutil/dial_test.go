@@ -51,11 +51,15 @@ func TestPermitted_AlternatesFamiliesFromTheFirstAnswer(t *testing.T) {
 	}
 }
 
-func TestPermitted_NAT64OffersTheIPv4AddressThroughThePrefixFirst(t *testing.T) {
+func TestPermitted_SynthesizedNAT64OffersTheIPv4AddressThroughThePrefixFirst(t *testing.T) {
 	resolver := &mockDNSResolver{ips: addrsOf("93.184.216.34", "10.0.0.1")}
-	got, err := permitted(context.Background(), "example.com", resolver, collectOptions([]Option{WithNAT64(WellKnownNAT64)}))
+	got, err := permitted(context.Background(), "example.com", resolver, collectOptions([]Option{WithNAT64(WellKnownNAT64), WithSynthesizedNAT64()}))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"64:ff9b::5db8:d822", "93.184.216.34"}, strs(got), "the private address stays out, also through the prefix")
+
+	got, err = permitted(context.Background(), "example.com", resolver, collectOptions([]Option{WithNAT64(WellKnownNAT64)}))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"93.184.216.34"}, strs(got), "the prefix alone accepts DNS64 answers and synthesizes none")
 
 	got, err = permitted(context.Background(), "64:ff9b::5db8:d822", nil, collectOptions([]Option{WithNAT64(WellKnownNAT64)}))
 	require.NoError(t, err)

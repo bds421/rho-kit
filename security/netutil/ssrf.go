@@ -21,6 +21,7 @@ type options struct {
 	allowPrivateIPs bool
 	allowedNetworks []netip.Prefix
 	nat64           NAT64Prefix
+	synthesizeNAT64 bool
 	requestTimeout  time.Duration
 	minTLSVersion   uint16
 }

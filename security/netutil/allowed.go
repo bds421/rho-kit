@@ -67,6 +67,15 @@ func WithNAT64(prefix NAT64Prefix) Option {
 	return func(o *options) { o.nat64 = prefix }
 }
 
+// WithSynthesizedNAT64 also dials each permitted IPv4 address through the
+// prefix given to [WithNAT64], before the IPv4 address itself, for an
+// IPv6-only host whose resolver does not synthesize (no DNS64). Leave it
+// off where IPv4 is routed: an address in the prefix there waits out its
+// dial timeout before the IPv4 one is tried.
+func WithSynthesizedNAT64() Option {
+	return func(o *options) { o.synthesizeNAT64 = true }
+}
+
 // refused reports whether the guard keeps ip out of reach.
 func (o options) refused(ip net.IP) bool {
 	if addr, ok := netip.AddrFromSlice(ip); ok && o.nat64.Contains(addr) {
