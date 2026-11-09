@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,7 +21,8 @@ var errHealthCheckRedirectBlocked = errors.New("health: readiness redirects are 
 type HealthCheckOptions struct {
 	// Host overrides the bind host. Defaults to "localhost". Use the
 	// container's hostname if the readiness endpoint is bound on a
-	// non-loopback address.
+	// non-loopback address. An IPv6 literal may be given with or without
+	// brackets.
 	Host string
 	// Port is the readiness endpoint port. Required.
 	Port int
@@ -33,7 +35,8 @@ type HealthCheckOptions struct {
 	// configuration: Certificates (or GetClientCertificate) for a
 	// listener that requires a client certificate, RootCAs for the
 	// listener's CA and ServerName for the name its certificate carries
-	// when that is not Host.
+	// when that is not Host. It is cloned, never changed; verification
+	// (InsecureSkipVerify) is the caller's choice.
 	TLS *tls.Config
 }
 
@@ -61,7 +64,7 @@ func CheckHealth(ctx context.Context, opts HealthCheckOptions) error {
 	if opts.Port <= 0 || opts.Port > 65535 {
 		return fmt.Errorf("health: port %d out of range", opts.Port)
 	}
-	host := opts.Host
+	host := strings.TrimSuffix(strings.TrimPrefix(opts.Host, "["), "]")
 	if host == "" {
 		host = "localhost"
 	}
@@ -93,15 +96,17 @@ func CheckHealth(ctx context.Context, opts HealthCheckOptions) error {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		return fmt.Errorf("health: readiness returned HTTP %d", resp.StatusCode)
 	}
 	return nil
 }
 
 func healthCheckHTTPClient(timeout time.Duration, tlsConfig *tls.Config) *http.Client {
 	tr := healthCheckTransport()
-	// The probe is local: a proxy from the environment must not see it.
+	// The probe is local: a proxy from the environment must not see it,
+	// and one probe leaves no idle connection behind.
 	tr.Proxy = nil
+	tr.DisableKeepAlives = true
 	if tlsConfig != nil {
 		tr.TLSClientConfig = tlsConfig.Clone()
 	}

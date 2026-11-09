@@ -12,8 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -74,38 +73,24 @@ func (ca testCA) issue(t *testing.T, name string, usage x509.ExtKeyUsage) tls.Ce
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
-func port(t *testing.T, srv *httptest.Server) int {
-	t.Helper()
-	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, p, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n, err := strconv.Atoi(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return n
-}
+func port(srv *httptest.Server) int { return srv.Listener.Addr().(*net.TCPAddr).Port }
 
 func TestCheckHealthPlainHTTP(t *testing.T) {
-	status := http.StatusOK
+	var status atomic.Int32
+	status.Store(http.StatusOK)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/ready" {
 			http.NotFound(w, r)
 			return
 		}
-		w.WriteHeader(status)
+		w.WriteHeader(int(status.Load()))
 	}))
 	defer srv.Close()
-	opts := HealthCheckOptions{Host: "127.0.0.1", Port: port(t, srv)}
+	opts := HealthCheckOptions{Host: "127.0.0.1", Port: port(srv)}
 	if err := CheckHealth(context.Background(), opts); err != nil {
 		t.Fatalf("ready endpoint: %v", err)
 	}
-	status = http.StatusServiceUnavailable
+	status.Store(http.StatusServiceUnavailable)
 	if err := CheckHealth(context.Background(), opts); err == nil {
 		t.Fatal("a 503 passed")
 	}
@@ -114,7 +99,7 @@ func TestCheckHealthPlainHTTP(t *testing.T) {
 func TestCheckHealthRefusesRedirects(t *testing.T) {
 	srv := httptest.NewServer(http.RedirectHandler("/elsewhere", http.StatusFound))
 	defer srv.Close()
-	if err := CheckHealth(context.Background(), HealthCheckOptions{Host: "127.0.0.1", Port: port(t, srv)}); err == nil {
+	if err := CheckHealth(context.Background(), HealthCheckOptions{Host: "127.0.0.1", Port: port(srv)}); err == nil {
 		t.Fatal("a redirect passed")
 	}
 }
@@ -130,7 +115,7 @@ func TestCheckHealthPresentsClientCertificate(t *testing.T) {
 	}
 	srv.StartTLS()
 	defer srv.Close()
-	base := HealthCheckOptions{Host: "127.0.0.1", Port: port(t, srv)}
+	base := HealthCheckOptions{Host: "127.0.0.1", Port: port(srv)}
 
 	withCert := base
 	withCert.TLS = &tls.Config{
@@ -164,5 +149,60 @@ func TestCheckHealthPresentsClientCertificate(t *testing.T) {
 func TestCheckHealthRejectsBadPort(t *testing.T) {
 	if err := CheckHealth(context.Background(), HealthCheckOptions{}); err == nil {
 		t.Fatal("port 0 passed")
+	}
+}
+
+func TestCheckHealthTakesBracketedIPv6(t *testing.T) {
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skip("no IPv6 loopback")
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Listener = ln
+	srv.Start()
+	defer srv.Close()
+	for _, host := range []string{"::1", "[::1]"} {
+		if err := CheckHealth(context.Background(), HealthCheckOptions{Host: host, Port: port(srv)}); err != nil {
+			t.Errorf("host %q: %v", host, err)
+		}
+	}
+}
+
+func TestCheckHealthLeavesNoConnectionOpen(t *testing.T) {
+	var open atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		switch s {
+		case http.StateNew:
+			open.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			open.Add(-1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+	for range 5 {
+		if err := CheckHealth(context.Background(), HealthCheckOptions{Host: "127.0.0.1", Port: port(srv)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for open.Load() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := open.Load(); n != 0 {
+		t.Fatalf("%d connections left open", n)
+	}
+}
+
+func TestHealthCheckClientUsesNoProxyAndKeepsCallerConfig(t *testing.T) {
+	cfg := &tls.Config{ServerName: "role.example.invalid", MinVersion: tls.VersionTLS12}
+	tr := healthCheckHTTPClient(time.Second, cfg).Transport.(*http.Transport)
+	if tr.Proxy != nil {
+		t.Error("the probe uses a proxy")
+	}
+	tr.TLSClientConfig.ServerName = "changed.example.invalid"
+	if cfg.ServerName != "role.example.invalid" {
+		t.Error("the caller's TLS config was changed")
 	}
 }

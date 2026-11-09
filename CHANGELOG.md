@@ -8,7 +8,9 @@
   for a readiness endpoint that requires a client certificate.
   `CheckHealth(ctx, opts)` runs one probe and returns its error;
   `RunHealthCheckOptions` wraps it and exits. The probe no longer goes
-  through a proxy from the environment.
+  through a proxy from the environment, keeps no connection open, takes an
+  IPv6 host with or without brackets, and refuses a port outside 1–65535
+  before it dials.
 
 ## crypto v2.39.0 — 2026-11-09
 
