@@ -297,17 +297,17 @@ func TestDecrypt_RejectsEmptyHeaderFields(t *testing.T) {
 	k := newKEK(t, "v1")
 	enc := envelope.NewEncryptor(k)
 
-	emptyKeyID := []byte{'E', 'N', 'V', 2, 0, 0, 1, 'x'}
+	emptyKeyID := []byte{'E', 'N', 'V', 3, 0, 0, 0, 1, 'x'}
 	if _, err := enc.Decrypt(context.Background(), emptyKeyID, nil); !errors.Is(err, envelope.ErrMalformed) {
 		t.Fatalf("empty keyID error = %v, want ErrMalformed", err)
 	}
 
-	emptyWrapped := []byte{'E', 'N', 'V', 2, 2, 'v', '1', 0, 0, 'b', 'o', 'd', 'y'}
+	emptyWrapped := []byte{'E', 'N', 'V', 3, 0, 2, 'v', '1', 0, 0, 'b', 'o', 'd', 'y'}
 	if _, err := enc.Decrypt(context.Background(), emptyWrapped, nil); !errors.Is(err, envelope.ErrMalformed) {
 		t.Fatalf("empty wrapped DEK error = %v, want ErrMalformed", err)
 	}
 
-	controlKeyID := []byte{'E', 'N', 'V', 2, 2, 'v', '\n', 0, 1, 'x', 'b', 'o', 'd', 'y'}
+	controlKeyID := []byte{'E', 'N', 'V', 3, 0, 2, 'v', '\n', 0, 1, 'x', 'b', 'o', 'd', 'y'}
 	if _, err := enc.Decrypt(context.Background(), controlKeyID, nil); !errors.Is(err, envelope.ErrMalformed) {
 		t.Fatalf("control keyID error = %v, want ErrMalformed", err)
 	}
@@ -315,8 +315,8 @@ func TestDecrypt_RejectsEmptyHeaderFields(t *testing.T) {
 
 func TestDecryptAndRewrap_RejectInvalidDEKLengthWithStableError(t *testing.T) {
 	enc := envelope.NewEncryptor(fakeKEK{keyID: "v1", wrapped: []byte("wrapped"), unwrapDEK: make([]byte, 16)})
-	blob := []byte{'E', 'N', 'V', 2, 2, 'v', '1', 0, 7, 'w', 'r', 'a', 'p', 'p', 'e', 'd'}
-	blob = append(blob, make([]byte, 12)...)
+	blob := []byte{'E', 'N', 'V', 3, 0, 2, 'v', '1', 0, 7, 'w', 'r', 'a', 'p', 'p', 'e', 'd'}
+	blob = append(blob, make([]byte, 28)...)
 
 	for name, run := range map[string]func() error{
 		"decrypt": func() error {
@@ -333,6 +333,7 @@ func TestDecryptAndRewrap_RejectInvalidDEKLengthWithStableError(t *testing.T) {
 			require.Error(t, err)
 			assert.NotContains(t, err.Error(), "16")
 			assert.NotContains(t, err.Error(), "32")
+			assert.Contains(t, err.Error(), "invalid DEK length")
 		})
 	}
 }

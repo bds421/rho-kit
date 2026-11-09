@@ -1,6 +1,17 @@
 # Changelog
 
-## security v2.41.0 — unreleased
+## crypto v2.39.0 — 2026-11-09
+
+- **feat(crypto/envelope): only the current formats open.** `Decrypt` and
+  `Rewrap` read only v3 blobs; a v2 blob fails with `ErrUnsupportedVer`.
+  `Box.Open` opens only values sealed with the length-prefixed binding; a
+  value sealed before v2.37.0 with purpose and binding joined by "/"
+  fails with `ErrAuthFailed`.
+
+Breaking: seal every v2 blob and pre-v2.37.0 Box value anew (open, then
+seal) with crypto v2.38.0 before taking this release.
+
+## security v2.41.0 — 2026-11-09
 
 - **feat(security/netutil): `SSRFSafeDialer`.** A DialContext that resolves
   and checks the target on every call and dials it as the dynamic
