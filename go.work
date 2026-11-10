@@ -113,5 +113,6 @@ use (
 	./security
 	./testing/integrationtest
 	./testing/doctruth
+	./testing/expandonly
 	./testing/kittest
 )

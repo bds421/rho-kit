@@ -1,5 +1,19 @@
 # Changelog
 
+## testing/expandonly v2.44.0 — 2026-11-10
+
+- **feat(testing/expandonly): schema migrations stay expand-only, as a
+  test.** `Run` and `Check` classify each goose Up section from
+  PostgreSQL's parse tree (pg_query_go, cgo, tests only): dropping,
+  renaming, retyping or tightening what existed before the file (a column,
+  table, index, constraint, function; NOT NULL, a CHECK, a unique index,
+  row-level security, a REVOKE, an owner, role or setting change,
+  TRUNCATE) is a finding that names the
+  statement, file and line, unless the file declares
+  `-- contract: vX.Y.Z <why>`. DO blocks are read through their PL/pgSQL.
+  `Set.After` leaves the history out; `Options.Floor` checks the rollback
+  floor file against the newest declared release.
+
 ## observability v2.44.0 — 2026-11-09
 
 - **feat(observability/health): the probe speaks mTLS.**

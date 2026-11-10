@@ -115,3 +115,6 @@ github.com/testcontainers/testcontainers-go/modules/redis
 
 # Bounded zstd decoding of untrusted payloads (codec/zstd only).
 github.com/klauspost/compress
+
+# PostgreSQL's own parser, for the expand-only migration check (testing/expandonly only; cgo, tests only).
+github.com/pganalyze/pg_query_go/v6
