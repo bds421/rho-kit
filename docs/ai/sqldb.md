@@ -1,6 +1,6 @@
 # Database - PostgreSQL (pgx)
 
-Packages: `infra/sqldb`, `infra/sqldb/pgx`, `infra/sqldb/migrate`, `infra/sqldb/dbtest/v2`, `data/idempotency/pgstore`
+Packages: `infra/sqldb`, `infra/sqldb/pgx`, `infra/sqldb/migrate`, `testing/expandonly`, `infra/sqldb/dbtest/v2`, `data/idempotency/pgstore`
 
 Snippet status: Go blocks in this recipe are illustrative fragments unless
 explicitly introduced as generated or executable code. Buildable golden-path
@@ -169,6 +169,29 @@ module) to take such a database as up to date. The trade-off: a database
 migrated by a chain since squashed into a baseline is no longer detected, so
 only use it when every migration keeps the schema working for the release
 before it. A file below the recorded version that never ran still fails.
+
+`testing/expandonly` checks that rule in a test, from PostgreSQL's parse
+tree (pg_query, cgo, never in a shipped binary): a goose Up section that
+drops a table, column, index, constraint or function, renames, retypes,
+tightens (NOT NULL, a CHECK, a unique index, row-level security, a REVOKE,
+an owner, a role or a setting) or truncates what existed before the file
+fails, unless the file declares
+`-- contract: vX.Y.Z <why>`, naming the first release that no longer uses
+what it removes. Objects the file creates (by schema, and not with IF NOT EXISTS or OR
+REPLACE) are its own; DO blocks are read
+through their PL/pgSQL, and a dynamic EXECUTE needs the declaration.
+`Set.After` marks the history the rule does not cover; `Options.Floor` is a
+file that must hold the newest declared release, the rollback floor below
+which a deploy tool refuses to roll back.
+
+```go
+func TestMigrationsAreExpandOnly(t *testing.T) {
+    expandonly.Run(t, expandonly.Options{
+        Sets:  []expandonly.Set{{Name: "orders", Dir: orders.Migrations(), After: 12}},
+        Floor: "../../deploy/rollback-floor",
+    })
+}
+```
 
 ## Transactions in context
 
