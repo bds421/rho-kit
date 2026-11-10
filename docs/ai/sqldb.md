@@ -177,14 +177,17 @@ tightens (NOT NULL, a CHECK, a unique index, row-level security, a REVOKE,
 an owner, a role or a setting) or truncates what existed before the file
 fails, unless the file declares
 `-- contract: vX.Y.Z <why>`, naming the first release that no longer uses
-what it removes. Objects the file creates (by schema, and not with IF NOT EXISTS or OR
-REPLACE) are its own; DO blocks are read
-through their PL/pgSQL, and a dynamic EXECUTE needs the declaration.
-`Set.After` marks the history the rule does not cover; `Options.Floor` is a
-file that must hold the newest declared release, the rollback floor below
-which a deploy tool refuses to roll back. The kit's own sets (the outbox,
-the audit log and every other module with goose files) run through it in
-`make check-expand-only`, part of `make ci` and `make ci-fast`.
+what it removes. Objects the file creates (by schema, and not with IF NOT
+EXISTS or OR REPLACE) are its own; DO blocks are read through their
+PL/pgSQL, and a dynamic EXECUTE needs the declaration. `Set.After` marks
+the history the rule does not cover; `Options.Floor` is a file that must
+hold the newest declared release, the rollback floor below which a deploy
+tool refuses to roll back. A product that runs a library's sets names them
+with `Set.Upstream`: a contract comment there names the library's release,
+so the product adopts it in `Options.Adopted` under its own first release
+that ships it, which counts for the floor instead. The kit's own sets (the
+outbox, the audit log and every other module with goose files) run through
+it in `make check-expand-only`, part of `make ci` and `make ci-fast`.
 
 ```go
 func TestMigrationsAreExpandOnly(t *testing.T) {

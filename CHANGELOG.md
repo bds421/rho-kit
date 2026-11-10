@@ -1,5 +1,15 @@
 # Changelog
 
+## testing/expandonly v2.45.0 — 2026-11-10
+
+- **feat(testing/expandonly): a library's migration sets.** `Set.Upstream`
+  names where a set's files come from when a product runs a library's
+  migrations beside its own. Their contract comments name the library's
+  releases, so each one past `After` must be adopted in `Options.Adopted`
+  under the product release that first ships it, and that release counts
+  for the rollback floor; an undeclared contraction there names the
+  library, and an adoption that matches no declaration is a finding.
+
 ## testing/expandonly v2.44.0 — 2026-11-10
 
 - **feat(testing/expandonly): schema migrations stay expand-only, as a
