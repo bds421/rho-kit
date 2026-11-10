@@ -10,7 +10,7 @@ module github.com/bds421/rho-kit/crypto/envelope/azurekeyvault/v2
 go 1.26.8
 
 require (
-	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.3
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.24.0
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys v1.5.0
 	github.com/bds421/rho-kit/core/v2 v2.38.0
 	github.com/bds421/rho-kit/crypto/v2 v2.38.0
@@ -31,7 +31,8 @@ require (
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/tink-crypto/tink-go/v2 v2.9.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
