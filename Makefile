@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-short test-race test-integration test-cover build tidy fmt vet clean help ci ci-fast release-candidate kit-doctor kit-contract release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-tidy check-release-team bench check-bench-regression update-bench-baseline exit-traps
+.PHONY: lint vulncheck test test-short test-race test-integration test-cover build tidy fmt vet clean help ci ci-fast release-candidate kit-doctor kit-contract release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-expand-only check-tidy check-release-team bench check-bench-regression update-bench-baseline exit-traps
 
 GOLANGCI_LINT_VERSION := v2.14.0
 GOVULNCHECK_VERSION  ?= v1.8.0
@@ -107,10 +107,10 @@ clean:
 	go clean -cache -testcache
 
 ## ci: Run the full CI pipeline locally (lint + test + build + supply-chain checks)
-ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-tidy check-doc-rot check-dashboard-metrics check-dashboard-labels lint test-race build
+ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-tidy check-doc-rot check-expand-only check-dashboard-metrics check-dashboard-labels lint test-race build
 
 ## ci-fast: Run the change-time GitHub gate (policy, tidy, and short unit tests)
-ci-fast: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-tidy test-short
+ci-fast: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-tidy check-expand-only test-short
 
 ## kit-doctor: Run strict critical kit-doctor checks against this repository
 kit-doctor:
@@ -178,6 +178,10 @@ check-dashboard-metrics:
 ## check-dashboard-labels: Verify every dashboard label selector references a label declared by the metric's Go NewXxxVec call.
 check-dashboard-labels:
 	@bash tools/check-dashboard-labels.sh
+
+## check-expand-only: Keep the kit's own schema migrations expand-only (testing/expandonly; history by version).
+check-expand-only:
+	@bash tools/check-expand-only.sh
 
 ## check-doc-rot: Validate every "wave N" reference in docs/ has a matching commit; flag unanchored "future wave" claims.
 check-doc-rot:

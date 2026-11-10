@@ -182,7 +182,9 @@ REPLACE) are its own; DO blocks are read
 through their PL/pgSQL, and a dynamic EXECUTE needs the declaration.
 `Set.After` marks the history the rule does not cover; `Options.Floor` is a
 file that must hold the newest declared release, the rollback floor below
-which a deploy tool refuses to roll back.
+which a deploy tool refuses to roll back. The kit's own sets (the outbox,
+the audit log and every other module with goose files) run through it in
+`make check-expand-only`, part of `make ci` and `make ci-fast`.
 
 ```go
 func TestMigrationsAreExpandOnly(t *testing.T) {
