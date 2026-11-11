@@ -14,14 +14,19 @@
 // file holds only what is open; -fixes is generated (a scan of the pinned
 // and the tag's newest image, say) and may name digests nothing pins.
 //
-// -write moves every pin that must move to the tag's digest, replacing the
-// old digest wherever the files read write it, and drops the -advisories entries of the digests it
-// moved; a pin within its wait stays.
+// -write moves every pin past its wait or named by -advisories or -fixes
+// to the tag's digest, replacing the old digest wherever the files read
+// write it, and drops the -advisories entries of the digests it moved; a
+// pin within its wait stays. A pin whose new digest has no known age
+// stays too and is listed: a person looks. -verify names a program run as
+// `program <host/repository> <tag> <digest>` for each move before any file
+// is written; its first output line is printed with the move, and a
+// failure stops the run with nothing written.
 //
-// It exits 1 when a pin must move (never with -write), 2 on bad input or
-// a registry error.
+// It exits 1 when a pin must move (with -write: when a new digest's age
+// is unknown), 2 on bad input, a registry error or a failed -verify.
 //
-//	kit-basepin [-wait 168h] [-advisories file] [-fixes file] [-write] [-compose file]... [-text file]... [-own prefix]... [Dockerfile]...
+//	kit-basepin [-wait 168h] [-advisories file] [-fixes file] [-write [-verify program]] [-compose file]... [-text file]... [-own prefix]... [Dockerfile]...
 package main
 
 import (
@@ -43,7 +48,7 @@ type list []string
 func (l *list) String() string     { return strings.Join(*l, ",") }
 func (l *list) Set(v string) error { *l = append(*l, v); return nil }
 
-const usage = "usage: kit-basepin [-wait 168h] [-advisories file] [-fixes file] [-write] [-compose file]... [-text file]... [-own prefix]... [Dockerfile]..."
+const usage = "usage: kit-basepin [-wait 168h] [-advisories file] [-fixes file] [-write [-verify program]] [-compose file]... [-text file]... [-own prefix]... [Dockerfile]..."
 
 // inputs are the files the pins and advisories come from.
 type inputs struct {
@@ -55,6 +60,16 @@ func (in inputs) files() []string {
 	return slices.Concat(in.dockerfiles, in.compose, in.text)
 }
 
+// verdict is what a pin needs: nothing, a move, or a person, as its new
+// digest's age is unknown.
+type verdict int
+
+const (
+	stays verdict = iota
+	moves
+	unknownAge
+)
+
 func run(args []string, stdout, stderr io.Writer, reg *registry, now time.Time) int {
 	flags := flag.NewFlagSet("kit-basepin", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -62,11 +77,12 @@ func run(args []string, stdout, stderr io.Writer, reg *registry, now time.Time) 
 	wait := flags.Duration("wait", 7*24*time.Hour, "how old the tag's digest must be before a pin behind it fails")
 	flags.StringVar(&in.advisories, "advisories", "", "JSON list of pinned digests with an advisory (image, digest, advisory, reason)")
 	flags.StringVar(&in.fixes, "fixes", "", "a generated list like -advisories; it may name digests nothing pins")
-	write := flags.Bool("write", false, "move every pin that must move to the tag's digest")
+	write := flags.Bool("write", false, "move every pin past its wait or named by an advisory to the tag's digest")
+	verify := flags.String("verify", "", "with -write: a program run for each move before anything is written")
 	flags.Var(&in.compose, "compose", "a compose file whose service images are checked (repeatable)")
 	flags.Var(&in.text, "text", "a file whose every name:tag@sha256:… is checked (repeatable)")
 	flags.Var(&in.own, "own", "a repository prefix of images built here, skipped in compose and text files (repeatable)")
-	if err := flags.Parse(args); err != nil || flags.NArg()+len(in.compose)+len(in.text) == 0 || *wait < 0 {
+	if err := flags.Parse(args); err != nil || flags.NArg()+len(in.compose)+len(in.text) == 0 || *wait < 0 || (*verify != "" && !*write) {
 		_, _ = fmt.Fprintln(stderr, usage)
 		return 2
 	}
@@ -76,8 +92,8 @@ func run(args []string, stdout, stderr io.Writer, reg *registry, now time.Time) 
 		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
-	var moves []move
-	failed := false
+	var toMove []move
+	unknown, failed := 0, false
 	for _, p := range pins {
 		if p.Unchecked != "" {
 			_, _ = fmt.Fprintf(stdout, "%s  %s  not checked: set at run time or without a tag\n", p.Line, p.Unchecked)
@@ -87,14 +103,17 @@ func run(args []string, stdout, stderr io.Writer, reg *registry, now time.Time) 
 		if adv == nil {
 			adv = advisoryFor(fixes, p)
 		}
-		state, digest, late, err := judge(reg, p, adv, *wait, now)
+		state, digest, v, err := judge(reg, p, adv, *wait, now)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "%s: %v\n", p.Line, err)
 			failed = true
 			continue
 		}
-		if late {
-			moves = append(moves, move{pin: p, to: digest})
+		switch v {
+		case moves:
+			toMove = append(toMove, move{pin: p, to: digest, why: state})
+		case unknownAge:
+			unknown++
 		}
 		_, _ = fmt.Fprintf(stdout, "%s  %s@%s  %s\n", p.Line, p.name(), p.Digest[:19], state)
 	}
@@ -104,16 +123,26 @@ func run(args []string, stdout, stderr io.Writer, reg *registry, now time.Time) 
 			failed = true
 		}
 	}
-	switch {
-	case failed:
+	if failed {
 		return 2
-	case *write:
-		if err := apply(moves, in.files(), in.advisories, stdout); err != nil {
-			_, _ = fmt.Fprintln(stderr, err)
-			return 2
+	}
+	if !*write {
+		if behind := len(toMove) + unknown; behind > 0 {
+			_, _ = fmt.Fprintf(stdout, "%d pinned images behind their tags\n", behind)
+			return 1
 		}
-	case len(moves) > 0:
-		_, _ = fmt.Fprintf(stdout, "%d pinned images behind their tags\n", len(moves))
+		return 0
+	}
+	if err := verifyMoves(*verify, toMove); err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if err := apply(toMove, in.files(), in.advisories, stdout); err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if unknown > 0 {
+		_, _ = fmt.Fprintf(stdout, "%d pinned images behind a digest of unknown age: left in place for a person to look at\n", unknown)
 		return 1
 	}
 	return 0
@@ -142,38 +171,38 @@ func load(in inputs) (pins []pin, advisories, fixes []*advisory, err error) {
 	return pins, advisories, fixes, err
 }
 
-// judge is the pin's state and the digest its tag names now; late when
-// the pin must move to it.
-func judge(reg *registry, p pin, adv *advisory, wait time.Duration, now time.Time) (string, string, bool, error) {
+// judge is the pin's state, the digest its tag names now and what the pin
+// needs.
+func judge(reg *registry, p pin, adv *advisory, wait time.Duration, now time.Time) (string, string, verdict, error) {
 	digest, err := reg.current(p)
 	if err != nil {
-		return "", "", false, err
+		return "", "", stays, err
 	}
 	if digest != p.Digest && slices.Contains(reg.platforms(p, digest), p.Digest) {
 		digest = p.Digest
 	}
 	if digest == p.Digest {
 		if adv != nil {
-			return "", "", false, fmt.Errorf("advisory %s names the digest the tag still has; the fix is not in a newer image yet", adv.Advisory)
+			return "", "", stays, fmt.Errorf("advisory %s names the digest the tag still has; the fix is not in a newer image yet", adv.Advisory)
 		}
-		return "current", digest, false, nil
+		return "current", digest, stays, nil
 	}
 	moved := "the tag is " + digest[:19]
 	if adv != nil {
-		return "BEHIND: " + moved + ", " + adv.Advisory + " (" + adv.Reason + ") overrides the wait", digest, true, nil
+		return "BEHIND: " + moved + ", " + adv.Advisory + " (" + adv.Reason + ") overrides the wait", digest, moves, nil
 	}
 	pushed, built := reg.pushed(p, digest)
 	switch {
 	case pushed.IsZero():
-		return "BEHIND: " + moved + ", pushed at an unknown time", digest, true, nil
+		return "BEHIND: " + moved + ", pushed at an unknown time", digest, unknownAge, nil
 	case built:
-		return "BEHIND: " + moved + ", built " + pushed.UTC().Format(time.DateOnly) + " (a build date: the push time is unknown)", digest, true, nil
+		return "BEHIND: " + moved + ", built " + pushed.UTC().Format(time.DateOnly) + " (a build date: the push time is unknown)", digest, unknownAge, nil
 	}
 	since := " since " + pushed.UTC().Format(time.DateOnly)
 	if now.Sub(pushed) >= wait {
-		return "BEHIND: " + moved + since, digest, true, nil
+		return "BEHIND: " + moved + since, digest, moves, nil
 	}
-	return "newer digest in its wait: " + moved + since + ", due " + pushed.Add(wait).UTC().Format(time.DateOnly), digest, false, nil
+	return "newer digest in its wait: " + moved + since + ", due " + pushed.Add(wait).UTC().Format(time.DateOnly), digest, stays, nil
 }
 
 func readFile[T any](path string, read func(io.Reader) (T, error)) (T, error) {

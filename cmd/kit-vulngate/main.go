@@ -33,10 +33,12 @@
 // report of an archive built from it.
 //
 // -upstream pinned=report.json names the report of a scan of the pinned
-// image's tag as it is now. A finding that would fail in the pinned image
-// but that newest image still carries waits on upstream: no release of
-// ours can fix it, so it is listed as "waits on upstream: <newest image>
-// <id>" and recorded with that image in the baseline, and passes.
+// image's tag as it is now (grype name:tag; a scan of anything else is
+// refused). A finding that would fail in the pinned image but that newest
+// image still carries waits on upstream: no release of ours can fix it,
+// so it is listed as "waits on upstream: <newest image> <id>" and
+// recorded with that image in the baseline (name:tag@ the scanned
+// platform's manifest digest, not the index digest), and passes.
 //
 //	kit-vulngate [-policy file] [-accepted file] [-baseline file [-previous release]] [-record file -release name] [-report [-initial]] [-upstream pinned=report.json]... [image=]report.json...
 package main

@@ -33,7 +33,8 @@ type entry struct {
 	FirstSeen string `json:"firstSeen,omitempty"`
 	Due       string `json:"due,omitempty"`
 	// Upstream is the newest image of the tag that still carried the
-	// late finding when this baseline was recorded: it waits on upstream.
+	// late finding when this baseline was recorded (name:tag@ its amd64
+	// manifest digest, not the tag's index digest): it waits on upstream.
 	Upstream string `json:"upstream,omitempty"`
 	due      time.Time
 }

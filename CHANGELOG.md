@@ -8,15 +8,21 @@
   `-upstream pinned=report.json` names a scan of the pinned image's tag as
   it is now. A finding that would fail in the pinned image but that newest
   image still carries is listed as `waits on upstream: <newest image>
-  <id>`, recorded in the baseline with that image (`upstream`) and passes:
-  no release of ours can fix it. Once the newest image drops it, it fails,
-  as moving the pin fixes it.
+  <id>`, recorded in the baseline with that image (`upstream`, name:tag@
+  the scanned platform's manifest digest, not the index digest) and
+  passes: no release of ours can fix it. Once the newest image drops it,
+  it fails, as moving the pin fixes it. A scan that is not of the pinned
+  repository by its tag is refused.
 - **feat(cmd/kit-basepin): pins move themselves.** `-text file` checks
   every `name:tag@sha256:…` a file names (a Makefile, a script, a
   workflow); `-fixes file`, generated, names pinned digests whose findings
   the tag's newest image drops, which override the wait like
-  `-advisories`; `-write` moves every pin that must move, replacing the old
-  digest wherever the files read write it, and drops the `-advisories` entries of the digests it moved.
+  `-advisories`; `-write` moves every pin past its wait or named by an
+  advisory, replacing the old digest wherever the files read write it, and
+  drops the `-advisories` entries of the digests it moved. A pin whose new
+  digest has no known age stays, is listed and fails the run (exit 1).
+  `-verify program` checks each new digest before anything is written and
+  its result is named with the move.
 
 ## v2.46.0 — 2026-11-11
 

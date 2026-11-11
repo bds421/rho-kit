@@ -32,7 +32,11 @@ func readUpstream(arg string) (image, upstream, error) {
 		if err := json.NewDecoder(r).Decode(&rep); err != nil {
 			return fmt.Errorf("%s: not a grype JSON report: %w", path, err)
 		}
-		u.newest = newestImage(rep.Source.Target, ref)
+		newest, err := newestImage(rep.Source.Target, ref)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		u.newest = newest
 		for _, m := range rep.Matches {
 			u.carries[findingKey{m.Vulnerability.ID, m.Artifact.Name}] = true
 			for _, related := range m.RelatedVulnerabilities {
@@ -45,21 +49,33 @@ func readUpstream(arg string) (image, upstream, error) {
 }
 
 // newestImage names the scanned image as name:tag@digest, from the scan's
-// input (registry:name:tag) and the manifest digest it resolved; the
-// pinned reference when the report names neither.
-func newestImage(target json.RawMessage, pinned string) string {
+// input and the manifest digest grype resolved, the platform's (amd64)
+// manifest, not the tag's index. The input must be the pinned repository
+// by its tag: a scan by digest would be the pinned image itself, and every
+// finding would wait.
+func newestImage(target json.RawMessage, pinned string) (string, error) {
 	var t struct {
 		UserInput      string `json:"userInput"`
 		ManifestDigest string `json:"manifestDigest"`
 	}
-	if json.Unmarshal(target, &t) != nil || t.UserInput == "" {
-		return pinned
+	_ = json.Unmarshal(target, &t)
+	input := strings.TrimPrefix(t.UserInput, "registry:")
+	want, _, _ := strings.Cut(pinned, "@")
+	if strings.Contains(input, "@") || repository(input) != repository(want) || tagOf(input) != tagOf(want) || tagOf(want) == "" {
+		return "", fmt.Errorf("the scan is of %q, not of the pinned image's tag %s", t.UserInput, want)
 	}
-	name := strings.TrimPrefix(t.UserInput, "registry:")
-	if t.ManifestDigest != "" && !strings.Contains(name, "@") {
-		name += "@" + t.ManifestDigest
+	if t.ManifestDigest != "" {
+		input += "@" + t.ManifestDigest
 	}
-	return name
+	return input, nil
+}
+
+// tagOf is name:tag's tag, empty without one.
+func tagOf(name string) string {
+	if i := strings.LastIndex(name, ":"); i > strings.LastIndex(name, "/") {
+		return name[i+1:]
+	}
+	return ""
 }
 
 // waits names the newest image of the finding's tag when it still carries

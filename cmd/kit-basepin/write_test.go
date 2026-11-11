@@ -88,3 +88,53 @@ func TestWriteMovesTheDigestEverywhereItIsWritten(t *testing.T) {
 		t.Errorf("exit %d\n%s", code, out)
 	}
 }
+
+// -write leaves a pin whose new digest has no known age in place, lists it
+// and exits 1, a build date alone included: a person looks.
+func TestWriteLeavesADigestOfUnknownAge(t *testing.T) {
+	for name, img := range map[string]image{
+		"no push time":      {digest: newDigest, created: time.Unix(0, 0)},
+		"a build date only": {digest: newDigest, created: now.Add(-9 * 24 * time.Hour)},
+	} {
+		script := file(t, "run.sh", "docker run "+textRefOld+"\n")
+		code, out := basepin(t, fakeRegistry(t, img), "-write", "-text", script)
+		if code != 1 || strings.Contains(read(t, script), newDigest) || !strings.Contains(out, "unknown age") {
+			t.Errorf("%s: exit %d\n%s", name, code, out)
+		}
+	}
+}
+
+// A second -write finds every moved pin current and changes nothing.
+func TestWriteTwiceChangesNothingTheSecondTime(t *testing.T) {
+	reg := fakeRegistry(t, image{digest: newDigest, uploaded: now.Add(-10 * 24 * time.Hour)})
+	script := file(t, "run.sh", "docker run "+textRefOld+"\n")
+	if code, out := basepin(t, reg, "-write", "-text", script); code != 0 || !strings.Contains(out, "moved to") {
+		t.Fatalf("first: exit %d\n%s", code, out)
+	}
+	after := read(t, script)
+	if code, out := basepin(t, reg, "-write", "-text", script); code != 0 || strings.Contains(out, "moved to") || !strings.Contains(out, "current") || read(t, script) != after {
+		t.Errorf("second: exit %d\n%s", code, out)
+	}
+}
+
+// -verify runs for each move before anything is written: what it says is
+// printed with the move, and a failure leaves every file as it was.
+func TestWriteVerifiesEachNewDigestFirst(t *testing.T) {
+	reg := fakeRegistry(t, image{digest: newDigest, uploaded: now.Add(-10 * 24 * time.Hour)})
+	program := func(body string) string {
+		path := file(t, "verify.sh", "#!/bin/sh\n"+body+"\n")
+		if err := os.Chmod(path, 0o700); err != nil { //nolint:gosec // the test's own script
+			t.Fatal(err)
+		}
+		return path
+	}
+	script := file(t, "run.sh", "docker run "+textRefOld+"\n")
+	ok := program(`echo "publisher $1:$2 checked"`)
+	if code, out := basepin(t, reg, "-write", "-verify", ok, "-text", script); code != 0 || !strings.Contains(out, "verified: publisher registry.example/team/base:1.0 checked") {
+		t.Errorf("a passing check: exit %d\n%s", code, out)
+	}
+	script = file(t, "run.sh", "docker run "+textRefOld+"\n")
+	if code, out := basepin(t, reg, "-write", "-verify", program(`echo "no signature" >&2; exit 1`), "-text", script); code != 2 || strings.Contains(read(t, script), newDigest) || !strings.Contains(out, "no signature") {
+		t.Errorf("a failing check: exit %d\n%s", code, out)
+	}
+}

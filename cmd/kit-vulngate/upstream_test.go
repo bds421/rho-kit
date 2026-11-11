@@ -16,7 +16,7 @@ func TestALateFindingTheNewestImageStillCarriesWaitsOnUpstream(t *testing.T) {
 	late := match("C1", "Critical", "2026-10-01", "")
 	report := write(t, "db.json", `{"matches":[`+late+`],"source":{"type":"image","target":{"userInput":"registry:`+pinned+`"}}}`)
 	scanOfTag := func(matches string) string {
-		return write(t, "db-newest.json", `{"matches":[`+matches+`],"source":{"type":"image","target":{"userInput":"registry:docker.io/example/db:2.0","manifestDigest":"`+newest+`"}}}`)
+		return write(t, "db-newest.json", `{"matches":[`+matches+`],"source":{"type":"image","target":{"userInput":"docker.io/example/db:2.0","manifestDigest":"`+newest+`"}}}`)
 	}
 	policy := write(t, "policy.json", proxyPolicy)
 	baseline := write(t, "b.json", base(""))
@@ -39,5 +39,28 @@ func TestALateFindingTheNewestImageStillCarriesWaitsOnUpstream(t *testing.T) {
 	}
 	if code, _ := gate(t, "-upstream", "db.json", report); code != 2 {
 		t.Errorf("an -upstream without its pinned image: exit %d", code)
+	}
+}
+
+// An -upstream scan must be of the pinned repository by its tag: one by
+// digest, of another tag or of another repository is refused, as every
+// finding would wait.
+func TestAnUpstreamScanOfAnythingButTheTagIsRefused(t *testing.T) {
+	const pinned = "docker.io/example/db:2.0@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	report := write(t, "db.json", `{"matches":[],"source":{"type":"image","target":{"userInput":"registry:`+pinned+`"}}}`)
+	for name, input := range map[string]string{
+		"by digest":          pinned,
+		"another tag":        "docker.io/example/db:2.1",
+		"another repository": "docker.io/example/other:2.0",
+		"no input":           "",
+	} {
+		scan := write(t, "db-newest.json", `{"matches":[],"source":{"type":"image","target":{"userInput":"`+input+`"}}}`)
+		if code, out := gate(t, "-upstream", pinned+"="+scan, report); code != 2 || !strings.Contains(out, "not of the pinned image's tag") {
+			t.Errorf("%s: exit %d\n%s", name, code, out)
+		}
+	}
+	scan := write(t, "db-newest.json", `{"matches":[],"source":{"type":"image","target":{"userInput":"example/db:2.0"}}}`)
+	if code, out := gate(t, "-upstream", pinned+"="+scan, report); code != 0 {
+		t.Errorf("Docker Hub's short name: exit %d\n%s", code, out)
 	}
 }
