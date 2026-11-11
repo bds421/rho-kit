@@ -7,14 +7,14 @@ module github.com/bds421/rho-kit/data/cron/pgstore/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.38.0
-	github.com/bds421/rho-kit/runtime/v2 v2.38.0
+	github.com/bds421/rho-kit/core/v2 v2.46.0
+	github.com/bds421/rho-kit/runtime/v2 v2.46.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/stretchr/testify v1.12.1
 )
 
 require (
-	github.com/bds421/rho-kit/observability/v2 v2.38.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.46.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
