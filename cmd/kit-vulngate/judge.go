@@ -14,6 +14,9 @@ type judge struct {
 	policy   policy
 	accepted []acceptance
 	baseline *baseline
+	// upstream holds, by pinned image, the newest image of its tag
+	// (-upstream).
+	upstream map[image]upstream
 	now      time.Time
 	// deployed is -report: everything scanned is in production already.
 	deployed bool
@@ -56,8 +59,20 @@ func (j judge) list(w io.Writer, all []finding) int {
 }
 
 // status is the finding's state; late fails the run, tracked is an
-// inherited third-party finding with a fix.
+// inherited third-party finding with a fix. A late finding the newest
+// image of its tag still carries waits on upstream instead.
 func (j judge) status(f finding) (state string, late, tracked bool) {
+	state, late, tracked = j.deadline(f)
+	if late {
+		if newest, waiting := j.waits(f); waiting {
+			return "waits on upstream: " + newest + " " + f.ID + " (" + strings.TrimPrefix(state, "LATE: ") + ")", false, false
+		}
+	}
+	return state, late, tracked
+}
+
+// deadline is the finding's state by its deadline alone.
+func (j judge) deadline(f finding) (state string, late, tracked bool) {
 	switch {
 	case accepted(j.accepted, f, j.now):
 		return "accepted", false, false

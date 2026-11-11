@@ -32,7 +32,10 @@ type entry struct {
 	// first carried it and its deadline then, kept while it stays.
 	FirstSeen string `json:"firstSeen,omitempty"`
 	Due       string `json:"due,omitempty"`
-	due       time.Time
+	// Upstream is the newest image of the tag that still carried the
+	// late finding when this baseline was recorded: it waits on upstream.
+	Upstream string `json:"upstream,omitempty"`
+	due      time.Time
 }
 
 type entryKey struct{ component, pkg, id string }
@@ -110,6 +113,10 @@ func (j judge) record(path, release string, all []finding) error {
 			if due, known := j.libraryDue(f); known {
 				e.Due = due.Format(time.DateOnly)
 			}
+		}
+		e.Upstream = ""
+		if _, late, _ := j.deadline(f); late {
+			e.Upstream, _ = j.waits(f)
 		}
 		k := entryKey{e.Component, e.Package, e.ID}
 		if !seen[k] {

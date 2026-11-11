@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### cmd/kit-vulngate, cmd/kit-basepin
+
+- **feat(cmd/kit-vulngate): a finding upstream has not fixed waits.**
+  `-upstream pinned=report.json` names a scan of the pinned image's tag as
+  it is now. A finding that would fail in the pinned image but that newest
+  image still carries is listed as `waits on upstream: <newest image>
+  <id>`, recorded in the baseline with that image (`upstream`) and passes:
+  no release of ours can fix it. Once the newest image drops it, it fails,
+  as moving the pin fixes it.
+- **feat(cmd/kit-basepin): pins move themselves.** `-text file` checks
+  every `name:tag@sha256:…` a file names (a Makefile, a script, a
+  workflow); `-fixes file`, generated, names pinned digests whose findings
+  the tag's newest image drops, which override the wait like
+  `-advisories`; `-write` moves every pin that must move in the line that
+  names it and drops the `-advisories` entries of the digests it moved.
+
 ## v2.46.0 — 2026-11-11
 
 Every workspace module is released at v2.46.0 (`release/v2.46.0`). `make lint` fails on Go that is not `gofmt -s` formatted (`check-fmt`); the workspace is formatted.

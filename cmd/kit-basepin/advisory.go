@@ -14,7 +14,9 @@ type advisory struct {
 	Digest   string `json:"digest"`
 	Advisory string `json:"advisory"`
 	Reason   string `json:"reason"`
-	used     bool
+	// name is Image as host/repository, as a pin names it.
+	name string
+	used bool
 }
 
 func readAdvisories(r io.Reader) ([]*advisory, error) {
@@ -27,14 +29,14 @@ func readAdvisories(r io.Reader) ([]*advisory, error) {
 		if !ok || a.Advisory == "" || a.Reason == "" {
 			return nil, fmt.Errorf("advisory %d: image (name), digest (sha256:<hex>), advisory and reason are required", i+1)
 		}
-		a.Image = p.Host + "/" + p.Repository
+		a.name = p.Host + "/" + p.Repository
 	}
 	return list, nil
 }
 
 func advisoryFor(list []*advisory, p pin) *advisory {
 	for _, a := range list {
-		if a.Image == p.Host+"/"+p.Repository && a.Digest == p.Digest {
+		if a.name == p.Host+"/"+p.Repository && a.Digest == p.Digest {
 			a.used = true
 			return a
 		}
