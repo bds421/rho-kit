@@ -60,22 +60,6 @@ type Options struct {
 	// of info. Typically the readiness probes the OpenAPI spec
 	// describes.
 	QuietPaths []string
-
-	// ErrorMapper translates an error returned by the strict server
-	// implementation into a [problemdetails.Problem]. The kit ships
-	// a default [DefaultErrorMapper] that handles apperror types;
-	// override only when the service has custom error categories.
-	//
-	// Mount does NOT consume this field: oapi-codegen converts a
-	// strict-server error into a response inside the generated handler,
-	// before it reaches Mount's outer middleware chain. Pass the mapper
-	// to [StrictErrorHandler] and wire the result through the generated
-	// constructor's ResponseErrorHandlerFunc instead. ErrorMapper is
-	// retained only so existing call sites keep compiling.
-	//
-	// Deprecated: Mount ignores ErrorMapper. Use [StrictErrorHandler]
-	// at the strict-handler boundary.
-	ErrorMapper func(error) problemdetails.Problem
 }
 
 // Mount wraps handler with the kit's standard OpenAPI-handler
@@ -134,8 +118,7 @@ func DefaultErrorMapper(err error) problemdetails.Problem {
 // error returned by a strict-server implementation into an RFC 7807
 // Problem Details response.
 //
-// It is the wiring point for the [Options.ErrorMapper] policy: pass the
-// result as the ResponseErrorHandlerFunc on oapi-codegen's
+// Pass the result as the ResponseErrorHandlerFunc on oapi-codegen's
 // StrictHTTPServerOptions, e.g.
 //
 //	opts := api.StrictHTTPServerOptions{

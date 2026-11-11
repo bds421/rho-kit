@@ -1,9 +1,19 @@
 package encrypt
 
 import (
+	"crypto/rand"
 	"errors"
 	"testing"
 )
+
+func testKey(t *testing.T) []byte {
+	t.Helper()
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	return key
+}
 
 func TestEncryptDecryptBytes_RoundTrip(t *testing.T) {
 	gcm, err := NewGCM(testKey(t))

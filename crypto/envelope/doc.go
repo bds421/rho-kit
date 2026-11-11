@@ -3,17 +3,18 @@
 // key-encryption-key — typically a KMS-managed master key), and emitted
 // alongside the ciphertext as a self-describing blob.
 //
-// Compared to a single static-key approach (crypto/encrypt), envelope
+// Compared to one static key over every value (crypto/encrypt), envelope
 // encryption gives:
 //
 //   - Online rotation. Re-key by swapping the KEK; new writes use the
 //     new key version, old reads still work via the embedded key-version
 //     metadata. [Encryptor.Rewrap] re-keys an existing blob without
-//     touching plaintext or AAD.
+//     touching plaintext or AAD, and [KeyID] tells which key a blob is under.
 //   - KMS integration. The KEK is pluggable behind the [KEK] interface.
 //     This package ships kekstatic for tests/dev; cloud KMS providers
 //     (AWS KMS, GCP KMS, Vault transit) live in their own subpackages
-//     so consumers only pull the SDK they use.
+//     so consumers only pull the SDK they use. [Box] seals values for one
+//     purpose, each bound to what it belongs to.
 //   - Per-record DEKs. A single key compromise reveals only the records
 //     written under that DEK, not the entire dataset.
 //

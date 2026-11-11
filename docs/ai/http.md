@@ -96,8 +96,7 @@ auth.RequireScopeStrict("api:write") // never honours WithTrustedS2SBypass
 subject := auth.Subject(r.Context())   // visibility / RLS UUID
 actor := auth.Actor(r.Context())       // audit attribution id
 kind := auth.ActorKindFromContext(r.Context())
-userID := auth.UserID(r.Context())       // deprecated alias for Subject
-perms := auth.Permissions(r.Context()) // nil for mTLS S2S
+userID := perms := auth.Permissions(r.Context()) // nil for mTLS S2S
 
 // Multi-credential Bearer chain (session, OAuth access, scoped keys, JWT):
 auth.ChainMiddleware(
@@ -152,12 +151,16 @@ app.New(...).With(ratelimit.IP(100, time.Minute))
 // stack.WithOuter needed. Reach for ratelimit.IPLimiter(infra) only
 // when wrapping a specific route with a tighter cap than the baseline.
 
+// Any data/ratelimit.Limiter (gcra, tokenbucket, redis or a Fallback of
+// redis and memory), with the RateLimit-Policy / RateLimit fields:
+mux.Handle("/api/", ratelimit.Limit{Limiter: shared, Policy: ratelimit.PerMinute(120)}.Middleware(apiHandler))
+
 // Keyed per-user (via Builder + app/ratelimit bridge):
 app.New(...).With(ratelimit.Keyed("api", 10, time.Second))
 // then in router:
 mux.Handle("/api/", ratelimit.KeyedMiddleware(
     kitratelimit.KeyedLimiter(infra, "api"),
-    func(r *http.Request) string { return auth.UserID(r.Context()) },
+    func(r *http.Request) string { return auth.Subject(r.Context()) },
 )(apiHandler))
 ```
 

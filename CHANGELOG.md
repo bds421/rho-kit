@@ -1,5 +1,126 @@
 # Changelog
 
+## data v2.39.0, data/ratelimit/redis v2.39.0, data/queue/riverqueue v2.39.0, httpx v2.39.0, realtime/centrifuge v2.39.0, observability v2.45.0 — 2026-11-11
+
+- **feat(data/ratelimit): `Fallback`** asks a shared limiter (Redis) and,
+  while it fails, a local one, so an unreachable Redis narrows the budget
+  to one instance instead of refusing every request; it logs once when the
+  shared limiter starts failing and once when it answers again.
+- **feat(data/ratelimit/redis): a failure names its class.** The error of
+  a failing Redis call carries the class of the failure (`context_canceled`,
+  `pool_timeout`, `reply_NOAUTH`, `network_timeout`, …) in its safe
+  message, never the driver's text.
+- **feat(httpx/middleware/ratelimit): `Limit`**, a middleware over any
+  `data/ratelimit.Limiter` (memory, Redis or a `Fallback`), a budget per
+  key (`Keys`; the client address by default; a request `Keys` names no
+  budget for is refused), with the
+  draft-ietf-httpapi-ratelimit-headers fields: `RateLimit-Policy` on every
+  answer (`Policy`, `PerMinute`, `SetPolicy`), `RateLimit` and
+  `Retry-After` on a refusal (`SetRemaining`), `Retry-After: 5` while the
+  limiter itself fails; `Refuse` and `Unavailable` write a product's own
+  problem bodies.
+- **feat(httpx/middleware/ratelimit): the limiters are
+  `data/ratelimit.Limiter` implementations.** `KeyedLimiter.Allow(ctx,
+  key)` and `Limiter.Allow(ctx, ip)` return `(allowed, retryAfter
+  time.Duration, err)`, so either can be handed to `tenant.New` or any
+  other consumer of the one limiter interface; `AllowN(ctx, key, n)` has the
+  same shape. Key validation and `ErrInvalidKey`/`ErrInvalidLimiter` are
+  `data/ratelimit`'s.
+
+- **feat(data/queue/riverqueue/periodic): a service's recurring tasks on
+  River.** `Registry` runs a task every interval (`Every`, `Add`), per
+  organization every interval (`EveryPerOrg`: a dispatcher lists the
+  organizations, each becomes its own job under the scope
+  `Options.OrgContext` derives) and on demand (`Task`, `RunTask`,
+  `RunOrgTask`); a service's own kinds go through `AddWorker`, whose
+  worker `Timeout` and a task's `Timeout` size River's stuck-job rescue to
+  the longest job, so a job within its time is never run twice; `Client`, `InsertOnly`, `Run` and `Migrate` are the
+  lifecycle. A run is unique while it waits or runs (`UniqueWhileWaiting`),
+  so a completed run never blocks the next tick. The job kinds are
+  `rho.periodic` and `rho.org_task`; a product that moves here from its
+  own kinds leaves their queued jobs to be discarded as unknown.
+- **feat(httpx/problemdetails): coded problems.** `Coded` is a problem an
+  API declares once (`Declare`, listed by `Declared` for a test to prove
+  each code has its texts) and answers with parameters (`With`), found in a
+  wrapped error by `Is`, and written by `WriteCoded` with the extensions
+  `code`, `params`, `requestId` and a `Retry-After` header.
+- **feat(httpx): `ParseRetryAfter`** reads a `Retry-After` value in
+  seconds, fractions rounded up, or as an HTTP date.
+- **feat(httpx/middleware/clientip): `Middleware`** sets each request's
+  `RemoteAddr` to the client behind the trusted proxies, keeping the port,
+  so rate limits, audit and logs that key on `RemoteAddr` agree with
+  `ClientIPWithTrustedProxies`; with no trusted proxies it rewrites nothing.
+- **feat(realtime/centrifuge): `NewConnectionTokens`** turns a PEM signing
+  key into the signer of a service's connection tokens and the verifier
+  `WithJWTAuth` takes, for one issuer, audience, lifetime and claim set.
+- **feat(observability/logging): `Config.Output`** is where the log goes
+  (stdout unless set), for a command whose stdout an operator reads.
+- **tools/golangci.yml** is the linter set every product's `.golangci.yml`
+  starts with, between its `# rho-kit golangci.yml begin` and `end`
+  lines; `make lint-config` prints the digest a product pins in its
+  `.golangci.sha256`.
+
+Breaking: `clientip.ClientIPWithTrustedProxies(r, nil)`,
+`ratelimit.WithTrustedProxies` and `auditlog.WithTrustedProxies` with an
+empty list trust no proxy (the client is `RemoteAddr`); `clientip.ClientIP`
+alone keeps the loopback default. `KeyedLimiter.AllowKey` and the `Allow(key) (bool, int)` wrapper,
+`ValidateKey`, `MaxKeyBytes`, `ErrInvalidKey` and `ErrInvalidLimiter` of the
+middleware package are removed (`AllowN`'s retry-after is a Duration);
+`middleware/auth.UserID` (use `Subject`) and its `authtest` helper
+`WithUserID` (now `WithSubject`, which stamps the subject key), and
+`openapi.Options.ErrorMapper` (which `Mount` never read; pass the mapper to
+`StrictErrorHandler`) are removed.
+
+## crypto v2.40.0 — 2026-11-11
+
+- **feat(crypto): one sealing API.** A value kept at rest is sealed with
+  `crypto/envelope`: `envelope.NewBox` over a `kekstatic.KEK` or a KMS
+  adapter binds each value to its purpose and record and rotates through
+  the KEK. `envelope.KeyID(blob)` names the key a blob is under, which a
+  reseal pass needs; `kekstatic.ErrUnknownKeyID` is the error of a key the
+  KEK no longer holds. `crypto/encrypt` keeps the AES-256-GCM primitive
+  (`NewGCM`, `EncryptBytesAAD`, `DecryptBytesAAD`).
+
+Breaking: `crypto/secretcrypt`, `encrypt.FieldEncryptor` (with its
+`enc:v1:`/`enc:v2:`/`enc:v3:` prefixes), `encrypt.Keyring`/`Key`/
+`ErrUnknownKey` and `masking.DecryptAndMaskURL` are removed. A value one of
+them sealed is opened with crypto v2.39.0 and sealed anew with a Box before
+this release is taken; nothing in this release reads the old forms.
+
+## auth/oauth2/redis v2.39.0 — 2026-11-11
+
+- **feat(auth/oauth2/redis): `WithEncryption` seals with an
+  `envelope.Box`** over a `kekstatic.KEK` of the keys, bound to the Redis
+  key. Key IDs are 1-32 bytes of `[A-Za-z0-9._:/-]`.
+
+Breaking: values sealed by an earlier release (the `rk1.` keyring form) are
+read as absent, so every signed-in user signs in again once after the
+deploy.
+
+Release order: this module needs crypto v2.40.0 (`envelope.KeyID`,
+`kekstatic.ErrUnknownKeyID`); its go.mod still pins crypto v2.38.0 and builds
+through go.work. Release crypto v2.40.0 first, move this module's crypto pin to
+it, then tag auth/oauth2/redis v2.39.0.
+
+## httpx/middleware/signedrequest/redis v2.39.0 — 2026-11-11
+
+Breaking: `WithNonceTimeout`, an alias of `WithCallTimeout`, is removed.
+
+## grpcx v2.39.0 — 2026-11-11
+
+Breaking: `interceptor.UserID` is removed; `Subject` reads the subject.
+
+## infra v2.39.0 — 2026-11-11
+
+Breaking: `infra/storage/retry` and `infra/storage/circuitbreaker`, storage
+wrappers over `resilience/retry` and `resilience/circuitbreaker` with option
+sets of their own, are removed; wrap a storage call in the resilience
+packages directly.
+
+## testing/integrationtest v2.39.0 — 2026-11-11
+
+- The `cryptoencrypt` integration test went with `encrypt.FieldEncryptor`.
+
 ## testing/expandonly v2.45.0 — 2026-11-10
 
 - **feat(testing/expandonly): a library's migration sets.** `Set.Upstream`
@@ -1284,9 +1405,8 @@ code changes.
 
 The agentic-AI service backend release. Every `go.work` module is tagged at
 `/v2` using Go semantic import versioning. Public API breaks vs. v1.x are
-intentional — see [`docs/RELEASE_NOTES_v2.md`](docs/RELEASE_NOTES_v2.md) for
-the full enumeration of breaking changes and the operational migration
-sequence.
+intentional; the migration is in `docs/ai/adoption.md`, "Upgrading from
+v1.x".
 
 ### Themes
 
@@ -1315,8 +1435,7 @@ sequence.
   HTTP servers reject zero-value `http.Server`; Redis health checks are
   critical by default; ASVS registries / RED-metric default buckets / retry
   default policies are now accessors; CORS requires explicit origins; auth
-  middleware fails closed; development-mode escape hatches removed. Full list
-  in [`docs/RELEASE_NOTES_v2.md`](docs/RELEASE_NOTES_v2.md).
+  middleware fails closed; development-mode escape hatches removed.
 
 ### Release engineering
 
@@ -1326,12 +1445,3 @@ sequence.
   placeholder cryptographic material, added CODEOWNERS coverage for
   security-sensitive audit/release/workflow files, and trimmed completed
   audit artifacts from package docs.
-
-See [`docs/RELEASE_NOTES_v2.md`](docs/RELEASE_NOTES_v2.md) for the full
-enumeration of breaking changes, new primitives, and verification commands.
-
-### Migration
-
-For the per-symbol break list grouped by package (renames, signature changes,
-removed APIs, wire-format changes), see
-[`docs/RELEASE_NOTES_v2.md`](docs/RELEASE_NOTES_v2.md).

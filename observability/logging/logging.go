@@ -6,6 +6,7 @@ package logging
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -31,14 +32,23 @@ type Config struct {
 
 	// Environment is the deployment environment (e.g. "development", "production").
 	Environment string
+
+	// Output is where the log goes; nil is stdout. A command whose stdout an
+	// operator or monitor reads logs to stderr.
+	Output io.Writer
 }
 
 // New creates a JSON slog.Logger enriched with service identity attributes.
-// The logger writes to stdout and is suitable for container log aggregation.
+// The logger writes to [Config.Output], by default stdout, as container log
+// aggregation reads it.
 func New(cfg Config) *slog.Logger {
 	level := parseLevel(cfg.Level)
 
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	out := cfg.Output
+	if out == nil {
+		out = os.Stdout
+	}
+	handler := slog.NewJSONHandler(out, &slog.HandlerOptions{
 		Level: level,
 	})
 

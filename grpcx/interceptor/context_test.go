@@ -9,8 +9,8 @@ import (
 	"github.com/bds421/rho-kit/grpcx/v2/interceptor"
 )
 
-func TestUserID_EmptyWithoutAuth(t *testing.T) {
-	assert.Equal(t, "", interceptor.UserID(context.Background()))
+func TestSubject_EmptyWithoutAuth(t *testing.T) {
+	assert.Equal(t, "", interceptor.Subject(context.Background()))
 }
 
 func TestUserPermissions_NilWithoutAuth(t *testing.T) {

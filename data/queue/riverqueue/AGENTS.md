@@ -21,6 +21,7 @@
 - `WithoutUniqueByID()` — opt out of FR-059 dedup if you genuinely want every Enqueue to deliver.
 - `EnqueueAt(ctx, queue, msg, at)` / `EnqueueTxAt(ctx, tx, queue, msg, at)` — a job that runs no earlier than `at` (River `ScheduledAt`); dedupe by `Message.ID` covers scheduled jobs.
 - `Pending(ctx, queue, id)` / `PendingTx` — whether a job with that `Message.ID` still waits, is scheduled, runs or retries; finds work River gave up on.
+- `periodic.New(Options)` — a service's recurring tasks: `Every`, `EveryPerOrg` (one job per organization under `Options.OrgContext`), `Task`/`RunTask`/`RunOrgTask` on demand, `AddWorker` for a service's own kinds (their `Timeout` counts for the stuck-job rescue), `Timeout` for a task's, `Client`/`InsertOnly`/`Run`/`Migrate`; `UniqueWhileWaiting` for a service's own kinds.
 
 ## Common mistakes
 

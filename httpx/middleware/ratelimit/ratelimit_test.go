@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"context"
 	"errors"
+	limiter "github.com/bds421/rho-kit/data/v2/ratelimit"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -26,16 +27,16 @@ func TestLimiterAllow(t *testing.T) {
 	rl := NewLimiter(3, time.Minute)
 
 	for i := 0; i < 3; i++ {
-		if allowed, _ := rl.allow("1.2.3.4"); !allowed {
+		if allowed, _, _ := rl.Allow(context.Background(), "1.2.3.4"); !allowed {
 			t.Fatalf("request %d should be allowed", i+1)
 		}
 	}
 
-	if allowed, _ := rl.allow("1.2.3.4"); allowed {
+	if allowed, _, _ := rl.Allow(context.Background(), "1.2.3.4"); allowed {
 		t.Fatal("4th request should be denied")
 	}
 
-	if allowed, _ := rl.allow("5.6.7.8"); !allowed {
+	if allowed, _, _ := rl.Allow(context.Background(), "5.6.7.8"); !allowed {
 		t.Fatal("different IP should be allowed")
 	}
 }
@@ -43,9 +44,12 @@ func TestLimiterAllow(t *testing.T) {
 func TestLimiterAllowRejectsEmptyIPWithoutStoring(t *testing.T) {
 	rl := NewLimiter(1, time.Minute)
 
-	allowed, remaining := rl.allow("")
+	allowed, remaining, err := rl.Allow(context.Background(), "")
 	if allowed {
 		t.Fatal("empty IP should not be allowed")
+	}
+	if !errors.Is(err, limiter.ErrInvalidKey) {
+		t.Fatalf("Allow error = %v, want ErrInvalidKey", err)
 	}
 	if remaining != 0 {
 		t.Fatalf("remaining = %s, want 0 for invalid IP", remaining)
@@ -62,13 +66,13 @@ func TestLimiterWindowReset(t *testing.T) {
 	rl.allow("1.2.3.4") //nolint:errcheck
 	rl.allow("1.2.3.4") //nolint:errcheck
 
-	if allowed, _ := rl.allow("1.2.3.4"); allowed {
+	if allowed, _, _ := rl.Allow(context.Background(), "1.2.3.4"); allowed {
 		t.Fatal("should be denied after limit")
 	}
 
 	now = now.Add(60 * time.Millisecond)
 
-	if allowed, _ := rl.allow("1.2.3.4"); !allowed {
+	if allowed, _, _ := rl.Allow(context.Background(), "1.2.3.4"); !allowed {
 		t.Fatal("should be allowed after window reset")
 	}
 }
@@ -269,7 +273,7 @@ func TestWithTrustedProxies_OptionReuseClonesOutput(t *testing.T) {
 
 func TestLimiterRun_StopsOnCancel(t *testing.T) {
 	rl := NewLimiter(5, 10*time.Millisecond)
-	rl.allow("1.2.3.4")
+	_, _, _ = rl.allow("1.2.3.4")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -303,8 +307,8 @@ func TestLimiterRun_RejectsNilContext(t *testing.T) {
 
 func TestLimiterRun_RejectsInvalidLimiter(t *testing.T) {
 	var rl Limiter
-	if err := rl.Start(context.Background()); err != ErrInvalidLimiter {
-		t.Fatalf("Run error = %v, want ErrInvalidLimiter", err)
+	if err := rl.Start(context.Background()); err != limiter.ErrInvalidLimiter {
+		t.Fatalf("Run error = %v, want limiter.ErrInvalidLimiter", err)
 	}
 }
 
@@ -556,16 +560,16 @@ func TestLimiterWithClock(t *testing.T) {
 	now := time.Now()
 	rl := NewLimiter(1, time.Minute, WithClock(func() time.Time { return now }))
 
-	if allowed, _ := rl.allow("1.2.3.4"); !allowed {
+	if allowed, _, _ := rl.Allow(context.Background(), "1.2.3.4"); !allowed {
 		t.Fatal("first request should be allowed")
 	}
-	if allowed, _ := rl.allow("1.2.3.4"); allowed {
+	if allowed, _, _ := rl.Allow(context.Background(), "1.2.3.4"); allowed {
 		t.Fatal("second request should be denied")
 	}
 
 	now = now.Add(2 * time.Minute)
 
-	if allowed, _ := rl.allow("1.2.3.4"); !allowed {
+	if allowed, _, _ := rl.Allow(context.Background(), "1.2.3.4"); !allowed {
 		t.Fatal("should be allowed after clock advance")
 	}
 }

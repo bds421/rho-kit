@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-short test-race test-integration test-cover build tidy fmt vet clean help ci ci-fast release-candidate kit-doctor kit-contract release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-expand-only check-tidy check-release-team bench check-bench-regression update-bench-baseline exit-traps
+.PHONY: lint lint-config vulncheck vet-tags test test-short test-race test-integration test-cover build tidy fmt vet clean help ci ci-fast release-candidate kit-doctor kit-contract release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-expand-only check-tidy check-release-team bench check-bench-regression update-bench-baseline exit-traps
 
 GOLANGCI_LINT_VERSION := v2.14.0
 GOVULNCHECK_VERSION  ?= v1.8.0
@@ -27,6 +27,11 @@ exit-traps:
 	@bad=$$(git grep -lE '^[[:space:]]*trap .*EXIT' -- '*.sh' | while read -r f; do grep -q 'finished=yes' "$$f" || echo "$$f"; done); \
 	if [ -n "$$bad" ]; then echo "an EXIT trap without finished=yes: $$bad" >&2; exit 1; fi
 
+## lint-config: Print the digest of tools/golangci.yml, the linter set a
+## product's .golangci.yml starts with (pinned in its .golangci.sha256)
+lint-config:
+	@shasum -a 256 tools/golangci.yml | cut -d' ' -f1
+
 lint: exit-traps
 	@for dir in $(WORKSPACE_MODULES); do \
 		echo "==> Linting $$dir"; \
@@ -40,8 +45,16 @@ vulncheck:
 		(cd $$dir && go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...) || exit 1; \
 	done
 
-## test: Run all tests (all workspace modules)
-test:
+## vet-tags: Compile every module, tests included, under every build tag the repo uses
+# (authtest, integration, minio, nativepostgres); lint and test leave those files out.
+vet-tags:
+	@for dir in $(WORKSPACE_MODULES); do \
+		echo "==> Vetting $$dir with build tags"; \
+		(cd $$dir && go vet -tags authtest,integration,minio,nativepostgres ./...) || exit 1; \
+	done
+
+## test: Run all tests (all workspace modules), after vet-tags
+test: vet-tags
 	@for dir in $(WORKSPACE_MODULES); do \
 		echo "==> Testing $$dir"; \
 		(cd $$dir && go test ./...) || exit 1; \

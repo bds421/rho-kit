@@ -303,10 +303,10 @@ func remoteAddrInTrustedProxies(remoteAddr string, trusted []*net.IPNet) bool {
 // request context using the provided function. This is more flexible than
 // an interface constraint and works with any context extraction mechanism.
 //
-// Example with auth.UserID:
+// Example with auth.Subject:
 //
 //	authz.SubjectFromContext(func(ctx context.Context) string {
-//	    return auth.UserID(ctx)
+//	    return auth.Subject(ctx)
 //	})
 func SubjectFromContext(fn func(context.Context) string) SubjectFunc {
 	if fn == nil {

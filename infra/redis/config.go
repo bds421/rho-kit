@@ -227,11 +227,10 @@ func LoadFields() (Fields, error) {
 
 // ValidateRedis checks the Redis configuration and credential strength.
 //
-// The environment parameter is preserved for backward compatibility but
-// no longer gates any check — the kit no longer has a development mode
-// (see docs/RELEASE_NOTES_v2.md). Production-safe defaults are
-// unconditional. Tests against fixture instances should provide
-// password-bearing URLs via REDIS_URL or set REDIS_PASSWORD.
+// The environment parameter gates no check: the kit has no development
+// mode, so production-safe defaults are unconditional. Tests against
+// fixture instances should provide password-bearing URLs via REDIS_URL or
+// set REDIS_PASSWORD.
 //
 // FR-077 [MED]: rejects passwordless URLs and the plaintext `redis://`
 // scheme unless [Redis.AllowPlaintext] is set. Production deployments

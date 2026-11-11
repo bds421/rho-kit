@@ -26,7 +26,6 @@ import (
 )
 
 // Named types for type-safe, collision-free context keys via contextutil.Key.
-type authUserID string
 type authSubject string
 type authActor string
 type authTenant string
@@ -43,7 +42,6 @@ type permissionSet map[string]struct{}
 type trustedS2SMarker struct{}
 
 var (
-	userIDKey      = contextutil.NewKey[authUserID]("httpx.auth.user_id")
 	subjectKey     = contextutil.NewKey[authSubject]("httpx.auth.subject")
 	actorKey       = contextutil.NewKey[authActor]("httpx.auth.actor")
 	actorKindKey   = contextutil.NewKey[ActorKind]("httpx.auth.actor_kind")
@@ -514,14 +512,10 @@ func singleHeaderValue(h http.Header, name string) (string, bool) {
 	return headerutil.SingletonIdentity(h, name)
 }
 
-// Subject extracts the visibility subject UUID from context. Falls back to the
-// legacy user_id key when only JWT/mTLS paths stamped [UserID].
+// Subject extracts the visibility subject UUID from context.
 func Subject(ctx context.Context) string {
-	v, ok := subjectKey.Get(ctx)
-	if ok && v != "" {
-		return string(v)
-	}
-	return UserID(ctx)
+	v, _ := subjectKey.Get(ctx)
+	return string(v)
 }
 
 // Actor extracts the attribution id (key id, client id, or user UUID).
@@ -549,13 +543,6 @@ func FormatActorFromContext(ctx context.Context) string {
 		Actor:   Actor(ctx),
 		Kind:    ActorKindFromContext(ctx),
 	})
-}
-
-// UserID extracts the subject UUID from the request context. Deprecated: use
-// [Subject]; reads the legacy user_id key or subject key.
-func UserID(ctx context.Context) string {
-	v, _ := userIDKey.Get(ctx)
-	return string(v)
 }
 
 // Tenant extracts the tenant id stamped by multi-credential auth strategies.

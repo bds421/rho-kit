@@ -40,7 +40,6 @@ func stampIdentity(ctx context.Context, subject, actor string, kind ActorKind, p
 	})
 	if subject != "" {
 		ctx = subjectKey.Set(ctx, grpcSubject(subject))
-		ctx = userIDKey.Set(ctx, grpcUserID(subject))
 	}
 	if actor != "" {
 		ctx = actorKey.Set(ctx, grpcActor(actor))
@@ -57,14 +56,10 @@ func stampIdentity(ctx context.Context, subject, actor string, kind ActorKind, p
 	return ctx
 }
 
-// Subject extracts the visibility subject UUID from context. Falls back to
-// [UserID] when only the legacy user_id key was stamped.
+// Subject extracts the visibility subject UUID from context.
 func Subject(ctx context.Context) string {
-	v, ok := subjectKey.Get(ctx)
-	if ok && v != "" {
-		return string(v)
-	}
-	return UserID(ctx)
+	v, _ := subjectKey.Get(ctx)
+	return string(v)
 }
 
 // Actor extracts the attribution id (service identity, key id, or user UUID).

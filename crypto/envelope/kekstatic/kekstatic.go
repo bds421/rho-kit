@@ -42,6 +42,10 @@ import (
 // detectable via errors.Is in callers and tests.
 var ErrKEKClosed = errors.New("kekstatic: KEK closed")
 
+// ErrUnknownKeyID is returned by [KEK.Unwrap] for a key ID the KEK does not
+// hold: a value sealed under a key that was removed, or never added.
+var ErrUnknownKeyID = errors.New("kekstatic: unknown keyID")
+
 // KEK is an in-memory KEK that holds one or more named keys. The
 // "current" key (selected at construction or via [KEK.Rotate]) is
 // returned by [KEK.KeyID] and used by [KEK.Wrap]; older keys remain
@@ -269,7 +273,7 @@ func (k *KEK) Unwrap(_ context.Context, keyID string, wrapped []byte) ([]byte, e
 	master := k.keys[keyID]
 	if master == nil {
 		k.mu.RUnlock()
-		return nil, fmt.Errorf("kekstatic: unknown keyID")
+		return nil, ErrUnknownKeyID
 	}
 	gcm, err := newGCM(master)
 	k.mu.RUnlock()

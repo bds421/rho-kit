@@ -9,9 +9,7 @@
 //
 // Key entry points:
 //
-//   - [MaskURL] / [DecryptAndMaskURL] — strip path, query, userinfo,
-//     and fragment from a URL, optionally after decrypting a field
-//     stored under a [crypto/encrypt.FieldEncryptor].
+//   - [MaskURL] — strip path, query, userinfo and fragment from a URL.
 //   - [MaskString] — keep a small rune prefix of a string and append
 //     "****", refusing to render short strings even partially.
 //

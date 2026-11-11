@@ -146,10 +146,8 @@ func AdoptIncomingIdentity(ctx context.Context) context.Context {
 	if Subject(ctx) == "" {
 		if vals := md.Get(MetadataSubjectKey); len(vals) == 1 && isSafeOutgoingIdentity(vals[0]) {
 			ctx = subjectKey.Set(ctx, grpcSubject(vals[0]))
-			ctx = userIDKey.Set(ctx, grpcUserID(vals[0]))
 		} else if vals := md.Get(MetadataLegacyUserKey); len(vals) == 1 && isSafeOutgoingIdentity(vals[0]) {
 			ctx = subjectKey.Set(ctx, grpcSubject(vals[0]))
-			ctx = userIDKey.Set(ctx, grpcUserID(vals[0]))
 		}
 	}
 	if Actor(ctx) == "" {

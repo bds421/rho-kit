@@ -100,7 +100,7 @@ func TestCrossHop_RequirePermission_UsesPropagatedEntitlements(t *testing.T) {
 			return requirePerm(ctx, req, &grpc.UnaryServerInfo{FullMethod: "/svc.B/Write"}, func(ctx context.Context, _ any) (any, error) {
 				called = true
 				assert.True(t, interceptor.IsTrustedS2S(ctx))
-				assert.Equal(t, subject, interceptor.UserID(ctx))
+				assert.Equal(t, subject, interceptor.Subject(ctx))
 				assert.Equal(t, []string{"orders:write"}, interceptor.UserPermissions(ctx))
 				assert.Equal(t, "api:write", interceptor.UserScopes(ctx))
 				return "ok", nil

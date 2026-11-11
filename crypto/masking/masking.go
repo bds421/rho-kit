@@ -4,22 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-
-	"github.com/bds421/rho-kit/crypto/v2/encrypt"
 )
-
-// DecryptAndMaskURL decrypts the URL (if encryptor is non-nil) then masks it,
-// showing only scheme and host (e.g., "https://example.com/***").
-// Returns "***" if the URL cannot be parsed.
-func DecryptAndMaskURL(rawURL string, encryptor *encrypt.FieldEncryptor) string {
-	if encryptor != nil {
-		decrypted, err := encryptor.Decrypt(rawURL)
-		if err == nil {
-			rawURL = decrypted
-		}
-	}
-	return MaskURL(rawURL)
-}
 
 // MaskURL returns a masked URL showing only scheme and host (e.g., "https://example.com/***").
 // Returns "***" if the URL cannot be parsed or lacks a scheme/host (e.g., relative paths,

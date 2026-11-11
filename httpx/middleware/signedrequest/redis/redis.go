@@ -82,21 +82,11 @@ const maxKeyPrefixLen = 128
 // Panics if d <= 0 — a zero or negative timeout would create an
 // immediately expired context and fail every nonce SET NX call closed,
 // silently turning the verifier into a denial-of-service.
-//
 func WithCallTimeout(d time.Duration) Option {
 	if d <= 0 {
 		panic("signedrequest/redis: WithCallTimeout requires a positive duration")
 	}
 	return func(s *RedisNonceStore) { s.callTimeout = d }
-}
-
-// WithNonceTimeout is a deprecated alias of [WithCallTimeout] retained
-// for source compatibility. Prefer WithCallTimeout (matches the field
-// and the sibling idempotency WithPostHandlerTimeout naming).
-//
-// Deprecated: use WithCallTimeout.
-func WithNonceTimeout(d time.Duration) Option {
-	return WithCallTimeout(d)
 }
 
 // New constructs a RedisNonceStore.

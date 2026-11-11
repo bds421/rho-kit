@@ -7,10 +7,8 @@ import (
 	"testing"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
-	"github.com/bds421/rho-kit/infra/v2/storage/circuitbreaker"
 	"github.com/bds421/rho-kit/infra/v2/storage/encryption"
 	"github.com/bds421/rho-kit/infra/v2/storage/membackend"
-	"github.com/bds421/rho-kit/infra/v2/storage/retry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -115,7 +113,7 @@ func TestExactVersionPageListerSurvivesSemanticDecoratorStack(t *testing.T) {
 		bytes.NewReader([]byte("body")),
 		storage.ObjectMeta{Size: 4},
 	))
-	wrapped := retry.New(circuitbreaker.New(encrypted))
+	wrapped := storage.WithHooks(encrypted, storage.Hooks{})
 
 	pager, ok := storage.AsExactVersionPageLister(wrapped)
 	require.True(t, ok)
@@ -130,10 +128,10 @@ func TestExactVersionPageListerSurvivesSemanticDecoratorStack(t *testing.T) {
 	assert.False(t, page.Truncated)
 	assert.Empty(t, page.NextCursor)
 
-	unversioned := retry.New(circuitbreaker.New(encryption.New(
+	unversioned := storage.WithHooks(encryption.New(
 		membackend.New(),
 		encryption.StaticKey(bytes.Repeat([]byte{9}, 32)),
-	)))
+	), storage.Hooks{})
 	_, ok = storage.AsExactVersionPageLister(unversioned)
 	assert.False(t, ok)
 }

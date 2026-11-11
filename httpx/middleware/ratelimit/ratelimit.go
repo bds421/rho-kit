@@ -8,12 +8,14 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/bds421/rho-kit/core/v2/clock"
+	limiter "github.com/bds421/rho-kit/data/v2/ratelimit"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/clientip"
 )
@@ -79,19 +81,14 @@ func WithClock(fn clock.Func) LimiterOption {
 // WithTrustedProxies sets the CIDRs from which X-Forwarded-For is trusted.
 // Invalid entries panic so proxy attribution cannot silently degrade at startup.
 //
-// A nil or empty slice falls back to the default trusted set (loopback) rather
-// than "trust no proxies" — passing []string{} does NOT disable XFF trust.
-// This preserves the kit's default attribution behavior; to trust no proxies,
-// configure the limiter behind an environment where XFF is already stripped.
+// An empty list trusts no proxy: the client is RemoteAddr, whatever the
+// forwarding headers say.
 func WithTrustedProxies(cidrs []string) LimiterOption {
 	trusted, err := clientip.ParseTrustedProxiesStrict(cidrs)
 	if err != nil {
 		// Surface which entry is malformed (index only) so operators can fix
 		// the config; the raw CIDR value is withheld for secret hygiene.
 		panic(fmt.Sprintf("middleware/ratelimit: WithTrustedProxies invalid trusted proxy at index %d", invalidTrustedProxyIndex(cidrs)))
-	}
-	if len(trusted) == 0 {
-		trusted = clientip.ParseTrustedProxies(nil)
 	}
 	return func(rl *Limiter) {
 		rl.trustedProxies = cloneIPNets(trusted)
@@ -161,9 +158,6 @@ func NewLimiter(limit int, window time.Duration, opts ...LimiterOption) *Limiter
 		}
 		opt(rl)
 	}
-	if len(rl.trustedProxies) == 0 {
-		rl.trustedProxies = clientip.ParseTrustedProxies(nil)
-	}
 	for i := range rl.shards {
 		// IMPORTANT: Do NOT use lru.NewWithEvict here. The shard mutex is held
 		// during Add() calls, and an OnEvict callback would execute under that
@@ -191,11 +185,11 @@ func cloneIPNets(in []*net.IPNet) []*net.IPNet {
 
 func (rl *Limiter) ready() error {
 	if rl == nil || rl.limit <= 0 || rl.window <= 0 || rl.now == nil {
-		return ErrInvalidLimiter
+		return limiter.ErrInvalidLimiter
 	}
 	for i := range rl.shards {
 		if rl.shards[i].visitors == nil {
-			return ErrInvalidLimiter
+			return limiter.ErrInvalidLimiter
 		}
 	}
 	return nil
@@ -208,17 +202,25 @@ func (rl *Limiter) getShard(ip string) *shard {
 	return &rl.shards[h.Sum32()%numShards]
 }
 
-// allow checks if the IP is within the rate limit. Returns (allowed, windowRemaining).
-// windowRemaining is only meaningful when allowed is false.
-func (rl *Limiter) allow(ip string) (bool, time.Duration) {
-	if rl.ready() != nil {
+var _ limiter.Limiter = (*Limiter)(nil)
+
+// Allow takes one request of the client IP, as a [limiter.Limiter]; the
+// middleware resolves the IP with [Limiter.ClientIP] first. An empty IP
+// fails with [limiter.ErrInvalidKey], an uninitialized limiter with
+// [limiter.ErrInvalidLimiter].
+func (rl *Limiter) Allow(_ context.Context, ip string) (bool, time.Duration, error) {
+	if err := rl.ready(); err != nil {
 		rl.observeDecision(rateLimitOutcomeUnavailable)
-		return false, 0
+		return false, 0, err
 	}
 	if ip == "" {
 		rl.observeDecision(rateLimitOutcomeInvalidClientIP)
-		return false, 0
+		return false, 0, limiter.ErrInvalidKey
 	}
+	return rl.allow(ip)
+}
+
+func (rl *Limiter) allow(ip string) (bool, time.Duration, error) {
 	s := rl.getShard(ip)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -234,26 +236,26 @@ func (rl *Limiter) allow(ip string) (bool, time.Duration) {
 			v.count = 1
 			v.windowAt = now
 			rl.observeDecision(rateLimitOutcomeAllowed)
-			return true, 0
+			return true, 0, nil
 		}
 		v.count++
 		if v.count <= rl.limit {
 			rl.observeDecision(rateLimitOutcomeAllowed)
-			return true, 0
+			return true, 0, nil
 		}
 		remaining := rl.window - elapsed
 		if remaining < 0 {
 			remaining = 0
 		}
 		rl.observeDecision(rateLimitOutcomeLimited)
-		return false, remaining
+		return false, remaining, nil
 	}
 
 	if s.visitors.Add(ip, &visitor{count: 1, windowAt: now}) {
 		rl.observeLRUEviction()
 	}
 	rl.observeDecision(rateLimitOutcomeAllowed)
-	return true, 0
+	return true, 0, nil
 }
 
 func (rl *Limiter) observeLRUEviction() {
@@ -341,6 +343,16 @@ func (rl *Limiter) Stop(ctx context.Context) error {
 	return rl.life.stop(ctx)
 }
 
+// retryAfterSeconds renders a wait as the whole seconds of a Retry-After
+// header, at least one.
+func retryAfterSeconds(wait time.Duration) int {
+	seconds := int(math.Ceil(wait.Seconds()))
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
+}
+
 func cleanupInterval(window time.Duration) time.Duration {
 	if window > maxDurationValue/2 {
 		return maxDurationValue
@@ -396,14 +408,15 @@ func Middleware(rl *Limiter) func(http.Handler) http.Handler {
 				httpx.WriteError(w, http.StatusBadRequest, "client IP could not be determined")
 				return
 			}
-			allowed, remaining := rl.allow(ip)
+			allowed, remaining, err := rl.Allow(r.Context(), ip)
+			if err != nil {
+				httpx.WriteError(w, http.StatusServiceUnavailable, "rate limit unavailable")
+				return
+			}
 			if !allowed {
-				retryAfter := int(math.Ceil(remaining.Seconds()))
-				if retryAfter < 1 {
-					retryAfter = 1
-				}
+				retryAfter := retryAfterSeconds(remaining)
 				rl.observeRetryAfter(float64(retryAfter))
-				w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 				httpx.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return
 			}

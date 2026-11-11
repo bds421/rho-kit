@@ -25,7 +25,6 @@ import (
 )
 
 // Named types for type-safe context keys.
-type grpcUserID string
 type grpcPermissions []string
 type grpcScopes string
 
@@ -37,7 +36,6 @@ type grpcScopes string
 type grpcTrustedS2SMarker struct{}
 
 var (
-	userIDKey      = contextutil.NewKey[grpcUserID]("grpcx.auth.user_id")
 	permissionsKey = contextutil.NewKey[grpcPermissions]("grpcx.auth.permissions")
 	scopesKey      = contextutil.NewKey[grpcScopes]("grpcx.auth.scopes")
 	trustedS2SKey  = contextutil.NewKey[grpcTrustedS2SMarker]("grpcx.auth.trusted_s2s")
@@ -221,14 +219,6 @@ func validBearerToken(token string) bool {
 		}
 	}
 	return true
-}
-
-// UserID extracts the subject UUID from the gRPC request context.
-//
-// Deprecated: use [Subject]; reads the legacy user_id key or subject key.
-func UserID(ctx context.Context) string {
-	v, _ := userIDKey.Get(ctx)
-	return string(v)
 }
 
 // UserPermissions extracts the permissions list from the gRPC request context.

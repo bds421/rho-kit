@@ -139,17 +139,6 @@ err := retry.Do(ctx, func(ctx context.Context) error {
 }))
 ```
 
-## Storage Wrappers
-
-The `storage/retry` and `storage/circuitbreaker` packages provide the same patterns pre-built for storage backends:
-
-```go
-retried := storageretry.New(backend, storageretry.WithMaxAttempts(3))
-breaker := storagecb.New(retried, storagecb.WithThreshold(5))
-```
-
-See [storage.md](storage.md) for composition details.
-
 ## Anti-Patterns
 
 - **Never** retry `apperror.PermanentError` — always use `RetryIfNotPermanent` or check manually.
