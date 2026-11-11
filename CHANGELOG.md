@@ -7,8 +7,9 @@
   organization every interval (`EveryPerOrg`: a dispatcher lists the
   organizations, each becomes its own job under the scope
   `Options.OrgContext` derives) and on demand (`Task`, `RunTask`,
-  `RunOrgTask`); `Timeout` and `Runs` size River's stuck-job rescue to the
-  longest task; `Client`, `InsertOnly`, `Run` and `Migrate` are the
+  `RunOrgTask`); a service's own kinds go through `AddWorker`, whose
+  worker `Timeout` and a task's `Timeout` size River's stuck-job rescue to
+  the longest job, so a job within its time is never run twice; `Client`, `InsertOnly`, `Run` and `Migrate` are the
   lifecycle. A run is unique while it waits or runs (`UniqueWhileWaiting`),
   so a completed run never blocks the next tick. The job kinds are
   `rho.periodic` and `rho.org_task`; a product that moves here from its
@@ -23,7 +24,7 @@
 - **feat(httpx/middleware/clientip): `Middleware`** sets each request's
   `RemoteAddr` to the client behind the trusted proxies, keeping the port,
   so rate limits, audit and logs that key on `RemoteAddr` agree with
-  `ClientIPWithTrustedProxies`.
+  `ClientIPWithTrustedProxies`; with no trusted proxies it rewrites nothing.
 - **feat(realtime/centrifuge): `NewConnectionTokens`** turns a PEM signing
   key into the signer of a service's connection tokens and the verifier
   `WithJWTAuth` takes, for one issuer, audience, lifetime and claim set.

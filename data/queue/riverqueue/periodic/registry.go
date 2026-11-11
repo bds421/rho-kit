@@ -59,6 +59,7 @@ type Registry struct {
 	periodic []*river.PeriodicJob
 	timeouts map[string]time.Duration
 	longest  time.Duration
+	logger   *slog.Logger
 }
 
 // New makes a registry; o.Schema and o.MaxAttempts are required,
@@ -89,9 +90,12 @@ func (r *Registry) Queue(name string, maxWorkers int) {
 	r.queues[name] = river.QueueConfig{MaxWorkers: maxWorkers}
 }
 
-// Workers are River's, for a service to add its own job kinds.
-func (r *Registry) Workers() *river.Workers {
-	return r.workers
+// AddWorker adds a service's own job kind. The worker's Timeout (asked with
+// an empty job: it names a constant) counts for the stuck-job rescue, so a
+// job running within its time is never run twice.
+func AddWorker[T river.JobArgs](r *Registry, w river.Worker[T]) {
+	river.AddWorker(r.workers, w)
+	r.runs(w.Timeout(&river.Job[T]{JobRow: &rivertype.JobRow{}}))
 }
 
 // Every runs task every interval, and once at start.
@@ -120,6 +124,7 @@ func (r *Registry) Task(name string, task Task) {
 // Client is a River client that works the registered tasks and the
 // service's own workers.
 func (r *Registry) Client(pool *pgxpool.Pool, logger *slog.Logger) (*river.Client[pgx.Tx], error) {
+	r.logger = logger
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Schema:               r.opts.Schema,
 		Queues:               r.queues,
@@ -134,6 +139,7 @@ func (r *Registry) Client(pool *pgxpool.Pool, logger *slog.Logger) (*river.Clien
 // InsertOnly is a River client that enqueues jobs without working them,
 // for roles that leave the work to a worker role.
 func (r *Registry) InsertOnly(pool *pgxpool.Pool, logger *slog.Logger) (*river.Client[pgx.Tx], error) {
+	r.logger = logger
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Schema: r.opts.Schema, Workers: r.workers, MaxAttempts: r.opts.MaxAttempts, Logger: logger,
 	})

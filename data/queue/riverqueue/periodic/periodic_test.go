@@ -52,30 +52,30 @@ func TestAJobCountsAsStuckJustPastTheLongestTimeout(t *testing.T) {
 		t.Errorf("with River's default timeout a job counts as stuck after %s", d)
 	}
 	r.Timeout("cases.prune", 30*time.Minute)
-	r.Runs(10 * time.Minute)
+	AddWorker(r, slowWorker{})
 	if d := r.rescueAfter(); d != 31*time.Minute {
 		t.Errorf("with a 30-minute task a job counts as stuck after %s", d)
 	}
 }
 
-// A task River cancels at its timeout is logged with its name, not left to
-// fail silently and start over at the next tick.
+// A task River cancels at its timeout is logged, through the client's
+// logger, with its name, not left to fail silently and start over at the
+// next tick.
 func TestATaskThatRunsOutOfItsTimeIsLogged(t *testing.T) {
 	var logged bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
 	ctx, cancel := context.WithTimeout(t.Context(), time.Nanosecond)
 	defer cancel()
 	<-ctx.Done()
-	if err := overran(ctx, "workspace.purge", 0, ctx.Err()); err == nil {
+	r := newRegistry(1)
+	r.logger = slog.New(slog.NewTextHandler(&logged, nil))
+	if err := r.overran(ctx, "workspace.purge", 0, ctx.Err()); err == nil {
 		t.Fatal("the task's error was swallowed")
 	}
 	if !strings.Contains(logged.String(), "task=workspace.purge") || !strings.Contains(logged.String(), "timeout=1m0s") {
 		t.Errorf("logged %q", logged.String())
 	}
 	logged.Reset()
-	_ = overran(t.Context(), "workspace.purge", 0, errors.New("refused"))
+	_ = r.overran(t.Context(), "workspace.purge", 0, errors.New("refused"))
 	if logged.Len() != 0 {
 		t.Errorf("an ordinary failure was logged as running out of time: %q", logged.String())
 	}
@@ -103,5 +103,25 @@ func TestAnOrganizationsRunIsScoped(t *testing.T) {
 	var cancel *river.JobCancelError
 	if !errors.As(err, &cancel) {
 		t.Errorf("a refused scope: %v", err)
+	}
+}
+
+type slowArgs struct{}
+
+func (slowArgs) Kind() string { return "test.slow" }
+
+type slowWorker struct{ river.WorkerDefaults[slowArgs] }
+
+func (slowWorker) Timeout(*river.Job[slowArgs]) time.Duration { return 10 * time.Minute }
+
+func (slowWorker) Work(context.Context, *river.Job[slowArgs]) error { return nil }
+
+// A worker added with a timeout of its own is given that long before it
+// counts as stuck, so a job running within its time is never run twice.
+func TestAnAddedWorkersTimeoutCountsForTheRescue(t *testing.T) {
+	r := newRegistry(1)
+	AddWorker(r, slowWorker{})
+	if d := r.rescueAfter(); d != 11*time.Minute {
+		t.Errorf("with a 10-minute worker a job counts as stuck after %s", d)
 	}
 }

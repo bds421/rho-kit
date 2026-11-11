@@ -19,12 +19,12 @@ const rescueMargin = time.Minute
 // River's default of a minute, which would cancel a long run midway.
 func (r *Registry) Timeout(name string, d time.Duration) {
 	r.timeouts[name] = d
-	r.Runs(d)
+	r.runs(d)
 }
 
-// Runs tells the registry that a worker added through Workers may run up
-// to d, so a job is not taken for stuck while it still works.
-func (r *Registry) Runs(d time.Duration) {
+// runs notes that a job may run up to d, so none is taken for stuck while
+// it still works.
+func (r *Registry) runs(d time.Duration) {
 	r.longest = max(r.longest, d)
 }
 
@@ -35,11 +35,12 @@ func (r *Registry) rescueAfter() time.Duration {
 	return r.longest + rescueMargin
 }
 
-// overran logs a task River cancelled at its timeout, which would
-// otherwise fail silently and start from the beginning at the next tick.
-func overran(ctx context.Context, name string, timeout time.Duration, err error) error {
+// overran logs, through the client's logger, a task River cancelled at its
+// timeout, which would otherwise fail silently and start from the beginning
+// at the next tick.
+func (r *Registry) overran(ctx context.Context, name string, timeout time.Duration, err error) error {
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		slog.ErrorContext(ctx, "periodic: a task ran out of its time", "task", name, "timeout", cmp.Or(timeout, river.JobTimeoutDefault), "error", err)
+		cmp.Or(r.logger, slog.Default()).ErrorContext(ctx, "periodic: a task ran out of its time", "task", name, "timeout", cmp.Or(timeout, river.JobTimeoutDefault), "error", err)
 	}
 	return err
 }
@@ -50,7 +51,7 @@ type periodicWorker struct {
 }
 
 func (w periodicWorker) Work(ctx context.Context, job *river.Job[periodicArgs]) error {
-	return overran(ctx, job.Args.Name, w.Timeout(job), w.r.runTask(ctx, job))
+	return w.r.overran(ctx, job.Args.Name, w.Timeout(job), w.r.runTask(ctx, job))
 }
 
 func (w periodicWorker) Timeout(job *river.Job[periodicArgs]) time.Duration {
@@ -63,7 +64,7 @@ type orgWorker struct {
 }
 
 func (w orgWorker) Work(ctx context.Context, job *river.Job[orgArgs]) error {
-	return overran(ctx, job.Args.Name, w.Timeout(job), w.r.runOrgTask(ctx, job))
+	return w.r.overran(ctx, job.Args.Name, w.Timeout(job), w.r.runOrgTask(ctx, job))
 }
 
 func (w orgWorker) Timeout(job *river.Job[orgArgs]) time.Duration {
