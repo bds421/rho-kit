@@ -32,7 +32,7 @@ func newTerminal() (*http.Handler, *struct {
 	}{}
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state.called = true
-		state.userID = auth.UserID(r.Context())
+		state.userID = auth.Subject(r.Context())
 		state.perms = auth.Permissions(r.Context())
 		state.scopes = auth.Scopes(r.Context())
 		state.trust = auth.IsTrustedS2S(r.Context())

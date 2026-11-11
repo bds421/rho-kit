@@ -4,7 +4,6 @@ go 1.26.8
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.38.0
-	github.com/bds421/rho-kit/crypto/v2 v2.38.0
 	github.com/bds421/rho-kit/data/actionlog/postgres/v2 v2.38.0
 	github.com/bds421/rho-kit/data/apikey/postgres/v2 v2.38.0
 	github.com/bds421/rho-kit/data/approval/postgres/v2 v2.38.0
@@ -78,6 +77,7 @@ require (
 	github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4 // indirect
 	github.com/IBM/sarama v1.50.3 // indirect
 	github.com/Microsoft/go-winio v0.6.3 // indirect
+	github.com/bds421/rho-kit/crypto/v2 v2.38.0 // indirect
 	github.com/bds421/rho-kit/io/v2 v2.38.0 // indirect
 	github.com/bds421/rho-kit/resilience/v2 v2.38.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -167,7 +167,6 @@ require (
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	github.com/tink-crypto/tink-go/v2 v2.9.0 // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/valyala/fastjson v1.6.10 // indirect

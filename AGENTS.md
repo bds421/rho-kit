@@ -43,81 +43,10 @@ go test -tags integration ./...
 
 ## Golden Path
 
-Every service follows this pattern. The snippet below is an illustrative
-`package main` shaped against the v2 API at HEAD; the literal values are
-placeholders — replace the hard-coded DSN, Redis address, AMQP URL, and JWKS
-endpoint with the env-loaded values from your service before building. The
-buildable, copy-paste-ready references are the `cmd/kit-new` scaffolds and
-`examples/agentic-service`.
-
-```go
-package main
-
-import (
-    "crypto/tls"
-    "log/slog"
-    "net/http"
-    "time"
-
-    goredis "github.com/redis/go-redis/v9"
-
-    "github.com/bds421/rho-kit/app/v2"
-    "github.com/bds421/rho-kit/app/amqp/v2"
-    "github.com/bds421/rho-kit/app/jwt/v2"
-    "github.com/bds421/rho-kit/app/postgres/v2"
-    "github.com/bds421/rho-kit/app/ratelimit/v2"
-    "github.com/bds421/rho-kit/app/redis/v2"
-    "github.com/bds421/rho-kit/httpx/v2/middleware/stack"
-    pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
-)
-
-var version = "" // set via -ldflags
-
-func main() {
-    app.Main("my-service", version, func(_ *slog.Logger) error {
-        base, err := app.LoadBaseConfig(8080)
-        if err != nil {
-            return err
-        }
-
-        return app.New("my-service", version, base).
-            With(postgres.Module(pgxbackend.Config{DSN: "postgres://localhost/my-service"})).
-            With(redis.Module(&goredis.Options{Addr: "cache.internal:6379", Password: "***", TLSConfig: &tls.Config{}})).
-            With(amqp.Module("amqps://broker.internal")).
-            With(jwt.Module("https://issuer.example.com/.well-known/jwks.json",
-                jwt.WithIssuer("https://issuer.example.com"),
-                jwt.WithAudience("my-service"),
-            )).
-            With(ratelimit.IP(100, time.Minute)).
-            Router(func(infra app.Infrastructure) http.Handler {
-                mux := http.NewServeMux()
-                // Register routes using postgres.Pool(infra), redis.Connection(infra),
-                // amqp.Publisher(infra), etc.
-                return stack.Default(mux, infra.Logger)
-            }).
-            Run()
-    })
-}
-```
-
-Notes:
-- `app.LoadBaseConfig(8080)` reads `SERVER_PORT`, `SERVER_HOST`,
-  `INTERNAL_PORT`, `ENVIRONMENT`, `LOG_LEVEL`, and `TLS_*` from the
-  environment; pass the per-service default port.
-- `BaseConfig` lives in package `app`, not `core/config`.
-- `app.New(name, version, cfg)` returns a `*Builder`; methods chain.
-- Adapter wiring (Postgres, Redis, RabbitMQ, NATS, OTel tracing, public
-  gRPC) lives in per-adapter sub-modules under `app/`. Register each via
-  `Builder.With(<adapter>.Module(...))`. Importing only `app/v2` no
-  longer pulls pgx, go-redis, amqp091, nats.go, otelgrpc, or grpc-go.
-- Non-loopback Redis MUST set `goredis.Options.TLSConfig` and a non-empty
-  `Password` (or a credentials provider) — `redis.Module` panics on a
-  non-loopback `Addr` that lacks either (FR-077) unless you opt out with
-  `redis.Module(..., redis.WithoutTLS())` on a reviewed boundary. `Addr`
-  is a `host:port`, not a `rediss://` URL.
-- Non-loopback AMQP MUST use `amqps://` — `amqp.Module` rejects
-  plaintext `amqp://` URLs (mirrors FR-077) unless you opt out with
-  `amqp.WithoutTLS()` on a reviewed boundary.
+Every service is wired through `app.Builder`; the pattern, its notes and
+the adapter rules are in [README.md → Golden path](README.md#golden-path-app).
+The buildable, copy-paste-ready references are the `cmd/kit-new` scaffolds
+and `examples/agentic-service`.
 
 For services that outgrow the Builder (custom transports, non-standard shutdown ordering), use `lifecycle.Runner` + `config.Load` directly. See the "Manual Wiring" section in [docs/ai/bootstrap.md](docs/ai/bootstrap.md). New downstream services should also read [docs/ai/adoption.md](docs/ai/adoption.md) for the `go.mod` and common-mistakes checklist.
 
@@ -216,8 +145,8 @@ row you start from:
 | Route reads to Postgres replicas (primary + N replicas, round-robin, auto failover) | `infra/sqldb/readreplica` (RoutingPool, `Acquire(..., WithReadOnly())`) | [database](docs/ai/sqldb.md) |
 | Retry transient failures | `resilience/retry` | [resilience](docs/ai/resilience.md) |
 | Protect against cascading failure | `resilience/circuitbreaker` | [resilience](docs/ai/resilience.md) |
-| Encrypt DB fields | `crypto/encrypt.FieldEncryptor` | [security](docs/ai/security.md) |
-| Rotate an encryption key without losing what it sealed | `crypto/encrypt.NewKeyring` | [security](docs/ai/security.md) |
+| Seal a credential or token at rest, bound to its record | `crypto/envelope.NewBox` over `crypto/envelope/kekstatic` or a KMS adapter | [security](docs/ai/security.md) |
+| Rotate a sealing key without losing what it sealed | `kekstatic.KEK.AddKey`/`Rotate`, `envelope.KeyID`, `Encryptor.Rewrap` | [security](docs/ai/security.md) |
 | Sign/verify webhooks (HMAC) | `crypto/signing` | [security](docs/ai/security.md) |
 | Verify JWTs (JWKS) | `security/jwtutil` | [security](docs/ai/security.md) |
 | Revoke JWTs after logout | `security/jwtutil/revocation` | [security](docs/ai/security.md) |

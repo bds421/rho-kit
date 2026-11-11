@@ -18,7 +18,6 @@ require (
 	github.com/bds421/rho-kit/core/v2 v2.38.0
 	github.com/bds421/rho-kit/crypto/v2 v2.38.0
 	github.com/bds421/rho-kit/observability/v2 v2.38.0
-	github.com/bds421/rho-kit/resilience/v2 v2.38.0
 	github.com/bds421/rho-kit/runtime/v2 v2.38.0
 	github.com/gabriel-vasile/mimetype v1.4.16
 	github.com/google/uuid v1.6.0
@@ -44,7 +43,6 @@ require (
 require (
 	github.com/bds421/rho-kit/io/v2 v2.38.0
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
@@ -54,7 +52,6 @@ require (
 	github.com/prometheus/common v0.72.1 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/sethvargo/go-retry v0.5.0 // indirect
-	github.com/sony/gobreaker/v2 v2.4.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect

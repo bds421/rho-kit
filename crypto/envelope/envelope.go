@@ -370,3 +370,10 @@ func (e *Encryptor) validate(ctx context.Context) error {
 	}
 	return nil
 }
+
+// KeyID names the KEK key that wraps the blob's DEK, so a reseal pass can
+// tell which values an older key still holds.
+func KeyID(blob []byte) (string, error) {
+	keyID, _, _, err := parseBlob(blob)
+	return keyID, err
+}

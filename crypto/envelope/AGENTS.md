@@ -7,7 +7,7 @@
 
 ## When to use something else
 
-- **Symmetric encryption with a hand-managed key:** out of scope — use `golang.org/x/crypto` directly. The kit's envelope contract assumes KMS-wrapped KEKs.
+- **Encrypting a stream or object under one key:** `crypto/encrypt` (`NewGCM`) and `infra/storage/encryption`; envelope encryption is per value.
 - **TLS / wire encryption:** stdlib `crypto/tls`. Envelope encryption is for data at rest, not in flight.
 - **Hashing / MAC:** `golang.org/x/crypto/blake2b` or stdlib `crypto/hmac`.
 

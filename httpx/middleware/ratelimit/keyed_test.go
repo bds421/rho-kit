@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	limiter "github.com/bds421/rho-kit/data/v2/ratelimit"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
@@ -16,35 +17,35 @@ func TestKeyedLimiter_Allow(t *testing.T) {
 	rl := NewKeyedLimiter(3, time.Minute)
 
 	for i := 0; i < 3; i++ {
-		allowed, _ := rl.Allow("key1")
+		allowed, _, _ := rl.Allow(context.Background(), "key1")
 		if !allowed {
 			t.Fatalf("request %d should be allowed", i+1)
 		}
 	}
 
-	allowed, retryAfter := rl.Allow("key1")
+	allowed, retryAfter, _ := rl.Allow(context.Background(), "key1")
 	if allowed {
 		t.Fatal("4th request should be denied")
 	}
-	if retryAfter < 1 {
-		t.Errorf("retryAfter should be >= 1, got %d", retryAfter)
+	if retryAfter <= 0 {
+		t.Errorf("retryAfter should be positive, got %v", retryAfter)
 	}
 }
 
 func TestKeyedLimiter_SeparateKeys(t *testing.T) {
 	rl := NewKeyedLimiter(1, time.Minute)
 
-	allowed1, _ := rl.Allow("key1")
+	allowed1, _, _ := rl.Allow(context.Background(), "key1")
 	if !allowed1 {
 		t.Fatal("key1 first request should be allowed")
 	}
 
-	allowed2, _ := rl.Allow("key2")
+	allowed2, _, _ := rl.Allow(context.Background(), "key2")
 	if !allowed2 {
 		t.Fatal("key2 first request should be allowed (different key)")
 	}
 
-	allowed1Again, _ := rl.Allow("key1")
+	allowed1Again, _, _ := rl.Allow(context.Background(), "key1")
 	if allowed1Again {
 		t.Fatal("key1 second request should be denied")
 	}
@@ -57,19 +58,19 @@ func TestKeyedLimiter_WindowExpiry(t *testing.T) {
 	window := time.Minute
 	rl := NewKeyedLimiter(1, window, WithKeyedClock(func() time.Time { return now }))
 
-	allowed, _ := rl.Allow("key1")
+	allowed, _, _ := rl.Allow(context.Background(), "key1")
 	if !allowed {
 		t.Fatal("first request should be allowed")
 	}
 
-	allowed, _ = rl.Allow("key1")
+	allowed, _, _ = rl.Allow(context.Background(), "key1")
 	if allowed {
 		t.Fatal("second request should be denied within the window")
 	}
 
 	// Advance past the window end; the next request starts a fresh window.
 	now = now.Add(window + time.Second)
-	allowed, _ = rl.Allow("key1")
+	allowed, _, _ = rl.Allow(context.Background(), "key1")
 	if !allowed {
 		t.Fatal("request after window expiry should be allowed")
 	}
@@ -79,8 +80,8 @@ func TestKeyedLimiter_Cleanup(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	window := time.Minute
 	rl := NewKeyedLimiter(1, window, WithKeyedClock(func() time.Time { return now }))
-	rl.Allow("key1")
-	rl.Allow("key2")
+	_, _, _ = rl.Allow(context.Background(), "key1")
+	_, _, _ = rl.Allow(context.Background(), "key2")
 
 	// Advance past the window so both entries are expired, then run cleanup.
 	now = now.Add(window + time.Second)
@@ -99,79 +100,40 @@ func TestKeyedLimiter_Cleanup(t *testing.T) {
 	}
 }
 
-func TestValidateKeyRejectsUnsafeKeys(t *testing.T) {
-	tests := map[string]string{
-		"empty":        "",
-		"too long":     strings.Repeat("a", MaxKeyBytes+1),
-		"null":         "tenant\x00a",
-		"newline":      "tenant\na",
-		"carriage":     "tenant\ra",
-		"space":        "tenant a",
-		"tab":          "tenant\ta",
-		"invalid utf8": string([]byte{0xff}),
-	}
-	for name, key := range tests {
-		t.Run(name, func(t *testing.T) {
-			err := ValidateKey(key)
-			if !errors.Is(err, ErrInvalidKey) {
-				t.Fatalf("ValidateKey(%q) did not return ErrInvalidKey", key)
-			}
-			if name == "too long" && (strings.Contains(err.Error(), "256") || strings.Contains(err.Error(), "257")) {
-				t.Fatalf("key length error leaked limits: %v", err)
-			}
-		})
-	}
-}
-
-func TestKeyedLimiter_AllowKeyRejectsInvalidKeysWithoutStoring(t *testing.T) {
+func TestKeyedLimiter_AllowRejectsInvalidKeysWithoutStoring(t *testing.T) {
 	rl := NewKeyedLimiter(1, time.Minute)
 
-	allowed, retryAfter, err := rl.AllowKey(strings.Repeat("a", MaxKeyBytes+1))
+	allowed, retryAfter, err := rl.Allow(context.Background(), strings.Repeat("a", limiter.MaxKeyLen+1))
 	if allowed {
 		t.Fatal("invalid key should not be allowed")
 	}
 	if retryAfter != 0 {
-		t.Fatalf("retryAfter = %d, want 0 for invalid key", retryAfter)
+		t.Fatalf("retryAfter = %v, want 0 for invalid key", retryAfter)
 	}
-	if !errors.Is(err, ErrInvalidKey) {
-		t.Fatalf("AllowKey error = %v, want ErrInvalidKey", err)
+	if !errors.Is(err, limiter.ErrInvalidKey) {
+		t.Fatalf("Allow error = %v, want limiter.ErrInvalidKey", err)
 	}
 	if strings.Contains(err.Error(), "256") || strings.Contains(err.Error(), "257") {
-		t.Fatalf("AllowKey error leaked key lengths: %v", err)
+		t.Fatalf("Allow error leaked key lengths: %v", err)
 	}
 	if got := keyedEntryCount(rl); got != 0 {
 		t.Fatalf("invalid key was stored; entries = %d", got)
 	}
 }
 
-func TestKeyedLimiter_AllowFailsClosedOnInvalidKey(t *testing.T) {
-	rl := NewKeyedLimiter(1, time.Minute)
-
-	allowed, retryAfter := rl.Allow("")
-	if allowed {
-		t.Fatal("invalid key should fail closed")
-	}
-	if retryAfter < 1 {
-		t.Fatalf("retryAfter = %d, want >= 1", retryAfter)
-	}
-	if got := keyedEntryCount(rl); got != 0 {
-		t.Fatalf("invalid key was stored; entries = %d", got)
-	}
-}
-
-func TestKeyedLimiter_AllowKeyRejectsUninitializedLimiter(t *testing.T) {
+func TestKeyedLimiter_AllowRejectsUninitializedLimiter(t *testing.T) {
 	var zero KeyedLimiter
-	_, _, err := zero.AllowKey("key")
-	if !errors.Is(err, ErrInvalidLimiter) {
-		t.Fatalf("AllowKey error = %v, want ErrInvalidLimiter", err)
+	_, _, err := zero.Allow(context.Background(), "key")
+	if !errors.Is(err, limiter.ErrInvalidLimiter) {
+		t.Fatalf("Allow error = %v, want limiter.ErrInvalidLimiter", err)
 	}
 }
 
 func TestKeyedLimiter_RunStopsOnCancel(t *testing.T) {
 	rl := NewKeyedLimiter(5, 10*time.Millisecond)
-	_, _, err := rl.AllowKey("key")
+	_, _, err := rl.Allow(context.Background(), "key")
 	if err != nil {
-		t.Fatalf("AllowKey returned %v", err)
+		t.Fatalf("Allow returned %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -202,8 +164,8 @@ func TestKeyedLimiter_RunRejectsNilContext(t *testing.T) {
 
 func TestKeyedLimiter_RunRejectsInvalidLimiter(t *testing.T) {
 	var rl KeyedLimiter
-	if err := rl.Start(context.Background()); !errors.Is(err, ErrInvalidLimiter) {
-		t.Fatalf("Run error = %v, want ErrInvalidLimiter", err)
+	if err := rl.Start(context.Background()); !errors.Is(err, limiter.ErrInvalidLimiter) {
+		t.Fatalf("Run error = %v, want limiter.ErrInvalidLimiter", err)
 	}
 }
 
@@ -368,7 +330,7 @@ func TestKeyedMiddleware_InvalidKeyReturns400WithoutStoring(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-API-Key", strings.Repeat("a", MaxKeyBytes+1))
+	req.Header.Set("X-API-Key", strings.Repeat("a", limiter.MaxKeyLen+1))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -468,22 +430,22 @@ func TestKeyedLimiter_AllowNTakesAllOrNothing(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	rl := NewKeyedLimiter(5, time.Minute, WithKeyedClock(func() time.Time { return now }))
 
-	if ok, _, err := rl.AllowN("key1", 3); !ok || err != nil {
+	if ok, _, err := rl.AllowN(context.Background(), "key1", 3); !ok || err != nil {
 		t.Fatalf("3 of 5: %v %v", ok, err)
 	}
-	if ok, retry, err := rl.AllowN("key1", 3); ok || err != nil || retry < 1 {
-		t.Fatalf("3 more of the 2 left: %v %d %v", ok, retry, err)
+	if ok, retry, err := rl.AllowN(context.Background(), "key1", 3); ok || err != nil || retry <= 0 {
+		t.Fatalf("3 more of the 2 left: %v %v %v", ok, retry, err)
 	}
 	for i := range 2 {
-		if ok, _ := rl.Allow("key1"); !ok {
+		if ok, _, _ := rl.Allow(context.Background(), "key1"); !ok {
 			t.Fatalf("a refused batch counted: request %d of the 2 left was denied", i+1)
 		}
 	}
-	if ok, _ := rl.Allow("key1"); ok {
+	if ok, _, _ := rl.Allow(context.Background(), "key1"); ok {
 		t.Fatal("the limit no longer holds")
 	}
 	now = now.Add(time.Minute)
-	if ok, _, err := rl.AllowN("key1", 5); !ok || err != nil {
+	if ok, _, err := rl.AllowN(context.Background(), "key1", 5); !ok || err != nil {
 		t.Fatalf("a full batch in a fresh window: %v %v", ok, err)
 	}
 }
@@ -491,15 +453,15 @@ func TestKeyedLimiter_AllowNTakesAllOrNothing(t *testing.T) {
 func TestKeyedLimiter_AllowNRefusesCountsNoWindowAllows(t *testing.T) {
 	rl := NewKeyedLimiter(5, time.Minute)
 	for _, n := range []int{0, -1, 6} {
-		if ok, _, err := rl.AllowN("key1", n); ok || !errors.Is(err, ErrInvalidCount) {
+		if ok, _, err := rl.AllowN(context.Background(), "key1", n); ok || !errors.Is(err, ErrInvalidCount) {
 			t.Errorf("n=%d: %v %v", n, ok, err)
 		}
 	}
-	if ok, _, err := rl.AllowN("", 1); ok || !errors.Is(err, ErrInvalidKey) {
+	if ok, _, err := rl.AllowN(context.Background(), "", 1); ok || !errors.Is(err, limiter.ErrInvalidKey) {
 		t.Errorf("an invalid key: %v %v", ok, err)
 	}
 	var nilLimiter *KeyedLimiter
-	if ok, _, err := nilLimiter.AllowN("key1", 1); ok || !errors.Is(err, ErrInvalidLimiter) {
+	if ok, _, err := nilLimiter.AllowN(context.Background(), "key1", 1); ok || !errors.Is(err, limiter.ErrInvalidLimiter) {
 		t.Errorf("a nil limiter: %v %v", ok, err)
 	}
 }

@@ -667,7 +667,7 @@ func TestIsTrustedS2S_NotSetByJWTAuth(t *testing.T) {
 		noopUnaryInfo,
 		func(ctx context.Context, req any) (any, error) {
 			observedTrusted = interceptor.IsTrustedS2S(ctx)
-			observedUserID = interceptor.UserID(ctx)
+			observedUserID = interceptor.Subject(ctx)
 			return nil, nil
 		},
 	)
@@ -1070,7 +1070,7 @@ func TestMTLSAuthUnary_MTLSPath_Success(t *testing.T) {
 		func(ctx context.Context, _ any) (any, error) {
 			called = true
 			observedTrusted = interceptor.IsTrustedS2S(ctx)
-			observedUserID = interceptor.UserID(ctx)
+			observedUserID = interceptor.Subject(ctx)
 			return "ok", nil
 		},
 	)
@@ -1112,7 +1112,7 @@ func TestMTLSAuthStream_MTLSPath_Success(t *testing.T) {
 		called = true
 		ctx := stream.Context()
 		observedTrusted = interceptor.IsTrustedS2S(ctx)
-		observedUserID = interceptor.UserID(ctx)
+		observedUserID = interceptor.Subject(ctx)
 		return nil
 	})
 	require.NoError(t, err)

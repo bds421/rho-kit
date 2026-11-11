@@ -8,9 +8,8 @@ while staying consistent, secure, and observable.
 
 ## Release
 
-- [docs/RELEASE_NOTES_v2.md](docs/RELEASE_NOTES_v2.md) — historical v2.0.0
-  breaking-changes enumeration.
-- [CHANGELOG.md](CHANGELOG.md) — per-release summary.
+- [CHANGELOG.md](CHANGELOG.md) — per-release summary; a service still on
+  v1.x follows [docs/ai/adoption.md → Upgrading from v1.x](docs/ai/adoption.md#8-upgrading-from-v1x).
 
 ### How to publish a release
 
@@ -110,45 +109,90 @@ commands are executable from a downstream module. Golden-path evidence lives in
 
 `app` is the standard service entry point. It wires logging, health
 endpoints, lifecycle management, and optional infrastructure like databases,
-RabbitMQ, and JWT verification.
+RabbitMQ, and JWT verification. The snippet is an illustrative `package main`
+shaped against the v2 API; replace the hard-coded DSN, Redis address, AMQP URL
+and JWKS endpoint with the env-loaded values of your service.
 
 ```go
-app.Main("backend", handler.Version, func(logger *slog.Logger) error {
-    base, err := app.LoadBaseConfig(8080)
-    if err != nil {
-        return err
-    }
+package main
 
-    return app.New("backend", handler.Version, base).
-        With(postgres.Module(pgxbackend.Config{DSN: os.Getenv("DATABASE_URL")})).
-        With(redis.Module(&goredis.Options{Addr: "cache.internal:6379", Password: "***", TLSConfig: &tls.Config{ServerName: "cache.internal"}})).
-        With(amqp.Module(os.Getenv("RABBITMQ_URL"))).
-        With(jwt.Module(os.Getenv("JWKS_URL"),
-            jwt.WithIssuer("https://issuer.example.com"),
-            jwt.WithAudience("backend"),
-        )).
-        With(ratelimit.IP(100, time.Minute)).
-        Router(func(infra app.Infrastructure) http.Handler {
-            return router.New(infra, logger)
-        }).
-        Run()
-})
+import (
+    "crypto/tls"
+    "log/slog"
+    "net/http"
+    "time"
+
+    goredis "github.com/redis/go-redis/v9"
+
+    "github.com/bds421/rho-kit/app/v2"
+    "github.com/bds421/rho-kit/app/amqp/v2"
+    "github.com/bds421/rho-kit/app/jwt/v2"
+    "github.com/bds421/rho-kit/app/postgres/v2"
+    "github.com/bds421/rho-kit/app/ratelimit/v2"
+    "github.com/bds421/rho-kit/app/redis/v2"
+    "github.com/bds421/rho-kit/httpx/v2/middleware/stack"
+    pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
+)
+
+var version = "" // set via -ldflags
+
+func main() {
+    app.Main("my-service", version, func(_ *slog.Logger) error {
+        base, err := app.LoadBaseConfig(8080)
+        if err != nil {
+            return err
+        }
+
+        return app.New("my-service", version, base).
+            With(postgres.Module(pgxbackend.Config{DSN: "postgres://localhost/my-service"})).
+            With(redis.Module(&goredis.Options{Addr: "cache.internal:6379", Password: "***", TLSConfig: &tls.Config{}})).
+            With(amqp.Module("amqps://broker.internal")).
+            With(jwt.Module("https://issuer.example.com/.well-known/jwks.json",
+                jwt.WithIssuer("https://issuer.example.com"),
+                jwt.WithAudience("my-service"),
+            )).
+            With(ratelimit.IP(100, time.Minute)).
+            Router(func(infra app.Infrastructure) http.Handler {
+                mux := http.NewServeMux()
+                // Register routes using postgres.Pool(infra), redis.Connection(infra),
+                // amqp.Publisher(infra), etc.
+                return stack.Default(mux, infra.Logger)
+            }).
+            Run()
+    })
+}
 ```
 
-Use `app.LoadBaseConfig`, `sqldb.LoadFields`, and package-specific loaders for
-env-backed settings. Pass a hardened `pgxbackend.Config` to `postgres.Module`.
+Notes:
+- `app.LoadBaseConfig(8080)` reads `SERVER_PORT`, `SERVER_HOST`,
+  `INTERNAL_PORT`, `ENVIRONMENT`, `LOG_LEVEL`, and `TLS_*` from the
+  environment; pass the per-service default port. `BaseConfig` lives in
+  package `app`, not `core/config`.
+- `app.New(name, version, cfg)` returns a `*Builder`; methods chain. Use
+  `app.LoadBaseConfig`, `sqldb.LoadFields`, and package-specific loaders for
+  env-backed settings. Pass a hardened `pgxbackend.Config` to `postgres.Module`.
+- Adapter wiring (Postgres, Redis, RabbitMQ, NATS, OTel tracing, public
+  gRPC) lives in per-adapter sub-modules under `app/`: `app/postgres`,
+  `app/redis`, `app/amqp`, `app/nats`, `app/tracing`, `app/grpc`. Register
+  each via `Builder.With(<adapter>.Module(...))`. Importing only `app/v2`
+  pulls neither pgx, go-redis, amqp091, nats.go, otelgrpc nor grpc-go.
+- Non-loopback Redis MUST set `goredis.Options.TLSConfig` and a non-empty
+  `Password` (or a credentials provider) — `redis.Module` panics on a
+  non-loopback `Addr` that lacks either (FR-077) unless you opt out with
+  `redis.Module(..., redis.WithoutTLS())` on a reviewed boundary. `Addr`
+  is a `host:port`, not a `rediss://` URL.
+- Non-loopback AMQP MUST use `amqps://` — `amqp.Module` rejects
+  plaintext `amqp://` URLs (mirrors FR-077) unless you opt out with
+  `amqp.WithoutTLS()` on a reviewed boundary.
+- For credential rotation, prefer provider hooks over static secrets: pgx
+  `PasswordProvider`, go-redis credential providers, AMQP/NATS auth providers,
+  cloud SDK default credentials, CSRF `WithSecrets`, and signed-request
+  `WrapKeyStore`. See [docs/ai/credential-rotation.md](docs/ai/credential-rotation.md).
 
-**v2.0.0 lazy-adapter architecture.** Heavy adapter wiring (Postgres, Redis,
-RabbitMQ, NATS, OTel tracing, public gRPC) lives in per-adapter sub-modules
-under `app/`: `app/postgres`, `app/redis`, `app/amqp`, `app/nats`,
-`app/tracing`, `app/grpc`. Importing `app/v2` alone no longer pulls pgx,
-go-redis, amqp091, nats.go, otelgrpc, or grpc-go.
-
-For credential rotation, prefer provider hooks over static secrets: pgx
-`PasswordProvider`, go-redis credential providers, AMQP/NATS auth providers,
-cloud SDK default credentials, CSRF `WithSecrets`, and signed-request
-`WrapKeyStore`. See [docs/ai/credential-rotation.md](docs/ai/credential-rotation.md).
-See `examples/agentic-service` for a full example.
+Services that outgrow the Builder (custom transports, non-standard shutdown
+ordering) use `lifecycle.Runner` + `config.Load` directly; see "Manual Wiring"
+in [docs/ai/bootstrap.md](docs/ai/bootstrap.md). `examples/agentic-service`
+wires the full stack in one file.
 
 ## HTTP stack (recommended)
 

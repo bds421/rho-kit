@@ -44,7 +44,7 @@
 //
 // # Test helpers
 //
-//   - WithUserID, WithPermissions: simulate the JWT path. Available only
+//   - WithSubject, WithPermissions: simulate the JWT path. Available only
 //     under the `authtest` build tag.
 //   - WithTrustedS2S: simulate the mTLS path's marker. Available only
 //     under the `authtest` build tag.

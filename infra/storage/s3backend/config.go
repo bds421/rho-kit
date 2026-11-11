@@ -146,7 +146,7 @@ func (c Config) Validate(environment string) error {
 	}
 
 	// Credential-strength check is unconditional — production-safe
-	// defaults are the only mode (see docs/RELEASE_NOTES_v2.md).
+	// defaults are the only mode.
 	if c.CredentialProvider == nil && !c.UseDefaultCredentials {
 		if err := config.RejectWeakCredential("S3_SECRET_ACCESS_KEY", c.SecretAccessKey); err != nil {
 			return err

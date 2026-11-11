@@ -20,7 +20,7 @@ func TestRequirePermission_TrustedS2S_DefaultDeniesWithoutPerms(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := WithUserID(req.Context(), testUUID)
+	ctx := WithSubject(req.Context(), testUUID)
 	ctx = WithTrustedS2S(ctx)
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -44,7 +44,7 @@ func TestRequirePermission_TrustedS2S_BypassOptIn(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := WithUserID(req.Context(), testUUID)
+	ctx := WithSubject(req.Context(), testUUID)
 	ctx = WithTrustedS2S(ctx)
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -68,7 +68,7 @@ func TestPermissionByMethod_TrustedS2S_DefaultDeniesWithoutPerms(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := WithUserID(req.Context(), testUUID)
+	ctx := WithSubject(req.Context(), testUUID)
 	ctx = WithTrustedS2S(ctx)
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -92,7 +92,7 @@ func TestPermissionByMethod_TrustedS2S_BypassOptIn(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := WithUserID(req.Context(), testUUID)
+	ctx := WithSubject(req.Context(), testUUID)
 	ctx = WithTrustedS2S(ctx)
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -146,7 +146,7 @@ func TestRequirePermission_TrustedS2S_WithPropagatedPermsPasses(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := WithUserID(req.Context(), testUUID)
+	ctx := WithSubject(req.Context(), testUUID)
 	ctx = WithTrustedS2S(ctx)
 	ctx = WithPermissions(ctx, []string{"general:view"})
 	req = req.WithContext(ctx)

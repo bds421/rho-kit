@@ -359,7 +359,7 @@ patterns.
 | D-02 | SQL injection via string concatenation | A1, A2 | Kit runtime DB path is pgx/sqlc-style parameterized queries; no string-concat query helper in the kit's surface area | kit-enforced |  |
 | D-03 | DB credential leakage via process logs | A6 | `sqldb.Config` / `pgxbackend.Config` implement safe `LogValue` renderers and `_FILE` secret loading avoids embedding password material in config errors; `pgxbackend.Config.PasswordProvider` supports rotating credentials without logging returned values | kit-enforced | [infra/sqldb/config.go](../../infra/sqldb/config.go), [infra/sqldb/pgx/pgx.go](../../infra/sqldb/pgx/pgx.go), [core/config](../../core/config/) |
 | D-04 | Connection-pool exhaustion DoS | A1 | `PoolConfig.MaxOpenConns` is set by `DefaultPool()` to 100 (services that need a different ceiling override it explicitly); `WithDBMetrics` exposes saturation | kit-enforced | [infra/sqldb/config.go](../../infra/sqldb/config.go) |
-| D-05 | Stolen DB backup discloses encrypted-at-rest fields | A6 | `crypto/envelope` for envelope encryption with KMS/Vault-rotatable KEKs; field-level helpers in `crypto/encrypt` | caller-must-cooperate | [crypto/envelope/envelope.go](../../crypto/envelope/envelope.go), [crypto/envelope/awskms](../../crypto/envelope/awskms/), [crypto/envelope/azurekeyvault](../../crypto/envelope/azurekeyvault/), [crypto/envelope/gcpkms](../../crypto/envelope/gcpkms/), [crypto/envelope/vaulttransit](../../crypto/envelope/vaulttransit/), [crypto/encrypt](../../crypto/encrypt/) |
+| D-05 | Stolen DB backup discloses encrypted-at-rest fields | A6 | `crypto/envelope.Box` seals each value under its own DEK, bound to its record, with a `kekstatic` or KMS/Vault KEK; `crypto/encrypt` is the byte primitive under `infra/storage/encryption` | caller-must-cooperate | [crypto/envelope/envelope.go](../../crypto/envelope/envelope.go), [crypto/envelope/awskms](../../crypto/envelope/awskms/), [crypto/envelope/azurekeyvault](../../crypto/envelope/azurekeyvault/), [crypto/envelope/gcpkms](../../crypto/envelope/gcpkms/), [crypto/envelope/vaulttransit](../../crypto/envelope/vaulttransit/), [crypto/encrypt](../../crypto/encrypt/) |
 | D-06 | Migration downgrade in prod (drop column) | A5 | Goose migrations are forward-only by convention; the kit ships no down-migration helper for prod use | caller-must-cooperate | [docs/ai/sqldb.md](../ai/sqldb.md) |
 
 ### 4.5 Redis (`infra/redis`, `data/*`)
@@ -591,15 +591,12 @@ and `errors.Is(err, fs.ErrInvalid)` to distinguish typo / permission
 from the surfaced error so log streams do not leak the operator's
 secret-store layout.
 
-**AES-GCM random-IV ceiling (Lens F A.8 closeout).**
-`crypto/encrypt.FieldEncryptor` tracks per-encryptor encrypt /
-decrypt counts via atomics surfaced through `OpsCount()` and an
-optional `RegisterMetrics(func(Operation))` hook that bridges to
-Prometheus / OpenTelemetry. Operators should track the count against
-the 2^32 random-IV birthday-bound ceiling documented in
-`crypto/encrypt/doc.go`: single-key `FieldEncryptor` is appropriate
-for deployments under ~10^9 ops/key/year; above that, switch to
-`crypto/envelope` with per-DEK rotation.
+**AES-GCM random-IV ceiling (Lens F A.8 closeout).** Values at rest
+are sealed with `crypto/envelope`, which mints a data key per value, so
+no key approaches the 2^32 random-IV birthday-bound ceiling
+(`crypto/encrypt/doc.go`). `infra/storage/encryption` encrypts objects
+under one key through `crypto/encrypt`; its key provider is the place to
+rotate when an object store nears ~10^9 writes per key.
 
 **Cross-Origin-Isolation defaults (Lens F A.11 closeout).**
 `httpx/middleware/secheaders` now emits `Cross-Origin-Opener-Policy:

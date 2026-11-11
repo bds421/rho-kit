@@ -1,35 +1,13 @@
-// Package encrypt provides AES-256-GCM encryption helpers at two levels:
+// Package encrypt is AES-256-GCM over bytes: [NewGCM] builds the [AEAD]
+// from a 32-byte key, [EncryptBytesAAD] and [DecryptBytesAAD] seal and
+// open "iv ‖ ciphertext ‖ tag" bound to associated data.
 //
-//   - Byte-level: [NewGCM], [EncryptBytes], [DecryptBytes] for raw encryption.
-//   - Rotation: [NewKeyring] is an AEAD over several keys; the first seals,
-//     every key opens, and each ciphertext names its key.
-//   - Field-level: [FieldEncryptor] for database column encryption with
-//     base64 encoding and version-prefixed format.
-//
-// # AES-256-GCM random-IV ceiling (read before deploying)
-//
-// AES-256-GCM uses a 96-bit random IV. The probability of an IV
-// collision under birthday-bound analysis is approximately 2^-32
-// after 2^32 encryptions performed with the same key. A collision
-// catastrophically breaks confidentiality and integrity for the
-// affected records, so deployments must stay well below that ceiling.
-//
-// The kit recommendation, anchored at a NIST-style 1-in-a-billion
-// collision-probability target (NIST SP 800-38D §8.3):
-//
-//   - Up to ~10^9 encryptions per key per year: a single static key
-//     via [FieldEncryptor] is appropriate. Track usage with
-//     [FieldEncryptor.OpsCount] / [FieldEncryptor.RegisterMetrics].
-//   - Above ~10^9 encryptions per key per year: switch to envelope
-//     encryption (`crypto/envelope`) with per-DEK rotation. The
-//     envelope flow mints a fresh DEK per row (or per session) so no
-//     single DEK ever encrypts more than a handful of plaintexts;
-//     the 2^32 ceiling effectively never matters.
-//
-// Operators can observe the per-key encrypt count via
-// [FieldEncryptor.OpsCount] (in-process) or by wiring
-// [FieldEncryptor.RegisterMetrics] into Prometheus / OpenTelemetry —
-// the example in [FieldEncryptor.RegisterMetrics] uses
-// `field_encryptor_ops_total{key_id, operation}` as the canonical
-// metric shape.
+// It is the primitive the kit's stores build on (infra/storage/encryption
+// encrypts objects with it). A value kept at rest, such as a credential
+// or token in a database column, is sealed with crypto/envelope instead:
+// [crypto/envelope.Box] binds each value to its purpose and record and
+// its KEK rotates the key without losing what it sealed. A random 96-bit
+// IV collides with a probability near 2^-32 after 2^32 encryptions under
+// one key (NIST SP 800-38D §8.3); envelope encryption mints a key per
+// value, so that ceiling is never reached there.
 package encrypt

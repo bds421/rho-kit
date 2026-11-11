@@ -1,3 +1,4 @@
+// asvs: V6.2.1, V6.4.1
 package encrypt
 
 import (
@@ -46,12 +47,9 @@ func NewGCM(key []byte) (AEAD, error) {
 // "iv ‖ ciphertext ‖ tag". A fresh random IV is generated per call.
 // Equivalent to [EncryptBytesAAD] with nil AAD.
 //
-// Operational ceiling: random 96-bit IVs reach a non-trivial collision
-// probability after ≈ 2^32 encryptions under one key (NIST SP 800-38D
-// §8.3). When driving the AEAD through this helper directly, operators
-// have no per-key op counter — wrap the AEAD in [FieldEncryptor] (which
-// exposes [FieldEncryptor.OpsCount]) when the deployment will exceed
-// ~10^9 ops per key lifetime.
+// Random 96-bit IVs reach a non-trivial collision probability after
+// about 2^32 encryptions under one key (NIST SP 800-38D §8.3); a key that
+// seals that many values is rotated by its provider.
 func EncryptBytes(a AEAD, plaintext []byte) ([]byte, error) {
 	return EncryptBytesAAD(a, plaintext, nil)
 }

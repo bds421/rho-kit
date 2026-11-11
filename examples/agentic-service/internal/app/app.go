@@ -349,7 +349,7 @@ func mcpHTTPHandler(next http.Handler) http.Handler {
 // SECURITY: in production, wrap this in:
 //   - auth middleware (auth.JWT or RequireS2SAuth) so the
 //     caller is authenticated; the actor field is derived from the
-//     verified JWT subject (auth.UserID), NOT from a client header.
+//     verified JWT subject (auth.Subject), NOT from a client header.
 //   - the httpx/middleware/approval middleware which creates the
 //     approval entry from a verified actor automatically.
 //
