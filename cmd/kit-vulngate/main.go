@@ -32,7 +32,15 @@
 // registry scan by digest names it, and image=report.json names it for a
 // report of an archive built from it.
 //
-//	kit-vulngate [-policy file] [-accepted file] [-baseline file [-previous release]] [-record file -release name] [-report [-initial]] [image=]report.json...
+// -upstream pinned=report.json names the report of a scan of the pinned
+// image's tag as it is now (grype name:tag; a scan of anything else is
+// refused). A finding that would fail in the pinned image but that newest
+// image still carries waits on upstream: no release of ours can fix it,
+// so it is listed as "waits on upstream: <newest image> <id>" and
+// recorded with that image in the baseline (name:tag@ the scanned
+// platform's manifest digest, not the index digest), and passes.
+//
+//	kit-vulngate [-policy file] [-accepted file] [-baseline file [-previous release]] [-record file -release name] [-report [-initial]] [-upstream pinned=report.json]... [image=]report.json...
 package main
 
 import (
@@ -49,7 +57,12 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, time.Now()))
 }
 
-const usage = "usage: kit-vulngate [-policy file] [-accepted file] [-baseline file [-previous release]] [-record file -release name] [-report [-initial]] [image=]grype-report.json..."
+const usage = "usage: kit-vulngate [-policy file] [-accepted file] [-baseline file [-previous release]] [-record file -release name] [-report [-initial]] [-upstream pinned=report.json]... [image=]grype-report.json..."
+
+type list []string
+
+func (l *list) String() string     { return strings.Join(*l, ",") }
+func (l *list) Set(v string) error { *l = append(*l, v); return nil }
 
 func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 	flags := flag.NewFlagSet("kit-vulngate", flag.ContinueOnError)
@@ -62,6 +75,8 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 	release := flags.String("release", "", "the release -record writes the baseline of")
 	reportMode := flags.Bool("report", false, "list what is deployed, by the same rules")
 	initial := flags.Bool("initial", false, "with -report -record and no -baseline: write the first baseline, every third-party finding inherited")
+	var upstreams list
+	flags.Var(&upstreams, "upstream", "pinned=report.json: a scan of the pinned image's tag as it is now (repeatable)")
 	if err := flags.Parse(args); err != nil || flags.NArg() == 0 || (*recordFile != "") != (*release != "") {
 		_, _ = fmt.Fprintln(stderr, usage)
 		return 2
@@ -71,6 +86,9 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		return 2
 	}
 	j, err := load(*policyFile, *acceptedFile, *baselineFile)
+	if err == nil {
+		j.upstream, err = loadUpstream(upstreams)
+	}
 	if err == nil {
 		err = j.checkBaseline(stdout, *previous, *release)
 	}

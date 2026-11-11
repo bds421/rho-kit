@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -171,4 +172,38 @@ func parsePin(ref string) (pin, bool) {
 		repo = "library/" + repo
 	}
 	return pin{Host: host, Repository: repo, Tag: m[2], Digest: m[3]}, true
+}
+
+// textRef is a pinned reference anywhere on a line: a Makefile variable,
+// a script's docker run, a workflow's image.
+var textRef = regexp.MustCompile(`[^\s"'=(,]+@sha256:[0-9a-f]{64}`)
+
+// readText returns every name:tag@sha256:… a file names outside comments,
+// a variable's default (${X:-ref}) included, except images of own; one
+// without its tag is listed, not checked.
+func readText(r io.Reader, file string, own []string) ([]pin, error) {
+	var pins []pin
+	scan := bufio.NewScanner(r)
+	for n := 1; scan.Scan(); n++ {
+		line := strings.TrimSpace(scan.Text())
+		if strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+			continue
+		}
+		for _, ref := range textRef.FindAllString(line, -1) {
+			if i := strings.LastIndex(ref, ":-"); i >= 0 {
+				ref = ref[i+2:]
+			}
+			if slices.ContainsFunc(own, func(prefix string) bool { return strings.HasPrefix(ref, prefix) }) {
+				continue
+			}
+			at := fmt.Sprintf("%s:%d", file, n)
+			if p, ok := parsePin(ref); ok {
+				p.Line = at
+				pins = append(pins, p)
+			} else {
+				pins = append(pins, pin{Line: at, Unchecked: ref})
+			}
+		}
+	}
+	return pins, scan.Err()
 }
