@@ -24,7 +24,8 @@ type Limit struct {
 	Limiter limiter.Limiter
 	Policy  Policy
 	// Keys names the budgets a request draws on, every one of which must
-	// admit it; nil draws on the client address (the host of RemoteAddr,
+	// admit it; a request it names none for is refused. Nil draws on the
+	// client address (the host of RemoteAddr,
 	// which the clientip middleware sets to the client behind trusted
 	// proxies).
 	Keys func(r *http.Request) []string
@@ -48,7 +49,12 @@ func (l Limit) Middleware(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		SetPolicy(w.Header(), l.Policy)
-		for _, key := range l.keys(r) {
+		keys := l.keys(r)
+		if len(keys) == 0 {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid rate limit key")
+			return
+		}
+		for _, key := range keys {
 			allowed, retryAfter, err := l.Limiter.Allow(r.Context(), key)
 			switch {
 			case errors.Is(err, limiter.ErrInvalidKey):

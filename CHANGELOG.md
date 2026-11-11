@@ -4,14 +4,16 @@
 
 - **feat(data/ratelimit): `Fallback`** asks a shared limiter (Redis) and,
   while it fails, a local one, so an unreachable Redis narrows the budget
-  to one instance instead of refusing every request.
+  to one instance instead of refusing every request; it logs once when the
+  shared limiter starts failing and once when it answers again.
 - **feat(data/ratelimit/redis): a failure names its class.** The error of
   a failing Redis call carries the class of the failure (`context_canceled`,
   `pool_timeout`, `reply_NOAUTH`, `network_timeout`, …) in its safe
   message, never the driver's text.
 - **feat(httpx/middleware/ratelimit): `Limit`**, a middleware over any
   `data/ratelimit.Limiter` (memory, Redis or a `Fallback`), a budget per
-  key (`Keys`; the client address by default), with the
+  key (`Keys`; the client address by default; a request `Keys` names no
+  budget for is refused), with the
   draft-ietf-httpapi-ratelimit-headers fields: `RateLimit-Policy` on every
   answer (`Policy`, `PerMinute`, `SetPolicy`), `RateLimit` and
   `Retry-After` on a refusal (`SetRemaining`), `Retry-After: 5` while the
@@ -58,10 +60,10 @@
   lines; `make lint-config` prints the digest a product pins in its
   `.golangci.sha256`.
 
-Breaking: `clientip.ClientIPWithTrustedProxies(r, nil)` and
-`ratelimit.WithTrustedProxies` with an empty list trust no proxy (the
-client is `RemoteAddr`); `clientip.ClientIP` alone keeps the loopback
-default. `KeyedLimiter.AllowKey` and the `Allow(key) (bool, int)` wrapper,
+Breaking: `clientip.ClientIPWithTrustedProxies(r, nil)`,
+`ratelimit.WithTrustedProxies` and `auditlog.WithTrustedProxies` with an
+empty list trust no proxy (the client is `RemoteAddr`); `clientip.ClientIP`
+alone keeps the loopback default. `KeyedLimiter.AllowKey` and the `Allow(key) (bool, int)` wrapper,
 `ValidateKey`, `MaxKeyBytes`, `ErrInvalidKey` and `ErrInvalidLimiter` of the
 middleware package are removed (`AllowN`'s retry-after is a Duration);
 `middleware/auth.UserID` (use `Subject`) and its `authtest` helper

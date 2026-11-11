@@ -34,8 +34,8 @@ type Options struct {
 	// Schema is the Postgres schema River's tables are in, created by
 	// [Migrate].
 	Schema string
-	// MaxAttempts is River's default for jobs of the workers added
-	// through [Registry.Workers].
+	// MaxAttempts is River's default for jobs of the workers [AddWorker]
+	// registers.
 	MaxAttempts int
 	// PeriodicAttempts is how often a tick's run is tried: 1 leaves a
 	// failed run to the next tick; more tries it again with River's

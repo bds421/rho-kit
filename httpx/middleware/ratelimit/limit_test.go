@@ -66,7 +66,7 @@ func TestAFailingLimiterAnswers503WithAShortRetry(t *testing.T) {
 	if w := call(h, "203.0.113.9:1"); w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") != "5" || outages != 1 || refusals != 0 {
 		t.Fatal("a failing limiter was not reported as unavailable", w.Code, w.Header())
 	}
-	fallback := ratelimit.Limit{Limiter: limiter.Fallback{Primary: failing{}, Secondary: gcra.New(time.Minute, 1, gcra.WithoutSweeper())}, Policy: ratelimit.PerMinute(60)}.Middleware(admitted)
+	fallback := ratelimit.Limit{Limiter: &limiter.Fallback{Primary: failing{}, Secondary: gcra.New(time.Minute, 1, gcra.WithoutSweeper())}, Policy: ratelimit.PerMinute(60)}.Middleware(admitted)
 	if call(fallback, "203.0.113.9:1").Code != http.StatusNoContent {
 		t.Fatal("public access refused while Redis is down")
 	}
@@ -99,6 +99,10 @@ func TestEveryKeyMustAdmitTheRequest(t *testing.T) {
 	}
 	if as("127.0.0.3:1", "") != http.StatusBadRequest {
 		t.Fatal("an invalid key was not refused")
+	}
+	none := ratelimit.Limit{Limiter: local, Policy: ratelimit.PerMinute(60), Keys: func(*http.Request) []string { return nil }}.Middleware(admitted)
+	if w := call(none, "127.0.0.4:1"); w.Code != http.StatusBadRequest {
+		t.Fatal("a request without a budget was admitted", w.Code)
 	}
 }
 
