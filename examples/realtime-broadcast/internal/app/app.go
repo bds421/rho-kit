@@ -50,8 +50,8 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwk"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 
-	"github.com/bds421/rho-kit/app/v2"
 	apphttp "github.com/bds421/rho-kit/app/http/v2"
+	"github.com/bds421/rho-kit/app/v2"
 	"github.com/bds421/rho-kit/realtime/centrifuge/v2"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )

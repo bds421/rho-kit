@@ -365,7 +365,6 @@ func TestWithMinTimeout_PanicsOnNonPositive(t *testing.T) {
 	}
 }
 
-
 func TestCancelOnCloseBody_ConcurrentClose(t *testing.T) {
 	// Concurrent Close must be race-free under -race and cancel exactly once.
 	var canceled atomic.Int32

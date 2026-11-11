@@ -207,4 +207,3 @@ func TestPostgres_PrevHMACMigrationRefusesAForkAndRepairsAnInvalidIndex(t *testi
 	assert.True(t, unique)
 	assert.True(t, valid)
 }
-

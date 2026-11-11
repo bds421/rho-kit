@@ -25,10 +25,10 @@ func TestDeadExchangeName(t *testing.T) {
 func retryBinding(maxRetries int) messaging.Binding {
 	return messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			Exchange:     "test.exchange",
-			ExchangeType: messaging.ExchangeDirect,
-			ConsumerGroup:        "test.queue",
-			RoutingKey:   "test.key",
+			Exchange:      "test.exchange",
+			ExchangeType:  messaging.ExchangeDirect,
+			ConsumerGroup: "test.queue",
+			RoutingKey:    "test.key",
 			Retry: &messaging.RetryPolicy{
 				MaxRetries: maxRetries,
 				Delay:      100 * time.Millisecond,
@@ -61,11 +61,11 @@ func deliveryWithXDeathCount(queue string, count int64) amqp.Delivery {
 func TestResolveFailure_NoRetry(t *testing.T) {
 	b := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			Exchange:     "test.exchange",
-			ExchangeType: messaging.ExchangeDirect,
-			ConsumerGroup:        "test.queue",
-			RoutingKey:   "test.key",
-			Retry:        nil,
+			Exchange:      "test.exchange",
+			ExchangeType:  messaging.ExchangeDirect,
+			ConsumerGroup: "test.queue",
+			RoutingKey:    "test.key",
+			Retry:         nil,
 		},
 	}
 	delivery := amqp.Delivery{}

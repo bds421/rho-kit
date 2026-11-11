@@ -96,7 +96,6 @@ func TestClassifyAWSError_Nil(t *testing.T) {
 	}
 }
 
-
 // kekWithClient builds a KEK whose Encrypt/Decrypt delegate to a fake.
 // We bypass NewKEK because the real constructor requires a *kms.Client. The
 // classifyAWSError test below exercises classification through the same code

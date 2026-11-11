@@ -110,7 +110,7 @@ func wrapWithResilience(
 	logger *slog.Logger,
 ) func(ctx context.Context, ev OrderEvent) error {
 	breaker := circuitbreaker.NewCircuitBreaker(
-		5 /* trip after 5 consecutive failures */,
+		5,              /* trip after 5 consecutive failures */
 		10*time.Second, /* cooldown */
 		circuitbreaker.WithName("downstream-billing"),
 	)

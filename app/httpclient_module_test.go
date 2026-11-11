@@ -147,9 +147,13 @@ var _ = health.StatusHealthy
 
 type stubCertificateSource struct{}
 
-func (stubCertificateSource) ServerCertificate() (*tls.Certificate, error) { return &tls.Certificate{}, nil }
-func (stubCertificateSource) ClientCertificate() (*tls.Certificate, error) { return &tls.Certificate{}, nil }
-func (stubCertificateSource) CAs() (*x509.CertPool, error)                 { return x509.NewCertPool(), nil }
+func (stubCertificateSource) ServerCertificate() (*tls.Certificate, error) {
+	return &tls.Certificate{}, nil
+}
+func (stubCertificateSource) ClientCertificate() (*tls.Certificate, error) {
+	return &tls.Certificate{}, nil
+}
+func (stubCertificateSource) CAs() (*x509.CertPool, error) { return x509.NewCertPool(), nil }
 
 // TestHTTPClientModule_InitWithReloadingTLS pins the WithReloadingTLS path:
 // the reloading client config verifies through VerifyConnection, and the

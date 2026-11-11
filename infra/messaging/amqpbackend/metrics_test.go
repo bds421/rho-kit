@@ -165,9 +165,9 @@ func TestConsumerMetrics_RecordFailureOutcomes(t *testing.T) {
 		c.metrics = metrics
 		ack := &fakeAcknowledger{}
 		binding := messaging.Binding{BindingSpec: messaging.BindingSpec{
-			ConsumerGroup:      "retry-queue",
-			RoutingKey: "test.event",
-			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup: "retry-queue",
+			RoutingKey:    "test.event",
+			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 		}}
 
 		c.handleFailure(context.Background(), makeAMQPDelivery(ack, msg), msg, binding, errors.New("transient"))
@@ -182,9 +182,9 @@ func TestConsumerMetrics_RecordFailureOutcomes(t *testing.T) {
 		ack := &fakeAcknowledger{}
 		binding := messaging.Binding{
 			BindingSpec: messaging.BindingSpec{
-				ConsumerGroup:      "dead-queue",
-				RoutingKey: "test.event",
-				Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+				ConsumerGroup: "dead-queue",
+				RoutingKey:    "test.event",
+				Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 			},
 			DeadExchange: "events.dead",
 		}

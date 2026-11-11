@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
+	kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
 )
 
 func TestDial_Success(t *testing.T) {

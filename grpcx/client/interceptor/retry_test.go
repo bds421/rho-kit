@@ -121,7 +121,6 @@ func TestRetryUnary_InvalidPolicyPanicsAtConstruction(t *testing.T) {
 	_ = interceptor.RetryUnary(interceptor.WithRetryPolicy(retry.Policy{}))
 }
 
-
 func TestRetryUnary_DoesNotRetryKitPayloadTooLarge(t *testing.T) {
 	// Kit servers attach errdetails.ErrorInfo{Domain:rho-kit, Reason:PAYLOAD_TOO_LARGE}.
 	st := status.New(codes.ResourceExhausted, "payload too large")

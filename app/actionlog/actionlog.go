@@ -48,12 +48,12 @@ type actionlogModule struct {
 	logger kitactionlog.Logger
 }
 
-func (m *actionlogModule) Name() string                                  { return ModuleName }
+func (m *actionlogModule) Name() string                                      { return ModuleName }
 func (m *actionlogModule) Init(_ context.Context, _ app.ModuleContext) error { return nil }
 func (m *actionlogModule) Populate(infra *app.Infrastructure) {
 	infra.SetResource(ResourceLoggerKey, m.logger)
 }
-func (m *actionlogModule) Stop(_ context.Context) error            { return nil }
+func (m *actionlogModule) Stop(_ context.Context) error           { return nil }
 func (m *actionlogModule) HealthChecks() []health.DependencyCheck { return nil }
 
 // Logger returns the action logger registered via [Module], or nil

@@ -49,8 +49,8 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"

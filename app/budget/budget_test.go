@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/app/v2"
 	apptenant "github.com/bds421/rho-kit/app/tenant/v2"
+	"github.com/bds421/rho-kit/app/v2"
 	budgetmem "github.com/bds421/rho-kit/data/v2/budget/memory"
 	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 )

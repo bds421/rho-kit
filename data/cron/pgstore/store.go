@@ -218,6 +218,7 @@ type JobFunc = func(ctx context.Context) error
 // use two shapes so operators can tell the failure modes apart:
 //   - bare name: job unknown to this binary (deploy a binary that ships it)
 //   - "name [invalid: <reason>]": row failed validateRecord (fix the Spec/Name)
+//
 // A CI/CD smoke check can still detect unknown jobs by looking for entries
 // that do not contain " [invalid:".
 func (s *Store) ApplyTo(ctx context.Context, scheduler *cron.Scheduler, jobs map[string]JobFunc) ([]string, error) {

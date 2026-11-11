@@ -126,7 +126,7 @@ func TestChainMiddleware_ScopedKeyRequirePermission(t *testing.T) {
 	key, token, err := apikey.GenerateScoped(apikey.ScopedGenerateOptions{
 		Tenant: "tenant-a", SubjectUserID: testUserID, Role: "member",
 		Scopes: []string{"billing:read"},
-		Now: now, HashParams: passhash.Params{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLen: 16, KeyLen: 32},
+		Now:    now, HashParams: passhash.Params{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLen: 16, KeyLen: 32},
 	})
 	require.NoError(t, err)
 	require.NoError(t, repo.InsertScoped(context.Background(), key))

@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"math"
 	"bytes"
 	"context"
 	"errors"
@@ -10,6 +9,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"math"
 	"strings"
 	"testing"
 
@@ -752,7 +752,6 @@ func createTestPNG(t *testing.T, width, height int) []byte {
 	require.NoError(t, png.Encode(&buf, img))
 	return buf.Bytes()
 }
-
 
 func TestMaxFileSize_MaxInt64NoPanic(t *testing.T) {
 	v := MaxFileSize(math.MaxInt64)

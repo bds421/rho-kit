@@ -1,4 +1,4 @@
-.PHONY: lint lint-config vulncheck vet-tags test test-short test-race test-integration test-cover build tidy fmt vet clean help ci ci-fast release-candidate kit-doctor kit-contract release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-expand-only check-tidy check-release-team bench check-bench-regression update-bench-baseline exit-traps
+.PHONY: lint lint-config vulncheck vet-tags test test-short test-race test-integration test-cover build tidy fmt check-fmt vet clean help ci ci-fast release-candidate kit-doctor kit-contract release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-expand-only check-tidy check-release-team bench check-bench-regression update-bench-baseline exit-traps
 
 GOLANGCI_LINT_VERSION := v2.14.0
 GOVULNCHECK_VERSION  ?= v1.8.0
@@ -32,7 +32,7 @@ exit-traps:
 lint-config:
 	@shasum -a 256 tools/golangci.yml | cut -d' ' -f1
 
-lint: exit-traps
+lint: exit-traps check-fmt
 	@for dir in $(WORKSPACE_MODULES); do \
 		echo "==> Linting $$dir"; \
 		(cd $$dir && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout=5m --allow-serial-runners) || exit 1; \
@@ -106,6 +106,10 @@ vet:
 ## fmt: Format code
 fmt:
 	gofmt -s -w .
+
+## check-fmt: Fail when a Go file is not gofmt -s formatted
+check-fmt:
+	@out="$$(gofmt -s -l $$(git ls-files "*.go"))"; test -z "$$out" || { echo "$$out"; echo "run make fmt"; exit 1; }
 
 ## tidy: Tidy and verify module dependencies (all workspace modules)
 tidy:

@@ -23,11 +23,11 @@ const (
 	kafkaConsumeOutcomeHandlerPanic  = "handler_panic"
 	kafkaConsumeOutcomeFetchError    = "fetch_error"
 
-	kafkaHandlerOutcomeSuccess        = "success"
-	kafkaHandlerOutcomeError          = "error"
-	kafkaHandlerOutcomePanic          = "panic"
-	kafkaHandlerOutcomeDecodeError    = "decode_error"
-	kafkaHandlerOutcomeValidateError  = "validate_error"
+	kafkaHandlerOutcomeSuccess       = "success"
+	kafkaHandlerOutcomeError         = "error"
+	kafkaHandlerOutcomePanic         = "panic"
+	kafkaHandlerOutcomeDecodeError   = "decode_error"
+	kafkaHandlerOutcomeValidateError = "validate_error"
 )
 
 // Metrics holds Prometheus collectors for the Kafka publisher and

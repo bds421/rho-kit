@@ -7,9 +7,9 @@ import (
 
 	"github.com/bds421/rho-kit/app/v2"
 	"github.com/bds421/rho-kit/core/v2/redact"
-	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
+	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 

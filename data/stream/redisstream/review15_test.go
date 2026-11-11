@@ -74,14 +74,14 @@ func TestWithProducerRegisterer_PanicsOnNil(t *testing.T) {
 // reject the full C0/DEL control class, not only NUL/CR/LF.
 func TestValidateHeader_RejectsC0Controls(t *testing.T) {
 	for name, value := range map[string]string{
-		"ESC":    "trace\x1bid",
-		"BEL":    "a\x07b",
-		"TAB":    "a\tb", // tab is control
-		"DEL":    "a\x7fb",
-		"VT":     "a\x0bb",
-		"NUL":    "a\x00b",
-		"CR":     "a\rb",
-		"LF":     "a\nb",
+		"ESC": "trace\x1bid",
+		"BEL": "a\x07b",
+		"TAB": "a\tb", // tab is control
+		"DEL": "a\x7fb",
+		"VT":  "a\x0bb",
+		"NUL": "a\x00b",
+		"CR":  "a\rb",
+		"LF":  "a\nb",
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := validateHeader("X-Trace", value)

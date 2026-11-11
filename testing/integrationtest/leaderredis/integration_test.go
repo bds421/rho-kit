@@ -15,9 +15,9 @@ import (
 
 	rlock "github.com/bds421/rho-kit/data/lock/redislock/v2"
 	redislockle "github.com/bds421/rho-kit/infra/leaderelection/redislock/v2"
-	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 	"github.com/bds421/rho-kit/infra/redis/redistest/v2"
 	"github.com/bds421/rho-kit/infra/redis/v2"
+	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 )
 
 func redisClient(t *testing.T) goredis.UniversalClient {

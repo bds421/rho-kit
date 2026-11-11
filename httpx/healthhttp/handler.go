@@ -9,8 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"

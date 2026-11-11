@@ -569,7 +569,6 @@ func (failingPutBackend) Exists(context.Context, string) (bool, error) {
 	return false, nil
 }
 
-
 func TestParseAndStore_WireCapIncludesSkippedBudget(t *testing.T) {
 	// MaxFileSize + MaxTotalSkippedBytes + overhead must fit legitimate
 	// non-file parts within the documented skipped-parts budget.

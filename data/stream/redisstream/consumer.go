@@ -1085,4 +1085,3 @@ func (c *Consumer) clearLocalDelivery(id string) {
 		delete(c.localDelivery, id)
 	}
 }
-

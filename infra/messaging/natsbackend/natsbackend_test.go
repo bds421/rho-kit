@@ -511,13 +511,13 @@ type fakeJetstreamMsg struct {
 	metaErr      error
 }
 
-func (f *fakeJetstreamMsg) Subject() string                    { return f.subject }
-func (f *fakeJetstreamMsg) Headers() nats.Header               { return f.headers }
-func (f *fakeJetstreamMsg) Data() []byte                       { return f.data }
-func (f *fakeJetstreamMsg) Reply() string                      { return "" }
-func (f *fakeJetstreamMsg) Ack() error                         { f.acked = true; return nil }
-func (f *fakeJetstreamMsg) DoubleAck(_ context.Context) error  { return nil }
-func (f *fakeJetstreamMsg) Nak() error                         { f.nacked = true; return nil }
+func (f *fakeJetstreamMsg) Subject() string                   { return f.subject }
+func (f *fakeJetstreamMsg) Headers() nats.Header              { return f.headers }
+func (f *fakeJetstreamMsg) Data() []byte                      { return f.data }
+func (f *fakeJetstreamMsg) Reply() string                     { return "" }
+func (f *fakeJetstreamMsg) Ack() error                        { f.acked = true; return nil }
+func (f *fakeJetstreamMsg) DoubleAck(_ context.Context) error { return nil }
+func (f *fakeJetstreamMsg) Nak() error                        { f.nacked = true; return nil }
 func (f *fakeJetstreamMsg) NakWithDelay(d time.Duration) error {
 	f.nakDelayed = true
 	f.nakDelay = d

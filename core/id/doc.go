@@ -32,13 +32,13 @@
 //
 // # When NOT to use
 //
-// - Request/correlation/trace IDs are produced by the
-//   observability and httpx middleware (correlationid, requestid,
-//   tracing) and follow their respective wire formats — do not
-//   substitute id.New() there.
-// - Opaque secret tokens (API keys, session tokens, refresh tokens,
-//   share-URL nonces) need cryptographic unguessability that UUID v7
-//   does not provide; use [core/v2/randstr] instead.
-// - User-facing short codes (vouchers, OTPs) likewise belong in
-//   [core/v2/randstr] with the no-ambiguous charset.
+//   - Request/correlation/trace IDs are produced by the
+//     observability and httpx middleware (correlationid, requestid,
+//     tracing) and follow their respective wire formats — do not
+//     substitute id.New() there.
+//   - Opaque secret tokens (API keys, session tokens, refresh tokens,
+//     share-URL nonces) need cryptographic unguessability that UUID v7
+//     does not provide; use [core/v2/randstr] instead.
+//   - User-facing short codes (vouchers, OTPs) likewise belong in
+//     [core/v2/randstr] with the no-ambiguous charset.
 package id

@@ -22,8 +22,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
-	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	postgresstore "github.com/bds421/rho-kit/observability/auditlog/postgres/v2"
+	"github.com/bds421/rho-kit/observability/v2/auditlog"
 )
 
 var (

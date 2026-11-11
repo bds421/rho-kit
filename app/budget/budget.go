@@ -26,8 +26,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/bds421/rho-kit/app/v2"
 	apptenant "github.com/bds421/rho-kit/app/tenant/v2"
+	"github.com/bds421/rho-kit/app/v2"
 	"github.com/bds421/rho-kit/data/v2/budget"
 	httpxbudget "github.com/bds421/rho-kit/httpx/v2/middleware/budget"
 	"github.com/bds421/rho-kit/observability/v2/health"

@@ -176,7 +176,7 @@ var (
 //
 // The returned KeySet has no issuer/audience policy. Callers must set
 // ExpectedIssuer / ExpectedAudience (or AllowAnyIssuer / AllowAnyAudience)
-// before [KeySet.Verify], or wrap the KeySet in a [Provider] / 
+// before [KeySet.Verify], or wrap the KeySet in a [Provider] /
 // [NewProviderWithKeySet] which enforces policy at construction.
 //
 // Symmetric (HMAC / kty=oct) keys are rejected to prevent the classic

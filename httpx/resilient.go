@@ -15,17 +15,17 @@ import (
 type ResilientOption func(*resilientConfig)
 
 type resilientConfig struct {
-	timeout           time.Duration
-	tlsConfig         *tls.Config
-	cbThreshold       int
-	cbReset           time.Duration
-	shouldTrip        func(resp *http.Response, err error) bool
-	onStateChange     func(from, to circuitbreaker.State)
+	timeout             time.Duration
+	tlsConfig           *tls.Config
+	cbThreshold         int
+	cbReset             time.Duration
+	shouldTrip          func(resp *http.Response, err error) bool
+	onStateChange       func(from, to circuitbreaker.State)
 	hostCircuitBreakers bool
-	deadlineBudget    bool
-	deadlineBudgetCfg deadlineBudgetConfig
-	checkRedirect     func(*http.Request, []*http.Request) error
-	idleConnTimeout   time.Duration
+	deadlineBudget      bool
+	deadlineBudgetCfg   deadlineBudgetConfig
+	checkRedirect       func(*http.Request, []*http.Request) error
+	idleConnTimeout     time.Duration
 }
 
 // WithResilientTimeout sets the HTTP client timeout. Default: 10s.

@@ -25,7 +25,7 @@ func TestMemoryLocker_Conformance(t *testing.T) {
 // memoryLocker is a process-local fake for the conformance smoke
 // test only.
 type memoryLocker struct {
-	mu     sync.Mutex
+	mu      sync.Mutex
 	holders map[string]*memoryLock
 }
 

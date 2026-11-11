@@ -13,7 +13,6 @@ import (
 	"github.com/bds421/rho-kit/resilience/v2/circuitbreaker"
 )
 
-
 // stubRoundTripper returns a fixed response/error and records how many times
 // it was invoked and the request bodies it observed.
 type stubRoundTripper struct {
@@ -302,7 +301,6 @@ func TestCircuitBreaker_OpenCircuit_ClosesRequestBody(t *testing.T) {
 		t.Fatal("req.Body was not closed when circuit was open (RoundTripper contract violation)")
 	}
 }
-
 
 // Excluded errors must not erase consecutive-failure progress: after
 // threshold-1 counted failures, an interleaving cancel, then one more

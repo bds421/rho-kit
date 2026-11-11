@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"testing"
 
-	kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/infra/v2/messaging/messagingtest"
+	kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
 )
 
 // TestAMQPPublisher_Conformance runs the kit's

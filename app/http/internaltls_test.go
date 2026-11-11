@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bds421/rho-kit/app/v2"
 	apphttp "github.com/bds421/rho-kit/app/http/v2"
+	"github.com/bds421/rho-kit/app/v2"
 )
 
 // issue makes a certificate for usage, signed by ca (self-signed when ca
@@ -72,7 +72,9 @@ func TestTheInternalServerUsesItsOwnTLS(t *testing.T) {
 
 	get := func(certs []tls.Certificate) (int, error) {
 		c := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
-			DialContext:     func(ctx context.Context, _, _ string) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "unix", "ops.sock") },
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", "ops.sock")
+			},
 			TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "svc", Certificates: certs, MinVersion: tls.VersionTLS13},
 		}}
 		resp, err := c.Get("https://svc/metrics")

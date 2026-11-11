@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
+	kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
 )
 
 func TestDeclareTopology_Direct(t *testing.T) {
@@ -24,10 +24,10 @@ func TestDeclareTopology_Direct(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
-		Exchange:     "test.direct",
-		ExchangeType: messaging.ExchangeDirect,
-		ConsumerGroup:        "test.direct.queue",
-		RoutingKey:   "test.key",
+		Exchange:      "test.direct",
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: "test.direct.queue",
+		RoutingKey:    "test.key",
 	})
 	assert.NoError(t, err)
 }
@@ -39,10 +39,10 @@ func TestDeclareTopology_Fanout(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
-		Exchange:     "test.fanout",
-		ExchangeType: messaging.ExchangeFanout,
-		ConsumerGroup:        "test.fanout.queue",
-		RoutingKey:   "",
+		Exchange:      "test.fanout",
+		ExchangeType:  messaging.ExchangeFanout,
+		ConsumerGroup: "test.fanout.queue",
+		RoutingKey:    "",
 	})
 	assert.NoError(t, err)
 }
@@ -54,10 +54,10 @@ func TestDeclareTopology_Topic(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
-		Exchange:     "test.topic",
-		ExchangeType: messaging.ExchangeTopic,
-		ConsumerGroup:        "test.topic.queue",
-		RoutingKey:   "test.#",
+		Exchange:      "test.topic",
+		ExchangeType:  messaging.ExchangeTopic,
+		ConsumerGroup: "test.topic.queue",
+		RoutingKey:    "test.#",
 	})
 	assert.NoError(t, err)
 }
@@ -69,10 +69,10 @@ func TestDeclareTopology_Headers(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
-		Exchange:     "test.headers",
-		ExchangeType: messaging.ExchangeHeaders,
-		ConsumerGroup:        "test.headers.queue",
-		RoutingKey:   "",
+		Exchange:      "test.headers",
+		ExchangeType:  messaging.ExchangeHeaders,
+		ConsumerGroup: "test.headers.queue",
+		RoutingKey:    "",
 	})
 	assert.NoError(t, err)
 }
@@ -84,10 +84,10 @@ func TestDeclareTopology_Idempotent(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	spec := messaging.BindingSpec{
-		Exchange:     "test.idempotent",
-		ExchangeType: messaging.ExchangeDirect,
-		ConsumerGroup:        "test.idempotent.queue",
-		RoutingKey:   "test.key",
+		Exchange:      "test.idempotent",
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: "test.idempotent.queue",
+		RoutingKey:    "test.key",
 	}
 
 	_, err = amqpbackend.DeclareTopology(conn, spec)
@@ -103,10 +103,10 @@ func TestDeclareAll_RetryTopology(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	spec := messaging.BindingSpec{
-		Exchange:     "test.retrytopo",
-		ExchangeType: messaging.ExchangeDirect,
-		ConsumerGroup:        "test.retrytopo.queue",
-		RoutingKey:   "test.key",
+		Exchange:      "test.retrytopo",
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: "test.retrytopo.queue",
+		RoutingKey:    "test.key",
 		Retry: &messaging.RetryPolicy{
 			MaxRetries: 3,
 			Delay:      500 * time.Millisecond,
@@ -191,11 +191,11 @@ func TestDeclareAll_NoRetry_EmptyDeclaredFields(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	declared, err := amqpbackend.DeclareAll(conn, messaging.BindingSpec{
-		Exchange:     "test.noretry",
-		ExchangeType: messaging.ExchangeDirect,
-		ConsumerGroup:        "test.noretry.queue",
-		RoutingKey:   "test.key",
-		WithoutRetry: true,
+		Exchange:      "test.noretry",
+		ExchangeType:  messaging.ExchangeDirect,
+		ConsumerGroup: "test.noretry.queue",
+		RoutingKey:    "test.key",
+		WithoutRetry:  true,
 	})
 	require.NoError(t, err)
 	require.Len(t, declared, 1)

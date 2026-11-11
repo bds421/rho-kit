@@ -219,8 +219,8 @@ func outcomeForErr(err error) string {
 // observability. Construct via [NewMetrics]; wire into a Bulkhead
 // via [WithMetrics].
 type Metrics struct {
-	acquisitions      *prometheus.CounterVec
-	acquireDuration   *prometheus.HistogramVec
+	acquisitions    *prometheus.CounterVec
+	acquireDuration *prometheus.HistogramVec
 }
 
 // MetricsOption configures [NewMetrics].

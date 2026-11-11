@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
+	kittestamqp "github.com/bds421/rho-kit/testing/kittest/v2/amqp"
 )
 
 func setupPublisher(t *testing.T) (*amqpbackend.Publisher, *amqpbackend.Connection, string, string, string) {

@@ -50,12 +50,12 @@ type authzModule struct {
 	decider kitauthz.Decider
 }
 
-func (m *authzModule) Name() string                                  { return ModuleName }
+func (m *authzModule) Name() string                                      { return ModuleName }
 func (m *authzModule) Init(_ context.Context, _ app.ModuleContext) error { return nil }
 func (m *authzModule) Populate(infra *app.Infrastructure) {
 	infra.SetResource(ResourceDeciderKey, m.decider)
 }
-func (m *authzModule) Stop(_ context.Context) error            { return nil }
+func (m *authzModule) Stop(_ context.Context) error           { return nil }
 func (m *authzModule) HealthChecks() []health.DependencyCheck { return nil }
 
 // Decider returns the decider registered via [Module], or nil if

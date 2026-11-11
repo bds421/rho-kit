@@ -52,4 +52,3 @@ func TestWithCSPNonceRequiresAHead(t *testing.T) {
 		t.Fatal("an index without </head> was accepted")
 	}
 }
-

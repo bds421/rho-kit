@@ -433,4 +433,3 @@ func actionlogLockID(tenantID string) int64 {
 	sum := sha256.Sum256([]byte("actionlog|" + tenantID))
 	return int64(binary.BigEndian.Uint64(sum[:8]))
 }
-

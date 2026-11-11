@@ -3,9 +3,9 @@ package mcp_test
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1551,7 +1551,6 @@ func TestRegister_AnonymousPointerEmbedDoesNotPanic(t *testing.T) {
 // ensure io is used for compile (used elsewhere via tests of failing
 // readers, kept for symmetry should hostile-input tests be re-added).
 var _ = io.EOF
-
 
 func TestNewServer_AsyncStrictPanics(t *testing.T) {
 	defer func() {

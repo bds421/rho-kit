@@ -77,12 +77,12 @@ func TestFormatActor(t *testing.T) {
 
 func TestStrategy_IdentityMatrix(t *testing.T) {
 	cases := []struct {
-		name       string
-		id         auth.Identity
-		wantCode   int
-		wantSubj   string
-		wantActor  string
-		wantKind   auth.ActorKind
+		name        string
+		id          auth.Identity
+		wantCode    int
+		wantSubj    string
+		wantActor   string
+		wantKind    auth.ActorKind
 		wantMachine bool
 	}{
 		{
@@ -121,13 +121,13 @@ func TestStrategy_IdentityMatrix(t *testing.T) {
 			wantKind: auth.ActorOAuthClient, wantMachine: true,
 		},
 		{
-			name: "non-uuid subject",
-			id: auth.Identity{UserID: "not-a-uuid", Actor: "not-a-uuid", ActorKind: auth.ActorUser},
+			name:     "non-uuid subject",
+			id:       auth.Identity{UserID: "not-a-uuid", Actor: "not-a-uuid", ActorKind: auth.ActorUser},
 			wantCode: http.StatusUnauthorized,
 		},
 		{
-			name: "unbound machine missing tenant",
-			id: auth.Identity{Actor: "keyid3", ActorKind: auth.ActorAPIKey},
+			name:     "unbound machine missing tenant",
+			id:       auth.Identity{Actor: "keyid3", ActorKind: auth.ActorAPIKey},
 			wantCode: http.StatusUnauthorized,
 		},
 	}

@@ -806,7 +806,6 @@ func TestRace_SweepEvictsBetweenLoadAndLock(t *testing.T) {
 	require.LessOrEqual(t, got, int64(callers*iters*5))
 }
 
-
 func TestRefund_CreditsChargePeriodAcrossRollover(t *testing.T) {
 	// Charge near the end of a period; after the window rolls, Refund with
 	// chargedAt must credit the original period (bucket still holding it)
@@ -847,4 +846,3 @@ func TestRefund_CreditsChargePeriodAcrossRollover(t *testing.T) {
 	// Consume rolls to new period and charges 10 against a fresh cap.
 	assert.Equal(t, int64(90), rem)
 }
-

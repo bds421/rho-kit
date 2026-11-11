@@ -278,7 +278,6 @@ func (k *KEK) decryptKeyIDFor(keyID string) (string, error) {
 	return "", errors.New("awskms: keyID does not match this KEK")
 }
 
-
 func isKMSAliasID(s string) bool {
 	return strings.HasPrefix(s, "alias/") || isKMSAliasARN(s)
 }

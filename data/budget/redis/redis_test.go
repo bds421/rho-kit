@@ -575,7 +575,6 @@ func TestWithKeyTTL_PanicsOnNonPositive(t *testing.T) {
 	assert.Panics(t, func() { budgetredis.WithKeyTTL(-time.Second) })
 }
 
-
 func TestRefund_CreditsChargePeriodAcrossRollover(t *testing.T) {
 	// Charge in period N; after the clock advances into N+1, Refund with
 	// chargedAt from N must DECR the N key, not the empty N+1 key.
@@ -618,4 +617,3 @@ func TestRefund_CreditsChargePeriodAcrossRollover(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(75), peekOld)
 }
-

@@ -54,12 +54,12 @@ type approvalModule struct {
 	store kitapproval.Store
 }
 
-func (m *approvalModule) Name() string                                  { return ModuleName }
+func (m *approvalModule) Name() string                                      { return ModuleName }
 func (m *approvalModule) Init(_ context.Context, _ app.ModuleContext) error { return nil }
 func (m *approvalModule) Populate(infra *app.Infrastructure) {
 	infra.SetResource(ResourceStoreKey, m.store)
 }
-func (m *approvalModule) Stop(_ context.Context) error            { return nil }
+func (m *approvalModule) Stop(_ context.Context) error           { return nil }
 func (m *approvalModule) HealthChecks() []health.DependencyCheck { return nil }
 
 // Store returns the approval store registered via [Module], or nil

@@ -303,9 +303,9 @@ func TestConsumer_HandleFailure_Retry_Nacks(t *testing.T) {
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup:      "test-queue",
-			RoutingKey: "test.event",
-			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup: "test-queue",
+			RoutingKey:    "test.event",
+			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 		},
 	}
 
@@ -326,9 +326,9 @@ func TestConsumer_HandleFailure_RetryHookPanic_DoesNotPanic(t *testing.T) {
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup:      "test-queue",
-			RoutingKey: "test.event",
-			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup: "test-queue",
+			RoutingKey:    "test.event",
+			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 		},
 	}
 
@@ -367,9 +367,9 @@ func TestConsumer_HandleFailure_DeadLetter_PublishesAndAcks(t *testing.T) {
 
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup:      "test-queue",
-			RoutingKey: "test.event",
-			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup: "test-queue",
+			RoutingKey:    "test.event",
+			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 		},
 		DeadExchange: "test-exchange.dead",
 	}
@@ -406,9 +406,9 @@ func TestConsumer_HandleFailure_DeadLetter_PublishFails_Nacks(t *testing.T) {
 
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup:      "test-queue",
-			RoutingKey: "test.event",
-			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup: "test-queue",
+			RoutingKey:    "test.event",
+			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 		},
 		DeadExchange: "test-exchange.dead",
 	}
@@ -443,9 +443,9 @@ func TestConsumer_HandleFailure_DeadLetterPublisherPanic_Nacks(t *testing.T) {
 	}
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup:      "test-queue",
-			RoutingKey: "test.event",
-			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup: "test-queue",
+			RoutingKey:    "test.event",
+			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 		},
 		DeadExchange: "test-exchange.dead",
 	}
@@ -485,9 +485,9 @@ func TestConsumer_HandleFailure_ForceDiscard_AcksAndDiscards(t *testing.T) {
 
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup:      "test-queue",
-			RoutingKey: "test.event",
-			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup: "test-queue",
+			RoutingKey:    "test.event",
+			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 		},
 	}
 
@@ -654,9 +654,9 @@ func TestConsumer_HandleDelivery_HandlerPanicWithRetry_RoutesToDiscard(t *testin
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup:      "test-queue",
-			RoutingKey: "test.event",
-			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup: "test-queue",
+			RoutingKey:    "test.event",
+			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 		},
 		DeadExchange: "test-exchange.dead",
 	}
@@ -729,9 +729,9 @@ func TestConsumeOnce_RetryWithoutPublisher_ReturnsError(t *testing.T) {
 
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup:      "test-queue",
-			RoutingKey: "test.event",
-			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+			ConsumerGroup: "test-queue",
+			RoutingKey:    "test.event",
+			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 		},
 	}
 

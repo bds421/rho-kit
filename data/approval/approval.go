@@ -346,7 +346,6 @@ func ValidateReason(reason string) error {
 	return nil
 }
 
-
 func validTenantID(s string) bool {
 	if len(s) > MaxTenantIDLen {
 		return false

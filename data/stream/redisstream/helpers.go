@@ -453,4 +453,3 @@ func parseStreamID(id string) (ms, seq uint64, ok bool) {
 	}
 	return ms, seq, true
 }
-

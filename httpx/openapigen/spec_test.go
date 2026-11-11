@@ -1158,7 +1158,6 @@ func TestHandle_ResponseContentOnlySuppressesDefault200(t *testing.T) {
 	})
 }
 
-
 func TestSecurityScheme_ExtensionsInline(t *testing.T) {
 	spec := openapigen.NewSpec("t", "1")
 	flows := json.RawMessage(`{"flows":{"clientCredentials":{"tokenUrl":"https://auth.example/token","scopes":{}}}}`)
@@ -1180,7 +1179,6 @@ func TestSecurityScheme_ExtensionsInline(t *testing.T) {
 		t.Fatalf("type = %v", oauth["type"])
 	}
 }
-
 
 func TestHandle_ResponseDescriptionDoesNotSuppressSchema(t *testing.T) {
 	mux := http.NewServeMux()
