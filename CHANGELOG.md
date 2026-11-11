@@ -1,5 +1,67 @@
 # Changelog
 
+## crypto v2.40.0 — 2026-11-11
+
+- **feat(crypto): one sealing API.** A value kept at rest is sealed with
+  `crypto/envelope`: `envelope.NewBox` over a `kekstatic.KEK` or a KMS
+  adapter binds each value to its purpose and record and rotates through
+  the KEK. `envelope.KeyID(blob)` names the key a blob is under, which a
+  reseal pass needs; `kekstatic.ErrUnknownKeyID` is the error of a key the
+  KEK no longer holds. `crypto/encrypt` keeps the AES-256-GCM primitive
+  (`NewGCM`, `EncryptBytesAAD`, `DecryptBytesAAD`).
+
+Breaking: `crypto/secretcrypt`, `encrypt.FieldEncryptor` (with its
+`enc:v1:`/`enc:v2:`/`enc:v3:` prefixes), `encrypt.Keyring`/`Key`/
+`ErrUnknownKey` and `masking.DecryptAndMaskURL` are removed. A value one of
+them sealed is opened with crypto v2.39.0 and sealed anew with a Box before
+this release is taken; nothing in this release reads the old forms.
+
+## auth/oauth2/redis v2.39.0 — 2026-11-11
+
+- **feat(auth/oauth2/redis): `WithEncryption` seals with an
+  `envelope.Box`** over a `kekstatic.KEK` of the keys, bound to the Redis
+  key. Key IDs are 1-32 bytes of `[A-Za-z0-9._:/-]`.
+
+Breaking: values sealed by an earlier release (the `rk1.` keyring form) are
+read as absent, so every signed-in user signs in again once after the
+deploy.
+
+## httpx v2.39.0 — 2026-11-11
+
+- **feat(httpx/middleware/ratelimit): the limiters are
+  `data/ratelimit.Limiter` implementations.** `KeyedLimiter.Allow(ctx,
+  key)` and `Limiter.Allow(ctx, ip)` return `(allowed, retryAfter
+  time.Duration, err)`, so either can be handed to `tenant.New` or any
+  other consumer of the one limiter interface; `AllowN(ctx, key, n)` has the
+  same shape. Key validation and `ErrInvalidKey`/`ErrInvalidLimiter` are
+  `data/ratelimit`'s.
+
+Breaking: `KeyedLimiter.AllowKey` and the `Allow(key) (bool, int)` wrapper,
+`ValidateKey`, `MaxKeyBytes`, `ErrInvalidKey` and `ErrInvalidLimiter` of the
+middleware package are removed (`AllowN`'s retry-after is a Duration);
+`middleware/auth.UserID` (use `Subject`) and `openapi.Options.ErrorMapper`
+(which `Mount` never read; pass the mapper to `StrictErrorHandler`) are
+removed.
+
+## httpx/middleware/signedrequest/redis v2.39.0 — 2026-11-11
+
+Breaking: `WithNonceTimeout`, an alias of `WithCallTimeout`, is removed.
+
+## grpcx v2.39.0 — 2026-11-11
+
+Breaking: `interceptor.UserID` is removed; `Subject` reads the subject.
+
+## infra v2.39.0 — 2026-11-11
+
+Breaking: `infra/storage/retry` and `infra/storage/circuitbreaker`, storage
+wrappers over `resilience/retry` and `resilience/circuitbreaker` with option
+sets of their own, are removed; wrap a storage call in the resilience
+packages directly.
+
+## testing/integrationtest v2.39.0 — 2026-11-11
+
+- The `cryptoencrypt` integration test went with `encrypt.FieldEncryptor`.
+
 ## testing/expandonly v2.45.0 — 2026-11-10
 
 - **feat(testing/expandonly): a library's migration sets.** `Set.Upstream`
