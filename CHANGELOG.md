@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## cmd/kit-basepin v2.47.0, cmd/kit-vulngate v2.47.0 — 2026-11-11
 
 ### cmd/kit-vulngate, cmd/kit-basepin
 
