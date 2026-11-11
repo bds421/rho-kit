@@ -66,10 +66,10 @@ func TestKeyedLimiterMetrics_RecordKeyedDecisions(t *testing.T) {
 	)
 
 	if allowed, _, err := rl.Allow(context.Background(), "tenant-a"); err != nil || !allowed {
-		t.Fatalf("first AllowKey = allowed %v, err %v; want allowed nil", allowed, err)
+		t.Fatalf("first Allow = allowed %v, err %v; want allowed nil", allowed, err)
 	}
 	if allowed, _, err := rl.Allow(context.Background(), "tenant-a"); err != nil || allowed {
-		t.Fatalf("second AllowKey = allowed %v, err %v; want limited nil", allowed, err)
+		t.Fatalf("second Allow = allowed %v, err %v; want limited nil", allowed, err)
 	}
 	_, _, _ = rl.Allow(context.Background(), "bad key")
 
@@ -126,7 +126,7 @@ func TestKeyedActiveKeysGauge_ReflectsShardLength(t *testing.T) {
 	// must equal the number of distinct keys regardless of FNV bucket.
 	for _, key := range []string{"tenant-a", "tenant-b", "tenant-c"} {
 		if allowed, _, err := rl.Allow(context.Background(), key); err != nil || !allowed {
-			t.Fatalf("AllowKey(%q) = allowed %v, err %v", key, allowed, err)
+			t.Fatalf("Allow(%q) = allowed %v, err %v", key, allowed, err)
 		}
 	}
 
@@ -134,7 +134,7 @@ func TestKeyedActiveKeysGauge_ReflectsShardLength(t *testing.T) {
 		t.Fatalf("active-keys = %v, want 3", got)
 	}
 
-	// Repeated AllowKey for an existing key must NOT grow the gauge.
+	// Repeated Allow for an existing key must NOT grow the gauge.
 	for range 5 {
 		_, _, _ = rl.Allow(context.Background(), "tenant-a")
 	}

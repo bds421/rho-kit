@@ -20,12 +20,12 @@ func WithTrustedS2S(ctx context.Context) context.Context {
 	return trustedS2SKey.Set(ctx, trustedS2SMarker{})
 }
 
-// WithUserID returns a new context with the given user ID.
+// WithSubject returns a new context with the given subject.
 //
 // Available only under the `authtest` build tag. Production code must rely on
-// the JWT or mTLS middleware to set the user ID.
-func WithUserID(ctx context.Context, id string) context.Context {
-	return userIDKey.Set(ctx, authUserID(id))
+// the JWT or mTLS middleware to set the subject.
+func WithSubject(ctx context.Context, id string) context.Context {
+	return subjectKey.Set(ctx, authSubject(id))
 }
 
 // WithPermissions returns a new context with the given permissions.

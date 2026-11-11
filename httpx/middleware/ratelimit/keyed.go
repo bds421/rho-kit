@@ -37,7 +37,7 @@ type keyedShard struct {
 // [lifecycle.Component] so callers can register it directly with a
 // lifecycle.Runner.
 //
-// Concurrency: AllowKey is safe for concurrent use. Start must only be
+// Concurrency: Allow is safe for concurrent use. Start must only be
 // called once per instance (guarded by an internal started flag).
 type KeyedLimiter struct {
 	shards      [numShards]keyedShard
@@ -299,7 +299,7 @@ func (rl *KeyedLimiter) cleanup() {
 		s := &rl.shards[i]
 		// Match the IP limiter's two-phase cleanup: snapshot Keys under the
 		// shard lock (Keys is not concurrent-safe), then re-lock for the
-		// per-key Peek/Remove pass so AllowKey is not blocked during the
+		// per-key Peek/Remove pass so Allow is not blocked during the
 		// Keys allocation window only briefly.
 		s.mu.Lock()
 		keys := s.entries.Keys()

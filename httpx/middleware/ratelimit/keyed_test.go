@@ -121,7 +121,7 @@ func TestKeyedLimiter_AllowRejectsInvalidKeysWithoutStoring(t *testing.T) {
 	}
 }
 
-func TestKeyedLimiter_AllowKeyRejectsUninitializedLimiter(t *testing.T) {
+func TestKeyedLimiter_AllowRejectsUninitializedLimiter(t *testing.T) {
 	var zero KeyedLimiter
 	_, _, err := zero.Allow(context.Background(), "key")
 	if !errors.Is(err, limiter.ErrInvalidLimiter) {
@@ -133,7 +133,7 @@ func TestKeyedLimiter_RunStopsOnCancel(t *testing.T) {
 	rl := NewKeyedLimiter(5, 10*time.Millisecond)
 	_, _, err := rl.Allow(context.Background(), "key")
 	if err != nil {
-		t.Fatalf("AllowKey returned %v", err)
+		t.Fatalf("Allow returned %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -1,6 +1,6 @@
 # Storage — File Storage & Serving
 
-Packages: `infra/storage`, `infra/storage/s3backend`, `infra/storage/azurebackend`, `infra/storage/gcsbackend`, `infra/storage/sftpbackend`, `infra/storage/localbackend`, `infra/storage/membackend`, `infra/storage/encryption`, `infra/storage/retry`, `infra/storage/circuitbreaker`, `infra/storage/storagehttp`, `infra/storage/storagehttp/uploadsec`, `infra/storage/storagehttp/uploadsec/clamav`
+Packages: `infra/storage`, `infra/storage/s3backend`, `infra/storage/azurebackend`, `infra/storage/gcsbackend`, `infra/storage/sftpbackend`, `infra/storage/localbackend`, `infra/storage/membackend`, `infra/storage/encryption`, `infra/storage/storagehttp`, `infra/storage/storagehttp/uploadsec`, `infra/storage/storagehttp/uploadsec/clamav`
 
 Snippet status: Go blocks in this recipe are illustrative fragments unless
 explicitly introduced as generated or executable code. Buildable golden-path
@@ -200,13 +200,14 @@ app.New(...).
 
 ## Composition Pattern (Production Stack)
 
-Wrappers compose transparently — each implements `Storage` and forwards optional interfaces:
+Wrappers compose transparently — each implements `Storage` and forwards
+optional interfaces. Retries and circuit breaking around a backend call are
+`resilience/retry` and `resilience/circuitbreaker` at the call site (see
+[resilience.md](resilience.md)); there is no storage-specific wrapper for them.
 
 ```go
 base, _ := s3backend.New(cfg)
-retried := retry.New(base, retry.WithMaxAttempts(3))
-breaker := circuitbreaker.New(retried, circuitbreaker.WithThreshold(5))
-enc := encryption.New(breaker, encryption.StaticKey(key32),
+enc := encryption.New(base, encryption.StaticKey(key32),
     encryption.WithMetricsRegisterer(nil), // optional open-plaintext budget metrics
 )
 hooked := storage.WithHooks(enc, storage.Hooks{

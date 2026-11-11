@@ -210,8 +210,6 @@ func (rl *Limiter) getShard(ip string) *shard {
 	return &rl.shards[h.Sum32()%numShards]
 }
 
-// allow checks if the IP is within the rate limit. Returns (allowed, windowRemaining).
-// windowRemaining is only meaningful when allowed is false.
 var _ limiter.Limiter = (*Limiter)(nil)
 
 // Allow takes one request of the client IP, as a [limiter.Limiter]; the

@@ -26,6 +26,11 @@ Breaking: values sealed by an earlier release (the `rk1.` keyring form) are
 read as absent, so every signed-in user signs in again once after the
 deploy.
 
+Release order: this module needs crypto v2.40.0 (`envelope.KeyID`,
+`kekstatic.ErrUnknownKeyID`); its go.mod still pins crypto v2.38.0 and builds
+through go.work. Release crypto v2.40.0 first, move this module's crypto pin to
+it, then tag auth/oauth2/redis v2.39.0.
+
 ## httpx v2.39.0 — 2026-11-11
 
 - **feat(httpx/middleware/ratelimit): the limiters are
@@ -39,9 +44,10 @@ deploy.
 Breaking: `KeyedLimiter.AllowKey` and the `Allow(key) (bool, int)` wrapper,
 `ValidateKey`, `MaxKeyBytes`, `ErrInvalidKey` and `ErrInvalidLimiter` of the
 middleware package are removed (`AllowN`'s retry-after is a Duration);
-`middleware/auth.UserID` (use `Subject`) and `openapi.Options.ErrorMapper`
-(which `Mount` never read; pass the mapper to `StrictErrorHandler`) are
-removed.
+`middleware/auth.UserID` (use `Subject`) and its `authtest` helper
+`WithUserID` (now `WithSubject`, which stamps the subject key), and
+`openapi.Options.ErrorMapper` (which `Mount` never read; pass the mapper to
+`StrictErrorHandler`) are removed.
 
 ## httpx/middleware/signedrequest/redis v2.39.0 — 2026-11-11
 

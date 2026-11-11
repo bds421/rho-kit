@@ -82,7 +82,6 @@ const maxKeyPrefixLen = 128
 // Panics if d <= 0 — a zero or negative timeout would create an
 // immediately expired context and fail every nonce SET NX call closed,
 // silently turning the verifier into a denial-of-service.
-//
 func WithCallTimeout(d time.Duration) Option {
 	if d <= 0 {
 		panic("signedrequest/redis: WithCallTimeout requires a positive duration")

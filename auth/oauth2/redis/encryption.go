@@ -65,7 +65,7 @@ func WithEncryption(keys ...EncryptionKey) Option {
 		var err error
 		switch {
 		case len(k.ID) > maxKeyIDLen:
-			err = errors.New("kekstatic: keyID exceeds 32 bytes")
+			err = errors.New("oauth2/redis: key ID exceeds 32 bytes")
 		case i == 0:
 			kek, err = kekstatic.NewKEK(k.ID, k.Key)
 		default:
