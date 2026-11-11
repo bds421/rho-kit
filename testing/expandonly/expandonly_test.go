@@ -204,3 +204,71 @@ func TestAnUnparsableMigrationFails(t *testing.T) {
 		t.Error("an unparsable migration passed")
 	}
 }
+
+// An upstream set's contract comment names the library's release, so it
+// counts for the floor only under the product release that adopts it; an
+// undeclared contraction there names the library, and an adoption that
+// matches no declaration is stale.
+func TestUpstreamContractionsAreAdopted(t *testing.T) {
+	kit := fstest.MapFS{
+		"0001_old.sql": {Data: []byte("-- contract: v2.1.0 history\n" + migration("DROP TABLE a;"))},
+		"0002_new.sql": {Data: []byte("-- contract: v2.45.0 b is unused since v2.45.0\n" + migration("DROP TABLE b;"))},
+	}
+	own := fstest.MapFS{"00002_a.sql": {Data: []byte("-- contract: v0.3.0 c\n" + migration("DROP TABLE c;"))}}
+	floor := filepath.Join(t.TempDir(), "rollback-floor")
+	run := func(want string, adopted map[string]string) []Finding {
+		t.Helper()
+		if err := os.WriteFile(floor, []byte(want+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		findings, err := Check(Options{
+			Sets:    []Set{{Name: "own", Dir: own}, {Name: "outbox", Dir: kit, After: 1, Upstream: "rho-kit outbox v2.45.0"}},
+			Floor:   floor,
+			Adopted: adopted,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return findings
+	}
+	if f := run("v0.3.0", nil); len(f) != 1 || f[0].File != "outbox/0002_new.sql" || !strings.Contains(f[0].Reason, "adopt it") {
+		t.Errorf("unadopted: %v", f)
+	}
+	if f := run("v0.4.0", map[string]string{"outbox/0002_new.sql": "v0.4.0"}); len(f) != 0 {
+		t.Errorf("adopted under v0.4.0: %v", f)
+	}
+	if f := run("v0.3.0", map[string]string{"outbox/0002_new.sql": "v0.2.0"}); len(f) != 0 {
+		t.Errorf("adopted below the product's own floor: %v", f)
+	}
+	if f := run("v0.3.0", map[string]string{"outbox/0002_new.sql": "soon"}); len(f) != 1 || !strings.Contains(f[0].Reason, "names no release") {
+		t.Errorf("adopted under no release: %v", f)
+	}
+	if f := run("v0.4.0", map[string]string{"outbox/0002_new.sql": "v0.4.0", "outbox/0001_old.sql": "v0.1.0"}); len(f) != 1 || !strings.Contains(f[0].Reason, "remove it") {
+		t.Errorf("stale adoption: %v", f)
+	}
+	own2 := fstest.MapFS{"00002_a.sql": {Data: []byte("-- contract: v0.3.0 c\n" + migration("DROP TABLE c;"))}}
+	for name, adopted := range map[string]map[string]string{
+		"a set that is not upstream": {"own/00002_a.sql": "v0.3.0"},
+		"no such file":               {"outbox/0009_none.sql": "v0.3.0"},
+	} {
+		findings, err := Check(Options{Sets: []Set{{Name: "own", Dir: own2}, {Name: "outbox", Dir: kit, After: 2, Upstream: "rho-kit outbox v2.45.0"}}, Adopted: adopted})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings) != 1 || !strings.Contains(findings[0].Reason, "remove it") {
+			t.Errorf("%s: %v", name, findings)
+		}
+	}
+	malformed := fstest.MapFS{"0002_new.sql": {Data: []byte("-- contract: soon\n" + migration("DROP TABLE b;"))}}
+	if f, err := Check(Options{Sets: []Set{{Name: "outbox", Dir: malformed, After: 1, Upstream: "rho-kit outbox v2.45.0"}}}); err != nil || len(f) != 2 || !strings.Contains(f[0].Reason, "fix it there") {
+		t.Errorf("a malformed upstream comment: %v %v", f, err)
+	}
+	undeclared := fstest.MapFS{"0002_new.sql": {Data: []byte(migration("DROP TABLE b;"))}}
+	findings, err := Check(Options{Sets: []Set{{Name: "outbox", Dir: undeclared, After: 1, Upstream: "rho-kit outbox v2.45.0"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 || !strings.Contains(findings[0].String(), "the file is rho-kit outbox v2.45.0's") {
+		t.Errorf("undeclared upstream contraction: %v", findings)
+	}
+}
