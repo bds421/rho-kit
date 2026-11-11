@@ -62,18 +62,15 @@ var defaultTrustedProxyCIDRs = func() []*net.IPNet {
 // X-Real-IP and does not set XFF still get the correct value via step 2.
 // Operators MUST strip or overwrite inbound X-Real-IP at the edge.
 func ClientIP(r *http.Request) string {
-	return ClientIPWithTrustedProxies(r, nil)
+	return ClientIPWithTrustedProxies(r, defaultTrustedProxyCIDRs)
 }
 
-// ClientIPWithTrustedProxies behaves like ClientIP but allows a custom list of
-// trusted proxy CIDRs. If trusted is nil or empty, the default proxy ranges
-// are used.
+// ClientIPWithTrustedProxies behaves like ClientIP with the given trusted
+// proxy CIDRs. An empty list trusts no proxy: the client is RemoteAddr,
+// whatever the forwarding headers say.
 func ClientIPWithTrustedProxies(r *http.Request, trusted []*net.IPNet) string {
 	if r == nil {
 		return ""
-	}
-	if len(trusted) == 0 {
-		trusted = defaultTrustedProxyCIDRs
 	}
 	if !isTrustedAddr(r.RemoteAddr, trusted) {
 		return remoteIPString(r.RemoteAddr)

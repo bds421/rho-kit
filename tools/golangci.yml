@@ -1,0 +1,16 @@
+# rho-kit golangci.yml begin
+version: "2"
+linters:
+  enable:
+    - depguard
+    - funlen
+    - gocognit
+    - gosec
+    - errorlint
+  settings:
+    funlen:
+      lines: 60
+      statements: 40
+    gocognit:
+      min-complexity: 20
+# rho-kit golangci.yml end

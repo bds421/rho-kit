@@ -81,19 +81,14 @@ func WithClock(fn clock.Func) LimiterOption {
 // WithTrustedProxies sets the CIDRs from which X-Forwarded-For is trusted.
 // Invalid entries panic so proxy attribution cannot silently degrade at startup.
 //
-// A nil or empty slice falls back to the default trusted set (loopback) rather
-// than "trust no proxies" — passing []string{} does NOT disable XFF trust.
-// This preserves the kit's default attribution behavior; to trust no proxies,
-// configure the limiter behind an environment where XFF is already stripped.
+// An empty list trusts no proxy: the client is RemoteAddr, whatever the
+// forwarding headers say.
 func WithTrustedProxies(cidrs []string) LimiterOption {
 	trusted, err := clientip.ParseTrustedProxiesStrict(cidrs)
 	if err != nil {
 		// Surface which entry is malformed (index only) so operators can fix
 		// the config; the raw CIDR value is withheld for secret hygiene.
 		panic(fmt.Sprintf("middleware/ratelimit: WithTrustedProxies invalid trusted proxy at index %d", invalidTrustedProxyIndex(cidrs)))
-	}
-	if len(trusted) == 0 {
-		trusted = clientip.ParseTrustedProxies(nil)
 	}
 	return func(rl *Limiter) {
 		rl.trustedProxies = cloneIPNets(trusted)
@@ -162,9 +157,6 @@ func NewLimiter(limit int, window time.Duration, opts ...LimiterOption) *Limiter
 			panic("middleware/ratelimit: NewLimiter option must not be nil")
 		}
 		opt(rl)
-	}
-	if len(rl.trustedProxies) == 0 {
-		rl.trustedProxies = clientip.ParseTrustedProxies(nil)
 	}
 	for i := range rl.shards {
 		// IMPORTANT: Do NOT use lru.NewWithEvict here. The shard mutex is held

@@ -61,8 +61,8 @@ type Option func(*ipModule)
 
 // WithTrustedProxies forwards CIDRs to the underlying IP limiter so
 // X-Forwarded-For / X-Real-IP from those proxies are used for bucketing.
-// Without this option the limiter trusts loopback only — behind a
-// non-loopback load balancer every client collapses into one bucket.
+// Without this option the limiter trusts no proxy — behind a load
+// balancer every client collapses into one bucket.
 //
 // Panics if any CIDR is invalid (same contract as
 // [mwrl.WithTrustedProxies]).

@@ -15,7 +15,8 @@
 //
 // All implementations satisfy [Limiter] so the HTTP middleware,
 // gRPC interceptors, and message-consumer guards can swap algorithms
-// without rewiring the call sites.
+// without rewiring the call sites; [Fallback] joins a shared one and a
+// local one.
 package ratelimit
 
 import (

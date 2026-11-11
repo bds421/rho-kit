@@ -151,6 +151,10 @@ app.New(...).With(ratelimit.IP(100, time.Minute))
 // stack.WithOuter needed. Reach for ratelimit.IPLimiter(infra) only
 // when wrapping a specific route with a tighter cap than the baseline.
 
+// Any data/ratelimit.Limiter (gcra, tokenbucket, redis or a Fallback of
+// redis and memory), with the RateLimit-Policy / RateLimit fields:
+mux.Handle("/api/", ratelimit.Limit{Limiter: shared, Policy: ratelimit.PerMinute(120)}.Middleware(apiHandler))
+
 // Keyed per-user (via Builder + app/ratelimit bridge):
 app.New(...).With(ratelimit.Keyed("api", 10, time.Second))
 // then in router:

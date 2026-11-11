@@ -288,7 +288,7 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 		ttlSec,
 	).Result()
 	if err != nil {
-		return false, 0, redact.WrapError("ratelimit/redis: script", err)
+		return false, 0, redact.WrapError("ratelimit/redis: script "+failureClass(err), err)
 	}
 	allowed, retryUS, err := parseScriptResult(res)
 	if err != nil {

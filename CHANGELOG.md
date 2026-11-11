@@ -1,6 +1,29 @@
 # Changelog
 
-## data/queue/riverqueue v2.39.0, httpx v2.39.0, realtime/centrifuge v2.39.0, observability v2.45.0 — 2026-11-11
+## data v2.39.0, data/ratelimit/redis v2.39.0, data/queue/riverqueue v2.39.0, httpx v2.39.0, realtime/centrifuge v2.39.0, observability v2.45.0 — 2026-11-11
+
+- **feat(data/ratelimit): `Fallback`** asks a shared limiter (Redis) and,
+  while it fails, a local one, so an unreachable Redis narrows the budget
+  to one instance instead of refusing every request.
+- **feat(data/ratelimit/redis): a failure names its class.** The error of
+  a failing Redis call carries the class of the failure (`context_canceled`,
+  `pool_timeout`, `reply_NOAUTH`, `network_timeout`, …) in its safe
+  message, never the driver's text.
+- **feat(httpx/middleware/ratelimit): `Limit`**, a middleware over any
+  `data/ratelimit.Limiter` (memory, Redis or a `Fallback`), a budget per
+  key (`Keys`; the client address by default), with the
+  draft-ietf-httpapi-ratelimit-headers fields: `RateLimit-Policy` on every
+  answer (`Policy`, `PerMinute`, `SetPolicy`), `RateLimit` and
+  `Retry-After` on a refusal (`SetRemaining`), `Retry-After: 5` while the
+  limiter itself fails; `Refuse` and `Unavailable` write a product's own
+  problem bodies.
+- **feat(httpx/middleware/ratelimit): the limiters are
+  `data/ratelimit.Limiter` implementations.** `KeyedLimiter.Allow(ctx,
+  key)` and `Limiter.Allow(ctx, ip)` return `(allowed, retryAfter
+  time.Duration, err)`, so either can be handed to `tenant.New` or any
+  other consumer of the one limiter interface; `AllowN(ctx, key, n)` has the
+  same shape. Key validation and `ErrInvalidKey`/`ErrInvalidLimiter` are
+  `data/ratelimit`'s.
 
 - **feat(data/queue/riverqueue/periodic): a service's recurring tasks on
   River.** `Registry` runs a task every interval (`Every`, `Add`), per
@@ -30,6 +53,21 @@
   `WithJWTAuth` takes, for one issuer, audience, lifetime and claim set.
 - **feat(observability/logging): `Config.Output`** is where the log goes
   (stdout unless set), for a command whose stdout an operator reads.
+- **tools/golangci.yml** is the linter set every product's `.golangci.yml`
+  starts with, between its `# rho-kit golangci.yml begin` and `end`
+  lines; `make lint-config` prints the digest a product pins in its
+  `.golangci.sha256`.
+
+Breaking: `clientip.ClientIPWithTrustedProxies(r, nil)` and
+`ratelimit.WithTrustedProxies` with an empty list trust no proxy (the
+client is `RemoteAddr`); `clientip.ClientIP` alone keeps the loopback
+default. `KeyedLimiter.AllowKey` and the `Allow(key) (bool, int)` wrapper,
+`ValidateKey`, `MaxKeyBytes`, `ErrInvalidKey` and `ErrInvalidLimiter` of the
+middleware package are removed (`AllowN`'s retry-after is a Duration);
+`middleware/auth.UserID` (use `Subject`) and its `authtest` helper
+`WithUserID` (now `WithSubject`, which stamps the subject key), and
+`openapi.Options.ErrorMapper` (which `Mount` never read; pass the mapper to
+`StrictErrorHandler`) are removed.
 
 ## crypto v2.40.0 — 2026-11-11
 
@@ -61,24 +99,6 @@ Release order: this module needs crypto v2.40.0 (`envelope.KeyID`,
 `kekstatic.ErrUnknownKeyID`); its go.mod still pins crypto v2.38.0 and builds
 through go.work. Release crypto v2.40.0 first, move this module's crypto pin to
 it, then tag auth/oauth2/redis v2.39.0.
-
-## httpx v2.39.0 — 2026-11-11
-
-- **feat(httpx/middleware/ratelimit): the limiters are
-  `data/ratelimit.Limiter` implementations.** `KeyedLimiter.Allow(ctx,
-  key)` and `Limiter.Allow(ctx, ip)` return `(allowed, retryAfter
-  time.Duration, err)`, so either can be handed to `tenant.New` or any
-  other consumer of the one limiter interface; `AllowN(ctx, key, n)` has the
-  same shape. Key validation and `ErrInvalidKey`/`ErrInvalidLimiter` are
-  `data/ratelimit`'s.
-
-Breaking: `KeyedLimiter.AllowKey` and the `Allow(key) (bool, int)` wrapper,
-`ValidateKey`, `MaxKeyBytes`, `ErrInvalidKey` and `ErrInvalidLimiter` of the
-middleware package are removed (`AllowN`'s retry-after is a Duration);
-`middleware/auth.UserID` (use `Subject`) and its `authtest` helper
-`WithUserID` (now `WithSubject`, which stamps the subject key), and
-`openapi.Options.ErrorMapper` (which `Mount` never read; pass the mapper to
-`StrictErrorHandler`) are removed.
 
 ## httpx/middleware/signedrequest/redis v2.39.0 — 2026-11-11
 
