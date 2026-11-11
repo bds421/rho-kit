@@ -28,6 +28,7 @@ github.com/pressly/goose/v3
 github.com/redis/go-redis/v9
 github.com/riverqueue/river
 github.com/riverqueue/river/riverdriver
+github.com/riverqueue/river/riverdriver/riverdatabasesql
 github.com/riverqueue/river/riverdriver/riverpgxv5
 github.com/riverqueue/river/rivertype
 

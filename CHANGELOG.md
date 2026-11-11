@@ -1,5 +1,35 @@
 # Changelog
 
+## data/queue/riverqueue v2.39.0, httpx v2.39.0, realtime/centrifuge v2.39.0, observability v2.45.0 — 2026-11-11
+
+- **feat(data/queue/riverqueue/periodic): a service's recurring tasks on
+  River.** `Registry` runs a task every interval (`Every`, `Add`), per
+  organization every interval (`EveryPerOrg`: a dispatcher lists the
+  organizations, each becomes its own job under the scope
+  `Options.OrgContext` derives) and on demand (`Task`, `RunTask`,
+  `RunOrgTask`); `Timeout` and `Runs` size River's stuck-job rescue to the
+  longest task; `Client`, `InsertOnly`, `Run` and `Migrate` are the
+  lifecycle. A run is unique while it waits or runs (`UniqueWhileWaiting`),
+  so a completed run never blocks the next tick. The job kinds are
+  `rho.periodic` and `rho.org_task`; a product that moves here from its
+  own kinds leaves their queued jobs to be discarded as unknown.
+- **feat(httpx/problemdetails): coded problems.** `Coded` is a problem an
+  API declares once (`Declare`, listed by `Declared` for a test to prove
+  each code has its texts) and answers with parameters (`With`), found in a
+  wrapped error by `Is`, and written by `WriteCoded` with the extensions
+  `code`, `params`, `requestId` and a `Retry-After` header.
+- **feat(httpx): `ParseRetryAfter`** reads a `Retry-After` value in
+  seconds, fractions rounded up, or as an HTTP date.
+- **feat(httpx/middleware/clientip): `Middleware`** sets each request's
+  `RemoteAddr` to the client behind the trusted proxies, keeping the port,
+  so rate limits, audit and logs that key on `RemoteAddr` agree with
+  `ClientIPWithTrustedProxies`.
+- **feat(realtime/centrifuge): `NewConnectionTokens`** turns a PEM signing
+  key into the signer of a service's connection tokens and the verifier
+  `WithJWTAuth` takes, for one issuer, audience, lifetime and claim set.
+- **feat(observability/logging): `Config.Output`** is where the log goes
+  (stdout unless set), for a command whose stdout an operator reads.
+
 ## testing/expandonly v2.45.0 — 2026-11-10
 
 - **feat(testing/expandonly): a library's migration sets.** `Set.Upstream`
