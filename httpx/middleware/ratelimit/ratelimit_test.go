@@ -273,7 +273,7 @@ func TestWithTrustedProxies_OptionReuseClonesOutput(t *testing.T) {
 
 func TestLimiterRun_StopsOnCancel(t *testing.T) {
 	rl := NewLimiter(5, 10*time.Millisecond)
-	rl.allow("1.2.3.4")
+	_, _, _ = rl.allow("1.2.3.4")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

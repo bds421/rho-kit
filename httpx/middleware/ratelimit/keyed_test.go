@@ -80,8 +80,8 @@ func TestKeyedLimiter_Cleanup(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	window := time.Minute
 	rl := NewKeyedLimiter(1, window, WithKeyedClock(func() time.Time { return now }))
-	rl.Allow(context.Background(), "key1")
-	rl.Allow(context.Background(), "key2")
+	_, _, _ = rl.Allow(context.Background(), "key1")
+	_, _, _ = rl.Allow(context.Background(), "key2")
 
 	// Advance past the window so both entries are expired, then run cleanup.
 	now = now.Add(window + time.Second)
