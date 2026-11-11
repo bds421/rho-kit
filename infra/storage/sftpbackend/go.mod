@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/bds421/rho-kit/infra/v2 v2.47.0
-	github.com/pkg/sftp v1.13.11
+	github.com/pkg/sftp v1.13.12
 	github.com/prometheus/client_golang v1.25.0
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.47.0
@@ -14,7 +14,7 @@ require (
 require (
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 )
 
 require (
