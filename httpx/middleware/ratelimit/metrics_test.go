@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -43,13 +44,13 @@ func TestLimiterMetrics_RecordIPDecisions(t *testing.T) {
 		WithLimiterName("public_api"),
 	)
 
-	if allowed, _ := rl.allow("192.0.2.10"); !allowed {
+	if allowed, _, _ := rl.Allow(context.Background(), "192.0.2.10"); !allowed {
 		t.Fatal("first request should be allowed")
 	}
-	if allowed, _ := rl.allow("192.0.2.10"); allowed {
+	if allowed, _, _ := rl.Allow(context.Background(), "192.0.2.10"); allowed {
 		t.Fatal("second request should be rate-limited")
 	}
-	rl.allow("") //nolint:errcheck // invalid-client-IP metric path
+	_, _, _ = rl.Allow(context.Background(), "")
 
 	assertDecision(t, metrics, "public_api", rateLimitKindIP, rateLimitOutcomeAllowed, 1)
 	assertDecision(t, metrics, "public_api", rateLimitKindIP, rateLimitOutcomeLimited, 1)
@@ -64,13 +65,13 @@ func TestKeyedLimiterMetrics_RecordKeyedDecisions(t *testing.T) {
 		WithKeyedLimiterName("api_key"),
 	)
 
-	if allowed, _, err := rl.AllowKey("tenant-a"); err != nil || !allowed {
+	if allowed, _, err := rl.Allow(context.Background(), "tenant-a"); err != nil || !allowed {
 		t.Fatalf("first AllowKey = allowed %v, err %v; want allowed nil", allowed, err)
 	}
-	if allowed, _, err := rl.AllowKey("tenant-a"); err != nil || allowed {
+	if allowed, _, err := rl.Allow(context.Background(), "tenant-a"); err != nil || allowed {
 		t.Fatalf("second AllowKey = allowed %v, err %v; want limited nil", allowed, err)
 	}
-	_, _, _ = rl.AllowKey("bad key")
+	_, _, _ = rl.Allow(context.Background(), "bad key")
 
 	assertDecision(t, metrics, "api_key", rateLimitKindKeyed, rateLimitOutcomeAllowed, 1)
 	assertDecision(t, metrics, "api_key", rateLimitKindKeyed, rateLimitOutcomeLimited, 1)
@@ -124,7 +125,7 @@ func TestKeyedActiveKeysGauge_ReflectsShardLength(t *testing.T) {
 	// Three distinct keys map to up to 3 shards; sum across all shards
 	// must equal the number of distinct keys regardless of FNV bucket.
 	for _, key := range []string{"tenant-a", "tenant-b", "tenant-c"} {
-		if allowed, _, err := rl.AllowKey(key); err != nil || !allowed {
+		if allowed, _, err := rl.Allow(context.Background(), key); err != nil || !allowed {
 			t.Fatalf("AllowKey(%q) = allowed %v, err %v", key, allowed, err)
 		}
 	}
@@ -135,7 +136,7 @@ func TestKeyedActiveKeysGauge_ReflectsShardLength(t *testing.T) {
 
 	// Repeated AllowKey for an existing key must NOT grow the gauge.
 	for range 5 {
-		_, _, _ = rl.AllowKey("tenant-a")
+		_, _, _ = rl.Allow(context.Background(), "tenant-a")
 	}
 	if got := activeKeysSample(t, reg, "api_key"); got != 3 {
 		t.Fatalf("after duplicates active-keys = %v, want 3", got)
@@ -155,9 +156,9 @@ func TestKeyedActiveKeysGauge_TracksMultipleLimitersDistinctNames(t *testing.T) 
 		WithKeyedLimiterName("login"),
 	)
 
-	_, _, _ = rlA.AllowKey("tenant-a")
-	_, _, _ = rlA.AllowKey("tenant-b")
-	_, _, _ = rlB.AllowKey("user-1")
+	_, _, _ = rlA.Allow(context.Background(), "tenant-a")
+	_, _, _ = rlA.Allow(context.Background(), "tenant-b")
+	_, _, _ = rlB.Allow(context.Background(), "user-1")
 
 	if got := activeKeysSample(t, reg, "api_key"); got != 2 {
 		t.Fatalf("api_key active-keys = %v, want 2", got)
@@ -198,7 +199,7 @@ func TestKeyedActiveKeysGauge_IdempotentRegistration(t *testing.T) {
 		WithKeyedMetrics(m1),
 		WithKeyedLimiterName("shared"),
 	)
-	_, _, _ = rl.AllowKey("k1")
+	_, _, _ = rl.Allow(context.Background(), "k1")
 
 	if got := activeKeysSample(t, reg, "shared"); got != 1 {
 		t.Fatalf("active-keys = %v, want 1", got)

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"hash/fnv"
 	"log/slog"
-	"math"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -15,6 +14,7 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
+	limiter "github.com/bds421/rho-kit/data/v2/ratelimit"
 	"github.com/bds421/rho-kit/httpx/v2"
 )
 
@@ -159,38 +159,35 @@ func (rl *KeyedLimiter) getShard(key string) *keyedShard {
 
 func (rl *KeyedLimiter) ready() error {
 	if rl == nil || rl.limit <= 0 || rl.window <= 0 || rl.now == nil {
-		return ErrInvalidLimiter
+		return limiter.ErrInvalidLimiter
 	}
 	for i := range rl.shards {
 		if rl.shards[i].entries == nil {
-			return ErrInvalidLimiter
+			return limiter.ErrInvalidLimiter
 		}
 	}
 	return nil
 }
 
-// Allow checks whether the given key is within its rate limit. Invalid keys
-// fail closed and are not stored. Call [KeyedLimiter.AllowKey] when the
-// caller needs to distinguish invalid keys from throttled keys.
-func (rl *KeyedLimiter) Allow(key string) (allowed bool, retryAfter int) {
-	allowed, retryAfter, err := rl.AllowKey(key)
-	if err != nil {
-		return false, 1
-	}
-	return allowed, retryAfter
-}
+var _ limiter.Limiter = (*KeyedLimiter)(nil)
 
-// AllowKey checks whether the given key is within its rate limit and returns
-// an error for invalid keys or uninitialized limiters.
-func (rl *KeyedLimiter) AllowKey(key string) (allowed bool, retryAfter int, err error) {
+// ErrInvalidCount is returned by [KeyedLimiter.AllowN] for a count below
+// one or above the limit, which no window could allow.
+var ErrInvalidCount = errors.New("ratelimit: count outside 1 to the limit")
+
+// Allow takes one request of the key, as a [limiter.Limiter]; a refused
+// request counts against the window too. An invalid key fails with
+// [limiter.ErrInvalidKey] and is not stored; an uninitialized limiter
+// fails with [limiter.ErrInvalidLimiter].
+func (rl *KeyedLimiter) Allow(_ context.Context, key string) (allowed bool, retryAfter time.Duration, err error) {
 	return rl.take(key, 1, true)
 }
 
 // AllowN takes n requests of the key at once: allowed when all of them
 // fit in the key's window, and then all counted; when refused, none is
-// counted, unlike a refused [KeyedLimiter.AllowKey]. n must be between 1
+// counted, unlike a refused [KeyedLimiter.Allow]. n must be between 1
 // and the limit ([ErrInvalidCount]).
-func (rl *KeyedLimiter) AllowN(key string, n int) (allowed bool, retryAfter int, err error) {
+func (rl *KeyedLimiter) AllowN(_ context.Context, key string, n int) (allowed bool, retryAfter time.Duration, err error) {
 	if err := rl.ready(); err == nil && (n < 1 || n > rl.limit) {
 		return false, 0, ErrInvalidCount
 	}
@@ -199,12 +196,12 @@ func (rl *KeyedLimiter) AllowN(key string, n int) (allowed bool, retryAfter int,
 
 // take counts n requests of the key when they fit; a refusal counts them
 // too when spend is set, as a single request always has.
-func (rl *KeyedLimiter) take(key string, n int, spend bool) (allowed bool, retryAfter int, err error) {
+func (rl *KeyedLimiter) take(key string, n int, spend bool) (allowed bool, retryAfter time.Duration, err error) {
 	if err := rl.ready(); err != nil {
 		rl.observeDecision(rateLimitOutcomeUnavailable)
 		return false, 0, err
 	}
-	if err := ValidateKey(key); err != nil {
+	if err := limiter.ValidateKey(key); err != nil {
 		rl.observeDecision(rateLimitOutcomeInvalidKey)
 		return false, 0, err
 	}
@@ -242,13 +239,10 @@ func (rl *KeyedLimiter) take(key string, n int, spend bool) (allowed bool, retry
 	if spend {
 		entry.count += n
 	}
-	seconds := int(math.Ceil(entry.windowEnd.Sub(now).Seconds()))
-	if seconds < 1 {
-		seconds = 1
-	}
+	retryAfter = entry.windowEnd.Sub(now)
 	rl.observeDecision(rateLimitOutcomeLimited)
-	rl.observeRetryAfter(float64(seconds))
-	return false, seconds, nil
+	rl.observeRetryAfter(float64(retryAfterSeconds(retryAfter)))
+	return false, retryAfter, nil
 }
 
 func (rl *KeyedLimiter) observeLRUEviction() {
@@ -362,9 +356,9 @@ func KeyedMiddleware(rl *KeyedLimiter, keyFunc func(r *http.Request) string) fun
 				httpx.WriteError(w, http.StatusServiceUnavailable, "rate limit unavailable")
 				return
 			}
-			allowed, retryAfter, err := rl.AllowKey(key)
+			allowed, retryAfter, err := rl.Allow(r.Context(), key)
 			if err != nil {
-				if errors.Is(err, ErrInvalidKey) {
+				if errors.Is(err, limiter.ErrInvalidKey) {
 					httpx.WriteError(w, http.StatusBadRequest, "invalid rate limit key")
 					return
 				}
@@ -372,7 +366,7 @@ func KeyedMiddleware(rl *KeyedLimiter, keyFunc func(r *http.Request) string) fun
 				return
 			}
 			if !allowed {
-				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(retryAfter)))
 				httpx.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return
 			}
