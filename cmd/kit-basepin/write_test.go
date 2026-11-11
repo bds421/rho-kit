@@ -77,3 +77,14 @@ func TestWriteDropsTheAdvisoriesOfMovedPins(t *testing.T) {
 		t.Errorf("exit %d\n%s\n%s", code, out, read(t, advisories))
 	}
 }
+
+// -write replaces a moved digest wherever the files read write it, as in
+// a Makefile variable built from the tag, which no reader takes as a pin.
+func TestWriteMovesTheDigestEverywhereItIsWritten(t *testing.T) {
+	reg := fakeRegistry(t, image{digest: newDigest, uploaded: now.Add(-10 * 24 * time.Hour)})
+	dockerfile := file(t, "Dockerfile", "FROM "+textRefOld+"\n")
+	makefile := file(t, "Makefile", "REF = registry.example/team/base:$(V)@"+oldDigest+"\n")
+	if code, out := basepin(t, reg, "-write", "-text", makefile, dockerfile); code != 0 || !strings.Contains(read(t, makefile), newDigest) || !strings.Contains(read(t, dockerfile), newDigest) {
+		t.Errorf("exit %d\n%s", code, out)
+	}
+}

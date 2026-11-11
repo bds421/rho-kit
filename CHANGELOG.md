@@ -15,8 +15,8 @@
   every `name:tag@sha256:…` a file names (a Makefile, a script, a
   workflow); `-fixes file`, generated, names pinned digests whose findings
   the tag's newest image drops, which override the wait like
-  `-advisories`; `-write` moves every pin that must move in the line that
-  names it and drops the `-advisories` entries of the digests it moved.
+  `-advisories`; `-write` moves every pin that must move, replacing the old
+  digest wherever the files read write it, and drops the `-advisories` entries of the digests it moved.
 
 ## v2.46.0 — 2026-11-11
 

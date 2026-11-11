@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -15,57 +14,47 @@ type move struct {
 	to  string
 }
 
-// apply writes each move into the line that names the pin and drops the
-// advisories (the committed file) of the digests it moved: the fix is in.
-func apply(moves []move, advisoriesFile string, w io.Writer) error {
-	byFile := map[string][]move{}
-	var order []string
-	for _, m := range moves {
-		file, _, _ := cutLine(m.pin.Line)
-		if _, seen := byFile[file]; !seen {
-			order = append(order, file)
-		}
-		byFile[file] = append(byFile[file], m)
+// apply replaces each moved digest everywhere in the files read, as a
+// digest names one image wherever it is written (a Makefile variable
+// built from the tag, a variable's default), and drops the advisories
+// (the committed file) of the digests it moved: the fix is in.
+func apply(moves []move, files []string, advisoriesFile string, w io.Writer) error {
+	if len(moves) == 0 {
+		return nil
 	}
-	for _, file := range order {
-		if err := rewrite(file, byFile[file]); err != nil {
+	pairs := make([]string, 0, 2*len(moves))
+	for _, m := range moves {
+		pairs = append(pairs, m.pin.Digest, m.to)
+	}
+	replace := strings.NewReplacer(pairs...)
+	for _, file := range files {
+		if err := rewrite(file, replace); err != nil {
 			return err
 		}
-		for _, m := range byFile[file] {
-			_, _ = fmt.Fprintf(w, "%s  %s@%s  moved to %s\n", m.pin.Line, m.pin.name(), m.pin.Digest[:19], m.to[:19])
-		}
 	}
-	if advisoriesFile == "" || len(moves) == 0 {
+	for _, m := range moves {
+		_, _ = fmt.Fprintf(w, "%s  %s@%s  moved to %s\n", m.pin.Line, m.pin.name(), m.pin.Digest[:19], m.to[:19])
+	}
+	if advisoriesFile == "" {
 		return nil
 	}
 	return dropMoved(advisoriesFile, moves)
 }
 
-// cutLine splits file:line.
-func cutLine(at string) (string, int, error) {
-	i := strings.LastIndex(at, ":")
-	n, err := strconv.Atoi(at[i+1:])
-	return at[:i], n, err
-}
-
-func rewrite(file string, moves []move) error {
+func rewrite(file string, replace *strings.Replacer) error {
 	body, err := os.ReadFile(file) //nolint:gosec // a file the caller named
 	if err != nil {
 		return err
 	}
-	lines := strings.Split(string(body), "\n")
-	for _, m := range moves {
-		_, n, err := cutLine(m.pin.Line)
-		if err != nil || n < 1 || n > len(lines) || !strings.Contains(lines[n-1], m.pin.Digest) {
-			return fmt.Errorf("%s: the pin %s is no longer on that line", m.pin.Line, m.pin.Digest[:19])
-		}
-		lines[n-1] = strings.ReplaceAll(lines[n-1], m.pin.Digest, m.to)
+	moved := replace.Replace(string(body))
+	if moved == string(body) {
+		return nil
 	}
 	info, err := os.Stat(file)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(file, []byte(strings.Join(lines, "\n")), info.Mode().Perm())
+	return os.WriteFile(file, []byte(moved), info.Mode().Perm())
 }
 
 func dropMoved(file string, moves []move) error {

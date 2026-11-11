@@ -14,8 +14,8 @@
 // file holds only what is open; -fixes is generated (a scan of the pinned
 // and the tag's newest image, say) and may name digests nothing pins.
 //
-// -write moves every pin that must move to the tag's digest, in the line
-// that names it, and drops the -advisories entries of the digests it
+// -write moves every pin that must move to the tag's digest, replacing the
+// old digest wherever the files read write it, and drops the -advisories entries of the digests it
 // moved; a pin within its wait stays.
 //
 // It exits 1 when a pin must move (never with -write), 2 on bad input or
@@ -49,6 +49,10 @@ const usage = "usage: kit-basepin [-wait 168h] [-advisories file] [-fixes file] 
 type inputs struct {
 	dockerfiles, compose, text, own list
 	advisories, fixes               string
+}
+
+func (in inputs) files() []string {
+	return slices.Concat(in.dockerfiles, in.compose, in.text)
 }
 
 func run(args []string, stdout, stderr io.Writer, reg *registry, now time.Time) int {
@@ -104,7 +108,7 @@ func run(args []string, stdout, stderr io.Writer, reg *registry, now time.Time) 
 	case failed:
 		return 2
 	case *write:
-		if err := apply(moves, in.advisories, stdout); err != nil {
+		if err := apply(moves, in.files(), in.advisories, stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, err)
 			return 2
 		}
