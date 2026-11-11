@@ -1,6 +1,10 @@
 # Changelog
 
-## data v2.39.0, data/ratelimit/redis v2.39.0, data/queue/riverqueue v2.39.0, httpx v2.39.0, realtime/centrifuge v2.39.0, observability v2.45.0 — 2026-11-11
+## v2.46.0 — 2026-11-11
+
+Every workspace module is released at v2.46.0 (`release/v2.46.0`). `make lint` fails on Go that is not `gofmt -s` formatted (`check-fmt`); the workspace is formatted.
+
+### data, data/ratelimit/redis, data/queue/riverqueue, httpx, realtime/centrifuge, observability
 
 - **feat(data/ratelimit): `Fallback`** asks a shared limiter (Redis) and,
   while it fails, a local one, so an unreachable Redis narrows the budget
@@ -71,7 +75,7 @@ middleware package are removed (`AllowN`'s retry-after is a Duration);
 `openapi.Options.ErrorMapper` (which `Mount` never read; pass the mapper to
 `StrictErrorHandler`) are removed.
 
-## crypto v2.40.0 — 2026-11-11
+### crypto
 
 - **feat(crypto): one sealing API.** A value kept at rest is sealed with
   `crypto/envelope`: `envelope.NewBox` over a `kekstatic.KEK` or a KMS
@@ -84,10 +88,10 @@ middleware package are removed (`AllowN`'s retry-after is a Duration);
 Breaking: `crypto/secretcrypt`, `encrypt.FieldEncryptor` (with its
 `enc:v1:`/`enc:v2:`/`enc:v3:` prefixes), `encrypt.Keyring`/`Key`/
 `ErrUnknownKey` and `masking.DecryptAndMaskURL` are removed. A value one of
-them sealed is opened with crypto v2.39.0 and sealed anew with a Box before
+them sealed is opened with crypto v2.39.0 or earlier and sealed anew with a Box before
 this release is taken; nothing in this release reads the old forms.
 
-## auth/oauth2/redis v2.39.0 — 2026-11-11
+### auth/oauth2/redis
 
 - **feat(auth/oauth2/redis): `WithEncryption` seals with an
   `envelope.Box`** over a `kekstatic.KEK` of the keys, bound to the Redis
@@ -97,27 +101,22 @@ Breaking: values sealed by an earlier release (the `rk1.` keyring form) are
 read as absent, so every signed-in user signs in again once after the
 deploy.
 
-Release order: this module needs crypto v2.40.0 (`envelope.KeyID`,
-`kekstatic.ErrUnknownKeyID`); its go.mod still pins crypto v2.38.0 and builds
-through go.work. Release crypto v2.40.0 first, move this module's crypto pin to
-it, then tag auth/oauth2/redis v2.39.0.
-
-## httpx/middleware/signedrequest/redis v2.39.0 — 2026-11-11
+### httpx/middleware/signedrequest/redis
 
 Breaking: `WithNonceTimeout`, an alias of `WithCallTimeout`, is removed.
 
-## grpcx v2.39.0 — 2026-11-11
+### grpcx
 
 Breaking: `interceptor.UserID` is removed; `Subject` reads the subject.
 
-## infra v2.39.0 — 2026-11-11
+### infra
 
 Breaking: `infra/storage/retry` and `infra/storage/circuitbreaker`, storage
 wrappers over `resilience/retry` and `resilience/circuitbreaker` with option
 sets of their own, are removed; wrap a storage call in the resilience
 packages directly.
 
-## testing/integrationtest v2.39.0 — 2026-11-11
+### testing/integrationtest
 
 - The `cryptoencrypt` integration test went with `encrypt.FieldEncryptor`.
 
