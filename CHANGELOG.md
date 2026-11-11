@@ -1284,9 +1284,8 @@ code changes.
 
 The agentic-AI service backend release. Every `go.work` module is tagged at
 `/v2` using Go semantic import versioning. Public API breaks vs. v1.x are
-intentional — see [`docs/RELEASE_NOTES_v2.md`](docs/RELEASE_NOTES_v2.md) for
-the full enumeration of breaking changes and the operational migration
-sequence.
+intentional; the migration is in `docs/ai/adoption.md`, "Upgrading from
+v1.x".
 
 ### Themes
 
@@ -1315,8 +1314,7 @@ sequence.
   HTTP servers reject zero-value `http.Server`; Redis health checks are
   critical by default; ASVS registries / RED-metric default buckets / retry
   default policies are now accessors; CORS requires explicit origins; auth
-  middleware fails closed; development-mode escape hatches removed. Full list
-  in [`docs/RELEASE_NOTES_v2.md`](docs/RELEASE_NOTES_v2.md).
+  middleware fails closed; development-mode escape hatches removed.
 
 ### Release engineering
 
@@ -1326,12 +1324,3 @@ sequence.
   placeholder cryptographic material, added CODEOWNERS coverage for
   security-sensitive audit/release/workflow files, and trimmed completed
   audit artifacts from package docs.
-
-See [`docs/RELEASE_NOTES_v2.md`](docs/RELEASE_NOTES_v2.md) for the full
-enumeration of breaking changes, new primitives, and verification commands.
-
-### Migration
-
-For the per-symbol break list grouped by package (renames, signature changes,
-removed APIs, wire-format changes), see
-[`docs/RELEASE_NOTES_v2.md`](docs/RELEASE_NOTES_v2.md).

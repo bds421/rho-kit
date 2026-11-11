@@ -1,5 +1,5 @@
 // Command check-doc-rot validates wave-N claims in release docs
-// (RELEASE_NOTES_v2.md and any other *.md under docs/) against the
+// (every *.md under docs/) against the
 // actual git commit log.
 //
 // # Why this exists

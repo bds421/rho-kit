@@ -310,3 +310,31 @@ app.New("my-service", version, base).
 A service that imports only `app/v2` + `httpx/v2` and registers no
 adapter modules does NOT pull pgx, go-redis, amqp091, nats.go,
 otelgrpc, or grpc-go transitively.
+
+## 8. Upgrading from v1.x
+
+v2 is a breaking release. A v1.x service:
+
+1. **Updates import paths.** Every kit import carries the `/v2` module-path
+   suffix (`github.com/bds421/rho-kit/httpx/v2`).
+2. **Replaces the removed Builder shortcuts** with adapter modules:
+   `WithPostgres(cfg)` → `With(postgres.Module(cfg))`, `WithRedis(opts, …)`
+   → `With(redis.Module(opts, …))`, `WithRabbitMQ(url)` →
+   `With(amqp.Module(url))`, `WithNATS(cfg)` → `With(nats.Module(cfg))`,
+   `WithTracing(cfg)` → `With(tracing.Module(cfg))`.
+3. **Deletes `WithProductionDefaults()`.** Its checks run in every
+   `Builder.Build()`; there is no development mode and no `KIT_ENV` or
+   `APP_ENV` escape hatch. The opt-outs are deliberate declarations:
+   `WithoutTLS` (was `WithProductionAllowPlaintext`),
+   `AllowInternalNonLoopback` (was `WithProductionInternalExposed`),
+   `WithoutJWTIssuer` (was `WithJWTAllowAnyIssuer`), `WithoutJWTAudience`
+   (was `WithJWTAllowAnyAudience`). `WithJWT(...)` without `WithJWTIssuer`
+   or `WithoutJWTIssuer` fails `Build()`.
+4. **Wires `RequireS2SAuth` for mTLS callers.** `auth.RequirePermission`,
+   `auth.PermissionByMethod` and `auth.RequireScope` bypass only for the
+   trusted-S2S marker that verified mTLS stamps; a request without a
+   permissions claim gets 403. JWTs carry explicit permissions claims.
+5. **Runs `kit-doctor ./...`** against the upgraded service for drift from
+   the kit's secure defaults.
+
+The per-release changes since v2.0.0 are in [CHANGELOG.md](../../CHANGELOG.md).
