@@ -179,7 +179,8 @@ func parsePin(ref string) (pin, bool) {
 var textRef = regexp.MustCompile(`[^\s"'=(,]+@sha256:[0-9a-f]{64}`)
 
 // readText returns every name:tag@sha256:… a file names outside comments,
-// except images of own; one without its tag is listed, not checked.
+// a variable's default (${X:-ref}) included, except images of own; one
+// without its tag is listed, not checked.
 func readText(r io.Reader, file string, own []string) ([]pin, error) {
 	var pins []pin
 	scan := bufio.NewScanner(r)
@@ -189,6 +190,9 @@ func readText(r io.Reader, file string, own []string) ([]pin, error) {
 			continue
 		}
 		for _, ref := range textRef.FindAllString(line, -1) {
+			if i := strings.LastIndex(ref, ":-"); i >= 0 {
+				ref = ref[i+2:]
+			}
 			if slices.ContainsFunc(own, func(prefix string) bool { return strings.HasPrefix(ref, prefix) }) {
 				continue
 			}

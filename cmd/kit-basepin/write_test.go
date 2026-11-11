@@ -32,9 +32,9 @@ const textRefOld = "registry.example/team/base:1.0@" + oldDigest
 // own and comments are skipped, one without a tag is listed unchecked.
 func TestTextFilePinsAreChecked(t *testing.T) {
 	reg := fakeRegistry(t, image{digest: newDigest, uploaded: now.Add(-10 * 24 * time.Hour)})
-	makefile := file(t, "Makefile", "BASE = "+textRefOld+"\n# OLD = "+textRefOld+"\nOWN = ghcr.io/us/app:1@"+oldDigest+"\nRAW = registry.example/team/base@"+oldDigest+"\n")
+	makefile := file(t, "Makefile", "BASE = "+textRefOld+"\nimage: ${BASE_IMAGE:-"+textRefOld+"}\n# OLD = "+textRefOld+"\nOWN = ghcr.io/us/app:1@"+oldDigest+"\nRAW = registry.example/team/base@"+oldDigest+"\n")
 	code, out := basepin(t, reg, "-own", "ghcr.io/us/", "-text", makefile)
-	if code != 1 || strings.Count(out, "BEHIND") != 1 || !strings.Contains(out, "not checked") || strings.Contains(out, "ghcr.io/us") {
+	if code != 1 || strings.Count(out, "BEHIND") != 2 || !strings.Contains(out, "not checked") || strings.Contains(out, "ghcr.io/us") {
 		t.Errorf("exit %d\n%s", code, out)
 	}
 }
