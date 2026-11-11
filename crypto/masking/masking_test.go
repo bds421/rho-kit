@@ -1,10 +1,7 @@
 package masking
 
 import (
-	"crypto/rand"
 	"testing"
-
-	"github.com/bds421/rho-kit/crypto/v2/encrypt"
 )
 
 func TestMaskString(t *testing.T) {
@@ -114,50 +111,5 @@ func TestMaskMapValues_Empty(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected empty map, got %v", got)
-	}
-}
-
-func TestDecryptAndMaskURL_NoEncryptor(t *testing.T) {
-	got := DecryptAndMaskURL("https://example.com/secret/path", nil)
-	if got != "https://example.com/***" {
-		t.Fatalf("expected masked URL, got %q", got)
-	}
-}
-
-func TestDecryptAndMaskURL_WithEncryptor(t *testing.T) {
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		t.Fatal(err)
-	}
-	enc, err := encrypt.NewFieldEncryptor(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	original := "https://hooks.slack.com/services/T00/B00/xxx"
-	encrypted, err := enc.Encrypt(original)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got := DecryptAndMaskURL(encrypted, enc)
-	if got != "https://hooks.slack.com/***" {
-		t.Fatalf("expected masked decrypted URL, got %q", got)
-	}
-}
-
-func TestDecryptAndMaskURL_PlaintextWithEncryptor(t *testing.T) {
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		t.Fatal(err)
-	}
-	enc, err := encrypt.NewFieldEncryptor(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got := DecryptAndMaskURL("https://example.com/path", enc)
-	if got != "https://example.com/***" {
-		t.Fatalf("expected masked URL, got %q", got)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/crypto/v2/envelope"
+	"github.com/bds421/rho-kit/crypto/v2/envelope/kekstatic"
 )
 
 type card struct {
@@ -76,4 +77,17 @@ func TestABoxValueDoesNotOpenUnderTheJoinedBinding(t *testing.T) {
 	plain, err := envelope.NewEncryptor(kek).Decrypt(ctx, sealed, documented)
 	require.NoError(t, err)
 	assert.Equal(t, "plain", string(plain))
+}
+
+func TestKeyIDNamesTheWrappingKey(t *testing.T) {
+	k, err := kekstatic.NewKEK("k1", make([]byte, 32))
+	require.NoError(t, err)
+	box := envelope.NewBox(k, "test/v1")
+	sealed, err := box.Seal(context.Background(), []byte("v"), "r1")
+	require.NoError(t, err)
+	id, err := envelope.KeyID(sealed)
+	require.NoError(t, err)
+	require.Equal(t, "k1", id)
+	_, err = envelope.KeyID([]byte("not a blob"))
+	require.ErrorIs(t, err, envelope.ErrMalformed)
 }

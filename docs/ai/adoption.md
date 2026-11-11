@@ -257,7 +257,7 @@ Reviews keep catching the same five mistakes in downstream services:
    | Cron schedule | `runtime/cron` (+ `data/cron/pgstore` for persistence) |
    | HMAC sign / verify | `crypto/signing` |
    | Hash a password | `crypto/passhash` |
-   | Encrypt a DB field | `crypto/encrypt` |
+   | Seal a credential or token in a DB column | `crypto/envelope` |
    | Zeroable secret holder | `core/secret` |
    | Validate input struct | `core/validate` |
    | Redact errors / values | `core/redact` |

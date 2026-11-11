@@ -17,8 +17,8 @@ Buildable golden-path evidence lives in `cmd/kit-new` scaffold tests and
 
 | Need | Package |
 |---|---|
-| Encrypt DB columns (PII, secrets) | `crypto/encrypt` (FieldEncryptor) |
-| Envelope-encrypt records with rotatable KEKs | `crypto/envelope` + `awskms` / `azurekeyvault` / `gcpkms` / `vaulttransit` |
+| Seal credentials and tokens in DB columns, bound to their record | `crypto/envelope` (`NewBox` over `kekstatic` or a KMS adapter) |
+| Wrap data keys in a cloud KMS | `crypto/envelope/awskms` / `azurekeyvault` / `gcpkms` / `vaulttransit` |
 | Encrypt files at rest | `storage/encryption` (see [storage.md](storage.md)) |
 | Sign/verify webhooks | `crypto/signing` (HMAC-SHA256) |
 | Sign service-to-service HTTP requests with replay protection | `httpx/sign` + `httpx/middleware/signedrequest` |
@@ -34,64 +34,57 @@ Buildable golden-path evidence lives in `cmd/kit-new` scaffold tests and
 | Prevent SSRF in user-supplied URLs | `security/netutil` |
 | Inspect kit ASVS control manifests | `security/asvs` |
 
-## Field Encryption (AES-256-GCM)
+## Sealing Values at Rest (envelope encryption)
 
-Encrypt sensitive DB columns with the current versioned prefix (`enc:v3:`).
-Prefer the AAD-bound methods so ciphertext copied between rows, tenants, or
-columns fails authentication.
+A credential, token or other value kept in a database column is sealed
+with `crypto/envelope`: `envelope.NewBox(kek, purpose)` seals each value
+under a fresh data key wrapped by the KEK, bound to the purpose and to
+what it belongs to, so a value copied to another record, tenant or purpose
+fails to open. The KEK is a `kekstatic.KEK` of keys the service holds, or
+one of the KMS adapters below.
 
 ```go
-key := []byte(os.Getenv("FIELD_ENCRYPTION_KEY")) // exactly 32 bytes
-enc, err := encrypt.NewFieldEncryptor(key)
-if err != nil { return err }
+kek, err := kekstatic.NewKEK("k1", key32) // the key that seals
+box := envelope.NewBox(kek, "accounts/directory-grant/v1")
 
-aad := []byte("users:" + userID + ":ssn")
-
-// Encrypt before storing:
-encrypted, err := enc.EncryptWithContext(user.SSN, aad)
-// "enc:v3:base64(nonce||ciphertext||tag)"
-
-// Decrypt after reading:
-plaintext, err := enc.DecryptWithContext(row.SSN, aad)
-// Values without a recognised prefix fail closed with ErrPlaintextNotAllowed.
-
-// Idempotent re-save path:
-result, err := enc.EncryptIfPlainWithContext(value, aad)
-
-// Nil-safe helper for optional encryption configuration:
-result, err := encrypt.EncryptOptionalWithContext(enc, value, aad)
+sealed, err := box.Seal(ctx, token, orgID, connectionID)   // bound to both
+token, err := box.Open(ctx, sealed, orgID, connectionID)   // same binding
+sealed, err := envelope.SealJSON(ctx, box, card, orgID)    // a typed value
 ```
 
-### Low-Level Byte Encryption
+`Open` fails with `envelope.ErrAuthFailed` for a wrong binding or a
+tampered value, `ErrMalformed`/`ErrTruncated`/`ErrUnsupportedVer` for a
+value that is not a current blob, and the KEK's error (such as
+`kekstatic.ErrUnknownKeyID`) for a key the KEK no longer holds.
+
+### Rotating a Sealing Key
+
+Add the new key, make it the one that seals, and reseal what the old key
+still holds before removing it. `envelope.KeyID` names the key a stored
+value is under; `Encryptor.Rewrap` moves a value to the sealing key without
+opening it.
+
+```go
+kek, err := kekstatic.NewKEK("k1", oldKey32)
+err = kek.AddKey("k2", newKey32)
+err = kek.Rotate("k2")                       // k2 seals, k1 still opens
+if id, _ := envelope.KeyID(stored); id != kek.KeyID() {
+    stored, err = envelope.NewEncryptor(kek).Rewrap(ctx, stored)
+}
+err = kek.RemoveKey("k1")                    // once nothing is under k1
+```
+
+### Byte Encryption
+
+`crypto/encrypt` is the AES-256-GCM primitive the stores build on
+(`infra/storage/encryption` encrypts objects with it); it binds nothing
+and rotates nothing, so values at rest use a Box instead.
 
 ```go
 gcm, err := encrypt.NewGCM(key32) // tink.AEAD
-sealed, err := encrypt.EncryptBytes(gcm, plaintext) // nonce || ciphertext
-opened, err := encrypt.DecryptBytes(gcm, sealed)
-// AAD-binding variants: encrypt.EncryptBytesAAD, encrypt.DecryptBytesAAD.
+sealed, err := encrypt.EncryptBytesAAD(gcm, plaintext, aad) // nonce || ciphertext || tag
+opened, err := encrypt.DecryptBytesAAD(gcm, sealed, aad)
 ```
-
-### Rotating a Byte-Encryption Key
-
-`encrypt.NewKeyring` is an AEAD over several keys, newest first: the first
-seals, every key opens, and each ciphertext starts with its key's ID.
-
-```go
-ring, err := encrypt.NewKeyring(
-    encrypt.Key{ID: "2", Key: newKey32},
-    encrypt.Key{ID: "1", Key: oldKey32},
-)
-sealed, err := encrypt.EncryptBytesAAD(ring, plaintext, aad) // "2." || nonce || ciphertext
-if !ring.Current(stored) { // reseal: open with any key, seal with the newest
-    plain, err := encrypt.DecryptBytesAAD(ring, stored, aad)
-    stored, err = encrypt.EncryptBytesAAD(ring, plain, aad)
-}
-```
-
-Remove the old key only after every stored value is current; a value
-sealed with a key no longer listed fails with `encrypt.ErrUnknownKey`.
-Ciphertext from a bare `NewGCM` has no key ID: prefix it with the ID of
-its key once (`"1." || ciphertext`) to bring it into a ring.
 
 ### Rotating Audit Log Keys
 
@@ -145,11 +138,11 @@ sealed are kept.
 
 ## Envelope Encryption
 
-Use `crypto/envelope` when records need per-write DEKs and online KEK rotation.
-Production KEKs live in split modules so services only pull the SDK they use:
-`crypto/envelope/awskms`, `crypto/envelope/azurekeyvault`,
-`crypto/envelope/gcpkms`, and `crypto/envelope/vaulttransit`. Use
-`crypto/envelope/kekstatic` only for tests and local development.
+`crypto/envelope` seals each value under its own DEK, wrapped by a KEK.
+A service that holds its keys itself uses `crypto/envelope/kekstatic`;
+cloud KMS KEKs live in split modules so services only pull the SDK they
+use: `crypto/envelope/awskms`, `crypto/envelope/azurekeyvault`,
+`crypto/envelope/gcpkms`, and `crypto/envelope/vaulttransit`.
 
 Credential rotation across DB, Redis, brokers, storage, CSRF, signed requests,
 JWT, PASETO, and KMS/Vault is summarized in
@@ -173,9 +166,9 @@ client with address, token, namespace/TLS/retry policy, then construct
 Optional `Config.Context` maps to Vault Transit `context`, so the Transit key
 must be `derived=true` when that field is set.
 
-The current blob format is v3: keyID length is uint16 and the body AAD
-is `domainSep || varint(len(callerAAD)) || callerAAD`. v2 blobs continue
-to decrypt unchanged.
+The blob format is v3: keyID length is uint16 and the body AAD is
+`domainSep || varint(len(callerAAD)) || callerAAD`; it is the only one that
+opens.
 
 ## HMAC Webhook Signing
 
@@ -389,7 +382,7 @@ subject. It never exposes an unbounded raw claim map or a bearer token to
 business handlers. Set `MappingProfile.AllowMissingClaims` when selected
 claims are optional: absent claims stay empty instead of answering 401, while
 malformed present claims still fail closed. Keep Redis protected with
-TLS/authentication, enable `oauth2redis.WithEncryption(keys...)` (an `encrypt.Keyring`, AES-256-GCM,
+TLS/authentication, enable `oauth2redis.WithEncryption(keys...)` (an `envelope.Box` over the keys,
 first key encrypts, all keys decrypt) and never log stored session values.
 
 Browser-session extras, all opt-in:
@@ -570,9 +563,6 @@ identity errors behave consistently across HTTP and gRPC.
 masking.MaskURL(url)         // "https://example.com/***"
 masking.MaskString(apiKey, 4) // "sk-p****" or "[REDACTED]" if too short
 masking.MaskMapValues(m)      // copy with all values = "***"
-
-// Decrypt then mask (for encrypted URLs in DB):
-masking.DecryptAndMaskURL(encryptedURL, encryptor)
 ```
 
 ## SSRF Prevention
@@ -696,8 +686,8 @@ state-changing payloads.
 
 ## Anti-Patterns
 
-- **Never** hardcode encryption keys — use env vars (`FIELD_ENCRYPTION_KEY`).
-- **Never** use encryption keys shorter than 32 bytes — `NewFieldEncryptor` rejects them.
+- **Never** hardcode encryption keys — use env vars or a KMS adapter.
+- **Never** use encryption keys shorter than 32 bytes — `kekstatic.NewKEK` and `encrypt.NewGCM` reject them.
 - **Never** log decrypted values — use `crypto/masking` to sanitize before logging.
 - **Never** trust `X-User-Id` / `x-user-id` identity metadata without mTLS verification and an impersonation guard — use `auth.RequireS2SAuth` or `grpcx/interceptor.MTLSAuthUnary`.
 - **Never** reuse `SSRFSafeTransport` across requests — DNS can change.
