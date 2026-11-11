@@ -42,7 +42,7 @@ func TestChainMiddleware_FallsThroughToScopedKey(t *testing.T) {
 		gotTenant = auth.Tenant(r.Context())
 		gotRole = auth.Role(r.Context())
 		assert.Equal(t, testUserID, auth.Subject(r.Context()))
-		assert.Equal(t, testUserID, auth.UserID(r.Context()))
+		assert.Equal(t, testUserID, auth.Subject(r.Context()))
 		assert.Equal(t, auth.ActorAPIKey, auth.ActorKindFromContext(r.Context()))
 		assert.NotEmpty(t, auth.Actor(r.Context()))
 		assert.True(t, auth.IsMachine(r.Context()))
@@ -157,7 +157,7 @@ func TestChainMiddleware_SessionBeforeJWTSucceeds(t *testing.T) {
 			return auth.Identity{UserID: testUserID}, nil
 		}),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, testUserID, auth.UserID(r.Context()))
+		assert.Equal(t, testUserID, auth.Subject(r.Context()))
 		assert.Equal(t, auth.ActorUser, auth.ActorKindFromContext(r.Context()))
 		w.WriteHeader(http.StatusNoContent)
 	}))

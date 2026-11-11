@@ -25,8 +25,8 @@ import (
 
 const testUUID = "550e8400-e29b-41d4-a716-446655440000"
 
-func withUserIDForTest(ctx context.Context, id string) context.Context {
-	return userIDKey.Set(ctx, authUserID(id))
+func withSubjectForTest(ctx context.Context, id string) context.Context {
+	return subjectKey.Set(ctx, authSubject(id))
 }
 
 func withPermissionsForTest(ctx context.Context, perms []string) context.Context {
@@ -128,7 +128,7 @@ func withMTLSCert(r *http.Request, cert *x509.Certificate) *http.Request {
 func TestHeaderMode_WithHeader(t *testing.T) {
 	var capturedUserID string
 	handler := headerOnlyMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedUserID = UserID(r.Context())
+		capturedUserID = Subject(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -286,7 +286,7 @@ func TestHeaderMode_RejectsAmbiguousIdentityValues(t *testing.T) {
 
 func TestUserID_NoContext(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	id := UserID(req.Context())
+	id := Subject(req.Context())
 	if id != "" {
 		t.Errorf("UserID without context value = %q, want empty", id)
 	}
@@ -385,7 +385,7 @@ func TestJWT_ValidToken(t *testing.T) {
 	var capturedScopes string
 
 	handler := JWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedUserID = UserID(r.Context())
+		capturedUserID = Subject(r.Context())
 		capturedPerms = Permissions(r.Context())
 		capturedScopes = Scopes(r.Context())
 		w.WriteHeader(http.StatusOK)
@@ -428,8 +428,8 @@ func TestJWT_ServiceActorFromClientIDClaim(t *testing.T) {
 	var capturedKind ActorKind
 
 	handler := JWT(provider, WithJWTServiceActorFromClaim("client_id"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if UserID(r.Context()) != testUUID {
-			t.Errorf("UserID = %q, want %q", UserID(r.Context()), testUUID)
+		if Subject(r.Context()) != testUUID {
+			t.Errorf("UserID = %q, want %q", Subject(r.Context()), testUUID)
 		}
 		capturedActor = Actor(r.Context())
 		capturedKind = ActorKindFromContext(r.Context())
@@ -742,7 +742,7 @@ func TestRequireS2SAuth_ValidJWT(t *testing.T) {
 
 	var capturedUserID string
 	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedUserID = UserID(r.Context())
+		capturedUserID = Subject(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -775,7 +775,7 @@ func TestRequireS2SAuth_ValidMTLS(t *testing.T) {
 	var capturedPerms []string
 	var permsObserved bool
 	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedUserID = UserID(r.Context())
+		capturedUserID = Subject(r.Context())
 		// Read permissions from the context the handler actually sees —
 		// the one the middleware stamped — not the original request
 		// context, which never had auth state regardless of behaviour.
@@ -1107,7 +1107,7 @@ func TestRequirePermission_Allowed(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := withUserIDForTest(req.Context(), testUUID)
+	ctx := withSubjectForTest(req.Context(), testUUID)
 	ctx = withPermissionsForTest(ctx, []string{"general:view", "general:manage"})
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -1128,7 +1128,7 @@ func TestRequirePermission_Denied(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withUserIDForTest(req.Context(), testUUID)
+	ctx := withSubjectForTest(req.Context(), testUUID)
 	ctx = withPermissionsForTest(ctx, []string{"general:view"})
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -1154,7 +1154,7 @@ func TestRequirePermission_NilPermissions_NoMarker_Denied(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(withUserIDForTest(req.Context(), testUUID))
+	req = req.WithContext(withSubjectForTest(req.Context(), testUUID))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -1194,7 +1194,7 @@ func TestRequirePermission_EmptyPermissions(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := withUserIDForTest(req.Context(), testUUID)
+	ctx := withSubjectForTest(req.Context(), testUUID)
 	ctx = withPermissionsForTest(ctx, []string{})
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -1220,7 +1220,7 @@ func TestPermissionByMethod_ReadAllowed(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
 		called = false
 		req := httptest.NewRequest(method, "/", nil)
-		ctx := withUserIDForTest(req.Context(), testUUID)
+		ctx := withSubjectForTest(req.Context(), testUUID)
 		ctx = withPermissionsForTest(ctx, []string{"general:view"})
 		req = req.WithContext(ctx)
 		rec := httptest.NewRecorder()
@@ -1245,7 +1245,7 @@ func TestPermissionByMethod_WriteAllowed(t *testing.T) {
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		called = false
 		req := httptest.NewRequest(method, "/", nil)
-		ctx := withUserIDForTest(req.Context(), testUUID)
+		ctx := withSubjectForTest(req.Context(), testUUID)
 		ctx = withPermissionsForTest(ctx, []string{"general:manage"})
 		req = req.WithContext(ctx)
 		rec := httptest.NewRecorder()
@@ -1266,7 +1266,7 @@ func TestPermissionByMethod_WriteDenied(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withUserIDForTest(req.Context(), testUUID)
+	ctx := withSubjectForTest(req.Context(), testUUID)
 	ctx = withPermissionsForTest(ctx, []string{"general:view"})
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -1286,7 +1286,7 @@ func TestPermissionByMethod_NilPermissions_NoMarker_Denied(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req = req.WithContext(withUserIDForTest(req.Context(), testUUID))
+	req = req.WithContext(withSubjectForTest(req.Context(), testUUID))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -1302,10 +1302,10 @@ func TestPermissionByMethod_NilPermissions_NoMarker_Denied(t *testing.T) {
 
 func TestUserIDContextHelper(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := withUserIDForTest(req.Context(), testUUID)
+	ctx := withSubjectForTest(req.Context(), testUUID)
 
-	if got := UserID(ctx); got != testUUID {
-		t.Errorf("UserID() = %q, want %q", got, testUUID)
+	if got := Subject(ctx); got != testUUID {
+		t.Errorf("Subject() = %q, want %q", got, testUUID)
 	}
 }
 

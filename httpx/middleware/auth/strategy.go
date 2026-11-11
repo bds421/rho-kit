@@ -156,7 +156,6 @@ func stampIdentity(ctx context.Context, id Identity) context.Context {
 	})
 	if id.Subject != "" {
 		ctx = subjectKey.Set(ctx, authSubject(id.Subject))
-		ctx = userIDKey.Set(ctx, authUserID(id.Subject))
 	}
 	if id.Actor != "" {
 		ctx = actorKey.Set(ctx, authActor(id.Actor))

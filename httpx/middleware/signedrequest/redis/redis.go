@@ -90,15 +90,6 @@ func WithCallTimeout(d time.Duration) Option {
 	return func(s *RedisNonceStore) { s.callTimeout = d }
 }
 
-// WithNonceTimeout is a deprecated alias of [WithCallTimeout] retained
-// for source compatibility. Prefer WithCallTimeout (matches the field
-// and the sibling idempotency WithPostHandlerTimeout naming).
-//
-// Deprecated: use WithCallTimeout.
-func WithNonceTimeout(d time.Duration) Option {
-	return WithCallTimeout(d)
-}
-
 // New constructs a RedisNonceStore.
 //
 // client is the Redis connection. It must be non-nil — the
