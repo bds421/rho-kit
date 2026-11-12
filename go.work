@@ -33,8 +33,8 @@ use (
 	./auth/oauth2/redis
 	./authz
 	./authz/openfga
-	./cmd/kit-catalog
 	./cmd/kit-basepin
+	./cmd/kit-catalog
 	./cmd/kit-contract
 	./cmd/kit-doctor
 	./cmd/kit-migrate
@@ -77,11 +77,11 @@ use (
 	./httpx/middleware/signedrequest/redis
 	./httpx/websocket
 	./infra
+	./infra/inbox/postgres
 	./infra/leaderelection/etcd
 	./infra/leaderelection/k8slease
 	./infra/leaderelection/pgadvisory
 	./infra/leaderelection/redislock
-	./infra/inbox/postgres
 	./infra/messaging/amqpbackend
 	./infra/messaging/amqpbackend/debughttp
 	./infra/messaging/kafkabackend
@@ -111,8 +111,8 @@ use (
 	./resilience
 	./runtime
 	./security
-	./testing/integrationtest
 	./testing/doctruth
 	./testing/expandonly
+	./testing/integrationtest
 	./testing/kittest
 )

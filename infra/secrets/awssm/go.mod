@@ -6,15 +6,15 @@ module github.com/bds421/rho-kit/infra/secrets/awssm/v2
 go 1.26.8
 
 require (
-	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.50.6
+	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.50.11
 	github.com/bds421/rho-kit/core/v2 v2.48.1
 	github.com/bds421/rho-kit/infra/secrets/v2 v2.48.1
 	github.com/stretchr/testify v1.12.1
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.7 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.7 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.11 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.11 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -27,7 +27,7 @@ require (
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.47.4 // indirect
-	github.com/aws/smithy-go v1.28.6 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	github.com/aws/aws-sdk-go-v2 v1.47.8 // indirect
+	github.com/aws/smithy-go v1.28.8 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 )
