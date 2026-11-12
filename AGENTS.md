@@ -142,6 +142,7 @@ row you start from:
 | Task queue (single consumer) | `data/queue/redisqueue` | [redis](docs/ai/redis.md) |
 | Cross-service messaging | `infra/messaging` interfaces + backend | [messaging](docs/ai/messaging.md) |
 | Connect to PostgreSQL | `infra/sqldb`, `infra/sqldb/pgx` | [database](docs/ai/sqldb.md) |
+| Retry only the database errors that pass, set aside work that fails on its own data | `infra/sqldb/pgx.IsTransient` (context ended, connection, timeout, never sent, SQLSTATE classes 08, 40, 53, 57, 58) | [database](docs/ai/sqldb.md) |
 | Route reads to Postgres replicas (primary + N replicas, round-robin, auto failover) | `infra/sqldb/readreplica` (RoutingPool, `Acquire(..., WithReadOnly())`) | [database](docs/ai/sqldb.md) |
 | Retry transient failures | `resilience/retry` | [resilience](docs/ai/resilience.md) |
 | Protect against cascading failure | `resilience/circuitbreaker` | [resilience](docs/ai/resilience.md) |

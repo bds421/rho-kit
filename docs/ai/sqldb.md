@@ -115,6 +115,31 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (User, error) 
 }
 ```
 
+## Transient errors
+
+`pgxbackend.IsTransient(err)` tells an error that may pass on its own from one
+the work itself causes. It is true when the context ended, the server could
+not be reached or timed out, pgx never sent the statement, or the server
+refused the work for its own state: SQLSTATE classes 08 (connection), 40
+(serialization failure, deadlock), 53 (insufficient resources), 57 (operator
+intervention, such as a shutdown) and 58 (system error). Every other error,
+such as a data exception (22, e.g. a NUL character in `text`), an integrity
+violation (23) or a permission error (42), comes back on every try. A queue
+consumer retries transient errors with backoff and dead-letters the rest, so
+one bad message cannot block the queue:
+
+```go
+switch err := handle(ctx, msg); {
+case err == nil:
+    msg.Ack()
+case pgxbackend.IsTransient(err):
+    msg.NakWithDelay(backoff)
+default:
+    deadLetter(ctx, msg, err)
+    msg.Ack()
+}
+```
+
 ## Migrations
 
 `postgres.WithMigrations(fs)` runs goose migrations through the pgx pool during startup. Migrations run in every environment so development, staging, and production use the same schema path.
