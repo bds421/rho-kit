@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.48.0 — 2026-11-12
+
+Every workspace module is released at v2.48.0 (`release/v2.48.0`). No breaking changes.
+
+### infra/sqldb/pgx
+
+- **feat(infra/sqldb/pgx): `IsTransient` tells database errors that pass
+  from the work's own.** True when the context ended, the server could not
+  be reached or timed out, pgx never sent the statement, or the server
+  refused the work for its own state (SQLSTATE classes 08, 40, 53, 57, 58).
+  Every other error comes back on every try, so a queue consumer can retry
+  only transient errors and dead-letter the rest
+  ([database](docs/ai/sqldb.md#transient-errors)). It classifies only: an
+  error a message itself causes on every try (a statement timeout) is also
+  transient, so a consumer still bounds its retries per message.
+
 ## cmd/kit-basepin v2.47.0, cmd/kit-vulngate v2.47.0 — 2026-11-11
 
 ### cmd/kit-vulngate, cmd/kit-basepin
