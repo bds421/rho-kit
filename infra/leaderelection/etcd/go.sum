@@ -1,9 +1,9 @@
-github.com/bds421/rho-kit/core/v2 v2.48.0 h1:6k66MGhmSB8NJkqyCTJqnnLeIy8vQv4XBmplt/xwGmg=
-github.com/bds421/rho-kit/core/v2 v2.48.0/go.mod h1:JmwYR5uUk6q6kaA5g9p/aw1gXk+iquaYNYxywxceZ5A=
-github.com/bds421/rho-kit/infra/v2 v2.48.0 h1:0vV+1wDeQMN779uLZ8NW7E/tA3t8hAeL4Ca8V6DZWNs=
-github.com/bds421/rho-kit/infra/v2 v2.48.0/go.mod h1:xJzxyBEpJg3jUNkeSYf5AI/zxlQ9IwMtU4y/lX4W8yc=
-github.com/bds421/rho-kit/observability/v2 v2.48.0 h1:OxBc76BU59kFtpbHCMtt0kAb/duBR/l8KYBaxLe1Rgc=
-github.com/bds421/rho-kit/observability/v2 v2.48.0/go.mod h1:k6Hy3/wgOJI2KryRCUw/py7Cnxn5tY0PoSQRxN7izVk=
+github.com/bds421/rho-kit/core/v2 v2.48.1 h1:Obqwd3GCGZlg1kx1WchUMhGxa2rZfEGyvR3E2ySZSk8=
+github.com/bds421/rho-kit/core/v2 v2.48.1/go.mod h1:JmwYR5uUk6q6kaA5g9p/aw1gXk+iquaYNYxywxceZ5A=
+github.com/bds421/rho-kit/infra/v2 v2.48.1 h1:2R9gQQ5rUdBBQIes5UcCMEOdvEFD5i0p0JFfIuMUzp4=
+github.com/bds421/rho-kit/infra/v2 v2.48.1/go.mod h1:v7Vb77+oTZ+AE92wUNNrLUDrzk+BhXgA5qP34xf6dec=
+github.com/bds421/rho-kit/observability/v2 v2.48.1 h1:XUSiYGfglPEgDI0Bz0rfLZGSH5rdKJcR2rJJ379ARgY=
+github.com/bds421/rho-kit/observability/v2 v2.48.1/go.mod h1:APZmmfWb7WjmTnMMHBMiXTNYvH+lZOXzr3IbIKbb5YU=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

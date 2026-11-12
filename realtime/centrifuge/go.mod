@@ -3,10 +3,10 @@ module github.com/bds421/rho-kit/realtime/centrifuge/v2
 go 1.26.8
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.48.0
-	github.com/bds421/rho-kit/observability/v2 v2.48.0
-	github.com/bds421/rho-kit/runtime/v2 v2.48.0
-	github.com/bds421/rho-kit/security/v2 v2.48.0
+	github.com/bds421/rho-kit/core/v2 v2.48.1
+	github.com/bds421/rho-kit/observability/v2 v2.48.1
+	github.com/bds421/rho-kit/runtime/v2 v2.48.1
+	github.com/bds421/rho-kit/security/v2 v2.48.1
 	github.com/centrifugal/centrifuge v0.40.1
 	github.com/centrifugal/protocol v0.23.1
 	github.com/coder/websocket v1.8.15
@@ -16,7 +16,7 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/resilience/v2 v2.48.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.48.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/centrifugal/fdelta v0.0.3 // indirect
