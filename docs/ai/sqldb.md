@@ -203,7 +203,11 @@ an owner, a role or a setting) or truncates what existed before the file
 fails, unless the file declares
 `-- contract: vX.Y.Z <why>`, naming the first release that no longer uses
 what it removes. Objects the file creates (by schema, and not with IF NOT
-EXISTS or OR REPLACE) are its own; DO blocks are read through their
+EXISTS or OR REPLACE) are its own, and so is an index the file creates
+that no earlier migration of the set creates, for a `DROP INDEX
+[CONCURRENTLY] IF EXISTS` before it: a `CREATE INDEX CONCURRENTLY` that
+failed leaves an invalid index, which the next run drops and builds again
+(goose `NO TRANSACTION`). DO blocks are read through their
 PL/pgSQL, and a dynamic EXECUTE needs the declaration. `Set.After` marks
 the history the rule does not cover; `Options.Floor` is a file that must
 hold the newest declared release, the rollback floor below which a deploy

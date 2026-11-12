@@ -111,25 +111,14 @@ func Check(o Options) ([]Finding, error) {
 	floor := ""
 	adopted := map[string]bool{}
 	for _, s := range o.Sets {
-		files, err := fs.Glob(s.Dir, "*.sql")
+		files, err := migrationsOf(s)
 		if err != nil {
 			return nil, err
 		}
-		for _, name := range files {
-			m := versioned.FindStringSubmatch(path.Base(name))
-			if m == nil {
-				continue
-			}
-			version, err := strconv.ParseInt(m[1], 10, 64)
-			if err != nil {
-				return nil, err
-			}
-			src, err := fs.ReadFile(s.Dir, name)
-			if err != nil {
-				return nil, err
-			}
+		for _, file := range files {
+			name, version, src := file.name, file.version, file.src
 			label := s.Name + "/" + name
-			declared, found := declaration(label, string(src))
+			declared, found := declaration(label, src)
 			for i := range found {
 				if s.Upstream != "" {
 					found[i].Reason += " (the file is " + s.Upstream + "'s: fix it there)"
@@ -147,7 +136,7 @@ func Check(o Options) ([]Finding, error) {
 			if version <= s.After || declared != "" {
 				continue
 			}
-			found, err = checkFile(label, string(src))
+			found, err = checkFile(label, src, earlierIndexes(files, version))
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", label, err)
 			}
@@ -175,6 +164,59 @@ func Check(o Options) ([]Finding, error) {
 		findings = append(findings, f...)
 	}
 	return findings, nil
+}
+
+// migrationFile is one file of a set, with the indexes its Up section creates.
+type migrationFile struct {
+	name    string
+	version int64
+	src     string
+	indexes map[string]bool
+}
+
+// migrationsOf reads a set's versioned files, history included, since a
+// later file's DROP INDEX IF EXISTS is its own only when none of them
+// created the index.
+func migrationsOf(s Set) ([]migrationFile, error) {
+	names, err := fs.Glob(s.Dir, "*.sql")
+	if err != nil {
+		return nil, err
+	}
+	var out []migrationFile
+	for _, name := range names {
+		m := versioned.FindStringSubmatch(path.Base(name))
+		if m == nil {
+			continue
+		}
+		version, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		src, err := fs.ReadFile(s.Dir, name)
+		if err != nil {
+			return nil, err
+		}
+		label := s.Name + "/" + name
+		indexes, err := indexesOf(label, string(src))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", label, err)
+		}
+		out = append(out, migrationFile{name: name, version: version, src: string(src), indexes: indexes})
+	}
+	return out, nil
+}
+
+// earlierIndexes are the indexes the set's migrations before version create.
+func earlierIndexes(files []migrationFile, version int64) map[string]bool {
+	out := map[string]bool{}
+	for _, f := range files {
+		if f.version < version {
+			for k := range f.indexes {
+				out[k] = true
+			}
+		}
+	}
+	return out
 }
 
 // forFloor is the release a file's declaration counts for in the floor: its

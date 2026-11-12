@@ -14,8 +14,8 @@ var (
 	gooseDown = regexp.MustCompile(`(?mi)^--\s*\+goose\s+down\b.*$`)
 )
 
-// checkFile classifies the statements of a file's Up section.
-func checkFile(label, src string) ([]Finding, error) {
+// upSection is a file's goose Up section and the line it starts on.
+func upSection(src string) (string, int) {
 	up, line := src, 1
 	if loc := gooseUp.FindStringIndex(src); loc != nil {
 		line += strings.Count(src[:loc[1]], "\n")
@@ -24,7 +24,29 @@ func checkFile(label, src string) ([]Finding, error) {
 	if loc := gooseDown.FindStringIndex(up); loc != nil {
 		up = up[:loc[0]]
 	}
-	c := &classifier{label: label, created: map[string]bool{}}
+	return up, line
+}
+
+// indexesOf names every index a file's Up section creates, IF NOT EXISTS
+// included, DO blocks read through.
+func indexesOf(label, src string) (map[string]bool, error) {
+	up, line := upSection(src)
+	c := &classifier{label: label, created: map[string]bool{}, indexes: map[string]bool{}}
+	if err := c.sql(up, line, -1); err != nil {
+		return nil, err
+	}
+	return c.indexes, nil
+}
+
+// checkFile classifies the statements of a file's Up section; earlier names
+// the indexes the set's earlier migrations create.
+func checkFile(label, src string, earlier map[string]bool) ([]Finding, error) {
+	own, err := indexesOf(label, src)
+	if err != nil {
+		return nil, err
+	}
+	up, line := upSection(src)
+	c := &classifier{label: label, created: map[string]bool{}, indexes: map[string]bool{}, own: own, earlier: earlier}
 	if err := c.sql(up, line, -1); err != nil {
 		return nil, err
 	}
@@ -32,8 +54,13 @@ func checkFile(label, src string) ([]Finding, error) {
 }
 
 type classifier struct {
-	label    string
-	created  map[string]bool
+	label   string
+	created map[string]bool
+	// indexes are the indexes the file creates; own those of the whole file,
+	// earlier those of the set's earlier migrations.
+	indexes  map[string]bool
+	own      map[string]bool
+	earlier  map[string]bool
 	findings []Finding
 }
 
@@ -109,8 +136,14 @@ func (c *classifier) create(n *pg.Node) bool {
 			c.mark(relKey(s.CreateSeqStmt.GetSequence()))
 		}
 	case *pg.Node_IndexStmt:
-		if i := s.IndexStmt; !i.GetIfNotExists() && i.GetIdxname() != "" {
-			c.mark("rel:" + schemaOr(i.GetRelation().GetSchemaname()) + "." + i.GetIdxname())
+		i := s.IndexStmt
+		key := ""
+		if i.GetIdxname() != "" {
+			key = "rel:" + schemaOr(i.GetRelation().GetSchemaname()) + "." + i.GetIdxname()
+			c.indexes[key] = true
+		}
+		if !i.GetIfNotExists() {
+			c.mark(key)
 		}
 	case *pg.Node_CreateFunctionStmt:
 		if !s.CreateFunctionStmt.GetReplace() {
@@ -221,7 +254,7 @@ func (c *classifier) alterTableStmt(s *pg.AlterTableStmt) (reasons []string) {
 }
 
 func (c *classifier) drop(s *pg.DropStmt) string {
-	if c.allCreated(s.GetRemoveType(), s.GetObjects()) {
+	if c.allCreated(s.GetRemoveType(), s.GetObjects()) || c.retried(s) {
 		return ""
 	}
 	kind := strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(s.GetRemoveType().String(), "OBJECT_"), "_", " "))
@@ -230,6 +263,23 @@ func (c *classifier) drop(s *pg.DropStmt) string {
 		article = "an "
 	}
 	return "drops " + article + kind + " the previous release may use"
+}
+
+// retried is DROP INDEX IF EXISTS of indexes the file creates and no earlier
+// migration of the set does: what it can meet is only this file's own build
+// that failed before (CREATE INDEX CONCURRENTLY leaves an invalid index),
+// so a run again starts clean.
+func (c *classifier) retried(s *pg.DropStmt) bool {
+	if s.GetRemoveType() != pg.ObjectType_OBJECT_INDEX || !s.GetMissingOk() || len(s.GetObjects()) == 0 {
+		return false
+	}
+	for _, o := range s.GetObjects() {
+		key := objectKey(s.GetRemoveType(), o)
+		if !c.own[key] || c.earlier[key] {
+			return false
+		}
+	}
+	return true
 }
 
 // expanding are the ALTER TABLE actions that leave the previous release

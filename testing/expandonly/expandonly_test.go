@@ -161,6 +161,42 @@ func TestOnlyObjectsTheFileCreatedAreExempt(t *testing.T) {
 	}
 }
 
+// A file that builds an index concurrently may drop it first with IF
+// EXISTS, so a run after a failed build starts clean: only when the file
+// creates it and no earlier migration of the set does.
+func TestARetriedIndexBuildDropsOnlyItsOwnIndex(t *testing.T) {
+	retry := migration("DROP INDEX CONCURRENTLY IF EXISTS archive.orders_open;\n" +
+		"CREATE INDEX CONCURRENTLY orders_open ON archive.orders (state) WHERE state = 'open';\n" +
+		"DROP INDEX IF EXISTS orders_note;\nCREATE INDEX IF NOT EXISTS orders_note ON orders (note);")
+	if findings := check(t, map[string]string{"00001_base.sql": migration("CREATE TABLE orders (id int);"), "00002_retry.sql": retry}, 1); len(findings) != 0 {
+		t.Errorf("a retried build: %v", findings)
+	}
+	for name, files := range map[string]map[string]string{
+		"an earlier migration created it": {
+			"00001_base.sql":  migration("CREATE INDEX IF NOT EXISTS orders_open ON archive.orders (state);"),
+			"00002_retry.sql": migration("DROP INDEX IF EXISTS archive.orders_open;\nCREATE INDEX orders_open ON archive.orders (state);"),
+		},
+		"an earlier history migration created it, in a DO block": {
+			"00001_base.sql":  migration("DO $$ BEGIN CREATE INDEX orders_open ON archive.orders (state); END $$;"),
+			"00002_retry.sql": migration("DROP INDEX IF EXISTS archive.orders_open;\nCREATE INDEX orders_open ON archive.orders (state);"),
+		},
+		"without IF EXISTS": {
+			"00002_retry.sql": migration("DROP INDEX archive.orders_open;\nCREATE INDEX orders_open ON archive.orders (state);"),
+		},
+		"the file never creates it": {
+			"00002_retry.sql": migration("DROP INDEX IF EXISTS archive.orders_open;\nCREATE INDEX orders_closed ON archive.orders (state);"),
+		},
+		"in another schema": {
+			"00002_retry.sql": migration("DROP INDEX IF EXISTS orders_open;\nCREATE INDEX orders_open ON archive.orders (state);"),
+		},
+	} {
+		findings := check(t, files, 1)
+		if len(findings) != 1 || !strings.Contains(findings[0].Reason, "drops an index") || findings[0].File != "orders/00002_retry.sql" {
+			t.Errorf("%s: %v", name, findings)
+		}
+	}
+}
+
 // A finding names the statement's own line, past block comments and goose
 // annotations, and quotes it without them.
 func TestFindingsNameTheStatementLine(t *testing.T) {

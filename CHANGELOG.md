@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.48.1 — 2026-11-12
+
+Every workspace module is released at v2.48.1 (`release/v2.48.1`). No breaking changes.
+
+### testing/expandonly
+
+- **fix(testing/expandonly): a retried concurrent index build may drop its
+  own index first.** `DROP INDEX [CONCURRENTLY] IF EXISTS x` passes when the
+  same file creates `x` and no earlier migration of the set creates it
+  (history and DO blocks included), so a migration can clean up the invalid
+  index a failed `CREATE INDEX CONCURRENTLY` left and build it again
+  ([database](docs/ai/sqldb.md)). A drop without IF EXISTS, of an index an
+  earlier migration created, or of one the file never creates still needs
+  `-- contract: vX.Y.Z <why>`. Every file of a set is now parsed, history
+  too; one PostgreSQL cannot parse fails the check.
+
 ## v2.48.0 — 2026-11-12
 
 Every workspace module is released at v2.48.0 (`release/v2.48.0`). No breaking changes.
