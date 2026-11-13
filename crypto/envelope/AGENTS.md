@@ -29,6 +29,8 @@
 
 Each adapter is a separate go.mod so the heavy SDK only lands in services that use it.
 
+Every adapter's tests call `kektest.Conform(t, kek)` (`crypto/envelope/kektest`): the contract the envelope layer relies on (round trip, no deterministic wrap, no aliasing, unknown IDs and changed, truncated or empty wraps refused, concurrent wraps), so a new wrapper is held to the same rules.
+
 ## Common mistakes
 
 - **Reusing AAD across blobs** — AAD is bound to the ciphertext; mixing AADs is a confused-deputy class of bug. Use a stable, blob-specific AAD (e.g. `"users/v1/" + userID`).
