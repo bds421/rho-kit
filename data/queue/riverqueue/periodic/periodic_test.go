@@ -125,3 +125,14 @@ func TestAnAddedWorkersTimeoutCountsForTheRescue(t *testing.T) {
 		t.Errorf("with a 10-minute worker a job counts as stuck after %s", d)
 	}
 }
+
+// Neither client reindexes River's tables, which needs their owner.
+func TestNoClientReindexes(t *testing.T) {
+	r := newRegistry(1)
+	now := time.Now()
+	for name, c := range map[string]*river.Config{"worker": r.workConfig(nil), "insert-only": r.config(nil)} {
+		if c.ReindexerSchedule == nil || c.ReindexerSchedule.Next(now).Before(now.AddDate(100, 0, 0)) {
+			t.Errorf("the %s client reindexes", name)
+		}
+	}
+}

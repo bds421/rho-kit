@@ -124,25 +124,35 @@ func (r *Registry) Task(name string, task Task) {
 // Client is a River client that works the registered tasks and the
 // service's own workers.
 func (r *Registry) Client(pool *pgxpool.Pool, logger *slog.Logger) (*river.Client[pgx.Tx], error) {
-	r.logger = logger
-	return river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Schema:               r.opts.Schema,
-		Queues:               r.queues,
-		Workers:              r.workers,
-		PeriodicJobs:         r.periodic,
-		MaxAttempts:          r.opts.MaxAttempts,
-		RescueStuckJobsAfter: r.rescueAfter(),
-		Logger:               logger,
-	})
+	return river.NewClient(riverpgxv5.New(pool), r.workConfig(logger))
 }
 
 // InsertOnly is a River client that enqueues jobs without working them,
 // for roles that leave the work to a worker role.
 func (r *Registry) InsertOnly(pool *pgxpool.Pool, logger *slog.Logger) (*river.Client[pgx.Tx], error) {
+	return river.NewClient(riverpgxv5.New(pool), r.config(logger))
+}
+
+// config is River's configuration of either client. River's nightly
+// reindexer stays off: REINDEX needs the owner of River's tables, which a
+// service's least-privilege job login is not.
+func (r *Registry) config(logger *slog.Logger) *river.Config {
 	r.logger = logger
-	return river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Schema: r.opts.Schema, Workers: r.workers, MaxAttempts: r.opts.MaxAttempts, Logger: logger,
-	})
+	return &river.Config{
+		Schema:            r.opts.Schema,
+		Workers:           r.workers,
+		MaxAttempts:       r.opts.MaxAttempts,
+		Logger:            logger,
+		ReindexerSchedule: river.NeverSchedule(),
+	}
+}
+
+func (r *Registry) workConfig(logger *slog.Logger) *river.Config {
+	c := r.config(logger)
+	c.Queues = r.queues
+	c.PeriodicJobs = r.periodic
+	c.RescueStuckJobsAfter = r.rescueAfter()
+	return c
 }
 
 func (r *Registry) runTask(ctx context.Context, job *river.Job[periodicArgs]) error {
