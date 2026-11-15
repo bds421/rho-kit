@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.48.2 — 2026-11-15
+
+Every workspace module is released at v2.48.2 (`release/v2.48.2`). No breaking changes.
+
+### data/queue/riverqueue
+
+- **fix(data/queue/riverqueue): the periodic registry's clients never
+  reindex.** River's nightly reindexer runs REINDEX on its job table's
+  indexes, which needs the owner of River's tables; a service's
+  least-privilege job login is not, so every run failed with
+  `permission denied for index river_job_*`. `Client` and `InsertOnly`
+  now share one configuration with `ReindexerSchedule` set to
+  `river.NeverSchedule()`.
+
 ## v2.48.1 — 2026-11-12
 
 Every workspace module is released at v2.48.1 (`release/v2.48.1`). No breaking changes.
