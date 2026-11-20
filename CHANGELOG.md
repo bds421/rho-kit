@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### httpx/openapifilter (new module)
+
+- **feat(httpx/openapifilter): serve part of an OpenAPI contract per run.**
+  `Filter{Extension, Keep}` keeps the operations whose extension value
+  `Keep` accepts (unmarked ones always), and `Apply`/`Spec` drop the rest,
+  the paths left empty, the tags no kept operation names and the
+  components only removed operations reached; a component no path reached
+  (a webhook payload) stays. `NewRoutes` is a mux for oapi-codegen's
+  `BaseRouter` that registers only kept operations, so the others answer
+  as unknown paths, and `Missing` lists kept operations no handler
+  registered. `Unknown` lists operations with a value the filter does not
+  decide. The module owns the kin-openapi dependency (allowlisted).
+
 ## v2.48.2 — 2026-11-15
 
 Every workspace module is released at v2.48.2 (`release/v2.48.2`). No breaking changes.
