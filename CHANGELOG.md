@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v2.49.0 — 2026-11-20
+
+Every workspace module is released at v2.49.0 (`release/v2.49.0`). No breaking changes.
 
 ### httpx/openapifilter (new module)
 
