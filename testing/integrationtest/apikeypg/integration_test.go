@@ -18,13 +18,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	postgresstore "github.com/bds421/rho-kit/data/apikey/postgres/v2"
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
 	"github.com/bds421/rho-kit/security/v2/apikey"
 )
 
 func startPostgres(t *testing.T) string {
 	t.Helper()
-	cfg := dbtest.StartPostgres(t, "apikey_test")
+	cfg := cluster.Database(t)
 	q := url.Values{}
 	for k, v := range cfg.Options {
 		q.Set(k, v)

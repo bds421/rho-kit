@@ -16,13 +16,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/data/cron/pgstore/v2"
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
 	"github.com/bds421/rho-kit/infra/v2/sqldb"
 )
 
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
-	cfg := dbtest.StartPostgres(t, "kit_test")
+	cfg := cluster.Database(t)
 	db, err := sql.Open("pgx", postgresDSN(cfg))
 	require.NoError(t, err, "open postgres")
 	waitForPostgres(t, db)

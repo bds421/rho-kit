@@ -22,7 +22,6 @@ import (
 
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
 	outboxpg "github.com/bds421/rho-kit/infra/outbox/postgres/v2"
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
 	kitpgx "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/infra/v2/outbox"
@@ -31,7 +30,7 @@ import (
 
 func startPostgres(t *testing.T) string {
 	t.Helper()
-	cfg := dbtest.StartPostgres(t, "outbox_test")
+	cfg := cluster.Database(t)
 	q := url.Values{}
 	for k, v := range cfg.Options {
 		q.Set(k, v)
@@ -133,7 +132,7 @@ func TestInbox_AMQPAckAfterCommittedDeduplication(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		defer ch.Close()
+		defer func() { _ = ch.Close() }()
 		_, ok, err := ch.Get(binding.ConsumerGroup, true)
 		return err == nil && !ok
 	}, 5*time.Second, 50*time.Millisecond, "both deliveries must be ACKed after inbox commit")
@@ -157,7 +156,7 @@ func TestInbox_AMQPAckAfterCommittedDeduplication(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		defer ch.Close()
+		defer func() { _ = ch.Close() }()
 		delivery, ok, err := ch.Get(egressBinding.ConsumerGroup, true)
 		return err == nil && ok && len(delivery.Body) > 0
 	}, 5*time.Second, 50*time.Millisecond, "outbox relay must publish committed inbox side effect")
@@ -289,7 +288,7 @@ func TestInbox_AMQPSchemaMismatchGoesToDLQ(t *testing.T) {
 	assert.Zero(t, count, "schema-invalid event must not create an inbox receipt")
 	ch, err := conn.Channel()
 	require.NoError(t, err)
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 	delivery, ok, err := ch.Get(binding.DeadQueue, true)
 	require.NoError(t, err)
 	assert.True(t, ok, "schema-invalid event must be retained in the dead-letter queue")
@@ -813,7 +812,7 @@ func TestStore_InsertJoinsPgxBackendInTx(t *testing.T) {
 	raw := openAndMigrate(t, dsn)
 	kitPool, err := kitpgx.Connect(context.Background(), kitpgx.Config{DSN: dsn, AllowPlaintextLoopbackForTests: true})
 	require.NoError(t, err)
-	defer kitPool.Close()
+	defer func() { _ = kitPool.Close() }()
 	store := outboxpg.New(raw)
 	ctx := context.Background()
 

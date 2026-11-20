@@ -4,6 +4,7 @@ package dbtest
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/testcontainers/testcontainers-go"
@@ -12,15 +13,18 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/sqldb"
 )
 
+const postgresImage = "postgres:18.1-alpine3.23"
+
 // StartPostgres launches a PostgreSQL container and returns a [sqldb.Config]
 // for connecting. The container is automatically terminated when the test
-// completes.
+// completes. A package whose tests isolate by database shares one container
+// through a [Cluster] instead.
 func StartPostgres(t *testing.T, dbName string) sqldb.Config {
 	t.Helper()
 
 	ctx := context.Background()
 
-	container, err := tcpostgres.Run(ctx, "postgres:18.1-alpine3.23",
+	container, err := tcpostgres.Run(ctx, postgresImage,
 		tcpostgres.WithDatabase(dbName),
 		tcpostgres.WithUsername("test"),
 		tcpostgres.WithPassword("test"),
@@ -35,16 +39,22 @@ func StartPostgres(t *testing.T, dbName string) sqldb.Config {
 		}
 	})
 
+	cfg, err := configOf(ctx, container, dbName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func configOf(ctx context.Context, container *tcpostgres.PostgresContainer, dbName string) (sqldb.Config, error) {
 	host, err := container.Host(ctx)
 	if err != nil {
-		t.Fatalf("get postgres host: %v", err)
+		return sqldb.Config{}, fmt.Errorf("get postgres host: %w", err)
 	}
-
 	port, err := container.MappedPort(ctx, "5432/tcp")
 	if err != nil {
-		t.Fatalf("get postgres port: %v", err)
+		return sqldb.Config{}, fmt.Errorf("get postgres port: %w", err)
 	}
-
 	return sqldb.Config{
 		Host:     host,
 		Port:     int(port.Num()),
@@ -52,5 +62,5 @@ func StartPostgres(t *testing.T, dbName string) sqldb.Config {
 		Password: "test",
 		Name:     dbName,
 		Options:  map[string]string{"sslmode": "disable"},
-	}
+	}, nil
 }

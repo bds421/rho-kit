@@ -14,12 +14,11 @@ import (
 
 	"github.com/bds421/rho-kit/data/lock/pgadvisory/v2"
 	"github.com/bds421/rho-kit/data/v2/lock"
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
 )
 
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	cfg := dbtest.StartPostgres(t, "pgadvisory_test")
+	cfg := cluster.Database(t)
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Name)
 	db, err := sql.Open("pgx", dsn)

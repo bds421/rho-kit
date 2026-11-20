@@ -19,12 +19,11 @@ import (
 
 	postgresstore "github.com/bds421/rho-kit/data/actionlog/postgres/v2"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
 )
 
 func startPostgres(t *testing.T) string {
 	t.Helper()
-	cfg := dbtest.StartPostgres(t, "actionlog_test")
+	cfg := cluster.Database(t)
 	q := url.Values{}
 	for k, v := range cfg.Options {
 		q.Set(k, v)

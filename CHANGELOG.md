@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### infra/sqldb/dbtest
+
+- **feat(infra/sqldb/dbtest): one PostgreSQL container per package.**
+  `NewCluster(prefix)` shares a container among a package's tests:
+  `Database(t)` creates an empty database per test and drops it when the
+  test ends, the container starts with the first database, and `Run(m)`
+  from TestMain removes it. The Postgres integration tests in
+  `testing/integrationtest` use it (auditlogpg 108 s to 6 s).
+
+### Makefile
+
+- **build(Makefile): the release candidate runs the unit tests once.**
+  `test-cover` (`go test -race -coverprofile`, every workspace package in
+  one invocation, plus the tool modules under race) stands for `test-race`
+  and `test-short`, which `ci` and `ci-fast` keep; `test-race` and `build`
+  run in one invocation too, and `test-integration` runs only the packages
+  with integration files.
+
 ### infra/sqldb/dbtest/pgtemplate (new module)
 
 - **feat(infra/sqldb/dbtest/pgtemplate): copy each test database from a

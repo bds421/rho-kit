@@ -15,14 +15,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
 	kitpgx "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 	"github.com/bds421/rho-kit/infra/v2/sqldb"
 )
 
 func startPostgres(t *testing.T) string {
 	t.Helper()
-	return postgresDSN(dbtest.StartPostgres(t, "pgx_test"))
+	return postgresDSN(cluster.Database(t))
 }
 
 func postgresDSN(cfg sqldb.Config) string {
@@ -44,7 +43,7 @@ func TestPing_Live(t *testing.T) {
 	dsn := startPostgres(t)
 	pool, err := kitpgx.Connect(context.Background(), kitpgx.Config{DSN: dsn, AllowPlaintextLoopbackForTests: true})
 	require.NoError(t, err)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	require.NoError(t, pool.Ping(context.Background()))
 }
 
@@ -52,7 +51,7 @@ func TestCopy_LoadsRows(t *testing.T) {
 	dsn := startPostgres(t)
 	pool, err := kitpgx.Connect(context.Background(), kitpgx.Config{DSN: dsn, AllowPlaintextLoopbackForTests: true})
 	require.NoError(t, err)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 
 	ctx := context.Background()
 	_, err = pool.Pool().Exec(ctx, "CREATE TABLE items (id INT, name TEXT)")
@@ -78,7 +77,7 @@ func TestListenNotify_RoundTrip(t *testing.T) {
 	// pool sizing math goes wrong.
 	pool, err := kitpgx.Connect(context.Background(), kitpgx.Config{DSN: dsn, MaxConns: 5, AllowPlaintextLoopbackForTests: true})
 	require.NoError(t, err)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
