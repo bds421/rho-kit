@@ -119,3 +119,6 @@ github.com/klauspost/compress
 
 # PostgreSQL's own parser, for the expand-only migration check (testing/expandonly only; cgo, tests only).
 github.com/pganalyze/pg_query_go/v6
+
+# OpenAPI contracts filtered by an extension (httpx/openapifilter only).
+github.com/getkin/kin-openapi

@@ -75,6 +75,7 @@ use (
 	./grpcx
 	./httpx
 	./httpx/middleware/signedrequest/redis
+	./httpx/openapifilter
 	./httpx/websocket
 	./infra
 	./infra/leaderelection/etcd

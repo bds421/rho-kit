@@ -1,6 +1,6 @@
 # Kit — Go Service Toolkit
 
-**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 116 Go modules: 112 at the `/v2` path suffix plus the 4 internal `tools/*` helper modules)
+**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 117 Go modules: 113 at the `/v2` path suffix plus the 4 internal `tools/*` helper modules)
 **Go:** 1.26+ | **License:** Apache 2.0
 
 Shared infrastructure library for rho platform microservices. Provides secure-by-default, composable packages so services focus on domain logic.
@@ -117,6 +117,7 @@ row you start from:
 | Authenticate requests (JWT) | `httpx/middleware/auth`, `security/jwtutil` | [http](docs/ai/http.md) |
 | Rate-limit requests | `httpx/middleware/ratelimit` | [http](docs/ai/http.md) |
 | Typed HTTP handlers (reduce boilerplate) | `httpx.JSON[Req,Resp](logger, func(ctx, *http.Request, Req) (Resp, error))`; siblings `JSONNoBody[Resp](logger, func(ctx, *http.Request) (Resp, error))`, `JSONStatus[Req,Resp](logger, func(ctx, *http.Request, Req) (int, Resp, error))`, `JSONNoBodyStatus[Resp](logger, func(ctx, *http.Request) (int, Resp, error))`, `NoContent(logger, func(ctx, *http.Request) error)`. Mux-bound wrappers: `httpx.Handle/HandleNoBody/HandleStatus/HandleNoBodyStatus`. | [http](docs/ai/http.md) |
+| Serve part of an OpenAPI contract per run (an extension marks the operations, e.g. `x-profile`) | `httpx/openapifilter` (`Filter{Extension, Keep}.Spec/Apply` drops the operations, empty paths, unused tags and components only they reached; `NewRoutes(spec, base)` as the oapi-codegen `BaseRouter` registers only kept operations, `Missing()` lists those no handler registered; `Unknown` holds a contract's marks to known values) | [httpx/openapifilter](httpx/openapifilter/doc.go) |
 | Idempotent HTTP requests | `httpx/middleware/idempotency` | [http](docs/ai/http.md) |
 | Compress HTTP responses (gzip) | `httpx/middleware/compress` (opt-in via `stack.WithCompress()`; pluggable `Encoder` admits brotli/zstd) | [http](docs/ai/http.md) |
 | Decode zstd from untrusted senders | `codec/zstd` (`NewDecoder(Limits{MaxSize, MaxRatio, Concurrency})`; a bomb fails with `ErrTooLarge` before allocating) | [codec/zstd](codec/zstd/doc.go) |
