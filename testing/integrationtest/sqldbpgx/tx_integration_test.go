@@ -18,7 +18,7 @@ func TestInTx_CommitRollbackPanicJoin(t *testing.T) {
 	dsn := startPostgres(t)
 	pool, err := kitpgx.Connect(context.Background(), kitpgx.Config{DSN: dsn, AllowPlaintextLoopbackForTests: true})
 	require.NoError(t, err)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	ctx := context.Background()
 	_, err = pool.Pool().Exec(ctx, "CREATE TABLE tx_items (name TEXT PRIMARY KEY)")
 	require.NoError(t, err)

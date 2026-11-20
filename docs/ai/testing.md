@@ -10,7 +10,7 @@ or executable code.
 
 Use integration helpers for tests that need real infrastructure. They use Testcontainers and require Docker. Keep these helpers behind the `integration` build tag and import them only from test files.
 
-- `infra/sqldb/dbtest/v2` starts PostgreSQL containers.
+- `infra/sqldb/dbtest/v2` starts PostgreSQL containers: `StartPostgres` one per test, `Cluster` one per package with a database per test.
 - `infra/sqldb/dbtest/pgtemplate/v2` copies each test database from a template migrated once per state of the migrations, on any PostgreSQL the tests reach (a container or a development cluster): `Template.Clone` builds it on first use and copies it with its database privileges, `Hash` names the state from the migration files and the versions of the modules that migrate.
 - `infra/redis/redistest/v2` starts a Redis container.
 - `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest` starts a RabbitMQ container.
@@ -66,7 +66,18 @@ func TestUserRepository(t *testing.T) {
 }
 ```
 
-Each call starts a fresh PostgreSQL container that terminates via `t.Cleanup`.
+`StartPostgres` starts a fresh PostgreSQL container per call that terminates via `t.Cleanup`. A package whose tests isolate by database shares one container instead: `Cluster.Database(t)` creates an empty database per test and drops it when the test ends, and the container starts with the first database and goes when `Run` returns. Roles are cluster-wide, so a test that creates one names it uniquely.
+
+```go
+var cluster = dbtest.NewCluster("users_test")
+
+func TestMain(m *testing.M) { os.Exit(cluster.Run(m)) }
+
+func TestUserRepository(t *testing.T) {
+    cfg := cluster.Database(t)
+    // ... connect and migrate as above
+}
+```
 
 ## Redis
 

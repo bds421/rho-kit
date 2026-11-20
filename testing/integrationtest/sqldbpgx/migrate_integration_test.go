@@ -23,7 +23,7 @@ func TestMigrate_IndependentSetsShareDatabase(t *testing.T) {
 	dsn := startPostgres(t)
 	pool, err := kitpgx.Connect(context.Background(), kitpgx.Config{DSN: dsn, AllowPlaintextLoopbackForTests: true})
 	require.NoError(t, err)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 
 	sqlDB := stdlib.OpenDBFromPool(pool.Pool())
 	defer func() { _ = sqlDB.Close() }()
@@ -68,7 +68,7 @@ func TestMigrate_RefusesADatabaseAheadOfTheFiles(t *testing.T) {
 	dsn := startPostgres(t)
 	pool, err := kitpgx.Connect(context.Background(), kitpgx.Config{DSN: dsn, AllowPlaintextLoopbackForTests: true})
 	require.NoError(t, err)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 
 	sqlDB := stdlib.OpenDBFromPool(pool.Pool())
 	defer func() { _ = sqlDB.Close() }()
@@ -105,7 +105,7 @@ func TestMigrate_AllowAheadTakesANewerDatabase(t *testing.T) {
 	dsn := startPostgres(t)
 	pool, err := kitpgx.Connect(context.Background(), kitpgx.Config{DSN: dsn, AllowPlaintextLoopbackForTests: true})
 	require.NoError(t, err)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 
 	sqlDB := stdlib.OpenDBFromPool(pool.Pool())
 	defer func() { _ = sqlDB.Close() }()

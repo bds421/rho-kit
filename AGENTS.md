@@ -168,7 +168,7 @@ row you start from:
 | Test HTTP handlers | `httpx/httpxtest` | [testing](docs/ai/testing.md) |
 | Redis-backed idempotency | `data/idempotency/redisstore` | [redis](docs/ai/redis.md) |
 | Queue depth health check | `data/queue/redisqueue.Queue.DepthCheck` | [redis](docs/ai/redis.md) |
-| Write integration tests (DB) | `infra/sqldb/dbtest/v2` | [testing](docs/ai/testing.md) |
+| Write integration tests (DB) | `infra/sqldb/dbtest/v2` (`StartPostgres(t, name)` a container per test; `NewCluster(prefix)` one per package, `Database(t)` a database per test, `Run(m)` from TestMain) | [testing](docs/ai/testing.md) |
 | Copy each test database from a template migrated once per state of the migrations | `infra/sqldb/dbtest/pgtemplate/v2` (`Template{Prefix, Hash, Owner, Build}.Clone(ctx, admin, name)` builds the template under an exclusive advisory lock, drops other hashes' templates, copies under a shared lock with the database's privileges; `Hash(sets, modules, extra...)` names the state) | [testing](docs/ai/testing.md) |
 | Write integration tests (Redis) | `infra/redis/redistest/v2` | [testing](docs/ai/testing.md) |
 | Write integration tests (RabbitMQ) | `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest` | [testing](docs/ai/testing.md) |

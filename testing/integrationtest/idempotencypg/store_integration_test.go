@@ -16,14 +16,13 @@ import (
 
 	"github.com/bds421/rho-kit/data/idempotency/pgstore/v2"
 	"github.com/bds421/rho-kit/data/v2/idempotency"
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
 	"github.com/bds421/rho-kit/infra/v2/sqldb"
 )
 
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
 
-	cfg := dbtest.StartPostgres(t, "kit_test")
+	cfg := cluster.Database(t)
 	db, err := sql.Open("pgx", postgresDSN(cfg))
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)

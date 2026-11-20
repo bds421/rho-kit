@@ -19,12 +19,11 @@ import (
 
 	postgresstore "github.com/bds421/rho-kit/data/approval/postgres/v2"
 	"github.com/bds421/rho-kit/data/v2/approval"
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
 )
 
 func startPostgres(t *testing.T) string {
 	t.Helper()
-	cfg := dbtest.StartPostgres(t, "approval_test")
+	cfg := cluster.Database(t)
 	q := url.Values{}
 	for k, v := range cfg.Options {
 		q.Set(k, v)

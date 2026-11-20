@@ -34,12 +34,11 @@ import (
 
 	"github.com/bds421/rho-kit/data/queue/riverqueue/v2"
 	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
 )
 
 func startPostgres(t *testing.T) string {
 	t.Helper()
-	cfg := dbtest.StartPostgres(t, "river")
+	cfg := cluster.Database(t)
 	q := url.Values{}
 	for k, v := range cfg.Options {
 		q.Set(k, v)

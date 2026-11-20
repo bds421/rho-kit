@@ -15,13 +15,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2"
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 )
 
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	cfg := dbtest.StartPostgres(t, "pgadvisory_le_test")
+	cfg := cluster.Database(t)
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Name)
 	db, err := sql.Open("pgx", dsn)

@@ -11,17 +11,18 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest/v2"
 	postgresstore "github.com/bds421/rho-kit/observability/auditlog/postgres/v2"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 )
@@ -33,7 +34,7 @@ var (
 
 func startPostgres(t *testing.T) string {
 	t.Helper()
-	cfg := dbtest.StartPostgres(t, "auditlog_test")
+	cfg := cluster.Database(t)
 	q := url.Values{}
 	for k, v := range cfg.Options {
 		q.Set(k, v)
@@ -316,18 +317,21 @@ func TestPostgres_AppendOnlyRole(t *testing.T) {
 	dsn := startPostgres(t)
 	admin := openAndMigrate(t, dsn)
 	ctx := context.Background()
+	u, err := url.Parse(dsn)
+	require.NoError(t, err)
+	// Roles outlive the test's database on the shared cluster.
+	role := "audit_appender_" + strings.TrimPrefix(u.Path, "/")
+	quoted := pgx.Identifier{role}.Sanitize()
 	for _, stmt := range []string{
-		"CREATE ROLE audit_appender LOGIN PASSWORD 'appender'",
-		"GRANT SELECT, INSERT ON audit_log_events TO audit_appender",
-		"GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO audit_appender",
+		"CREATE ROLE " + quoted + " LOGIN PASSWORD 'appender'",
+		"GRANT SELECT, INSERT ON audit_log_events TO " + quoted,
+		"GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO " + quoted,
 	} {
 		_, err := admin.Exec(ctx, stmt)
 		require.NoError(t, err)
 	}
 
-	u, err := url.Parse(dsn)
-	require.NoError(t, err)
-	u.User = url.UserPassword("audit_appender", "appender")
+	u.User = url.UserPassword(role, "appender")
 	pool, err := pgxpool.New(ctx, u.String())
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)

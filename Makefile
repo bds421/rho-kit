@@ -18,6 +18,11 @@ RELEASE_GLOBAL_CHANGES ?= none
 WORKSPACE_MODULES := $(shell sed -n '/^use (/,/^)/{ s/^[[:space:]]*\.\/\(.*\)/\1/p; }' go.work | grep -v '^\.')
 WORKSPACE_PACKAGE_PATTERNS := $(addprefix ./,$(addsuffix /...,$(WORKSPACE_MODULES)))
 TOOL_MODULES := $(patsubst %/go.mod,%,$(wildcard tools/*/go.mod))
+# Packages with a file under the integration build tag; only these hold tests
+# that test-integration adds to the unit runs.
+INTEGRATION_PACKAGES := $(addprefix ./,$(sort $(dir $(shell git grep -l -E '^//go:build .*integration' -- '*.go'))))
+# The policy checks every full gate runs before lint and the tests.
+POLICY_CHECKS := check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-tidy check-doc-rot check-expand-only check-dashboard-metrics check-dashboard-labels
 
 ## help: Show this help message
 help:
@@ -72,34 +77,25 @@ test-short:
 		(cd $$dir && GOWORK=off go test -short ./...) || exit 1; \
 	done
 
-## test-race: Run tests with race detector (all workspace modules)
+## test-race: Run every workspace package with the race detector in one invocation
 test-race:
-	@for dir in $(WORKSPACE_MODULES); do \
-		echo "==> Testing $$dir (race)"; \
-		(cd $$dir && go test -race ./...) || exit 1; \
-	done
+	@go test -race $(WORKSPACE_PACKAGE_PATTERNS)
 
-## test-integration: Run Docker-backed integration tests (all workspace modules)
+## test-integration: Run the packages with Docker-backed integration tests
 test-integration:
 	@docker info >/dev/null 2>&1 || { echo "Docker is required for integration tests"; exit 1; }
-	@for dir in $(WORKSPACE_MODULES); do \
-		echo "==> Integration testing $$dir"; \
-		(cd $$dir && go test -tags integration ./...) || exit 1; \
-	done
+	@go test -tags integration $(INTEGRATION_PACKAGES)
 
-## test-cover: Run tests with coverage report (all workspace modules)
+## test-cover: The race run with a coverage report (coverage.out), plus the tool modules under race
 test-cover:
-	@for dir in $(WORKSPACE_MODULES); do \
-		echo "==> Coverage $$dir"; \
-		(cd $$dir && go test -race -coverprofile=coverage.out ./...) || exit 1; \
+	@go test -race -coverprofile=$(COVERAGE_FILE) $(WORKSPACE_PACKAGE_PATTERNS)
+	@for dir in $(TOOL_MODULES); do \
+		(cd $$dir && GOWORK=off go test -race ./...) || exit 1; \
 	done
 
-## build: Build all packages (all workspace modules)
+## build: Build every workspace package in one invocation
 build:
-	@for dir in $(WORKSPACE_MODULES); do \
-		echo "==> Building $$dir"; \
-		(cd $$dir && go build ./...) || exit 1; \
-	done
+	@go build $(WORKSPACE_PACKAGE_PATTERNS)
 
 ## vet: Run go vet (all workspace modules)
 vet:
@@ -129,7 +125,7 @@ clean:
 	go clean -cache -testcache
 
 ## ci: Run the full CI pipeline locally (lint + test + build + supply-chain checks)
-ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-tidy check-doc-rot check-expand-only check-dashboard-metrics check-dashboard-labels lint test-race build
+ci: $(POLICY_CHECKS) lint test-race build
 
 ## ci-fast: Run the change-time GitHub gate (policy, tidy, and short unit tests)
 ci-fast: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-tidy check-expand-only test-short
@@ -144,13 +140,16 @@ kit-contract:
 
 ## release-candidate: Run the full pre-release quality gate
 #
-# `test-short` is listed explicitly even though `ci` already runs `test-race`.
-# They are not redundant: `ci` runs tests per module (sequential, one `go test`
-# per module), while `test-short` runs every workspace package in a SINGLE
-# invocation. Only the latter reproduces the cross-package parallelism of the
-# GitHub "Fast checks and unit tests" job, so timing-sensitive tests can pass
-# the per-module runs and still fail the gate CI actually enforces.
-release-candidate: ci test-short vulncheck test-integration test-cover kit-doctor
+# The unit tests run once, in test-cover: every workspace package in a single
+# `go test -race -coverprofile` invocation. It stands for the three runs `ci`
+# and `ci-fast` make on their own: test-race differs from it only in the
+# profile; test-short's `-short` only skips tests, so its tests are a subset;
+# and like test-short it runs every package in one invocation, so it keeps
+# the cross-package contention of the GitHub "Fast checks and unit tests" job
+# that timing-sensitive tests can fail under. What is dropped is a second run
+# without the race detector of the tests `-short` keeps. test-integration
+# runs only the packages with integration files.
+release-candidate: $(POLICY_CHECKS) lint build vulncheck test-integration test-cover kit-doctor
 
 ## release-plan: Compute dependency-aware module release levels
 release-plan:
