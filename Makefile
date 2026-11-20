@@ -1,5 +1,10 @@
 .PHONY: lint lint-config vulncheck vet-tags test test-short test-race test-integration test-cover build tidy fmt check-fmt vet clean help ci ci-fast release-candidate kit-doctor kit-contract release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot check-expand-only check-tidy check-release-team bench check-bench-regression update-bench-baseline exit-traps
 
+# Worktrees share the build cache only without the checkout's path in the
+# build ID.
+override GOFLAGS := $(strip $(GOFLAGS) -trimpath)
+export GOFLAGS
+
 GOLANGCI_LINT_VERSION := v2.14.0
 GOVULNCHECK_VERSION  ?= v1.8.0
 COVERAGE_FILE        := coverage.out
