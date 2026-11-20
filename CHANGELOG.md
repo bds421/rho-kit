@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### infra/sqldb/dbtest/pgtemplate (new module)
+
+- **feat(infra/sqldb/dbtest/pgtemplate): copy each test database from a
+  migrated template.** `Template{Prefix, Hash, Owner, Build}.Clone` creates
+  a test database with `CREATE DATABASE … TEMPLATE`, building the template
+  of `Hash` first when the cluster has none, under an exclusive advisory
+  lock that also drops the templates of other hashes under the prefix;
+  copies hold the lock shared, so no template goes while it is copied. A
+  copy takes the template's privileges on the database (`datacl`), which
+  `CREATE DATABASE` leaves out, so the admin connection is a superuser; a
+  copy that fails half-way is dropped. Only templates go: an unfinished
+  build of another hash stays, and a copy may not take the prefix.
+  `Hash(sets, modules, extra...)` names the state from the migration files,
+  the versions of named modules and extra text, and fails on a module the
+  binary does not link.
+
 ## v2.49.0 — 2026-11-20
 
 Every workspace module is released at v2.49.0 (`release/v2.49.0`). No breaking changes.

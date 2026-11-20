@@ -88,6 +88,7 @@ allowed_for_boundary_dep() {
 		infra/inbox/postgres/go.mod|\
                 infra/outbox/postgres/go.mod|\
                 infra/sqldb/dbtest/go.mod|\
+                infra/sqldb/dbtest/pgtemplate/go.mod|\
                 infra/sqldb/pgx/go.mod|\
                 infra/sqldb/readreplica/go.mod|\
                 observability/auditlog/postgres/go.mod|\
