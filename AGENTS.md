@@ -1,6 +1,6 @@
 # Kit — Go Service Toolkit
 
-**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 117 Go modules: 113 at the `/v2` path suffix plus the 4 internal `tools/*` helper modules)
+**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 119 Go modules: 114 at the `/v2` path suffix plus the 5 internal `tools/*` helper modules)
 **Go:** 1.26+ | **License:** Apache 2.0
 
 Shared infrastructure library for rho platform microservices. Provides secure-by-default, composable packages so services focus on domain logic.
@@ -169,6 +169,7 @@ row you start from:
 | Redis-backed idempotency | `data/idempotency/redisstore` | [redis](docs/ai/redis.md) |
 | Queue depth health check | `data/queue/redisqueue.Queue.DepthCheck` | [redis](docs/ai/redis.md) |
 | Write integration tests (DB) | `infra/sqldb/dbtest/v2` | [testing](docs/ai/testing.md) |
+| Copy each test database from a template migrated once per state of the migrations | `infra/sqldb/dbtest/pgtemplate/v2` (`Template{Prefix, Hash, Owner, Build}.Clone(ctx, admin, name)` builds the template under an exclusive advisory lock, drops other hashes' templates, copies under a shared lock with the database's privileges; `Hash(sets, modules, extra...)` names the state) | [testing](docs/ai/testing.md) |
 | Write integration tests (Redis) | `infra/redis/redistest/v2` | [testing](docs/ai/testing.md) |
 | Write integration tests (RabbitMQ) | `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest` | [testing](docs/ai/testing.md) |
 | Test storage backends | `infra/storage/storagetest/v2` | [testing](docs/ai/testing.md) |

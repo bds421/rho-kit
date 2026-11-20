@@ -96,6 +96,7 @@ use (
 	./infra/secrets/gcpsm
 	./infra/secrets/vaultkv
 	./infra/sqldb/dbtest
+	./infra/sqldb/dbtest/pgtemplate
 	./infra/sqldb/pgx
 	./infra/sqldb/readreplica
 	./infra/storage/azurebackend

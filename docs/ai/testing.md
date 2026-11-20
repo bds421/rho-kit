@@ -1,6 +1,6 @@
 # Testing - Integration Helpers and Compliance Suites
 
-Packages: `infra/sqldb/dbtest/v2`, `infra/redis/redistest/v2`, `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest`, `infra/storage/storagetest/v2`
+Packages: `infra/sqldb/dbtest/v2`, `infra/sqldb/dbtest/pgtemplate/v2`, `infra/redis/redistest/v2`, `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest`, `infra/storage/storagetest/v2`
 
 Snippet status: shell blocks are executable from the documented module root.
 Go blocks are illustrative fragments unless explicitly introduced as generated
@@ -11,6 +11,7 @@ or executable code.
 Use integration helpers for tests that need real infrastructure. They use Testcontainers and require Docker. Keep these helpers behind the `integration` build tag and import them only from test files.
 
 - `infra/sqldb/dbtest/v2` starts PostgreSQL containers.
+- `infra/sqldb/dbtest/pgtemplate/v2` copies each test database from a template migrated once per state of the migrations, on any PostgreSQL the tests reach (a container or a development cluster): `Template.Clone` builds it on first use and copies it with its database privileges, `Hash` names the state from the migration files and the versions of the modules that migrate.
 - `infra/redis/redistest/v2` starts a Redis container.
 - `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest` starts a RabbitMQ container.
 - `infra/storage/storagetest/v2` provides storage compliance suites and local/S3/SFTP helpers.
