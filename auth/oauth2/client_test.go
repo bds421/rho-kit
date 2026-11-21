@@ -67,71 +67,85 @@ func newFakeIssuer(t *testing.T, clientID string) *fakeIssuer {
 		codes:      make(map[string]codeRecord),
 	}
 
-	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
-		doc := map[string]any{
-			"issuer":                                srv.URL,
-			"authorization_endpoint":                srv.URL + "/authorize",
-			"token_endpoint":                        srv.URL + "/token",
-			"jwks_uri":                              srv.URL + "/jwks",
-			"id_token_signing_alg_values_supported": []string{"RS256"},
-			"response_types_supported":              []string{"code"},
-			"subject_types_supported":               []string{"public"},
-		}
-		for k, v := range f.discoveryExtra {
-			doc[k] = v
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(doc)
-	})
-	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
-		jwks := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
-			Key:       &key.PublicKey,
-			KeyID:     "test-key-1",
-			Algorithm: "RS256",
-			Use:       "sig",
-		}}}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(jwks)
-	})
-	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		code := "code-" + q.Get("state")
-		f.mu.Lock()
-		f.codes[code] = codeRecord{nonce: q.Get("nonce"), codeChallenge: q.Get("code_challenge")}
-		f.mu.Unlock()
-		redirectURI := q.Get("redirect_uri")
-		u, _ := url.Parse(redirectURI)
-		rq := u.Query()
-		rq.Set("code", code)
-		rq.Set("state", q.Get("state"))
-		u.RawQuery = rq.Encode()
-		http.Redirect(w, r, u.String(), http.StatusFound)
-	})
+	mux.HandleFunc("/.well-known/openid-configuration", f.serveDiscovery)
+	mux.HandleFunc("/jwks", f.serveJWKS)
+	mux.HandleFunc("/authorize", f.serveAuthorize)
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		if f.tokenHandler != nil {
 			f.tokenHandler(w, r)
 			return
 		}
-		_ = r.ParseForm()
-		code := r.FormValue("code")
-		f.mu.Lock()
-		rec, ok := f.codes[code]
-		f.mu.Unlock()
-		if !ok {
-			http.Error(w, "unknown code", http.StatusBadRequest)
-			return
-		}
-		idToken := f.signIDToken(t, rec.nonce)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"access_token":  "fake-access",
-			"token_type":    "Bearer",
-			"refresh_token": "fake-refresh",
-			"expires_in":    3600,
-			"id_token":      idToken,
-		})
+		f.serveToken(t, w, r)
 	})
 	return f
+}
+
+func (f *fakeIssuer) serveDiscovery(w http.ResponseWriter, _ *http.Request) {
+	base := f.server.URL
+	doc := map[string]any{
+		"issuer":                                base,
+		"authorization_endpoint":                base + "/authorize",
+		"token_endpoint":                        base + "/token",
+		"jwks_uri":                              base + "/jwks",
+		"id_token_signing_alg_values_supported": []string{"RS256"},
+		"response_types_supported":              []string{"code"},
+		"subject_types_supported":               []string{"public"},
+	}
+	for k, v := range f.discoveryExtra {
+		doc[k] = v
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(doc)
+}
+
+func (f *fakeIssuer) serveJWKS(w http.ResponseWriter, _ *http.Request) {
+	jwks := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       &f.signingKey.PublicKey,
+		KeyID:     "test-key-1",
+		Algorithm: "RS256",
+		Use:       "sig",
+	}}}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(jwks)
+}
+
+// serveAuthorize records the code's nonce and challenge and redirects
+// straight back with the code, as if the user signed in.
+func (f *fakeIssuer) serveAuthorize(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	code := "code-" + q.Get("state")
+	f.mu.Lock()
+	f.codes[code] = codeRecord{nonce: q.Get("nonce"), codeChallenge: q.Get("code_challenge")}
+	f.mu.Unlock()
+	redirectURI := q.Get("redirect_uri")
+	u, _ := url.Parse(redirectURI)
+	rq := u.Query()
+	rq.Set("code", code)
+	rq.Set("state", q.Get("state"))
+	u.RawQuery = rq.Encode()
+	http.Redirect(w, r, u.String(), http.StatusFound)
+}
+
+// serveToken redeems a known code for tokens with a signed ID token.
+func (f *fakeIssuer) serveToken(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	code := r.FormValue("code")
+	f.mu.Lock()
+	rec, ok := f.codes[code]
+	f.mu.Unlock()
+	if !ok {
+		http.Error(w, "unknown code", http.StatusBadRequest)
+		return
+	}
+	idToken := f.signIDToken(t, rec.nonce)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"access_token":  "fake-access",
+		"token_type":    "Bearer",
+		"refresh_token": "fake-refresh",
+		"expires_in":    3600,
+		"id_token":      idToken,
+	})
 }
 
 // signIDToken builds a real RS256-signed ID token go-oidc's verifier
@@ -405,40 +419,13 @@ func TestHandlers_LogoutClearCookieMirrorsDomain(t *testing.T) {
 // The fake issuer's /token handler blocks on r.Context().Done() with
 // a fallback timer so test-harness death can't deadlock.
 func TestHandlers_CallbackCtxCancelDuringExchange(t *testing.T) {
-	// Build the fake issuer first so we know its URL before serving
-	// the .well-known/openid-configuration body (which must echo
-	// `issuer` matching the URL go-oidc was given — RFC 8414 §3.3).
-	var srvURL string
 	tokenRelease := make(chan struct{})
-	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"issuer":                                srvURL,
-			"authorization_endpoint":                srvURL + "/auth",
-			"token_endpoint":                        srvURL + "/token",
-			"jwks_uri":                              srvURL + "/jwks",
-			"id_token_signing_alg_values_supported": []string{"RS256"},
-			"response_types_supported":              []string{"code"},
-			"subject_types_supported":               []string{"public"},
-		})
-	})
-	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"keys":[]}`)) // never reached — exchange hangs first
-	})
-	mux.HandleFunc("/token", func(_ http.ResponseWriter, r *http.Request) {
-		select {
-		case <-r.Context().Done():
-		case <-tokenRelease:
-		}
-	})
-	srv := httptest.NewServer(mux)
+	srv := hangingTokenIssuer(tokenRelease)
 	defer srv.Close()
 	// Release the fake token handler before httptest.Server.Close waits for
 	// active handlers. The assertion below still proves the callback observes
 	// request cancellation; cleanup no longer pays an unrelated 2s timer.
 	defer close(tokenRelease)
-	srvURL = srv.URL
 
 	stateStore := oauth2.NewMemoryStateStore()
 	client, err := oauth2.NewClient(context.Background(),
@@ -663,4 +650,36 @@ func TestOAuth2Config_ReturnsCopy(t *testing.T) {
 	cfg2 := client.OAuth2Config()
 	require.Equal(t, orig, cfg2.ClientID, "mutation of returned config must not affect client")
 	require.NotEqual(t, "https://evil.example/cb", cfg2.RedirectURL)
+}
+
+// hangingTokenIssuer serves discovery for its own URL (the `issuer` must
+// match the URL go-oidc was given — RFC 8414 §3.3) and a token endpoint
+// that hangs until the request is cancelled or release closes.
+func hangingTokenIssuer(release <-chan struct{}) *httptest.Server {
+	var srvURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                srvURL,
+			"authorization_endpoint":                srvURL + "/auth",
+			"token_endpoint":                        srvURL + "/token",
+			"jwks_uri":                              srvURL + "/jwks",
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+		})
+	})
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"keys":[]}`)) // never reached — exchange hangs first
+	})
+	mux.HandleFunc("/token", func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	})
+	srv := httptest.NewServer(mux)
+	srvURL = srv.URL
+	return srv
 }

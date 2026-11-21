@@ -232,19 +232,7 @@ func TestRPInitiatedLogout_ReturnsProviderLogoutURL(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/oauth/", client.Handlers())
 
-	state, cookies := runLoginAndAuthorize(t, mux, "/oauth/login")
-	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=code-"+state+"&state="+state, nil)
-	addCookies(cbReq, cookies)
-	cbRes := httptest.NewRecorder()
-	mux.ServeHTTP(cbRes, cbReq)
-	require.Equal(t, http.StatusOK, cbRes.Code, cbRes.Body.String())
-	var sessionCookie *http.Cookie
-	for _, ck := range cbRes.Result().Cookies() {
-		if ck.Name == "kit_oauth_session" {
-			sessionCookie = ck
-		}
-	}
-	require.NotNil(t, sessionCookie)
+	sessionCookie := signInSessionCookie(t, mux)
 	stored, err := sessions.Get(context.Background(), sessionCookie.Value)
 	require.NoError(t, err)
 	require.NotNil(t, stored.IDToken, "callback must record the raw ID token")
@@ -392,4 +380,24 @@ func TestTokenRefresh_OutageGraceBoundaries(t *testing.T) {
 	require.ErrorIs(t, err, oauth2.ErrSessionNotFound)
 
 	assert.Panics(t, func() { oauth2.WithRefreshOutageGrace(-time.Second) })
+}
+
+// signInSessionCookie signs in through mux's login and callback and returns
+// the session cookie the callback sets.
+func signInSessionCookie(t *testing.T, mux *http.ServeMux) *http.Cookie {
+	t.Helper()
+	state, cookies := runLoginAndAuthorize(t, mux, "/oauth/login")
+	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=code-"+state+"&state="+state, nil)
+	addCookies(cbReq, cookies)
+	cbRes := httptest.NewRecorder()
+	mux.ServeHTTP(cbRes, cbReq)
+	require.Equal(t, http.StatusOK, cbRes.Code, cbRes.Body.String())
+	var sessionCookie *http.Cookie
+	for _, ck := range cbRes.Result().Cookies() {
+		if ck.Name == "kit_oauth_session" {
+			sessionCookie = ck
+		}
+	}
+	require.NotNil(t, sessionCookie)
+	return sessionCookie
 }

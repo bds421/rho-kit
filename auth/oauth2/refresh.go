@@ -178,25 +178,8 @@ func (c *Client) refreshSession(ctx context.Context, sessionID string) (Session,
 		updated.RefreshToken = secret.NewFromString(token.RefreshToken)
 	}
 	if rawIDToken, ok := token.Extra("id_token").(string); ok && rawIDToken != "" {
-		idToken, err := c.verifier.Verify(exchangeCtx, rawIDToken)
-		if err != nil {
+		if err := c.applyRefreshedIDToken(exchangeCtx, rawIDToken, &updated); err != nil {
 			return c.refreshFailed(ctx, sessionID, current, err, true)
-		}
-		if idToken.Subject != current.UserID {
-			return c.refreshFailed(ctx, sessionID, current, errors.New("refreshed id_token subject changed"), true)
-		}
-		var claims map[string]any
-		if err := idToken.Claims(&claims); err != nil {
-			return c.refreshFailed(ctx, sessionID, current, err, true)
-		}
-		updated.Claims = claims
-		updated.IDToken = secret.NewFromString(rawIDToken)
-		if sid := stringClaim(claims, "sid"); sid != "" {
-			updated.SID = sid
-		}
-		if amr, authTime := authenticationClaims(claims); !authTime.IsZero() {
-			updated.AuthTime = authTime
-			updated.AMR = amr
 		}
 	}
 	updated.Version = current.Version + 1
@@ -271,34 +254,7 @@ func (c *Client) storeRefreshed(ctx context.Context, sessionID string, current, 
 		return Session{}, c.expireSession(ctx, sessionID, "lifetime reached during token refresh")
 	}
 	if updater, ok := c.sessions.(SessionUpdater); ok {
-		expectedVersion := current.Version
-		for attempt := 0; ; attempt++ {
-			stored, err := updater.Update(ctx, sessionID, expectedVersion, updated, ttl)
-			if err != nil {
-				c.logger.WarnContext(ctx, "oauth2: session.Update failed after token refresh", redact.Error(err))
-				return Session{}, err
-			}
-			if stored {
-				return updated, nil
-			}
-			// Lost the race. A concurrent refresh that persisted fresh tokens
-			// is still a valid session; a deleted or otherwise changed one is
-			// not.
-			latest, err := c.sessions.Get(ctx, sessionID)
-			if err == nil && latest.Version > expectedVersion && !c.needsRefresh(latest, time.Now()) {
-				return latest, nil
-			}
-			if err != nil || attempt+1 >= maxActivityMergeAttempts || !onlyActivityChanged(current, latest) {
-				break
-			}
-			if latest.LastActivity.After(updated.LastActivity) {
-				updated.LastActivity = latest.LastActivity
-			}
-			expectedVersion = latest.Version
-			updated.Version = latest.Version + 1
-		}
-		c.logger.WarnContext(ctx, "oauth2: session changed during token refresh; discarding refreshed tokens")
-		return Session{}, ErrSessionNotFound
+		return c.updateRefreshed(ctx, updater, sessionID, current, updated, ttl)
 	}
 	if _, err := c.sessions.Get(ctx, sessionID); err != nil {
 		// Deleted (logout) or unreadable while refreshing: do not recreate.
@@ -356,4 +312,66 @@ func refreshRejected(err error) bool {
 		return false
 	}
 	return re.Response == nil || re.Response.StatusCode < http.StatusInternalServerError
+}
+
+// applyRefreshedIDToken verifies the ID token of a refresh, which must
+// keep the session's subject, and takes its claims, sid and, when it
+// carries auth_time, its authentication context into updated.
+func (c *Client) applyRefreshedIDToken(exchangeCtx context.Context, rawIDToken string, updated *Session) error {
+	idToken, err := c.verifier.Verify(exchangeCtx, rawIDToken)
+	if err != nil {
+		return err
+	}
+	if idToken.Subject != updated.UserID {
+		return errors.New("refreshed id_token subject changed")
+	}
+	var claims map[string]any
+	if err := idToken.Claims(&claims); err != nil {
+		return err
+	}
+	updated.Claims = claims
+	updated.IDToken = secret.NewFromString(rawIDToken)
+	if sid := stringClaim(claims, "sid"); sid != "" {
+		updated.SID = sid
+	}
+	if amr, authTime := authenticationClaims(claims); !authTime.IsZero() {
+		updated.AuthTime = authTime
+		updated.AMR = amr
+	}
+	return nil
+}
+
+// updateRefreshed stores updated with a compare-and-set against the version
+// that was refreshed. A lost race keeps a session another refresh stored,
+// re-applies the refreshed tokens onto one whose only change was recorded
+// activity, and otherwise discards the refreshed tokens.
+func (c *Client) updateRefreshed(ctx context.Context, updater SessionUpdater, sessionID string, current, updated Session, ttl time.Duration) (Session, error) {
+	expectedVersion := current.Version
+	for attempt := 0; ; attempt++ {
+		stored, err := updater.Update(ctx, sessionID, expectedVersion, updated, ttl)
+		if err != nil {
+			c.logger.WarnContext(ctx, "oauth2: session.Update failed after token refresh", redact.Error(err))
+			return Session{}, err
+		}
+		if stored {
+			return updated, nil
+		}
+		// Lost the race. A concurrent refresh that persisted fresh tokens
+		// is still a valid session; a deleted or otherwise changed one is
+		// not.
+		latest, err := c.sessions.Get(ctx, sessionID)
+		if err == nil && latest.Version > expectedVersion && !c.needsRefresh(latest, time.Now()) {
+			return latest, nil
+		}
+		if err != nil || attempt+1 >= maxActivityMergeAttempts || !onlyActivityChanged(current, latest) {
+			break
+		}
+		if latest.LastActivity.After(updated.LastActivity) {
+			updated.LastActivity = latest.LastActivity
+		}
+		expectedVersion = latest.Version
+		updated.Version = latest.Version + 1
+	}
+	c.logger.WarnContext(ctx, "oauth2: session changed during token refresh; discarding refreshed tokens")
+	return Session{}, ErrSessionNotFound
 }

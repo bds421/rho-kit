@@ -227,29 +227,8 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 	if c.hostPrefixed() && (c.cookieDomain != "" || !c.cookieSecure) {
 		return nil, errors.New("oauth2: a __Host- cookie name requires Secure cookies without a Domain")
 	}
-	if c.sessions == nil {
-		return nil, errors.New("oauth2: WithSessionStore is required")
-	}
-	if c.state == nil {
-		return nil, errors.New("oauth2: WithStateStore is required")
-	}
-	if _, atomic := c.sessions.(SessionUpdater); c.idleTimeout > 0 && !atomic {
-		return nil, errors.New("oauth2: WithIdleTimeout requires a session store implementing SessionUpdater")
-	}
-	if c.backChannelLogout {
-		if _, indexed := c.sessions.(SessionIndex); !indexed {
-			return nil, errors.New("oauth2: WithBackChannelLogout requires a session store implementing SessionIndex")
-		}
-		if _, atomic := c.sessions.(SessionUpdater); !atomic {
-			return nil, errors.New("oauth2: WithBackChannelLogout requires a session store implementing SessionUpdater")
-		}
-		if c.replayCache == nil {
-			if cache, ok := c.sessions.(ReplayCache); ok {
-				c.replayCache = cache
-			} else {
-				c.replayCache = NewMemoryReplayCache()
-			}
-		}
+	if err := c.checkStores(); err != nil {
+		return nil, err
 	}
 	// Fail closed: a public client (no client secret) with PKCE disabled
 	// has neither authorization-code-interception protection — exactly
@@ -265,47 +244,93 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 		// kit-doctor:allow default-http-client reason="OAuth2 keeps its module dependency-light and applies an explicit timeout; callers can inject a hardened client with WithHTTPClient"
 		c.httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
+	if err := c.discover(ctx, cfg.Issuer); err != nil {
+		return nil, err
+	}
+	c.oauth = oauthConfig(cfg, c.provider.Endpoint())
+	c.verifier = c.provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
+	return c, nil
+}
 
-	// go-oidc's RemoteKeySet retains the construction context for every
-	// later JWKS refresh. A caller wrapping NewClient in
-	// context.WithTimeout(...); defer cancel() would otherwise leave the
-	// provider using a cancelled ctx after construction, so every key
-	// rotation fails with "context canceled" until process restart.
-	// Honour the caller's ctx for the initial discovery round-trip via
-	// the http.Client timeout, but bind the long-lived provider to a
-	// non-cancellable context so JWKS refresh outlives construction.
+// checkStores checks that the stores support the configured features and
+// defaults the back-channel logout replay cache to the session store's,
+// else to an in-memory one.
+func (c *Client) checkStores() error {
+	if c.sessions == nil {
+		return errors.New("oauth2: WithSessionStore is required")
+	}
+	if c.state == nil {
+		return errors.New("oauth2: WithStateStore is required")
+	}
+	_, atomic := c.sessions.(SessionUpdater)
+	if c.idleTimeout > 0 && !atomic {
+		return errors.New("oauth2: WithIdleTimeout requires a session store implementing SessionUpdater")
+	}
+	if !c.backChannelLogout {
+		return nil
+	}
+	if _, indexed := c.sessions.(SessionIndex); !indexed {
+		return errors.New("oauth2: WithBackChannelLogout requires a session store implementing SessionIndex")
+	}
+	if !atomic {
+		return errors.New("oauth2: WithBackChannelLogout requires a session store implementing SessionUpdater")
+	}
+	if c.replayCache == nil {
+		if cache, ok := c.sessions.(ReplayCache); ok {
+			c.replayCache = cache
+		} else {
+			c.replayCache = NewMemoryReplayCache()
+		}
+	}
+	return nil
+}
+
+// discover runs OIDC discovery against issuer and, for RP-initiated
+// logout, finds the end-session endpoint.
+//
+// go-oidc's RemoteKeySet retains the construction context for every
+// later JWKS refresh. A caller wrapping NewClient in
+// context.WithTimeout(...); defer cancel() would otherwise leave the
+// provider using a cancelled ctx after construction, so every key
+// rotation fails with "context canceled" until process restart.
+// Honour the caller's ctx for the initial discovery round-trip via
+// the http.Client timeout, but bind the long-lived provider to a
+// non-cancellable context so JWKS refresh outlives construction.
+func (c *Client) discover(ctx context.Context, issuer string) error {
 	discoveryCtx := oidc.ClientContext(context.WithoutCancel(ctx), c.httpClient)
-	provider, err := oidc.NewProvider(discoveryCtx, cfg.Issuer)
+	provider, err := oidc.NewProvider(discoveryCtx, issuer)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrIssuerDiscovery, err)
+		return fmt.Errorf("%w: %w", ErrIssuerDiscovery, err)
 	}
 	c.provider = provider
 	if c.rpLogout {
 		endpoint, err := discoverEndSession(provider)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		c.endSessionEndpoint = endpoint
 	}
+	return nil
+}
 
+// oauthConfig is the code-flow configuration; the openid scope is always
+// requested.
+func oauthConfig(cfg Config, endpoint xoauth2.Endpoint) *xoauth2.Config {
 	scopes := cfg.Scopes
 	if !containsScope(scopes, oidc.ScopeOpenID) {
 		scopes = append([]string{oidc.ScopeOpenID}, scopes...)
 	}
-
 	var secretStr string
 	if cfg.ClientSecret != nil && !cfg.ClientSecret.IsEmpty() {
 		secretStr = cfg.ClientSecret.RevealString()
 	}
-	c.oauth = &xoauth2.Config{
+	return &xoauth2.Config{
 		ClientID:     cfg.ClientID,
 		ClientSecret: secretStr,
 		RedirectURL:  cfg.RedirectURL,
-		Endpoint:     provider.Endpoint(),
+		Endpoint:     endpoint,
 		Scopes:       scopes,
 	}
-	c.verifier = provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
-	return c, nil
 }
 
 func containsScope(scopes []string, want string) bool {
@@ -451,29 +476,8 @@ func (c *Client) handleLogin(w http.ResponseWriter, r *http.Request) {
 // double-checks the nonce, persists the session, and sets the cookie.
 func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	stateToken := q.Get("state")
-	if !c.isBound(r, stateToken) {
-		returnTo := ""
-		if stateToken != "" {
-			if entry, err := c.takeState(r.Context(), stateToken); err == nil {
-				returnTo = entry.RedirectTo
-			}
-		}
-		c.recoverSignIn(w, r, returnTo, "state not bound to this browser")
-		return
-	}
-	c.clearPending(w, stateToken)
-	entry, err := c.takeState(r.Context(), stateToken)
-	if err != nil {
-		if errors.Is(err, ErrStateNotFound) {
-			c.recoverSignIn(w, r, "", "state unknown")
-			return
-		}
-		// Infrastructure failures (Redis down, timeouts) must not be
-		// reported as a state problem: that misleads operators and
-		// confuses attack-signal dashboards with availability faults.
-		c.logger.WarnContext(r.Context(), "oauth2: callback state store failed", redact.Error(err))
-		c.renderFailure(w, r, http.StatusServiceUnavailable, FailureUnavailable, "")
+	entry, ok := c.callbackState(w, r, q.Get("state"))
+	if !ok {
 		return
 	}
 	if errParam := q.Get("error"); errParam != "" {
@@ -495,85 +499,13 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 		c.recoverSignIn(w, r, entry.RedirectTo, "missing code")
 		return
 	}
-
-	exchangeCtx := oidc.ClientContext(r.Context(), c.httpClient)
-	exchangeOpts := []xoauth2.AuthCodeOption{}
-	if c.usePKCE && entry.CodeVerifier != "" {
-		exchangeOpts = append(exchangeOpts, xoauth2.VerifierOption(entry.CodeVerifier))
-	}
-	token, err := c.oauth.Exchange(exchangeCtx, code, exchangeOpts...)
-	if err != nil {
-		c.logger.WarnContext(r.Context(), "oauth2: code exchange failed", redact.Error(err))
-		c.renderFailure(w, r, http.StatusBadGateway, FailureSignIn, entry.RedirectTo)
+	grant, ok := c.exchangeCode(w, r, entry, code)
+	if !ok {
 		return
 	}
-	rawIDToken, ok := token.Extra("id_token").(string)
-	if !ok || rawIDToken == "" {
-		c.logger.WarnContext(r.Context(), "oauth2: token response missing id_token")
-		c.renderFailure(w, r, http.StatusBadGateway, FailureSignIn, entry.RedirectTo)
+	if !c.startSession(w, r, entry, grant) {
 		return
 	}
-	idToken, err := c.verifier.Verify(exchangeCtx, rawIDToken)
-	if err != nil {
-		// The verifier error can embed token claims, signature details,
-		// or the issuer's raw endpoint body. Log it redacted and return
-		// only the opaque sentinel across the trust boundary.
-		c.logger.WarnContext(r.Context(), "oauth2: id_token verify failed", redact.Error(err))
-		c.renderFailure(w, r, http.StatusBadRequest, FailureSignIn, entry.RedirectTo)
-		return
-	}
-	if idToken.Nonce != entry.Nonce {
-		c.logger.WarnContext(r.Context(), "oauth2: id_token nonce mismatch")
-		c.renderFailure(w, r, http.StatusBadRequest, FailureSignIn, entry.RedirectTo)
-		return
-	}
-	var claims map[string]any
-	if err := idToken.Claims(&claims); err != nil {
-		c.logger.WarnContext(r.Context(), "oauth2: id_token claims decode failed", redact.Error(err))
-		c.renderFailure(w, r, http.StatusBadGateway, FailureSignIn, entry.RedirectTo)
-		return
-	}
-	amr, authTime := authenticationClaims(claims)
-	if entry.MaxAge != nil && !satisfiesMaxAge(authTime, entry.CreatedAt, *entry.MaxAge) {
-		c.logger.WarnContext(r.Context(), "oauth2: id_token auth_time does not satisfy the requested max_age")
-		c.renderFailure(w, r, http.StatusBadRequest, FailureSignIn, entry.RedirectTo)
-		return
-	}
-
-	sessionID, err := generateRandomToken()
-	if err != nil {
-		c.renderFailure(w, r, http.StatusInternalServerError, FailureUnavailable, entry.RedirectTo)
-		return
-	}
-	now := time.Now()
-	sess := Session{
-		SessionID:    sessionID,
-		UserID:       idToken.Subject,
-		AccessToken:  secret.NewFromString(token.AccessToken),
-		IDToken:      secret.NewFromString(rawIDToken),
-		Expiry:       token.Expiry,
-		Claims:       claims,
-		SID:          stringClaim(claims, "sid"),
-		AuthTime:     authTime,
-		AMR:          amr,
-		CreatedAt:    now,
-		LastActivity: now,
-	}
-	// Nil when the issuer did not grant a refresh token (documented
-	// Session.RefreshToken contract).
-	if token.RefreshToken != "" {
-		sess.RefreshToken = secret.NewFromString(token.RefreshToken)
-	}
-	if !c.runSignInHook(w, r, &sess, entry.RedirectTo) {
-		return
-	}
-	if err := c.sessions.Put(r.Context(), sessionID, sess, c.sessionTTLFor(sess, now)); err != nil {
-		c.logger.WarnContext(r.Context(), "oauth2: session.Put failed", redact.Error(err))
-		c.renderFailure(w, r, http.StatusServiceUnavailable, FailureUnavailable, entry.RedirectTo)
-		return
-	}
-	http.SetCookie(w, c.sessionCookie(sessionID, now))
-	http.SetCookie(w, c.expiredCookie(c.retryCookieName(), c.flowCookiePath()))
 	// Defence in depth: re-validate the persisted deep link before
 	// emitting it in a Location header. handleLogin already screens
 	// redirect_to, but a hostile StateStore implementation could return
@@ -591,6 +523,130 @@ func (c *Client) handleCallback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("<!doctype html><title>Signed in</title><p>Signed in. You can close this window.</p>"))
+}
+
+// callbackState consumes the login state of a callback. A state not bound
+// to this browser or unknown restarts the sign-in; a store failure answers
+// 503. ok is false when the response was written.
+func (c *Client) callbackState(w http.ResponseWriter, r *http.Request, stateToken string) (StateEntry, bool) {
+	if !c.isBound(r, stateToken) {
+		returnTo := ""
+		if stateToken != "" {
+			if entry, err := c.takeState(r.Context(), stateToken); err == nil {
+				returnTo = entry.RedirectTo
+			}
+		}
+		c.recoverSignIn(w, r, returnTo, "state not bound to this browser")
+		return StateEntry{}, false
+	}
+	c.clearPending(w, stateToken)
+	entry, err := c.takeState(r.Context(), stateToken)
+	if err == nil {
+		return entry, true
+	}
+	if errors.Is(err, ErrStateNotFound) {
+		c.recoverSignIn(w, r, "", "state unknown")
+		return StateEntry{}, false
+	}
+	// Infrastructure failures (Redis down, timeouts) must not be
+	// reported as a state problem: that misleads operators and
+	// confuses attack-signal dashboards with availability faults.
+	c.logger.WarnContext(r.Context(), "oauth2: callback state store failed", redact.Error(err))
+	c.renderFailure(w, r, http.StatusServiceUnavailable, FailureUnavailable, "")
+	return StateEntry{}, false
+}
+
+// codeGrant is what a verified code exchange yields.
+type codeGrant struct {
+	token      *xoauth2.Token
+	rawIDToken string
+	subject    string
+	claims     map[string]any
+	amr        []string
+	authTime   time.Time
+}
+
+// exchangeCode exchanges the authorization code and verifies the ID token
+// it returns: signature, nonce and the requested max_age. ok is false when
+// the failure was rendered.
+func (c *Client) exchangeCode(w http.ResponseWriter, r *http.Request, entry StateEntry, code string) (codeGrant, bool) {
+	fail := func(status int, msg string, attrs ...any) (codeGrant, bool) {
+		c.logger.WarnContext(r.Context(), msg, attrs...)
+		c.renderFailure(w, r, status, FailureSignIn, entry.RedirectTo)
+		return codeGrant{}, false
+	}
+	exchangeCtx := oidc.ClientContext(r.Context(), c.httpClient)
+	exchangeOpts := []xoauth2.AuthCodeOption{}
+	if c.usePKCE && entry.CodeVerifier != "" {
+		exchangeOpts = append(exchangeOpts, xoauth2.VerifierOption(entry.CodeVerifier))
+	}
+	token, err := c.oauth.Exchange(exchangeCtx, code, exchangeOpts...)
+	if err != nil {
+		return fail(http.StatusBadGateway, "oauth2: code exchange failed", redact.Error(err))
+	}
+	rawIDToken, ok := token.Extra("id_token").(string)
+	if !ok || rawIDToken == "" {
+		return fail(http.StatusBadGateway, "oauth2: token response missing id_token")
+	}
+	idToken, err := c.verifier.Verify(exchangeCtx, rawIDToken)
+	if err != nil {
+		// The verifier error can embed token claims, signature details,
+		// or the issuer's raw endpoint body. Log it redacted and return
+		// only the opaque sentinel across the trust boundary.
+		return fail(http.StatusBadRequest, "oauth2: id_token verify failed", redact.Error(err))
+	}
+	if idToken.Nonce != entry.Nonce {
+		return fail(http.StatusBadRequest, "oauth2: id_token nonce mismatch")
+	}
+	var claims map[string]any
+	if err := idToken.Claims(&claims); err != nil {
+		return fail(http.StatusBadGateway, "oauth2: id_token claims decode failed", redact.Error(err))
+	}
+	amr, authTime := authenticationClaims(claims)
+	if entry.MaxAge != nil && !satisfiesMaxAge(authTime, entry.CreatedAt, *entry.MaxAge) {
+		return fail(http.StatusBadRequest, "oauth2: id_token auth_time does not satisfy the requested max_age")
+	}
+	return codeGrant{token: token, rawIDToken: rawIDToken, subject: idToken.Subject, claims: claims, amr: amr, authTime: authTime}, true
+}
+
+// startSession stores the new session and sets its cookie. ok is false
+// when the sign-in hook refused it or the failure was rendered.
+func (c *Client) startSession(w http.ResponseWriter, r *http.Request, entry StateEntry, grant codeGrant) bool {
+	sessionID, err := generateRandomToken()
+	if err != nil {
+		c.renderFailure(w, r, http.StatusInternalServerError, FailureUnavailable, entry.RedirectTo)
+		return false
+	}
+	now := time.Now()
+	sess := Session{
+		SessionID:    sessionID,
+		UserID:       grant.subject,
+		AccessToken:  secret.NewFromString(grant.token.AccessToken),
+		IDToken:      secret.NewFromString(grant.rawIDToken),
+		Expiry:       grant.token.Expiry,
+		Claims:       grant.claims,
+		SID:          stringClaim(grant.claims, "sid"),
+		AuthTime:     grant.authTime,
+		AMR:          grant.amr,
+		CreatedAt:    now,
+		LastActivity: now,
+	}
+	// Nil when the issuer did not grant a refresh token (documented
+	// Session.RefreshToken contract).
+	if grant.token.RefreshToken != "" {
+		sess.RefreshToken = secret.NewFromString(grant.token.RefreshToken)
+	}
+	if !c.runSignInHook(w, r, &sess, entry.RedirectTo) {
+		return false
+	}
+	if err := c.sessions.Put(r.Context(), sessionID, sess, c.sessionTTLFor(sess, now)); err != nil {
+		c.logger.WarnContext(r.Context(), "oauth2: session.Put failed", redact.Error(err))
+		c.renderFailure(w, r, http.StatusServiceUnavailable, FailureUnavailable, entry.RedirectTo)
+		return false
+	}
+	http.SetCookie(w, c.sessionCookie(sessionID, now))
+	http.SetCookie(w, c.expiredCookie(c.retryCookieName(), c.flowCookiePath()))
+	return true
 }
 
 // handleLogout drops the session and clears the cookie. With

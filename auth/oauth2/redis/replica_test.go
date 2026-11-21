@@ -53,9 +53,7 @@ func runBrowserReplicaContinuity(t *testing.T, store *redisoauth.Store) {
 	require.NotEmpty(t, state)
 
 	// Visiting the provider registers the one-time authorization code.
-	providerResp, err := (&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Get(authURL.String())
-	require.NoError(t, err)
-	_ = providerResp.Body.Close()
+	visitProvider(t, authURL)
 
 	// Replica B owns the callback after A has disappeared.
 	second := newClient()
@@ -67,12 +65,7 @@ func runBrowserReplicaContinuity(t *testing.T, store *redisoauth.Store) {
 	second.Handlers().ServeHTTP(callbackResp, callback)
 	require.Equal(t, http.StatusOK, callbackResp.Code, callbackResp.Body.String())
 
-	var sessionCookie *http.Cookie
-	for _, cookie := range callbackResp.Result().Cookies() {
-		if cookie.Name == "kit_oauth_session" {
-			sessionCookie = cookie
-		}
-	}
+	sessionCookie := namedCookie(callbackResp.Result().Cookies(), "kit_oauth_session")
 	require.NotNil(t, sessionCookie)
 
 	// Replica C simulates process restart and reads the Redis session.
@@ -149,4 +142,25 @@ func (f *replicaIssuer) idToken(t *testing.T, nonce string) string {
 	raw, err := jwt.Signed(signer).Claims(map[string]any{"iss": f.server.URL, "sub": "user-123", "aud": f.client, "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "nonce": nonce}).Serialize()
 	require.NoError(t, err)
 	return raw
+}
+
+// visitProvider opens the provider's authorization URL without following
+// its redirect back.
+func visitProvider(t *testing.T, authURL *url.URL) {
+	t.Helper()
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	providerResp, err := noRedirect.Get(authURL.String())
+	require.NoError(t, err)
+	_ = providerResp.Body.Close()
+}
+
+// namedCookie returns the last cookie called name, or nil.
+func namedCookie(cookies []*http.Cookie, name string) *http.Cookie {
+	var found *http.Cookie
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			found = cookie
+		}
+	}
+	return found
 }
