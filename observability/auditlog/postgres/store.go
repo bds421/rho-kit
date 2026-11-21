@@ -219,6 +219,38 @@ func (s *Store) Query(ctx context.Context, filter auditlog.Filter, cursor string
 		return nil, "", err
 	}
 
+	sql, args := querySQL(filter, cursor, cursorTime, cursorID, limit)
+
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("auditlog/postgres: query: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]auditlog.Event, 0, limit)
+	for rows.Next() {
+		event, scanErr := scanEvent(rows)
+		if scanErr != nil {
+			return nil, "", fmt.Errorf("auditlog/postgres: query scan: %w", scanErr)
+		}
+		out = append(out, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("auditlog/postgres: query iterate: %w", err)
+	}
+
+	var next string
+	if len(out) > limit {
+		marker := out[limit-1]
+		next = encodeCursor(marker.Timestamp, marker.ID)
+		out = out[:limit]
+	}
+	return out, next, nil
+}
+
+// querySQL builds the page query: the filter's conditions, the position
+// after the cursor, and limit+1 rows so a further page shows.
+func querySQL(filter auditlog.Filter, cursor string, cursorTime time.Time, cursorID string, limit int) (string, []any) {
 	args := make([]any, 0, 8)
 	clauses := make([]string, 0, 8)
 	add := func(expr string, val any) {
@@ -267,32 +299,7 @@ func (s *Store) Query(ctx context.Context, filter auditlog.Filter, cursor string
 	}
 	args = append(args, limit+1)
 	sql += fmt.Sprintf(" ORDER BY occurred_at DESC, id DESC LIMIT $%d", len(args))
-
-	rows, err := s.pool.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, "", fmt.Errorf("auditlog/postgres: query: %w", err)
-	}
-	defer rows.Close()
-
-	out := make([]auditlog.Event, 0, limit)
-	for rows.Next() {
-		event, scanErr := scanEvent(rows)
-		if scanErr != nil {
-			return nil, "", fmt.Errorf("auditlog/postgres: query scan: %w", scanErr)
-		}
-		out = append(out, event)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, "", fmt.Errorf("auditlog/postgres: query iterate: %w", err)
-	}
-
-	var next string
-	if len(out) > limit {
-		marker := out[limit-1]
-		next = encodeCursor(marker.Timestamp, marker.ID)
-		out = out[:limit]
-	}
-	return out, next, nil
+	return sql, args
 }
 
 // RangeChain iterates every event in append order (seq ASC) so the

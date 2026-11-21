@@ -294,25 +294,28 @@ func TestStaticKeyStore_KeyRaceWithCloseNeverReturnsNilNil(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				// Spin so a reader is mid-flight when Close lands,
-				// hitting the window between the presence check and
-				// the secret read.
-				for i := 0; i < 64; i++ {
-					if k, err := store.Key(ctx, "k1"); err == nil && k == nil {
-						t.Errorf("Key returned (nil, nil): success-shaped result with no key")
-						return
-					}
-					if id, k, err := store.CurrentKeyID(ctx); err == nil && id != "" && k == nil {
-						t.Errorf("CurrentKeyID returned (%q, nil, nil): id present but no secret", id)
-						return
-					}
-				}
+				readDuringClose(ctx, t, store)
 			}()
 		}
 
 		close(start)
 		wg.Wait()
 		if t.Failed() {
+			return
+		}
+	}
+}
+
+// readDuringClose spins so a reader is mid-flight when Close lands, hitting
+// the window between the presence check and the secret read.
+func readDuringClose(ctx context.Context, t *testing.T, store *StaticKeyStore) {
+	for i := 0; i < 64; i++ {
+		if k, err := store.Key(ctx, "k1"); err == nil && k == nil {
+			t.Errorf("Key returned (nil, nil): success-shaped result with no key")
+			return
+		}
+		if id, k, err := store.CurrentKeyID(ctx); err == nil && id != "" && k == nil {
+			t.Errorf("CurrentKeyID returned (%q, nil, nil): id present but no secret", id)
 			return
 		}
 	}

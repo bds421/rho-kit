@@ -172,8 +172,17 @@ func NewHTTP(opts ...HTTPOption) *HTTPMetrics {
 	}
 	validateMetricNamePart("HTTP namespace", cfg.namespace)
 	validateMetricNamePart("HTTP subsystem", cfg.subsystem)
-	reg := cfg.registerer
+	m := newHTTPCollectors(cfg)
+	if cfg.exemplars {
+		m.exemplars = NewExemplarObserver()
+	}
+	return m
+}
 
+// newHTTPCollectors builds the four RED collectors and registers them on
+// the configured registerer, if any.
+func newHTTPCollectors(cfg httpConfig) *HTTPMetrics {
+	reg := cfg.registerer
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: cfg.namespace,
 		Subsystem: cfg.subsystem,
@@ -210,16 +219,12 @@ func NewHTTP(opts ...HTTPOption) *HTTPMetrics {
 		inflight = promutil.MustRegisterOrGet(reg, inflight)
 	}
 
-	m := &HTTPMetrics{
+	return &HTTPMetrics{
 		Requests: requests,
 		Errors:   errs,
 		Duration: duration,
 		InFlight: inflight,
 	}
-	if cfg.exemplars {
-		m.exemplars = NewExemplarObserver()
-	}
-	return m
 }
 
 // Middleware records the four RED metrics around next.
@@ -247,29 +252,7 @@ func (m *HTTPMetrics) Middleware(routeFor func(*http.Request) string) func(http.
 			// can still log and respond.
 			defer func() {
 				rr := recover()
-				route := safeRouteLabel(routeFor, r)
-				method := promutil.HTTPMethodLabel(r.Method)
-				status := rec.status
-				if rr != nil {
-					// If headers were not yet written, force a 500 for
-					// the metric. Don't write to w — leave that to the
-					// outer recover middleware.
-					if !rec.wrote {
-						status = http.StatusInternalServerError
-					}
-				}
-
-				elapsed := time.Since(start)
-				m.Requests.WithLabelValues(route, method, strconv.Itoa(status)).Inc()
-				if m.exemplars != nil {
-					m.exemplars.Observe(r.Context(), m.Duration.WithLabelValues(route, method), elapsed.Seconds())
-				} else {
-					m.Duration.WithLabelValues(route, method).Observe(elapsed.Seconds())
-				}
-				if status >= 400 {
-					m.Errors.WithLabelValues(route, method, statusClass(status)).Inc()
-				}
-
+				m.observe(r, routeFor, rec, time.Since(start), rr != nil)
 				if rr != nil {
 					panic(rr)
 				}
@@ -277,6 +260,27 @@ func (m *HTTPMetrics) Middleware(routeFor func(*http.Request) string) func(http.
 
 			next.ServeHTTP(rec, r)
 		})
+	}
+}
+
+// observe records one request. After a panic before the headers were
+// written the metric shows a 500; w is left to the outer recover
+// middleware.
+func (m *HTTPMetrics) observe(r *http.Request, routeFor func(*http.Request) string, rec *statusRecorder, elapsed time.Duration, panicked bool) {
+	route := safeRouteLabel(routeFor, r)
+	method := promutil.HTTPMethodLabel(r.Method)
+	status := rec.status
+	if panicked && !rec.wrote {
+		status = http.StatusInternalServerError
+	}
+	m.Requests.WithLabelValues(route, method, strconv.Itoa(status)).Inc()
+	if m.exemplars != nil {
+		m.exemplars.Observe(r.Context(), m.Duration.WithLabelValues(route, method), elapsed.Seconds())
+	} else {
+		m.Duration.WithLabelValues(route, method).Observe(elapsed.Seconds())
+	}
+	if status >= 400 {
+		m.Errors.WithLabelValues(route, method, statusClass(status)).Inc()
 	}
 }
 

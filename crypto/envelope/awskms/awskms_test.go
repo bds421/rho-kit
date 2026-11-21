@@ -109,64 +109,31 @@ func TestUnwrapRejectsMismatchedKeyID(t *testing.T) {
 }
 
 func TestDecryptKeyIDForConstrainsAliasBackedEnvelopeARN(t *testing.T) {
-	envelopeKeyARN := "arn:aws:kms:us-east-1:111122223333:key/12345678-1234-1234-1234-123456789abc"
-
+	const (
+		envelopeKeyARN = "arn:aws:kms:us-east-1:111122223333:key/12345678-1234-1234-1234-123456789abc"
+		aliasARN       = "arn:aws:kms:us-east-1:111122223333:alias/configured"
+		bareKeyID      = "12345678-1234-1234-1234-123456789abc"
+	)
 	tests := []struct {
 		name       string
 		configured string
 		envelope   string
-		want       string
-		wantErr    bool
+		want       string // empty: an error is expected
 	}{
-		{
-			name:       "bare alias forwards envelope key ARN for rotation safety",
-			configured: "alias/configured",
-			envelope:   envelopeKeyARN,
-			want:       envelopeKeyARN,
-		},
-		{
-			name:       "bare alias rejects foreign alias ARN",
-			configured: "alias/configured",
-			envelope:   "arn:aws:kms:us-east-1:999900001111:alias/configured",
-			wantErr:    true,
-		},
-		{
-			name:       "alias ARN forwards scoped envelope key ARN for rotation safety",
-			configured: "arn:aws:kms:us-east-1:111122223333:alias/configured",
-			envelope:   envelopeKeyARN,
-			want:       envelopeKeyARN,
-		},
-		{
-			name:       "alias ARN rejects different account",
-			configured: "arn:aws:kms:us-east-1:111122223333:alias/configured",
-			envelope:   "arn:aws:kms:us-east-1:999900001111:key/12345678-1234-1234-1234-123456789abc",
-			wantErr:    true,
-		},
-		{
-			name:       "bare key ID rejects ARN without region pin context",
-			configured: "12345678-1234-1234-1234-123456789abc",
-			envelope:   envelopeKeyARN,
-			wantErr:    true,
-		},
-		{
-			name:       "bare key ID rejects nested suffix craft",
-			configured: "12345678-1234-1234-1234-123456789abc",
-			envelope:   "arn:aws:kms:us-east-1:999900001111:key/arn:aws:kms:us-east-1:111122223333:key/12345678-1234-1234-1234-123456789abc",
-			wantErr:    true,
-		},
-		{
-			name:       "non-alias key rejects unrelated key ARN",
-			configured: "87654321-4321-4321-4321-cba987654321",
-			envelope:   envelopeKeyARN,
-			wantErr:    true,
-		},
+		{"bare alias forwards envelope key ARN for rotation safety", "alias/configured", envelopeKeyARN, envelopeKeyARN},
+		{"bare alias rejects foreign alias ARN", "alias/configured", "arn:aws:kms:us-east-1:999900001111:alias/configured", ""},
+		{"alias ARN forwards scoped envelope key ARN for rotation safety", aliasARN, envelopeKeyARN, envelopeKeyARN},
+		{"alias ARN rejects different account", aliasARN, "arn:aws:kms:us-east-1:999900001111:key/" + bareKeyID, ""},
+		{"bare key ID rejects ARN without region pin context", bareKeyID, envelopeKeyARN, ""},
+		{"bare key ID rejects nested suffix craft", bareKeyID, "arn:aws:kms:us-east-1:999900001111:key/" + envelopeKeyARN, ""},
+		{"non-alias key rejects unrelated key ARN", "87654321-4321-4321-4321-cba987654321", envelopeKeyARN, ""},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			k := &KEK{keyID: tc.configured}
 			got, err := k.decryptKeyIDFor(tc.envelope)
-			if tc.wantErr {
+			if tc.want == "" {
 				if err == nil {
 					t.Fatal("decryptKeyIDFor expected error")
 				}

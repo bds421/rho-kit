@@ -126,87 +126,23 @@ func TestConfigValidate(t *testing.T) {
 		cfg     Config
 		wantErr string
 	}{
-		{
-			name: "noop config accepts empty endpoint",
-			cfg:  Config{},
-		},
-		{
-			name: "valid endpoint with port",
-			cfg:  Config{ServiceName: "svc", Endpoint: "collector.internal:4317"},
-		},
-		{
-			name: "valid endpoint without port",
-			cfg:  Config{ServiceName: "svc", Endpoint: "collector.internal"},
-		},
-		{
-			name: "valid bracketed IPv6",
-			cfg:  Config{ServiceName: "svc", Endpoint: "[::1]:4317"},
-		},
-		{
-			name:    "service name required",
-			cfg:     Config{Endpoint: "collector.internal:4317"},
-			wantErr: "ServiceName",
-		},
-		{
-			name:    "endpoint is not URL",
-			cfg:     Config{ServiceName: "svc", Endpoint: "https://collector.internal:4317"},
-			wantErr: "not a URL",
-		},
-		{
-			name:    "endpoint rejects path",
-			cfg:     Config{ServiceName: "svc", Endpoint: "collector.internal:4317/v1/traces"},
-			wantErr: "path",
-		},
-		{
-			name:    "endpoint rejects credentials",
-			cfg:     Config{ServiceName: "svc", Endpoint: "user@collector.internal:4317"},
-			wantErr: "credentials",
-		},
-		{
-			name:    "endpoint rejects bad port",
-			cfg:     Config{ServiceName: "svc", Endpoint: "collector.internal:bad"},
-			wantErr: "port",
-		},
-		{
-			name:    "sample rate too high",
-			cfg:     Config{ServiceName: "svc", Endpoint: "collector.internal:4317", SampleRate: 1.5},
-			wantErr: "SampleRate",
-		},
-		{
-			name:    "sample rate negative",
-			cfg:     Config{ServiceName: "svc", Endpoint: "collector.internal:4317", SampleRate: -0.1},
-			wantErr: "SampleRate",
-		},
-		{
-			name:    "unknown compression",
-			cfg:     Config{ServiceName: "svc", Endpoint: "collector.internal:4317", Compression: "zstd"},
-			wantErr: "Compression",
-		},
-		{
-			name:    "negative batch timeout",
-			cfg:     Config{ServiceName: "svc", Endpoint: "collector.internal:4317", BatchTimeout: -time.Second},
-			wantErr: "BatchTimeout",
-		},
-		{
-			name:    "negative queue size",
-			cfg:     Config{ServiceName: "svc", Endpoint: "collector.internal:4317", MaxQueueSize: -1},
-			wantErr: "MaxQueueSize",
-		},
-		{
-			name:    "export batch larger than queue",
-			cfg:     Config{ServiceName: "svc", Endpoint: "collector.internal:4317", MaxQueueSize: 10, MaxExportBatchSize: 11},
-			wantErr: "MaxExportBatchSize",
-		},
-		{
-			name:    "invalid header key",
-			cfg:     Config{ServiceName: "svc", Endpoint: "collector.internal:4317", Headers: map[string]string{"bad key": "value"}},
-			wantErr: "header key",
-		},
-		{
-			name:    "invalid header value",
-			cfg:     Config{ServiceName: "svc", Endpoint: "collector.internal:4317", Headers: map[string]string{"x-token": "line\nbreak"}},
-			wantErr: "header",
-		},
+		{"noop config accepts empty endpoint", Config{}, ""},
+		{"valid endpoint with port", Config{ServiceName: "svc", Endpoint: "collector.internal:4317"}, ""},
+		{"valid endpoint without port", Config{ServiceName: "svc", Endpoint: "collector.internal"}, ""},
+		{"valid bracketed IPv6", Config{ServiceName: "svc", Endpoint: "[::1]:4317"}, ""},
+		{"service name required", Config{Endpoint: "collector.internal:4317"}, "ServiceName"},
+		{"endpoint is not URL", Config{ServiceName: "svc", Endpoint: "https://collector.internal:4317"}, "not a URL"},
+		{"endpoint rejects path", Config{ServiceName: "svc", Endpoint: "collector.internal:4317/v1/traces"}, "path"},
+		{"endpoint rejects credentials", Config{ServiceName: "svc", Endpoint: "user@collector.internal:4317"}, "credentials"},
+		{"endpoint rejects bad port", Config{ServiceName: "svc", Endpoint: "collector.internal:bad"}, "port"},
+		{"sample rate too high", Config{ServiceName: "svc", Endpoint: "collector.internal:4317", SampleRate: 1.5}, "SampleRate"},
+		{"sample rate negative", Config{ServiceName: "svc", Endpoint: "collector.internal:4317", SampleRate: -0.1}, "SampleRate"},
+		{"unknown compression", Config{ServiceName: "svc", Endpoint: "collector.internal:4317", Compression: "zstd"}, "Compression"},
+		{"negative batch timeout", Config{ServiceName: "svc", Endpoint: "collector.internal:4317", BatchTimeout: -time.Second}, "BatchTimeout"},
+		{"negative queue size", Config{ServiceName: "svc", Endpoint: "collector.internal:4317", MaxQueueSize: -1}, "MaxQueueSize"},
+		{"export batch larger than queue", Config{ServiceName: "svc", Endpoint: "collector.internal:4317", MaxQueueSize: 10, MaxExportBatchSize: 11}, "MaxExportBatchSize"},
+		{"invalid header key", Config{ServiceName: "svc", Endpoint: "collector.internal:4317", Headers: map[string]string{"bad key": "value"}}, "header key"},
+		{"invalid header value", Config{ServiceName: "svc", Endpoint: "collector.internal:4317", Headers: map[string]string{"x-token": "line\nbreak"}}, "header"},
 	}
 
 	for _, tt := range tests {

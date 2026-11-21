@@ -157,54 +157,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	forceQuit := make(chan os.Signal, 1)
 	runDone := make(chan struct{})
 	defer close(runDone)
-	go func() {
-		// First select: wait for signal (ctx.Done) OR for Run to finish on
-		// its own (runDone). Without this, when a component returns an error
-		// before any signal arrives, runCtx might never cancel and this goroutine
-		// blocks forever waiting for shutdown — a goroutine leak per failed Run
-		// call. Selecting on runDone here lets the goroutine exit cleanly
-		// in that path.
-		select {
-		case <-runCtx.Done():
-			// Fall through to register the second-signal handler below.
-		case <-runDone:
-			return
-		}
-		// Re-check runDone before Notify. Run's deferred signal.Stop may
-		// already have run (defers fire before close(runDone)), so a
-		// late-scheduled goroutine that Notify'd after Stop would leave
-		// forceQuit permanently registered and disable default SIGINT/
-		// SIGTERM handling for the rest of the process lifetime.
-		select {
-		case <-runDone:
-			return
-		default:
-		}
-		signal.Notify(forceQuit, os.Interrupt, syscall.SIGTERM)
-		// Stop from this goroutine too so a Notify that races past the
-		// re-check above is always unregistered when we exit.
-		defer signal.Stop(forceQuit)
-		select {
-		case <-forceQuit:
-			// Second signal: cancel the stop timeout context so all pending
-			// Stop calls return immediately. Unlike os.Exit(1), this still
-			// allows deferred cleanup (DB close, tracing flush, file handles).
-			r.logger.Error("second signal received, forcing immediate shutdown")
-			forceCancel()
-		case <-runDone:
-		}
-	}()
+	go r.forceOnSecondSignal(runCtx, runDone, forceQuit, forceCancel)
 	defer signal.Stop(forceQuit)
 
-	// Structured startup summary for operational visibility.
-	componentNames := make([]string, len(r.components))
-	for i, nc := range r.components {
-		componentNames[i] = nc.name
-	}
-	r.logger.Info("starting components",
-		slog.Int("count", len(r.components)),
-		slog.Any("components", componentNames),
-	)
+	r.logStartSummary()
 
 	if len(r.components) == 0 {
 		return nil
@@ -213,33 +169,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	eg, gCtx := errgroup.WithContext(runCtx)
 
 	for _, nc := range r.components {
-		eg.Go(func() (retErr error) {
+		eg.Go(func() error {
 			defer runCancel()
-			defer func() {
-				if rec := recover(); rec != nil {
-					stack := string(debug.Stack())
-					retErr = fmt.Errorf("goroutine panicked: %s", redact.PanicValue(rec))
-					r.logger.Error("goroutine panicked",
-						logattr.Component(nc.name),
-						redact.Panic(rec),
-						slog.String("stack", stack),
-					)
-				}
-			}()
-
-			r.logger.Info("component starting", logattr.Component(nc.name))
-
-			startCtx, span := startComponentSpan(gCtx, "lifecycle.Start", nc.name)
-			err := nc.component.Start(startCtx)
-			recordComponentResult(span, err)
-			span.End()
-
-			// http.ErrServerClosed is expected during shutdown, and so is a
-			// component the shutdown stopped before it started.
-			if errors.Is(err, http.ErrServerClosed) || errors.Is(err, ErrStoppedBeforeStart) {
-				return nil
-			}
-			return err
+			return r.runComponent(gCtx, nc)
 		})
 	}
 
@@ -253,25 +185,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	var stopErr error
 	eg.Go(func() error {
 		<-gCtx.Done()
-		var beforeStopErr error
-		// Run BeforeStop synchronously while components are still
-		// live — hooks rely on DB / broker connections being open.
-		// Any panic is converted to a structured error log so a
-		// misbehaving hook cannot block component teardown.
-		if r.beforeStop != nil {
-			func() {
-				defer func() {
-					if rec := recover(); rec != nil {
-						r.logger.Error("BeforeStop panicked",
-							redact.Panic(rec),
-							slog.String("stack", string(debug.Stack())),
-						)
-						beforeStopErr = fmt.Errorf("BeforeStop panicked: %s", redact.PanicValue(rec))
-					}
-				}()
-				r.beforeStop(forceCtx)
-			}()
-		}
+		beforeStopErr := r.runBeforeStop(forceCtx)
 		r.logger.Info("shutting down components")
 		stopErr = errors.Join(beforeStopErr, r.stopAll(forceCtx))
 		return nil
@@ -283,26 +197,133 @@ func (r *Runner) Run(ctx context.Context) error {
 	// immediate shutdown" log (audit: force-quit must abandon stragglers).
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- eg.Wait() }()
+	return r.awaitStarts(waitCh, forceCtx, &stopErr)
+}
 
+// awaitStarts returns once every Start has exited. After a second-signal
+// force-quit, which already cancelled the stop budgets, it gives one final
+// stopTimeout window for cooperative exit, then abandons the stragglers.
+// stopErr is read once the stop goroutine has set it.
+func (r *Runner) awaitStarts(waitCh <-chan error, forceCtx context.Context, stopErr *error) error {
 	select {
 	case startErr := <-waitCh:
-		return errors.Join(startErr, stopErr)
+		return errors.Join(startErr, *stopErr)
 	case <-forceCtx.Done():
-		// Second signal already cancelled stop budgets. Give one final
-		// stopTimeout window for cooperative exit, then abandon.
-		timer := time.NewTimer(r.stopTimeout)
-		defer timer.Stop()
-		select {
-		case startErr := <-waitCh:
-			return errors.Join(startErr, stopErr)
-		case <-timer.C:
-			r.logger.Error("forced shutdown abandoned components still blocked in Start")
-			return errors.Join(
-				errors.New("lifecycle: forced shutdown abandoned components still blocked in Start"),
-				stopErr,
+	}
+	timer := time.NewTimer(r.stopTimeout)
+	defer timer.Stop()
+	select {
+	case startErr := <-waitCh:
+		return errors.Join(startErr, *stopErr)
+	case <-timer.C:
+		r.logger.Error("forced shutdown abandoned components still blocked in Start")
+		return errors.Join(
+			errors.New("lifecycle: forced shutdown abandoned components still blocked in Start"),
+			*stopErr,
+		)
+	}
+}
+
+// logStartSummary logs the components about to start.
+func (r *Runner) logStartSummary() {
+	componentNames := make([]string, len(r.components))
+	for i, nc := range r.components {
+		componentNames[i] = nc.name
+	}
+	r.logger.Info("starting components",
+		slog.Int("count", len(r.components)),
+		slog.Any("components", componentNames),
+	)
+}
+
+// forceOnSecondSignal cancels the stop budgets on a second signal during
+// shutdown.
+func (r *Runner) forceOnSecondSignal(runCtx context.Context, runDone <-chan struct{}, forceQuit chan os.Signal, forceCancel context.CancelFunc) {
+	// First select: wait for signal (ctx.Done) OR for Run to finish on
+	// its own (runDone). Without this, when a component returns an error
+	// before any signal arrives, runCtx might never cancel and this goroutine
+	// blocks forever waiting for shutdown — a goroutine leak per failed Run
+	// call. Selecting on runDone here lets the goroutine exit cleanly
+	// in that path.
+	select {
+	case <-runCtx.Done():
+		// Fall through to register the second-signal handler below.
+	case <-runDone:
+		return
+	}
+	// Re-check runDone before Notify. Run's deferred signal.Stop may
+	// already have run (defers fire before close(runDone)), so a
+	// late-scheduled goroutine that Notify'd after Stop would leave
+	// forceQuit permanently registered and disable default SIGINT/
+	// SIGTERM handling for the rest of the process lifetime.
+	select {
+	case <-runDone:
+		return
+	default:
+	}
+	signal.Notify(forceQuit, os.Interrupt, syscall.SIGTERM)
+	// Stop from this goroutine too so a Notify that races past the
+	// re-check above is always unregistered when we exit.
+	defer signal.Stop(forceQuit)
+	select {
+	case <-forceQuit:
+		// Second signal: cancel the stop timeout context so all pending
+		// Stop calls return immediately. Unlike os.Exit(1), this still
+		// allows deferred cleanup (DB close, tracing flush, file handles).
+		r.logger.Error("second signal received, forcing immediate shutdown")
+		forceCancel()
+	case <-runDone:
+	}
+}
+
+// runComponent starts one component; a panic becomes its error.
+func (r *Runner) runComponent(gCtx context.Context, nc namedComponent) (retErr error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			stack := string(debug.Stack())
+			retErr = fmt.Errorf("goroutine panicked: %s", redact.PanicValue(rec))
+			r.logger.Error("goroutine panicked",
+				logattr.Component(nc.name),
+				redact.Panic(rec),
+				slog.String("stack", stack),
 			)
 		}
+	}()
+
+	r.logger.Info("component starting", logattr.Component(nc.name))
+
+	startCtx, span := startComponentSpan(gCtx, "lifecycle.Start", nc.name)
+	err := nc.component.Start(startCtx)
+	recordComponentResult(span, err)
+	span.End()
+
+	// http.ErrServerClosed is expected during shutdown, and so is a
+	// component the shutdown stopped before it started.
+	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, ErrStoppedBeforeStart) {
+		return nil
 	}
+	return err
+}
+
+// runBeforeStop runs BeforeStop synchronously while components are still
+// live — hooks rely on DB / broker connections being open. Any panic is
+// converted to a structured error log so a misbehaving hook cannot block
+// component teardown.
+func (r *Runner) runBeforeStop(forceCtx context.Context) (err error) {
+	if r.beforeStop == nil {
+		return nil
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.logger.Error("BeforeStop panicked",
+				redact.Panic(rec),
+				slog.String("stack", string(debug.Stack())),
+			)
+			err = fmt.Errorf("BeforeStop panicked: %s", redact.PanicValue(rec))
+		}
+	}()
+	r.beforeStop(forceCtx)
+	return nil
 }
 
 // stopAll stops all components sequentially in reverse registration order.

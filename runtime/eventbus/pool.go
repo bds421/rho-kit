@@ -96,9 +96,7 @@ func (p *workerPool) submit(task *asyncTask, policy OnFullPolicy, pubCtx context
 	}
 
 	if p.stopped.Load() {
-		if p.metrics != nil {
-			p.metrics.dropped.Inc()
-		}
+		p.countDropped()
 		p.logger.Warn("eventbus: submit after stop, event dropped",
 			slog.String("event", task.eventName),
 		)
@@ -115,51 +113,62 @@ func (p *workerPool) submit(task *asyncTask, policy OnFullPolicy, pubCtx context
 		if r := recover(); r != nil {
 			ok = false
 			err = ErrStopped
-			if p.metrics != nil {
-				p.metrics.dropped.Inc()
-			}
+			p.countDropped()
 			releaseTask(task)
 		}
 	}()
 
 	if policy == OnFullBlock {
-		select {
-		case p.queue <- task:
-			if p.metrics != nil {
-				p.metrics.queueDepth.Set(float64(len(p.queue)))
-			}
-			return true, nil
-		case <-pubCtx.Done():
-			if p.metrics != nil {
-				p.metrics.dropped.Inc()
-			}
-			p.logger.Warn("eventbus: publisher context cancelled while waiting for queue space",
-				slog.String("event", task.eventName),
-				slog.String("handler", task.handler.name),
-			)
-			releaseTask(task)
-			return false, pubCtx.Err()
-		}
+		return p.enqueueOrWait(task, pubCtx)
 	}
+	return p.enqueueOrDrop(task), nil
+}
 
+// enqueueOrWait waits for queue space until pubCtx ends.
+func (p *workerPool) enqueueOrWait(task *asyncTask, pubCtx context.Context) (bool, error) {
 	select {
 	case p.queue <- task:
-		// queueDepth is approximate: len(p.queue) is non-atomic relative to the
-		// channel operation. Acceptable for Prometheus gauges.
-		if p.metrics != nil {
-			p.metrics.queueDepth.Set(float64(len(p.queue)))
-		}
+		p.recordQueueDepth()
 		return true, nil
+	case <-pubCtx.Done():
+		p.countDropped()
+		p.logger.Warn("eventbus: publisher context cancelled while waiting for queue space",
+			slog.String("event", task.eventName),
+			slog.String("handler", task.handler.name),
+		)
+		releaseTask(task)
+		return false, pubCtx.Err()
+	}
+}
+
+// enqueueOrDrop enqueues the task or, with the queue full, drops it.
+func (p *workerPool) enqueueOrDrop(task *asyncTask) bool {
+	select {
+	case p.queue <- task:
+		p.recordQueueDepth()
+		return true
 	default:
-		if p.metrics != nil {
-			p.metrics.dropped.Inc()
-		}
+		p.countDropped()
 		p.logger.Warn("eventbus: worker pool queue full, event dropped",
 			slog.String("event", task.eventName),
 			slog.String("handler", task.handler.name),
 		)
 		releaseTask(task)
-		return false, nil
+		return false
+	}
+}
+
+func (p *workerPool) countDropped() {
+	if p.metrics != nil {
+		p.metrics.dropped.Inc()
+	}
+}
+
+// recordQueueDepth is approximate: len(p.queue) is non-atomic relative to
+// the channel operation. Acceptable for Prometheus gauges.
+func (p *workerPool) recordQueueDepth() {
+	if p.metrics != nil {
+		p.metrics.queueDepth.Set(float64(len(p.queue)))
 	}
 }
 

@@ -164,25 +164,7 @@ func NewChecker(gatherer prometheus.Gatherer, slos ...SLO) *Checker {
 		if _, exists := seen[s.Name]; exists {
 			panic("slo: NewChecker duplicate SLO name")
 		}
-		switch s.Type {
-		case TypeLatency:
-			if s.Threshold <= 0 {
-				panic("slo: NewChecker latency SLO Threshold must be > 0 (seconds at the configured percentile)")
-			}
-			if s.Percentile <= 0 || s.Percentile >= 1 {
-				panic("slo: NewChecker latency SLO Percentile must lie in (0, 1)")
-			}
-		case TypeErrorRate:
-			if s.Threshold < 0 || s.Threshold > 1 {
-				panic("slo: NewChecker error-rate SLO Threshold must lie in [0, 1]")
-			}
-		case TypeSuccessRate:
-			if s.Threshold < 0 || s.Threshold > 1 {
-				panic("slo: NewChecker success-rate SLO Threshold must lie in [0, 1]")
-			}
-		default:
-			panic("slo: NewChecker SLO Type must be one of TypeLatency, TypeErrorRate, TypeSuccessRate")
-		}
+		mustValidTarget(s)
 		if s.Window < 0 {
 			panic("slo: NewChecker SLO Window must not be negative")
 		}
@@ -194,6 +176,30 @@ func NewChecker(gatherer prometheus.Gatherer, slos ...SLO) *Checker {
 	return &Checker{
 		gatherer: gatherer,
 		slos:     copied,
+	}
+}
+
+// mustValidTarget panics unless the SLO's threshold and percentile fit
+// its type.
+func mustValidTarget(s SLO) {
+	switch s.Type {
+	case TypeLatency:
+		if s.Threshold <= 0 {
+			panic("slo: NewChecker latency SLO Threshold must be > 0 (seconds at the configured percentile)")
+		}
+		if s.Percentile <= 0 || s.Percentile >= 1 {
+			panic("slo: NewChecker latency SLO Percentile must lie in (0, 1)")
+		}
+	case TypeErrorRate:
+		if s.Threshold < 0 || s.Threshold > 1 {
+			panic("slo: NewChecker error-rate SLO Threshold must lie in [0, 1]")
+		}
+	case TypeSuccessRate:
+		if s.Threshold < 0 || s.Threshold > 1 {
+			panic("slo: NewChecker success-rate SLO Threshold must lie in [0, 1]")
+		}
+	default:
+		panic("slo: NewChecker SLO Type must be one of TypeLatency, TypeErrorRate, TypeSuccessRate")
 	}
 }
 

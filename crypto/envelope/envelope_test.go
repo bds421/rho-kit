@@ -480,15 +480,7 @@ func TestEncrypt_ConsistentUnderConcurrentRotation(t *testing.T) {
 	rotWG.Add(1)
 	go func() {
 		defer rotWG.Done()
-		toggle := false
-		for !stop.Load() {
-			toggle = !toggle
-			if toggle {
-				_ = k.Rotate("v2")
-			} else {
-				_ = k.Rotate("v1")
-			}
-		}
+		toggleActiveKey(k, &stop)
 	}()
 
 	var wg sync.WaitGroup
@@ -497,22 +489,8 @@ func TestEncrypt_ConsistentUnderConcurrentRotation(t *testing.T) {
 	for w := 0; w < writers; w++ {
 		go func() {
 			defer wg.Done()
-			pt := []byte("rotation-race-payload")
-			for i := 0; i < perWriter; i++ {
-				blob, err := enc.Encrypt(context.Background(), pt, nil)
-				if err != nil {
-					errs <- err
-					return
-				}
-				got, err := enc.Decrypt(context.Background(), blob, nil)
-				if err != nil {
-					errs <- err
-					return
-				}
-				if string(got) != string(pt) {
-					errs <- assertEqualErr(pt, got)
-					return
-				}
+			if err := roundTrips(enc, []byte("rotation-race-payload"), perWriter); err != nil {
+				errs <- err
 			}
 		}()
 	}
@@ -524,6 +502,37 @@ func TestEncrypt_ConsistentUnderConcurrentRotation(t *testing.T) {
 	for e := range errs {
 		t.Fatalf("concurrent encrypt/decrypt failed: %v", e)
 	}
+}
+
+// toggleActiveKey flips the active key between v1 and v2 until stop is set.
+func toggleActiveKey(k *kekstatic.KEK, stop *atomic.Bool) {
+	toggle := false
+	for !stop.Load() {
+		toggle = !toggle
+		if toggle {
+			_ = k.Rotate("v2")
+		} else {
+			_ = k.Rotate("v1")
+		}
+	}
+}
+
+// roundTrips encrypts and decrypts pt n times and returns the first failure.
+func roundTrips(enc *envelope.Encryptor, pt []byte, n int) error {
+	for i := 0; i < n; i++ {
+		blob, err := enc.Encrypt(context.Background(), pt, nil)
+		if err != nil {
+			return err
+		}
+		got, err := enc.Decrypt(context.Background(), blob, nil)
+		if err != nil {
+			return err
+		}
+		if string(got) != string(pt) {
+			return assertEqualErr(pt, got)
+		}
+	}
+	return nil
 }
 
 // TestEncrypt_SamePlaintextDistinctCiphertexts is the adversarial DEK

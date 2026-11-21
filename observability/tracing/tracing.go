@@ -176,6 +176,18 @@ func (c Config) Validate() error {
 	if c.Compression != "" && c.Compression != "gzip" {
 		return fmt.Errorf("tracing: Compression must be empty or gzip")
 	}
+	if err := c.validateBatching(); err != nil {
+		return err
+	}
+	for k, v := range c.Headers {
+		if err := validateHeader(k, v); err != nil {
+			return err
+		}
+	}
+	return validateTenantSampleRates(c.TenantSampleRates)
+}
+
+func (c Config) validateBatching() error {
 	if c.BatchTimeout < 0 {
 		return errors.New("tracing: BatchTimeout must not be negative")
 	}
@@ -188,12 +200,11 @@ func (c Config) Validate() error {
 	if c.MaxQueueSize > 0 && c.MaxExportBatchSize > c.MaxQueueSize {
 		return errors.New("tracing: MaxExportBatchSize must be <= MaxQueueSize")
 	}
-	for k, v := range c.Headers {
-		if err := validateHeader(k, v); err != nil {
-			return err
-		}
-	}
-	for id, rate := range c.TenantSampleRates {
+	return nil
+}
+
+func validateTenantSampleRates(rates map[string]float64) error {
+	for id, rate := range rates {
 		if id == "" {
 			return errors.New("tracing: TenantSampleRates contains empty tenant ID")
 		}
@@ -324,34 +335,9 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 		return nil, fmt.Errorf("build resource: %w", err)
 	}
 
-	opts := []otlptracegrpc.Option{
-		otlptracegrpc.WithEndpoint(cfg.Endpoint),
-	}
-	if cfg.Insecure {
-		opts = append(opts, otlptracegrpc.WithInsecure())
-	}
-	if len(cfg.Headers) > 0 {
-		opts = append(opts, otlptracegrpc.WithHeaders(cfg.Headers))
-	}
-	if cfg.Compression == "gzip" {
-		opts = append(opts, otlptracegrpc.WithCompressor("gzip"))
-	}
-
-	dialCtx := ctx
-	var dialCancel context.CancelFunc
-	switch {
-	case cfg.InitTimeout < 0:
-		// Disabled: use caller ctx unchanged.
-	case cfg.InitTimeout == 0:
-		dialCtx, dialCancel = context.WithTimeout(ctx, defaultInitTimeout)
-	default:
-		dialCtx, dialCancel = context.WithTimeout(ctx, cfg.InitTimeout)
-	}
-	if dialCancel != nil {
-		defer dialCancel()
-	}
-
-	exporter, err := otlptracegrpc.New(dialCtx, opts...)
+	dialCtx, dialCancel := initDialContext(ctx, cfg.InitTimeout)
+	defer dialCancel()
+	exporter, err := otlptracegrpc.New(dialCtx, exporterOptions(cfg)...)
 	if err != nil {
 		// Don't block service startup on an unreachable collector.
 		// Surface the failure and degrade to noop so the rest of the
@@ -371,22 +357,8 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 		return nil, err
 	}
 
-	batchTimeout := cfg.BatchTimeout
-	if batchTimeout <= 0 {
-		batchTimeout = 5 * time.Second
-	}
-	batcherOpts := []sdktrace.BatchSpanProcessorOption{
-		sdktrace.WithBatchTimeout(batchTimeout),
-	}
-	if cfg.MaxQueueSize > 0 {
-		batcherOpts = append(batcherOpts, sdktrace.WithMaxQueueSize(cfg.MaxQueueSize))
-	}
-	if cfg.MaxExportBatchSize > 0 {
-		batcherOpts = append(batcherOpts, sdktrace.WithMaxExportBatchSize(cfg.MaxExportBatchSize))
-	}
-
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter, batcherOpts...),
+		sdktrace.WithBatcher(exporter, batcherOptions(cfg)...),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sampler),
 	)
@@ -396,6 +368,52 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 	otel.SetTextMapPropagator(propagators(cfg.EnableBaggage))
 
 	return &Provider{tp: tp}, nil
+}
+
+func exporterOptions(cfg Config) []otlptracegrpc.Option {
+	opts := []otlptracegrpc.Option{
+		otlptracegrpc.WithEndpoint(cfg.Endpoint),
+	}
+	if cfg.Insecure {
+		opts = append(opts, otlptracegrpc.WithInsecure())
+	}
+	if len(cfg.Headers) > 0 {
+		opts = append(opts, otlptracegrpc.WithHeaders(cfg.Headers))
+	}
+	if cfg.Compression == "gzip" {
+		opts = append(opts, otlptracegrpc.WithCompressor("gzip"))
+	}
+	return opts
+}
+
+// initDialContext bounds the exporter handshake by timeout: the default
+// when zero, none (the caller's ctx as-is) when negative.
+func initDialContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	switch {
+	case timeout < 0:
+		return ctx, func() {}
+	case timeout == 0:
+		return context.WithTimeout(ctx, defaultInitTimeout)
+	default:
+		return context.WithTimeout(ctx, timeout)
+	}
+}
+
+func batcherOptions(cfg Config) []sdktrace.BatchSpanProcessorOption {
+	batchTimeout := cfg.BatchTimeout
+	if batchTimeout <= 0 {
+		batchTimeout = 5 * time.Second
+	}
+	opts := []sdktrace.BatchSpanProcessorOption{
+		sdktrace.WithBatchTimeout(batchTimeout),
+	}
+	if cfg.MaxQueueSize > 0 {
+		opts = append(opts, sdktrace.WithMaxQueueSize(cfg.MaxQueueSize))
+	}
+	if cfg.MaxExportBatchSize > 0 {
+		opts = append(opts, sdktrace.WithMaxExportBatchSize(cfg.MaxExportBatchSize))
+	}
+	return opts
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

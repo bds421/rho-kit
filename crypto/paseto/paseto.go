@@ -45,6 +45,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -513,15 +514,7 @@ func buildToken(c Claims, cfg config) (paseto.Token, error) {
 	if len(c.Audience) > 1 {
 		return paseto.Token{}, ErrMultiAudience
 	}
-
-	exp := c.ExpiresAt
-	if exp.IsZero() && cfg.defaultLifetime > 0 {
-		base := c.IssuedAt
-		if base.IsZero() {
-			base = cfg.clock()
-		}
-		exp = base.Add(cfg.defaultLifetime)
-	}
+	exp := expiration(c, cfg)
 	if exp.IsZero() && cfg.requireExp {
 		return paseto.Token{}, ErrNoExpiration
 	}
@@ -530,21 +523,8 @@ func buildToken(c Claims, cfg config) (paseto.Token, error) {
 	if c.Subject != "" {
 		t.SetSubject(c.Subject)
 	}
-	if cfg.expectedIssuer != "" {
-		if c.Issuer != "" && c.Issuer != cfg.expectedIssuer {
-			return paseto.Token{}, ErrIssuerMismatch
-		}
-		t.SetIssuer(cfg.expectedIssuer)
-	} else if c.Issuer != "" {
-		t.SetIssuer(c.Issuer)
-	}
-	if cfg.expectedAudience != "" {
-		if len(c.Audience) == 1 && c.Audience[0] != cfg.expectedAudience {
-			return paseto.Token{}, ErrAudienceUnknown
-		}
-		t.SetAudience(cfg.expectedAudience)
-	} else if len(c.Audience) == 1 {
-		t.SetAudience(c.Audience[0])
+	if err := setIssuerAndAudience(&t, c, cfg); err != nil {
+		return paseto.Token{}, err
 	}
 	if !c.IssuedAt.IsZero() {
 		t.SetIssuedAt(c.IssuedAt)
@@ -564,6 +544,41 @@ func buildToken(c Claims, cfg config) (paseto.Token, error) {
 		}
 	}
 	return t, nil
+}
+
+// expiration is the token's expiry: the claimed one, or the default
+// lifetime from the issue time (or now) when none is claimed.
+func expiration(c Claims, cfg config) time.Time {
+	if !c.ExpiresAt.IsZero() || cfg.defaultLifetime <= 0 {
+		return c.ExpiresAt
+	}
+	base := c.IssuedAt
+	if base.IsZero() {
+		base = cfg.clock()
+	}
+	return base.Add(cfg.defaultLifetime)
+}
+
+// setIssuerAndAudience sets the configured issuer and audience, which a
+// claimed value must match, or else the claimed ones.
+func setIssuerAndAudience(t *paseto.Token, c Claims, cfg config) error {
+	if cfg.expectedIssuer != "" {
+		if c.Issuer != "" && c.Issuer != cfg.expectedIssuer {
+			return ErrIssuerMismatch
+		}
+		t.SetIssuer(cfg.expectedIssuer)
+	} else if c.Issuer != "" {
+		t.SetIssuer(c.Issuer)
+	}
+	if cfg.expectedAudience != "" {
+		if len(c.Audience) == 1 && c.Audience[0] != cfg.expectedAudience {
+			return ErrAudienceUnknown
+		}
+		t.SetAudience(cfg.expectedAudience)
+	} else if len(c.Audience) == 1 {
+		t.SetAudience(c.Audience[0])
+	}
+	return nil
 }
 
 func (v *V4PublicVerifier) validate(t *paseto.Token, now time.Time) (*Claims, error) {
@@ -590,45 +605,14 @@ func (v *V4Local) validateReady() error {
 
 func validate(t *paseto.Token, cfg config, now time.Time) (*Claims, error) {
 	now = verificationTime(now)
-	c := &Claims{Custom: make(map[string]any)}
-
-	if sub, err := t.GetSubject(); err == nil {
-		c.Subject = sub
-	}
-	if iss, err := t.GetIssuer(); err == nil {
-		c.Issuer = iss
-	}
-	if aud, err := t.GetAudience(); err == nil && aud != "" {
-		c.Audience = []string{aud}
-	}
-	if iat, err := t.GetIssuedAt(); err == nil {
-		c.IssuedAt = iat
-	}
-	expPresent := false
-	if exp, err := t.GetExpiration(); err == nil {
-		c.ExpiresAt = exp
-		expPresent = true
-	}
-	if nbf, err := t.GetNotBefore(); err == nil {
-		c.NotBefore = nbf
-	}
+	c, expPresent := registeredClaims(t)
 
 	if !cfg.allowAnyIssuer && c.Issuer != cfg.expectedIssuer {
 		return nil, ErrIssuerMismatch
 	}
-	if !cfg.allowAnyAudience {
-		match := false
-		for _, a := range c.Audience {
-			if a == cfg.expectedAudience {
-				match = true
-				break
-			}
-		}
-		if !match {
-			return nil, ErrAudienceUnknown
-		}
+	if !cfg.allowAnyAudience && !slices.Contains(c.Audience, cfg.expectedAudience) {
+		return nil, ErrAudienceUnknown
 	}
-
 	if cfg.requireExp && !expPresent {
 		return nil, ErrTokenNoExp
 	}
@@ -648,8 +632,33 @@ func validate(t *paseto.Token, cfg config, now time.Time) (*Claims, error) {
 		}
 		c.Custom[name] = val
 	}
-
 	return c, nil
+}
+
+// registeredClaims reads the typed claims of t and whether it carries an
+// expiry.
+func registeredClaims(t *paseto.Token) (c *Claims, expPresent bool) {
+	c = &Claims{Custom: make(map[string]any)}
+	if sub, err := t.GetSubject(); err == nil {
+		c.Subject = sub
+	}
+	if iss, err := t.GetIssuer(); err == nil {
+		c.Issuer = iss
+	}
+	if aud, err := t.GetAudience(); err == nil && aud != "" {
+		c.Audience = []string{aud}
+	}
+	if iat, err := t.GetIssuedAt(); err == nil {
+		c.IssuedAt = iat
+	}
+	if exp, err := t.GetExpiration(); err == nil {
+		c.ExpiresAt = exp
+		expPresent = true
+	}
+	if nbf, err := t.GetNotBefore(); err == nil {
+		c.NotBefore = nbf
+	}
+	return c, expPresent
 }
 
 // knownTopLevelClaims is the subset of reservedClaims that the

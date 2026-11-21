@@ -288,22 +288,7 @@ func (e *DurableExecutor) executeInstance(ctx context.Context, def *DurableDefin
 	unlock := e.lockInstance(instanceID)
 	defer unlock()
 
-	defer func() {
-		if rec := recover(); rec != nil {
-			e.logger.Error("saga step panicked",
-				slog.String("instance", instanceID),
-				slog.String("definition", def.Name),
-				redact.Panic(rec),
-			)
-			// Best-effort: persist a failure marker so Resume can pick up.
-			if inst, getErr := e.store.Get(ctx, instanceID); getErr == nil && !inst.IsTerminal() {
-				inst.LastError = redact.PanicValue(rec)
-				inst.State = StateCompensating
-				_ = e.store.Put(ctx, inst)
-			}
-			err = fmt.Errorf("saga: step panicked: %s", redact.PanicValue(rec))
-		}
-	}()
+	defer e.recoverStepPanic(ctx, def, instanceID, &err)
 
 	inst, err := e.store.Get(ctx, instanceID)
 	if err != nil {
@@ -332,32 +317,9 @@ func (e *DurableExecutor) executeInstance(ctx context.Context, def *DurableDefin
 		input := e.stepInput(inst)
 		output, fwdErr := step.Forward(ctx, input)
 		if fwdErr != nil {
-			e.logger.Warn("saga forward step failed",
-				slog.String("instance", inst.ID),
-				slog.String("definition", def.Name),
-				slog.String("step", step.Name),
-				redact.Error(fwdErr),
-			)
-			inst.LastError = redact.ErrorValue(fwdErr)
-			inst.State = StateCompensating
-			if err := e.store.Put(ctx, inst); err != nil {
-				return fmt.Errorf("saga: persist failure state: %w", err)
-			}
-			fwd := &ForwardError{Index: inst.CurrentStep, Name: step.Name, Cause: fwdErr}
-			return e.driveCompensationAfterForward(ctx, def, inst, fwd)
+			return e.failForward(ctx, def, inst, step.Name, fwdErr)
 		}
-		// Persist the step's output before advancing CurrentStep so
-		// a crash after this point still has the output for Compensate.
-		// Grow StepResults to len(def.Steps) when starting fresh OR
-		// when resuming a pre-crash instance whose persisted slice is
-		// shorter than the definition (the crash happened before
-		// later step slots were written).
-		if len(inst.StepResults) < len(def.Steps) {
-			grown := make([]json.RawMessage, len(def.Steps))
-			copy(grown, inst.StepResults)
-			inst.StepResults = grown
-		}
-		inst.StepResults[inst.CurrentStep] = output
+		recordStepOutput(&inst, len(def.Steps), output)
 		inst.CurrentStep++
 		inst.LastError = ""
 		if err := e.store.Put(ctx, inst); err != nil {
@@ -374,6 +336,58 @@ func (e *DurableExecutor) executeInstance(ctx context.Context, def *DurableDefin
 		slog.String("definition", def.Name),
 	)
 	return nil
+}
+
+// recoverStepPanic turns a panicking step into *err and, best effort,
+// persists a failure marker so Resume can pick up.
+func (e *DurableExecutor) recoverStepPanic(ctx context.Context, def *DurableDefinition, instanceID string, err *error) {
+	rec := recover()
+	if rec == nil {
+		return
+	}
+	e.logger.Error("saga step panicked",
+		slog.String("instance", instanceID),
+		slog.String("definition", def.Name),
+		redact.Panic(rec),
+	)
+	// Best-effort: persist a failure marker so Resume can pick up.
+	if inst, getErr := e.store.Get(ctx, instanceID); getErr == nil && !inst.IsTerminal() {
+		inst.LastError = redact.PanicValue(rec)
+		inst.State = StateCompensating
+		_ = e.store.Put(ctx, inst)
+	}
+	*err = fmt.Errorf("saga: step panicked: %s", redact.PanicValue(rec))
+}
+
+// failForward persists the failed forward step and compensates.
+func (e *DurableExecutor) failForward(ctx context.Context, def *DurableDefinition, inst Instance, stepName string, fwdErr error) error {
+	e.logger.Warn("saga forward step failed",
+		slog.String("instance", inst.ID),
+		slog.String("definition", def.Name),
+		slog.String("step", stepName),
+		redact.Error(fwdErr),
+	)
+	inst.LastError = redact.ErrorValue(fwdErr)
+	inst.State = StateCompensating
+	if err := e.store.Put(ctx, inst); err != nil {
+		return fmt.Errorf("saga: persist failure state: %w", err)
+	}
+	fwd := &ForwardError{Index: inst.CurrentStep, Name: stepName, Cause: fwdErr}
+	return e.driveCompensationAfterForward(ctx, def, inst, fwd)
+}
+
+// recordStepOutput keeps the step's output before CurrentStep advances, so
+// a crash after this point still has the output for Compensate. It grows
+// StepResults to steps when starting fresh OR when resuming a pre-crash
+// instance whose persisted slice is shorter than the definition (the crash
+// happened before later step slots were written).
+func recordStepOutput(inst *Instance, steps int, output json.RawMessage) {
+	if len(inst.StepResults) < steps {
+		grown := make([]json.RawMessage, steps)
+		copy(grown, inst.StepResults)
+		inst.StepResults = grown
+	}
+	inst.StepResults[inst.CurrentStep] = output
 }
 
 // driveCompensationAfterForward is invoked when a forward step has

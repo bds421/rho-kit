@@ -1110,28 +1110,7 @@ func TestV4PublicSigner_CloseConcurrentWithSign(t *testing.T) {
 		go func() {
 			defer func() { done <- struct{}{} }()
 			<-start
-			for {
-				tok, serr := signer.Sign(Claims{
-					Issuer:    "svc-A",
-					Audience:  []string{"svc-B"},
-					ExpiresAt: time.Now().Add(time.Hour),
-				})
-				if errors.Is(serr, ErrSignerClosed) {
-					return
-				}
-				if serr != nil {
-					// No other error is expected from a valid signer.
-					t.Errorf("Sign: %v", serr)
-					return
-				}
-				// Any successfully signed token must verify: a token
-				// produced from partially zeroed key material would fail
-				// authentication here.
-				if _, verr := verifier.Verify(tok, time.Now()); verr != nil {
-					t.Errorf("token from concurrent Sign failed Verify: %v", verr)
-					return
-				}
-			}
+			signUntilClosed(t, signer, verifier)
 		}()
 	}
 
@@ -1157,6 +1136,32 @@ func TestV4PublicSigner_CloseConcurrentWithSign(t *testing.T) {
 		ExpiresAt: futureExp(),
 	})
 	assert.ErrorIs(t, err, ErrSignerClosed)
+}
+
+// signUntilClosed signs until the signer is closed. Any successfully signed
+// token must verify: a token produced from partially zeroed key material
+// would fail authentication. It runs off the test goroutine, so it reports
+// with t.Errorf.
+func signUntilClosed(t *testing.T, signer *V4PublicSigner, verifier *V4PublicVerifier) {
+	for {
+		tok, err := signer.Sign(Claims{
+			Issuer:    "svc-A",
+			Audience:  []string{"svc-B"},
+			ExpiresAt: time.Now().Add(time.Hour),
+		})
+		if errors.Is(err, ErrSignerClosed) {
+			return
+		}
+		if err != nil {
+			// No other error is expected from a valid signer.
+			t.Errorf("Sign: %v", err)
+			return
+		}
+		if _, err := verifier.Verify(tok, time.Now()); err != nil {
+			t.Errorf("token from concurrent Sign failed Verify: %v", err)
+			return
+		}
+	}
 }
 
 func TestWithDefaultLifetime_UsesWithClock(t *testing.T) {

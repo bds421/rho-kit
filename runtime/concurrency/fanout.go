@@ -213,26 +213,27 @@ func FanOutSettled[T any](ctx context.Context, fns []func(ctx context.Context) (
 			if sem != nil {
 				defer func() { <-sem }()
 			}
-
-			defer func() {
-				if rec := recover(); rec != nil {
-					results[i] = Result[T]{
-						Err: newPanicError(i, rec),
-					}
-				}
-			}()
-
-			val, err := fn(ctx)
-			if err != nil {
-				results[i] = Result[T]{Err: err}
-			} else {
-				results[i] = Result[T]{Value: val}
-			}
+			results[i] = settle(ctx, i, fn)
 		}()
 	}
 
 	wg.Wait()
 	return results
+}
+
+// settle runs fn and returns its Result; a panic becomes the Result's
+// error.
+func settle[T any](ctx context.Context, i int, fn func(ctx context.Context) (T, error)) (result Result[T]) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			result = Result[T]{Err: newPanicError(i, rec)}
+		}
+	}()
+	val, err := fn(ctx)
+	if err != nil {
+		return Result[T]{Err: err}
+	}
+	return Result[T]{Value: val}
 }
 
 func settledErrorResults[T any](n int, err error) []Result[T] {

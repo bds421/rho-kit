@@ -259,18 +259,29 @@ func newChainVerifier(keys []ChainKey, sealing int, v Verification) (*chainVerif
 	return nil, fmt.Errorf("%w: the anchored chain key %q is not listed", ErrChainBroken, v.Anchor.KeyID)
 }
 
+// checkPrev checks that the event chains from the one before it, or for
+// the first event from the retention watermark (none: empty or zero).
+func (c *chainVerifier) checkPrev(event Event) error {
+	i := c.index
+	switch {
+	case i > 0:
+		if !constantTimeEqualHMAC(event.PrevHMAC, c.prev) {
+			return fmt.Errorf("%w: event[%d] PrevHMAC does not match event[%d] HMAC", ErrChainBroken, i, i-1)
+		}
+	case len(c.v.Watermark) == 0:
+		if len(event.PrevHMAC) != 0 && !isZeroBytes(event.PrevHMAC) {
+			return fmt.Errorf("%w: event[0] PrevHMAC must be empty or zero", ErrChainBroken)
+		}
+	case !constantTimeEqualHMAC(event.PrevHMAC, c.v.Watermark):
+		return fmt.Errorf("%w: event[0] PrevHMAC does not match retention watermark", ErrChainBroken)
+	}
+	return nil
+}
+
 func (c *chainVerifier) step(event Event) error {
 	i := c.index
-	if i == 0 {
-		if len(c.v.Watermark) == 0 {
-			if len(event.PrevHMAC) != 0 && !isZeroBytes(event.PrevHMAC) {
-				return fmt.Errorf("%w: event[0] PrevHMAC must be empty or zero", ErrChainBroken)
-			}
-		} else if !constantTimeEqualHMAC(event.PrevHMAC, c.v.Watermark) {
-			return fmt.Errorf("%w: event[0] PrevHMAC does not match retention watermark", ErrChainBroken)
-		}
-	} else if !constantTimeEqualHMAC(event.PrevHMAC, c.prev) {
-		return fmt.Errorf("%w: event[%d] PrevHMAC does not match event[%d] HMAC", ErrChainBroken, i, i-1)
+	if err := c.checkPrev(event); err != nil {
+		return err
 	}
 	sealer, keyed := c.sealer(event)
 	if sealer < 0 {

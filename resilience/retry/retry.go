@@ -283,15 +283,7 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 	if logger == nil {
 		logger = slog.Default()
 	}
-	p := WorkerPolicy()
-	for _, o := range opts {
-		if o == nil {
-			panic("retry: Loop option must not be nil")
-		}
-		o(&p)
-	}
-	mustValidatePolicy("retry: Loop policy", p)
-
+	p := loopPolicy(opts)
 	bo := newBackOff(p)
 	attempt := 0
 	loopStart := time.Now()
@@ -327,17 +319,8 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 		}
 
 		wait, plan := evaluateRetry(logger, component, p, bo, &attempt, loopStart, start, err)
-		switch plan {
-		case retryPlanStopNonRetryable:
-			logger.Error(component+" stopped with non-retryable error", redact.Error(err))
-			return
-		case retryPlanStopMaxElapsed:
-			logger.Error(component+" max elapsed time exceeded, stopping",
-				redact.Error(err), "elapsed", time.Since(loopStart), "max", p.MaxElapsedTime)
-			return
-		case retryPlanStopMaxRetries:
-			logger.Error(component+" max retries exhausted, stopping",
-				"attempts", attempt, "max", p.MaxRetries)
+		if plan != retryPlanContinue {
+			logLoopStop(logger, component, plan, err, attempt, loopStart, p)
 			return
 		}
 
@@ -355,6 +338,33 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 		case <-timer.C:
 		}
 		attempt++
+	}
+}
+
+// loopPolicy is WorkerPolicy with opts applied.
+func loopPolicy(opts []Option) Policy {
+	p := WorkerPolicy()
+	for _, o := range opts {
+		if o == nil {
+			panic("retry: Loop option must not be nil")
+		}
+		o(&p)
+	}
+	mustValidatePolicy("retry: Loop policy", p)
+	return p
+}
+
+// logLoopStop logs why Loop stops retrying.
+func logLoopStop(logger *slog.Logger, component string, plan retryPlan, err error, attempt int, loopStart time.Time, p Policy) {
+	switch plan {
+	case retryPlanStopNonRetryable:
+		logger.Error(component+" stopped with non-retryable error", redact.Error(err))
+	case retryPlanStopMaxElapsed:
+		logger.Error(component+" max elapsed time exceeded, stopping",
+			redact.Error(err), "elapsed", time.Since(loopStart), "max", p.MaxElapsedTime)
+	case retryPlanStopMaxRetries:
+		logger.Error(component+" max retries exhausted, stopping",
+			"attempts", attempt, "max", p.MaxRetries)
 	}
 }
 

@@ -178,21 +178,8 @@ func newTransitHandler(t *testing.T, expectedContext string) http.Handler {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/platform/transit/encrypt/orders", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Errorf("encrypt method = %s, want PUT", r.Method)
-			return
-		}
-		var req map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("decode encrypt request: %v", err)
-			return
-		}
-		got, ok := decodeTransitField(t, req, "context")
+		req, ok := readTransitRequest(t, r, "encrypt", expectedContext)
 		if !ok {
-			return
-		}
-		if got != expectedContext {
-			t.Errorf("encrypt context = %q, want %q", got, expectedContext)
 			return
 		}
 		if got := req["key_version"]; got != float64(3) {
@@ -207,21 +194,8 @@ func newTransitHandler(t *testing.T, expectedContext string) http.Handler {
 		writeVaultData(t, w, map[string]interface{}{"ciphertext": ciphertext})
 	})
 	mux.HandleFunc("/v1/platform/transit/decrypt/orders", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Errorf("decrypt method = %s, want PUT", r.Method)
-			return
-		}
-		var req map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("decode decrypt request: %v", err)
-			return
-		}
-		got, ok := decodeTransitField(t, req, "context")
+		req, ok := readTransitRequest(t, r, "decrypt", expectedContext)
 		if !ok {
-			return
-		}
-		if got != expectedContext {
-			t.Errorf("decrypt context = %q, want %q", got, expectedContext)
 			return
 		}
 		ciphertext, ok := req["ciphertext"].(string)
@@ -239,6 +213,31 @@ func newTransitHandler(t *testing.T, expectedContext string) http.Handler {
 		})
 	})
 	return mux
+}
+
+// readTransitRequest checks the method and the context of an encrypt or
+// decrypt request (op) and returns its body. Like decodeTransitField it
+// reports failures via t.Error*.
+func readTransitRequest(t *testing.T, r *http.Request, op, expectedContext string) (map[string]interface{}, bool) {
+	t.Helper()
+	if r.Method != http.MethodPut {
+		t.Errorf("%s method = %s, want PUT", op, r.Method)
+		return nil, false
+	}
+	var req map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		t.Errorf("decode %s request: %v", op, err)
+		return nil, false
+	}
+	got, ok := decodeTransitField(t, req, "context")
+	if !ok {
+		return nil, false
+	}
+	if got != expectedContext {
+		t.Errorf("%s context = %q, want %q", op, got, expectedContext)
+		return nil, false
+	}
+	return req, true
 }
 
 // decodeTransitField reads a base64 Transit field. It is called from server

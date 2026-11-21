@@ -221,61 +221,73 @@ func (k *KEK) validate(ctx context.Context) error {
 //     does not orphan envelopes written under the previous target key.
 //   - Alias-form envelope IDs still decrypt through the configured alias.
 func (k *KEK) decryptKeyIDFor(keyID string) (string, error) {
-	if keyID == k.keyID {
+	switch {
+	case keyID == k.keyID:
 		return keyID, nil
-	}
-
-	if isKMSAliasID(k.keyID) {
-		// Forward a scoped key ARN so alias retargeting keeps prior
-		// envelopes decryptable via their recorded key ARN.
-		if isKMSKeyARN(keyID) {
-			if isKMSAliasARN(k.keyID) {
-				if !sameKMSARNScope(k.keyID, keyID) {
-					return "", errors.New("awskms: keyID does not match this KEK")
-				}
-			} else if k.region != "" {
-				region, ok := kmsARNRegion(keyID)
-				if !ok || region != k.region {
-					return "", errors.New("awskms: keyID region does not match this KEK")
-				}
-			}
-			return keyID, nil
-		}
-		// Alias-form envelope IDs: decrypt through the configured alias only
-		// when the envelope alias is in scope (or the config is a bare alias
-		// name — then only exact match is accepted via the keyID==k.keyID
-		// short-circuit above, or reject foreign alias ARNs).
-		if isKMSAliasARN(keyID) && isKMSAliasARN(k.keyID) && sameKMSARNScope(k.keyID, keyID) {
-			// Same account/region alias ARN family — still pin to configured
-			// alias resource rather than a foreign alias name.
-			if kmsARNResourceEqual(k.keyID, keyID) {
-				return k.keyID, nil
-			}
-		}
+	case isKMSAliasID(k.keyID):
+		return k.aliasDecryptKeyID(keyID)
+	case isKMSKeyARN(keyID):
+		return k.bareKeyDecryptKeyID(keyID)
+	default:
 		return "", errors.New("awskms: keyID does not match this KEK")
 	}
+}
 
-	// Bare key UUID configuration: accept only a well-formed key ARN whose
-	// resource is exactly "key/<configured-id>" (not a loose suffix match that
-	// could accept crafted nested resources). When the client region is known,
-	// pin it; when unknown, reject ARN forms fail-closed rather than forwarding
-	// an attacker-controlled ARN to Decrypt.
+// aliasDecryptKeyID serves an alias-configured KEK.
+func (k *KEK) aliasDecryptKeyID(keyID string) (string, error) {
+	// Forward a scoped key ARN so alias retargeting keeps prior
+	// envelopes decryptable via their recorded key ARN.
 	if isKMSKeyARN(keyID) {
-		resource, ok := kmsARNResource(keyID)
-		if !ok || resource != "key/"+k.keyID {
-			return "", errors.New("awskms: keyID does not match this KEK")
-		}
-		if k.region == "" {
-			return "", errors.New("awskms: keyID ARN requires known client region for bare key ID config")
-		}
-		region, ok := kmsARNRegion(keyID)
-		if !ok || region != k.region {
-			return "", errors.New("awskms: keyID region does not match this KEK")
+		if isKMSAliasARN(k.keyID) {
+			if !sameKMSARNScope(k.keyID, keyID) {
+				return "", errors.New("awskms: keyID does not match this KEK")
+			}
+		} else if k.region != "" {
+			if err := k.checkARNRegion(keyID); err != nil {
+				return "", err
+			}
 		}
 		return keyID, nil
 	}
-
+	// Alias-form envelope IDs: decrypt through the configured alias only
+	// when the envelope alias is in scope (or the config is a bare alias
+	// name — then only exact match is accepted via the keyID==k.keyID
+	// short-circuit in decryptKeyIDFor, or reject foreign alias ARNs).
+	// Same account/region alias ARN family — still pin to configured
+	// alias resource rather than a foreign alias name.
+	if isKMSAliasARN(keyID) && isKMSAliasARN(k.keyID) && sameKMSARNScope(k.keyID, keyID) &&
+		kmsARNResourceEqual(k.keyID, keyID) {
+		return k.keyID, nil
+	}
 	return "", errors.New("awskms: keyID does not match this KEK")
+}
+
+// bareKeyDecryptKeyID serves a bare key UUID configuration: it accepts only
+// a well-formed key ARN whose resource is exactly "key/<configured-id>"
+// (not a loose suffix match that could accept crafted nested resources).
+// When the client region is known, it pins it; when unknown, it rejects
+// ARN forms fail-closed rather than forwarding an attacker-controlled ARN
+// to Decrypt.
+func (k *KEK) bareKeyDecryptKeyID(keyID string) (string, error) {
+	resource, ok := kmsARNResource(keyID)
+	if !ok || resource != "key/"+k.keyID {
+		return "", errors.New("awskms: keyID does not match this KEK")
+	}
+	if k.region == "" {
+		return "", errors.New("awskms: keyID ARN requires known client region for bare key ID config")
+	}
+	if err := k.checkARNRegion(keyID); err != nil {
+		return "", err
+	}
+	return keyID, nil
+}
+
+func (k *KEK) checkARNRegion(keyID string) error {
+	region, ok := kmsARNRegion(keyID)
+	if !ok || region != k.region {
+		return errors.New("awskms: keyID region does not match this KEK")
+	}
+	return nil
 }
 
 func isKMSAliasID(s string) bool {

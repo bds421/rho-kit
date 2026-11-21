@@ -145,6 +145,30 @@ func ValidateEvent(event Event) error {
 	if event.Timestamp.IsZero() {
 		return fmt.Errorf("%w: timestamp must not be zero", ErrInvalidEvent)
 	}
+	if err := validateTokens(event); err != nil {
+		return err
+	}
+	if err := validateStatus(event.Status); err != nil {
+		return err
+	}
+	if event.IPAddress != "" && !validIPAddress(event.IPAddress) {
+		return fmt.Errorf("%w: ip_address is invalid", ErrInvalidEvent)
+	}
+	if event.TraceID != "" && (len(event.TraceID) != MaxTraceIDBytes || !isLowerHex(event.TraceID)) {
+		return fmt.Errorf("%w: trace_id must be 32 lowercase hex characters", ErrInvalidEvent)
+	}
+	if len(event.Metadata) > MaxMetadataBytes {
+		return fmt.Errorf("%w: metadata exceeds maximum length", ErrInvalidEvent)
+	}
+	if len(event.Metadata) > 0 && !json.Valid(event.Metadata) {
+		return fmt.Errorf("%w: metadata must be valid JSON", ErrInvalidEvent)
+	}
+	return nil
+}
+
+// validateTokens checks the event's identifying tokens; the tenant is
+// optional.
+func validateTokens(event Event) error {
 	if err := validateRequiredToken("id", event.ID, MaxEventIDBytes); err != nil {
 		return err
 	}
@@ -159,32 +183,15 @@ func ValidateEvent(event Event) error {
 	if err := validateRequiredToken("action", event.Action, MaxActionBytes); err != nil {
 		return err
 	}
-	if err := validateRequiredToken("resource", event.Resource, MaxResourceBytes); err != nil {
-		return err
+	return validateRequiredToken("resource", event.Resource, MaxResourceBytes)
+}
+
+func validIPAddress(s string) bool {
+	if len(s) > MaxIPAddressBytes || !utf8.ValidString(s) {
+		return false
 	}
-	if err := validateStatus(event.Status); err != nil {
-		return err
-	}
-	if event.IPAddress != "" {
-		if len(event.IPAddress) > MaxIPAddressBytes || !utf8.ValidString(event.IPAddress) {
-			return fmt.Errorf("%w: ip_address is invalid", ErrInvalidEvent)
-		}
-		if _, err := netip.ParseAddr(event.IPAddress); err != nil {
-			return fmt.Errorf("%w: ip_address is invalid", ErrInvalidEvent)
-		}
-	}
-	if event.TraceID != "" {
-		if len(event.TraceID) != MaxTraceIDBytes || !isLowerHex(event.TraceID) {
-			return fmt.Errorf("%w: trace_id must be 32 lowercase hex characters", ErrInvalidEvent)
-		}
-	}
-	if len(event.Metadata) > MaxMetadataBytes {
-		return fmt.Errorf("%w: metadata exceeds maximum length", ErrInvalidEvent)
-	}
-	if len(event.Metadata) > 0 && !json.Valid(event.Metadata) {
-		return fmt.Errorf("%w: metadata must be valid JSON", ErrInvalidEvent)
-	}
-	return nil
+	_, err := netip.ParseAddr(s)
+	return err == nil
 }
 
 // Store is the append-only persistence interface for audit events.

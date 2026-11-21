@@ -180,49 +180,26 @@ func (m *MemoryStore) Query(ctx context.Context, filter Filter, cursor string, l
 	if limit > MaxPageLimit {
 		return nil, "", ErrLimitTooLarge
 	}
-	m.mu.RLock()
-	// Snapshot under the read lock so the sort runs on an immutable
-	// slice without pinning writers behind it.
-	snap := make([]Event, len(m.events))
-	for i, e := range m.events {
-		snap[i] = cloneEvent(e)
-	}
-	m.mu.RUnlock()
-
+	snap := m.newestFirst()
 	if limit <= 0 {
 		limit = 50
 	}
 
-	// Sort timestamp-descending; ties break on event ID descending so
-	// the iteration is stable.
-	sort.SliceStable(snap, func(i, j int) bool {
-		if !snap[i].Timestamp.Equal(snap[j].Timestamp) {
-			return snap[i].Timestamp.After(snap[j].Timestamp)
-		}
-		return snap[i].ID > snap[j].ID
-	})
-
 	matched := make([]Event, 0, limit+1)
 	pastCursor := cursor == ""
-
 	for i, e := range snap {
 		if i%memCtxCheckBatch == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, "", err
 			}
 		}
-
 		if !pastCursor {
-			if e.ID == cursor {
-				pastCursor = true
-			}
+			pastCursor = e.ID == cursor
 			continue
 		}
-
 		if !matchesFilter(e, filter) {
 			continue
 		}
-
 		matched = append(matched, e)
 		if len(matched) > limit {
 			break
@@ -236,6 +213,27 @@ func (m *MemoryStore) Query(ctx context.Context, filter Filter, cursor string, l
 		matched = matched[:limit]
 	}
 	return matched, nextCursor, nil
+}
+
+// newestFirst snapshots the events under the read lock, so the sort runs
+// on an immutable slice without pinning writers behind it, and sorts them
+// timestamp-descending; ties break on event ID descending so the
+// iteration is stable.
+func (m *MemoryStore) newestFirst() []Event {
+	m.mu.RLock()
+	snap := make([]Event, len(m.events))
+	for i, e := range m.events {
+		snap[i] = cloneEvent(e)
+	}
+	m.mu.RUnlock()
+
+	sort.SliceStable(snap, func(i, j int) bool {
+		if !snap[i].Timestamp.Equal(snap[j].Timestamp) {
+			return snap[i].Timestamp.After(snap[j].Timestamp)
+		}
+		return snap[i].ID > snap[j].ID
+	})
+	return snap
 }
 
 // Events returns all stored events (oldest first). Test helper.

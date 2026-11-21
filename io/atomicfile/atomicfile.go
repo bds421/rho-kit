@@ -112,90 +112,18 @@ func Save[T any](path string, v T) error {
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
-
-	dir := filepath.Dir(path)
-	if err := rejectSymlinkAncestors(path); err != nil {
-		return fmt.Errorf("unsafe state path: %w", err)
-	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fileError("create state directory", err)
-	}
-	if err := rejectSymlinkAncestors(path); err != nil {
-		return fmt.Errorf("unsafe state path: %w", err)
-	}
-
-	// Refuse to follow a symlink at the destination. An attacker with
-	// write access to the parent dir could otherwise plant a symlink
-	// at `path` pointing at a sensitive target (e.g. /etc/passwd) and
-	// trick Save into clobbering it. lstat does not follow links, so
-	// this catches the case before we open the temp file.
-	info, lerr := os.Lstat(path)
-	if lerr != nil && !errors.Is(lerr, os.ErrNotExist) {
-		return fileError("stat state file", lerr)
-	}
-	if lerr == nil && info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("refusing to write through symlink")
-	}
-
-	// Capture existing mode before we replace it. Missing target is fine —
-	// new files will use the temp-file default (0600). Use Lstat so we
-	// inspect the path itself, not a symlink target.
-	var preserveMode os.FileMode
-	if lerr == nil {
-		preserveMode = info.Mode().Perm()
-	}
-
-	tmp, err := os.CreateTemp(dir, "state-*.tmp")
+	preserveMode, err := prepareStatePath(path)
 	if err != nil {
-		return fileError("create temp file", err)
+		return err
 	}
-	tmpPath := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
+	dir := filepath.Dir(path)
+	tmpPath, err := writeTemp(dir, data, preserveMode)
+	if err != nil {
+		return err
+	}
+	if err := replaceWithTemp(tmpPath, path, preserveMode); err != nil {
 		_ = os.Remove(tmpPath)
-		return fileError("write temp file", err)
-	}
-
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return fileError("sync temp file", err)
-	}
-
-	// Chmod via the open fd (not the path) so a concurrent symlink plant
-	// in the same directory cannot redirect the mode change.
-	if preserveMode != 0 {
-		if err := tmp.Chmod(preserveMode); err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmpPath)
-			return fileError("preserve file mode", err)
-		}
-	}
-
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fileError("close temp file", err)
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		// EXDEV: temp file and target are on different filesystems. This
-		// happens when the parent directory is a bind mount whose backing
-		// store differs from where CreateTemp landed. Fall back to a
-		// copy + remove so atomic semantics are preserved at the
-		// filesystem-of-target level (the rename target is replaced
-		// atomically once the copy completes; the only loss vs same-fs
-		// rename is durability if the process dies mid-copy).
-		var linkErr *os.LinkError
-		if errors.As(err, &linkErr) && errors.Is(linkErr.Err, errExdev) {
-			if copyErr := copyAndReplace(tmpPath, path, preserveMode); copyErr != nil {
-				_ = os.Remove(tmpPath)
-				return fmt.Errorf("rename state file (cross-device fallback): %w", copyErr)
-			}
-		} else {
-			_ = os.Remove(tmpPath)
-			return fileError("rename state file", err)
-		}
+		return err
 	}
 
 	// Flush the directory entry to stable storage so the new filename
@@ -208,7 +136,94 @@ func Save[T any](path string, v T) error {
 		_ = d.Sync()
 		_ = d.Close()
 	}
+	return nil
+}
 
+// prepareStatePath creates the parent directory and returns the mode of
+// an existing file at path to preserve (0 when there is none; new files
+// keep the temp-file default 0600).
+//
+// It refuses to follow a symlink at the destination. An attacker with
+// write access to the parent dir could otherwise plant a symlink at
+// `path` pointing at a sensitive target (e.g. /etc/passwd) and trick Save
+// into clobbering it. lstat does not follow links, so this catches the
+// case before the temp file is opened.
+func prepareStatePath(path string) (os.FileMode, error) {
+	if err := rejectSymlinkAncestors(path); err != nil {
+		return 0, fmt.Errorf("unsafe state path: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return 0, fileError("create state directory", err)
+	}
+	if err := rejectSymlinkAncestors(path); err != nil {
+		return 0, fmt.Errorf("unsafe state path: %w", err)
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fileError("stat state file", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return 0, errors.New("refusing to write through symlink")
+	}
+	return info.Mode().Perm(), nil
+}
+
+// writeTemp writes data to a synced temp file in dir and returns its
+// path; on failure the temp file is removed.
+func writeTemp(dir string, data []byte, preserveMode os.FileMode) (string, error) {
+	tmp, err := os.CreateTemp(dir, "state-*.tmp")
+	if err != nil {
+		return "", fileError("create temp file", err)
+	}
+	tmpPath := tmp.Name()
+	fail := func(op string, err error) (string, error) {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return "", fileError(op, err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fail("write temp file", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fail("sync temp file", err)
+	}
+	// Chmod via the open fd (not the path) so a concurrent symlink plant
+	// in the same directory cannot redirect the mode change.
+	if preserveMode != 0 {
+		if err := tmp.Chmod(preserveMode); err != nil {
+			return fail("preserve file mode", err)
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fileError("close temp file", err)
+	}
+	return tmpPath, nil
+}
+
+// replaceWithTemp renames the temp file over path.
+//
+// On EXDEV the temp file and target are on different filesystems. This
+// happens when the parent directory is a bind mount whose backing store
+// differs from where CreateTemp landed. It falls back to a copy + remove
+// so atomic semantics are preserved at the filesystem-of-target level
+// (the rename target is replaced atomically once the copy completes; the
+// only loss vs same-fs rename is durability if the process dies mid-copy).
+func replaceWithTemp(tmpPath, path string, preserveMode os.FileMode) error {
+	err := os.Rename(tmpPath, path)
+	if err == nil {
+		return nil
+	}
+	var linkErr *os.LinkError
+	if !errors.As(err, &linkErr) || !errors.Is(linkErr.Err, errExdev) {
+		return fileError("rename state file", err)
+	}
+	if copyErr := copyAndReplace(tmpPath, path, preserveMode); copyErr != nil {
+		return fmt.Errorf("rename state file (cross-device fallback): %w", copyErr)
+	}
 	return nil
 }
 

@@ -143,20 +143,8 @@ func shippedHosts(o HostOptions) (map[string]string, error) {
 			continue
 		}
 		built[fields[0]] = true
-		for _, f := range strings.Fields(fields[2]) {
-			path := filepath.Join(fields[1], f)
-			if skipped(o, path) {
-				continue
-			}
-			b, err := os.ReadFile(path) // #nosec G304 -- a source file go list names
-			if err != nil {
-				return nil, err
-			}
-			for _, m := range urlHost.FindAllStringSubmatch(string(b), -1) {
-				if !reservedHost.MatchString(m[1]) {
-					hosts[m[1]] = path
-				}
-			}
+		if err := collectHosts(o, fields[1], strings.Fields(fields[2]), hosts); err != nil {
+			return nil, err
 		}
 	}
 	for _, m := range modules {
@@ -165,6 +153,26 @@ func shippedHosts(o HostOptions) (map[string]string, error) {
 		}
 	}
 	return hosts, nil
+}
+
+// collectHosts adds the hosts named in the files of dir to hosts.
+func collectHosts(o HostOptions, dir string, files []string, hosts map[string]string) error {
+	for _, f := range files {
+		path := filepath.Join(dir, f)
+		if skipped(o, path) {
+			continue
+		}
+		b, err := os.ReadFile(path) // #nosec G304 -- a source file go list names
+		if err != nil {
+			return err
+		}
+		for _, m := range urlHost.FindAllStringSubmatch(string(b), -1) {
+			if !reservedHost.MatchString(m[1]) {
+				hosts[m[1]] = path
+			}
+		}
+	}
+	return nil
 }
 
 // goCmd runs go in dir as the release builds: outside any workspace, where

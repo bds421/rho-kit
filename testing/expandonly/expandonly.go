@@ -107,63 +107,80 @@ var (
 
 // Check returns the findings of every set and of the floor.
 func Check(o Options) ([]Finding, error) {
-	var findings []Finding
-	floor := ""
-	adopted := map[string]bool{}
+	c := &checkRun{o: o, adopted: map[string]bool{}}
 	for _, s := range o.Sets {
 		files, err := migrationsOf(s)
 		if err != nil {
 			return nil, err
 		}
 		for _, file := range files {
-			name, version, src := file.name, file.version, file.src
-			label := s.Name + "/" + name
-			declared, found := declaration(label, src)
-			for i := range found {
-				if s.Upstream != "" {
-					found[i].Reason += " (the file is " + s.Upstream + "'s: fix it there)"
-				}
+			if err := c.checkMigration(s, files, file); err != nil {
+				return nil, err
 			}
-			findings = append(findings, found...)
-			counted, adopts, f := forFloor(o, s, label, declared, version)
-			findings = append(findings, f...)
-			if adopts {
-				adopted[label] = true
-			}
-			if newer(counted, floor) {
-				floor = counted
-			}
-			if version <= s.After || declared != "" {
-				continue
-			}
-			found, err = checkFile(label, src, earlierIndexes(files, version))
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", label, err)
-			}
-			for i := range found {
-				found[i].Upstream = s.Upstream
-			}
-			findings = append(findings, found...)
 		}
 	}
-	stale := make([]string, 0, len(o.Adopted))
-	for label := range o.Adopted {
-		if !adopted[label] {
+	c.reportStaleAdoptions()
+	if o.Floor != "" {
+		f, err := checkFloor(o.Floor, c.floor)
+		if err != nil {
+			return nil, err
+		}
+		c.findings = append(c.findings, f...)
+	}
+	return c.findings, nil
+}
+
+// checkRun is the state of one Check: its findings, the newest release a
+// contraction counts for, and the adopted labels seen.
+type checkRun struct {
+	o        Options
+	findings []Finding
+	floor    string
+	adopted  map[string]bool
+}
+
+func (c *checkRun) checkMigration(s Set, files []migrationFile, file migrationFile) error {
+	label := s.Name + "/" + file.name
+	declared, found := declaration(label, file.src)
+	for i := range found {
+		if s.Upstream != "" {
+			found[i].Reason += " (the file is " + s.Upstream + "'s: fix it there)"
+		}
+	}
+	c.findings = append(c.findings, found...)
+	counted, adopts, f := forFloor(c.o, s, label, declared, file.version)
+	c.findings = append(c.findings, f...)
+	if adopts {
+		c.adopted[label] = true
+	}
+	if newer(counted, c.floor) {
+		c.floor = counted
+	}
+	if file.version <= s.After || declared != "" {
+		return nil
+	}
+	found, err := checkFile(label, file.src, earlierIndexes(files, file.version))
+	if err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	for i := range found {
+		found[i].Upstream = s.Upstream
+	}
+	c.findings = append(c.findings, found...)
+	return nil
+}
+
+func (c *checkRun) reportStaleAdoptions() {
+	stale := make([]string, 0, len(c.o.Adopted))
+	for label := range c.o.Adopted {
+		if !c.adopted[label] {
 			stale = append(stale, label)
 		}
 	}
 	sort.Strings(stale)
 	for _, label := range stale {
-		findings = append(findings, Finding{File: label, Reason: "is adopted, but no upstream set declares a contraction there past its history: remove it from Options.Adopted"})
+		c.findings = append(c.findings, Finding{File: label, Reason: "is adopted, but no upstream set declares a contraction there past its history: remove it from Options.Adopted"})
 	}
-	if o.Floor != "" {
-		f, err := checkFloor(o.Floor, floor)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, f...)
-	}
-	return findings, nil
 }
 
 // migrationFile is one file of a set, with the indexes its Up section creates.

@@ -311,35 +311,8 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 		hc.mu.Unlock()
 		return resp
 	}
-
-	// Another goroutine is already evaluating.
 	if hc.evaluating {
-		// If we have a stale cache, serve it rather than blocking.
-		if hc.cached != nil {
-			resp := hc.cached.response
-			hc.mu.Unlock()
-			return resp
-		}
-		// No cache yet (first request) — wait for the evaluator to finish.
-		// Use a channel so we can also select on ctx.Done(), releasing the
-		// goroutine immediately if the HTTP client disconnects.
-		ch := hc.evalDone
-		version := hc.Version // Copy under lock — hc.Version is not protected outside mu.
-		hc.mu.Unlock()
-
-		select {
-		case <-ch:
-			// Evaluator finished — cache is now populated.
-			hc.mu.Lock()
-			resp := hc.cached.response
-			hc.mu.Unlock()
-			return resp
-		case <-ctx.Done():
-			return Response{
-				Status:  StatusUnhealthy,
-				Version: version,
-			}
-		}
+		return hc.awaitEvaluation(ctx)
 	}
 
 	// We are the evaluator. Create a fresh notification channel and release the lock.
@@ -350,61 +323,102 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 	copy(checks, hc.Checks)
 	hc.mu.Unlock()
 
-	// result is written by the check loop and consumed by the defer.
-	// The defer consolidates ALL lock operations (cache update + evaluating reset)
-	// into a single Lock/Unlock pair, preventing deadlock if a panic occurred
-	// while the mutex was held.
+	// result is written below and consumed by finishEvaluation.
 	var result *cachedResult
+	defer hc.finishEvaluation(&result, evalDone)
 
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("health check panicked", redact.Panic(r))
-		}
-		hc.mu.Lock()
-		if result != nil {
-			hc.cached = result
-			hc.cachedAt = time.Now()
-		} else if hc.cached == nil {
-			// Panic before result was set — provide a synthetic unhealthy entry
-			// so waiters never nil-dereference hc.cached.
-			hc.cached = &cachedResult{
-
-				response: Response{Status: StatusUnhealthy, Version: hc.Version},
-			}
-			hc.cachedAt = time.Now()
-		}
-		// No action needed — caller gets zero-value Response on panic path.
-		// The cached result is set above for future callers.
-		hc.evaluating = false
-		close(evalDone)
-		hc.mu.Unlock()
-	}()
-
-	services := make(map[string]string, len(checks))
-	overall := StatusHealthy
-
-	// Run checks concurrently to avoid a slow dependency blocking others.
-	// Each check has its own panic recovery in runCheck.
-	type checkResult struct {
-		name      string
-		status    string
-		critical  bool
-		dependsOn []string
+	results := runChecks(ctx, checks)
+	services, overall := aggregateStatus(results)
+	resp := Response{
+		Status:   overall,
+		Version:  hc.Version,
+		Services: services,
+		Details:  dependencyDetails(results, services),
 	}
-	// Evaluate against a detached parent so a single cancelled probe
-	// (client disconnect, short k8s timeout) cannot mark every
-	// dependency unhealthy and poison the shared readiness cache for
-	// the full CacheTTL. Each check still has its own timeout via
-	// runCheck; request cancellation is observed only for the HTTP
-	// wait path above, not for the evaluator itself.
+	result = &cachedResult{response: resp}
+	return resp
+}
+
+// awaitEvaluation runs with hc.mu held while another goroutine evaluates,
+// and releases it. A stale cache is served rather than blocking; with no
+// cache yet (first request) it waits for the evaluator, or for ctx so the
+// goroutine is released at once if the HTTP client disconnects.
+func (hc *Checker) awaitEvaluation(ctx context.Context) Response {
+	if hc.cached != nil {
+		resp := hc.cached.response
+		hc.mu.Unlock()
+		return resp
+	}
+	ch := hc.evalDone
+	version := hc.Version // Copy under lock — hc.Version is not protected outside mu.
+	hc.mu.Unlock()
+
+	select {
+	case <-ch:
+		// Evaluator finished — cache is now populated.
+		hc.mu.Lock()
+		resp := hc.cached.response
+		hc.mu.Unlock()
+		return resp
+	case <-ctx.Done():
+		return Response{
+			Status:  StatusUnhealthy,
+			Version: version,
+		}
+	}
+}
+
+// finishEvaluation is deferred by the evaluator. It consolidates ALL lock
+// operations (cache update + evaluating reset) into a single Lock/Unlock
+// pair, preventing deadlock if a panic occurred while the mutex was held.
+// On the panic path the caller gets a zero-value Response; the cache is
+// set for future callers.
+func (hc *Checker) finishEvaluation(result **cachedResult, evalDone chan struct{}) {
+	if r := recover(); r != nil {
+		slog.Error("health check panicked", redact.Panic(r))
+	}
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	if *result != nil {
+		hc.cached = *result
+		hc.cachedAt = time.Now()
+	} else if hc.cached == nil {
+		// Panic before result was set — provide a synthetic unhealthy entry
+		// so waiters never nil-dereference hc.cached.
+		hc.cached = &cachedResult{
+			response: Response{Status: StatusUnhealthy, Version: hc.Version},
+		}
+		hc.cachedAt = time.Now()
+	}
+	hc.evaluating = false
+	close(evalDone)
+}
+
+// checkOutcome is one dependency check's result.
+type checkOutcome struct {
+	name      string
+	status    string
+	critical  bool
+	dependsOn []string
+}
+
+// runChecks runs the checks concurrently so a slow dependency does not
+// block the others; each has its own panic recovery in runCheck.
+//
+// They run against a detached parent so a single cancelled probe (client
+// disconnect, short k8s timeout) cannot mark every dependency unhealthy
+// and poison the shared readiness cache for the full CacheTTL. Each check
+// still has its own timeout via runCheck; request cancellation is
+// observed only by awaitEvaluation, not by the evaluator itself.
+func runChecks(ctx context.Context, checks []DependencyCheck) []checkOutcome {
 	evalCtx := context.WithoutCancel(ctx)
-	results := make([]checkResult, len(checks))
+	results := make([]checkOutcome, len(checks))
 	var wg sync.WaitGroup
 	wg.Add(len(checks))
 	for i, dc := range checks {
 		go func(idx int, dc DependencyCheck) {
 			defer wg.Done()
-			results[idx] = checkResult{
+			results[idx] = checkOutcome{
 				name:      dc.Name,
 				status:    runCheck(evalCtx, dc),
 				critical:  dc.Critical,
@@ -413,15 +427,17 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 		}(i, dc)
 	}
 	wg.Wait()
+	return results
+}
 
+// aggregateStatus returns each service's status and the overall one. If
+// duplicate check names exist, the worst status wins to prevent a
+// healthy replica from masking a critical unhealthy primary.
+func aggregateStatus(results []checkOutcome) (map[string]string, string) {
+	services := make(map[string]string, len(results))
+	overall := StatusHealthy
 	for _, cr := range results {
-		// If duplicate check names exist, the worst status wins to prevent
-		// a healthy replica from masking a critical unhealthy primary.
-		if existing, ok := services[cr.name]; ok {
-			if isWorseThan(cr.status, existing) {
-				services[cr.name] = cr.status
-			}
-		} else {
+		if existing, ok := services[cr.name]; !ok || isWorseThan(cr.status, existing) {
 			services[cr.name] = cr.status
 		}
 		if cr.status == StatusHealthy {
@@ -439,13 +455,15 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 			}
 		}
 	}
+	return services, overall
+}
 
-	// Wave 146: build graph-aware Details. For each non-healthy
-	// check with DependsOn, the RootCause is the first declared dep
-	// whose own Services entry is non-healthy. Healthy checks omit
-	// RootCause. Checks with no declared DependsOn omit it (and the
-	// DependsOn field) so the JSON stays compact when callers don't
-	// use the graph feature.
+// dependencyDetails builds the graph-aware Details. For each non-healthy
+// check with DependsOn, the RootCause is the first declared dep whose own
+// Services entry is non-healthy. Healthy checks omit RootCause. Checks
+// with no declared DependsOn omit it (and the DependsOn field) so the JSON
+// stays compact when callers don't use the graph feature.
+func dependencyDetails(results []checkOutcome, services map[string]string) map[string]CheckResult {
 	var details map[string]CheckResult
 	for _, cr := range results {
 		if len(cr.dependsOn) == 0 && cr.status == StatusHealthy {
@@ -465,16 +483,7 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 		}
 		details[cr.name] = entry
 	}
-
-	resp := Response{
-		Status:   overall,
-		Version:  hc.Version,
-		Services: services,
-		Details:  details,
-	}
-
-	result = &cachedResult{response: resp}
-	return resp
+	return details
 }
 
 // statusSeverity maps health statuses to a numeric severity for comparison.

@@ -367,24 +367,7 @@ func TestServe_DrainsInFlightRequestBeforeReturning(t *testing.T) {
 	}()
 
 	// Fire a slow request and wait until the handler is executing.
-	clientDone := make(chan struct{})
-	var (
-		clientStatus int
-		clientBody   string
-		clientErr    error
-	)
-	go func() {
-		defer close(clientDone)
-		resp, e := http.Get("http://" + ln.Addr().String() + "/slow")
-		if e != nil {
-			clientErr = e
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-		clientStatus = resp.StatusCode
-		b, _ := io.ReadAll(resp.Body)
-		clientBody = string(b)
-	}()
+	client := startGet("http://" + ln.Addr().String() + "/slow")
 
 	select {
 	case <-requestStarted:
@@ -411,9 +394,35 @@ func TestServe_DrainsInFlightRequestBeforeReturning(t *testing.T) {
 	wrote := responseWritten
 	mu.Unlock()
 
-	<-clientDone
-	require.NoError(t, clientErr, "in-flight request must complete, not be truncated")
+	<-client.done
+	require.NoError(t, client.err, "in-flight request must complete, not be truncated")
 	assert.True(t, wrote, "handler must finish writing its response")
-	assert.Equal(t, http.StatusOK, clientStatus)
-	assert.Equal(t, "drained", clientBody)
+	assert.Equal(t, http.StatusOK, client.status)
+	assert.Equal(t, "drained", client.body)
+}
+
+// pendingGet is a GET running in the background; its fields are set once
+// done is closed.
+type pendingGet struct {
+	done   chan struct{}
+	status int
+	body   string
+	err    error
+}
+
+func startGet(url string) *pendingGet {
+	g := &pendingGet{done: make(chan struct{})}
+	go func() {
+		defer close(g.done)
+		resp, err := http.Get(url)
+		if err != nil {
+			g.err = err
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		g.status = resp.StatusCode
+		b, _ := io.ReadAll(resp.Body)
+		g.body = string(b)
+	}()
+	return g
 }

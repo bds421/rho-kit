@@ -241,15 +241,20 @@ func TestAnUnparsableMigrationFails(t *testing.T) {
 	}
 }
 
-// An upstream set's contract comment names the library's release, so it
-// counts for the floor only under the product release that adopts it; an
-// undeclared contraction there names the library, and an adoption that
-// matches no declaration is stale.
-func TestUpstreamContractionsAreAdopted(t *testing.T) {
-	kit := fstest.MapFS{
+// upstreamKit is an upstream set with a contraction in its history and
+// one past it.
+func upstreamKit() fstest.MapFS {
+	return fstest.MapFS{
 		"0001_old.sql": {Data: []byte("-- contract: v2.1.0 history\n" + migration("DROP TABLE a;"))},
 		"0002_new.sql": {Data: []byte("-- contract: v2.45.0 b is unused since v2.45.0\n" + migration("DROP TABLE b;"))},
 	}
+}
+
+// An upstream set's contract comment names the library's release, so it
+// counts for the floor only under the product release that adopts it, and
+// an adoption that matches no declaration is stale.
+func TestUpstreamContractionsAreAdopted(t *testing.T) {
+	kit := upstreamKit()
 	own := fstest.MapFS{"00002_a.sql": {Data: []byte("-- contract: v0.3.0 c\n" + migration("DROP TABLE c;"))}}
 	floor := filepath.Join(t.TempDir(), "rollback-floor")
 	run := func(want string, adopted map[string]string) []Finding {
@@ -282,6 +287,12 @@ func TestUpstreamContractionsAreAdopted(t *testing.T) {
 	if f := run("v0.4.0", map[string]string{"outbox/0002_new.sql": "v0.4.0", "outbox/0001_old.sql": "v0.1.0"}); len(f) != 1 || !strings.Contains(f[0].Reason, "remove it") {
 		t.Errorf("stale adoption: %v", f)
 	}
+}
+
+// An adoption must name a contraction of an upstream set, and an upstream
+// set's findings name the library.
+func TestUpstreamFindingsNameTheLibrary(t *testing.T) {
+	kit := upstreamKit()
 	own2 := fstest.MapFS{"00002_a.sql": {Data: []byte("-- contract: v0.3.0 c\n" + migration("DROP TABLE c;"))}}
 	for name, adopted := range map[string]map[string]string{
 		"a set that is not upstream": {"own/00002_a.sql": "v0.3.0"},
