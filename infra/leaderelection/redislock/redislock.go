@@ -223,80 +223,101 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-
-		handle, ok, err := e.locker.Acquire(ctx, e.key)
-		if err != nil {
-			e.logger.Warn("leader-election: acquire failed",
-				redact.String("key", e.key),
-				redact.Error(err),
-			)
-			if !sleep(ctx, e.retryInterval) {
-				return ctx.Err()
-			}
-			continue
-		}
+		handle, ok := e.tryAcquire(ctx)
 		if !ok {
 			if !sleep(ctx, e.retryInterval) {
 				return ctx.Err()
 			}
 			continue
 		}
+		holdErr, lostErr := e.serveTerm(ctx, handle, cb)
+		if done, err := e.concludeTerm(ctx, holdErr, lostErr); done {
+			return err
+		}
+	}
+}
 
-		e.leader.Store(true)
-		e.logger.Info("leader-election: acquired", redact.String("key", e.key))
+// tryAcquire makes one attempt at the lock. A failed attempt is logged and
+// reported like a lock another replica holds, so Run backs off either way.
+func (e *Elector) tryAcquire(ctx context.Context) (lock.Lock, bool) {
+	handle, ok, err := e.locker.Acquire(ctx, e.key)
+	if err != nil {
+		e.logger.Warn("leader-election: acquire failed",
+			redact.String("key", e.key),
+			redact.Error(err),
+		)
+		return nil, false
+	}
+	return handle, ok
+}
 
-		holdErr := e.holdLeadership(ctx, handle, cb)
-		e.leader.Store(false)
-		lostErr := e.runOnLost(cb)
-		// A drain timeout leaves OnAcquired running in this process. Do not
-		// block on, or actively release, the Redis lock: returning promptly is
-		// the terminal contract, and releasing would let another replica enter
-		// leadership while the orphan still runs. Let the lease TTL expire and
-		// require the orchestrator to restart this process (L-141).
-		if holdErr != nil && errors.Is(holdErr, ErrCallbackDrainTimeout) {
-			e.logger.Error("leader-election: OnAcquired drain timed out; refusing to re-acquire — restart the process",
-				redact.String("key", e.key),
-				redact.Error(holdErr),
-			)
-			return errors.Join(holdErr, lostErr)
-		}
-		// Bound Release: a hung Redis must not pin this goroutine
-		// indefinitely and starve the elector loop.
-		releaseCtx, releaseCancel := leaderReleaseContext(ctx, 5*time.Second)
-		if err := handle.Release(releaseCtx); err != nil && !errors.Is(err, lock.ErrLockLost) {
-			e.logger.Warn("leader-election: release failed; lock will TTL out",
-				redact.String("key", e.key),
-				redact.Error(err),
-			)
-		}
-		releaseCancel()
+// serveTerm holds leadership for one term, runs OnLost and hands the lock
+// back.
+func (e *Elector) serveTerm(ctx context.Context, handle lock.Lock, cb leaderelection.Callbacks) (holdErr, lostErr error) {
+	e.leader.Store(true)
+	e.logger.Info("leader-election: acquired", redact.String("key", e.key))
 
-		if ctx.Err() != nil {
-			return errors.Join(ctx.Err(), holdErr, lostErr)
-		}
-		// OnLost errors/panics are non-fatal: log and continue so a flaky
-		// cleanup hook cannot permanently disable leadership (aligned
-		// with etcd/k8slease and the Elector interface contract).
-		if lostErr != nil {
-			e.logger.Error("leader-election: OnLost failed; continuing",
-				redact.String("key", e.key),
-				redact.Error(lostErr),
-			)
-		}
-		if holdErr == nil {
-			e.logger.Info("leader-election: leadership callback returned; retrying",
-				redact.String("key", e.key),
-			)
-			if !sleep(ctx, e.retryInterval) {
-				return ctx.Err()
-			}
-			continue
-		}
-		e.logger.Warn("leader-election: leadership lost; retrying",
+	holdErr = e.holdLeadership(ctx, handle, cb)
+	e.leader.Store(false)
+	lostErr = e.runOnLost(cb)
+	// A drain timeout leaves OnAcquired running in this process. Do not
+	// block on, or actively release, the Redis lock: releasing would let
+	// another replica enter leadership while the orphan still runs. Let
+	// the lease TTL expire.
+	if errors.Is(holdErr, ErrCallbackDrainTimeout) {
+		return holdErr, lostErr
+	}
+	// Bound Release: a hung Redis must not pin this goroutine
+	// indefinitely and starve the elector loop.
+	releaseCtx, releaseCancel := leaderReleaseContext(ctx, 5*time.Second)
+	defer releaseCancel()
+	if err := handle.Release(releaseCtx); err != nil && !errors.Is(err, lock.ErrLockLost) {
+		e.logger.Warn("leader-election: release failed; lock will TTL out",
+			redact.String("key", e.key),
+			redact.Error(err),
+		)
+	}
+	return holdErr, lostErr
+}
+
+// concludeTerm decides after a term whether Run returns, and with which
+// error, or retries.
+func (e *Elector) concludeTerm(ctx context.Context, holdErr, lostErr error) (bool, error) {
+	// After a drain timeout returning promptly is the terminal contract:
+	// the orchestrator must restart this process (L-141).
+	if errors.Is(holdErr, ErrCallbackDrainTimeout) {
+		e.logger.Error("leader-election: OnAcquired drain timed out; refusing to re-acquire — restart the process",
 			redact.String("key", e.key),
 			redact.Error(holdErr),
 		)
+		return true, errors.Join(holdErr, lostErr)
 	}
+	if ctx.Err() != nil {
+		return true, errors.Join(ctx.Err(), holdErr, lostErr)
+	}
+	// OnLost errors/panics are non-fatal: log and continue so a flaky
+	// cleanup hook cannot permanently disable leadership (aligned
+	// with etcd/k8slease and the Elector interface contract).
+	if lostErr != nil {
+		e.logger.Error("leader-election: OnLost failed; continuing",
+			redact.String("key", e.key),
+			redact.Error(lostErr),
+		)
+	}
+	if holdErr == nil {
+		e.logger.Info("leader-election: leadership callback returned; retrying",
+			redact.String("key", e.key),
+		)
+		if !sleep(ctx, e.retryInterval) {
+			return true, ctx.Err()
+		}
+		return false, nil
+	}
+	e.logger.Warn("leader-election: leadership lost; retrying",
+		redact.String("key", e.key),
+		redact.Error(holdErr),
+	)
+	return false, nil
 }
 
 func (e *Elector) runOnLost(cb leaderelection.Callbacks) (err error) {
@@ -354,47 +375,10 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	cbDone := make(chan callbackResult, 1)
-	go func() {
-		var result callbackResult
-		defer func() {
-			if rec := recover(); rec != nil {
-				result.panicValue = rec
-			}
-			cbDone <- result
-		}()
-		if cb.OnAcquired != nil {
-			cb.OnAcquired(ctx)
-		}
-	}()
+	cbDone := startOnAcquired(ctx, cb)
 
 	renewTicker := time.NewTicker(e.renewInterval)
 	defer renewTicker.Stop()
-
-	awaitCallback := func() callbackResult {
-		return e.awaitCallbackDrain(cbDone)
-	}
-
-	joinDrainResult := func(termErr error, result callbackResult) error {
-		errs := []error{}
-		if termErr != nil {
-			errs = append(errs, termErr)
-		}
-		if result.panicValue != nil {
-			errs = append(errs, onAcquiredPanicError(result.panicValue))
-		}
-		if result.timedOut {
-			errs = append(errs, ErrCallbackDrainTimeout)
-		}
-		switch len(errs) {
-		case 0:
-			return nil
-		case 1:
-			return errs[0]
-		default:
-			return errors.Join(errs...)
-		}
-	}
 
 	for {
 		select {
@@ -403,9 +387,7 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 			// (possibly long) callback drain so IsLeader stops
 			// reporting true while another replica may already lead.
 			// Mirrors pgadvisory.holdLeadership / k8slease.
-			e.leader.Store(false)
-			cancel()
-			return joinDrainResult(parent.Err(), awaitCallback())
+			return e.abandonTerm(cancel, parent.Err(), cbDone)
 		case result := <-cbDone:
 			// Happy path: the callback returned on its own while still
 			// leader. Drain wait is ~0 (no cancellation was needed), so
@@ -418,21 +400,24 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 			}
 			return nil
 		case <-renewTicker.C:
-			ok, err := e.extendOnce(ctx, handle)
-			if err != nil {
-				// Loss detected: drop the leader flag immediately so
-				// IsLeader reflects reality during the callback drain.
-				e.leader.Store(false)
-				cancel()
-				return joinDrainResult(redact.WrapError("extend", err), awaitCallback())
-			}
-			if !ok {
-				e.leader.Store(false)
-				cancel()
-				return joinDrainResult(errors.New("leader-election: handle reports lost"), awaitCallback())
+			if lossErr := e.renewLoss(ctx, handle); lossErr != nil {
+				return e.abandonTerm(cancel, lossErr, cbDone)
 			}
 		}
 	}
+}
+
+// renewLoss renews the lock once and reports why it is lost, or nil while
+// it still holds.
+func (e *Elector) renewLoss(ctx context.Context, handle lock.Lock) error {
+	ok, err := e.extendOnce(ctx, handle)
+	if err != nil {
+		return redact.WrapError("extend", err)
+	}
+	if !ok {
+		return errors.New("leader-election: handle reports lost")
+	}
+	return nil
 }
 
 // extendOnce performs a single lock renewal bounded by a per-call
@@ -533,5 +518,58 @@ func sleep(ctx context.Context, d time.Duration) bool {
 		return false
 	case <-t.C:
 		return true
+	}
+}
+
+// startOnAcquired runs OnAcquired in its own goroutine; the returned
+// channel receives its result, a recovered panic included, once it exits.
+func startOnAcquired(ctx context.Context, cb leaderelection.Callbacks) <-chan callbackResult {
+	cbDone := make(chan callbackResult, 1)
+	go func() {
+		var result callbackResult
+		defer func() {
+			if rec := recover(); rec != nil {
+				result.panicValue = rec
+			}
+			cbDone <- result
+		}()
+		if cb.OnAcquired != nil {
+			cb.OnAcquired(ctx)
+		}
+	}()
+	return cbDone
+}
+
+// abandonTerm ends a term the elector lost: it drops the leader flag
+// immediately so IsLeader reflects reality during the callback drain,
+// cancels the callback's ctx and waits for it to drain.
+func (e *Elector) abandonTerm(cancel context.CancelFunc, termErr error, cbDone <-chan callbackResult) error {
+	e.leader.Store(false)
+	cancel()
+	return joinDrainResult(termErr, e.awaitCallbackDrain(cbDone))
+}
+
+// joinDrainResult merges the drain-timeout signal (if any) into the
+// termination error. Panic errors win over plain timeout for clarity
+// — a panicking callback that also blew its drain budget should
+// surface both via errors.Is for the dashboards' sake.
+func joinDrainResult(termErr error, result callbackResult) error {
+	errs := []error{}
+	if termErr != nil {
+		errs = append(errs, termErr)
+	}
+	if result.panicValue != nil {
+		errs = append(errs, onAcquiredPanicError(result.panicValue))
+	}
+	if result.timedOut {
+		errs = append(errs, ErrCallbackDrainTimeout)
+	}
+	switch len(errs) {
+	case 0:
+		return nil
+	case 1:
+		return errs[0]
+	default:
+		return errors.Join(errs...)
 	}
 }

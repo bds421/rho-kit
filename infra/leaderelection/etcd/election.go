@@ -365,22 +365,7 @@ func (e *Elector) runOnce(ctx context.Context, cb leaderelection.Callbacks) (err
 		}
 	}()
 
-	// Run OnAcquired in its own goroutine so we can drain it under a
-	// warn-ticker and optional timeout. Panic-recover before any other
-	// work so an early panic still funnels onto cbDone.
-	cbDone := make(chan callbackResult, 1)
-	go func() {
-		var result callbackResult
-		defer func() {
-			if rec := recover(); rec != nil {
-				result.panicValue = rec
-			}
-			cbDone <- result
-		}()
-		if cb.OnAcquired != nil {
-			cb.OnAcquired(leaderCtx)
-		}
-	}()
+	cbDone := startOnAcquired(leaderCtx, cb)
 
 	// Hold phase: wait for the term to end before arming the drain
 	// watchdog. The watchdog (warn ticker + optional drain timeout)
@@ -412,22 +397,7 @@ func (e *Elector) runOnce(ctx context.Context, cb leaderelection.Callbacks) (err
 	}
 	leaderCancel() // ensure leader ctx is cancelled before resign
 
-	// leader flag already cleared above (before drain on the loss path,
-	// and before OnLost on the happy path). Keep a defensive Store so
-	// any future reorder still satisfies the kit contract that
-	// IsLeader is false for OnLost.
-
-	// Resign cleanly so peers do not wait out the lease TTL on a
-	// planned shutdown. Use a detached release context so the resign
-	// still runs when the caller ctx is already cancelled.
-	resignCtx, cancel := detachedReleaseContext(ctx, 5*time.Second)
-	defer cancel()
-	if rerr := elect.Resign(resignCtx); rerr != nil {
-		e.logger.Debug("leader-election: resign",
-			redact.String("election", e.electionKey),
-			redact.Error(rerr),
-		)
-	}
+	e.resign(ctx, elect)
 
 	e.logger.Info("leader-election: lost",
 		redact.String("election", e.electionKey),
@@ -565,3 +535,37 @@ func joinTermErrors(lostErr error, drainResult callbackResult) error {
 
 // Compile-time guard that the Elector satisfies the kit's contract.
 var _ leaderelection.Elector = (*Elector)(nil)
+
+// startOnAcquired runs OnAcquired in its own goroutine so the term can
+// drain it under a warn-ticker and optional timeout. Panic-recover runs
+// before any other work so an early panic still funnels onto the channel.
+func startOnAcquired(leaderCtx context.Context, cb leaderelection.Callbacks) <-chan callbackResult {
+	cbDone := make(chan callbackResult, 1)
+	go func() {
+		var result callbackResult
+		defer func() {
+			if rec := recover(); rec != nil {
+				result.panicValue = rec
+			}
+			cbDone <- result
+		}()
+		if cb.OnAcquired != nil {
+			cb.OnAcquired(leaderCtx)
+		}
+	}()
+	return cbDone
+}
+
+// resign ends the campaign cleanly so peers do not wait out the lease TTL
+// on a planned shutdown. A detached release context lets the resign still
+// run when the caller ctx is already cancelled.
+func (e *Elector) resign(ctx context.Context, elect election) {
+	resignCtx, cancel := detachedReleaseContext(ctx, 5*time.Second)
+	defer cancel()
+	if rerr := elect.Resign(resignCtx); rerr != nil {
+		e.logger.Debug("leader-election: resign",
+			redact.String("election", e.electionKey),
+			redact.Error(rerr),
+		)
+	}
+}

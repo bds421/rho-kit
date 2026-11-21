@@ -467,32 +467,7 @@ func TestHoldLeadership_LongCallbackEmitsWarnAndMetric(t *testing.T) {
 
 	// Terminal drained observation must also be recorded so the
 	// drained-state histogram is non-empty for SLO dashboards.
-	drainedHistogramHasObservation := func() bool {
-		// Collect metrics and inspect the drained-state vec for our key.
-		ch := make(chan prometheus.Metric, 16)
-		metrics.drainDuration.Collect(ch)
-		close(ch)
-		for m := range ch {
-			out := &dto.Metric{}
-			if err := m.Write(out); err != nil {
-				continue
-			}
-			var key, state string
-			for _, lp := range out.Label {
-				switch lp.GetName() {
-				case "target":
-					key = lp.GetValue()
-				case "state":
-					state = lp.GetValue()
-				}
-			}
-			if key == "tenant-sweeper" && state == drainStateDrained && out.Histogram != nil && out.Histogram.GetSampleCount() > 0 {
-				return true
-			}
-		}
-		return false
-	}
-	require.True(t, drainedHistogramHasObservation(), "drained histogram must record terminal observation")
+	require.True(t, drainedHistogramHasObservation(metrics.drainDuration, "tenant-sweeper"), "drained histogram must record terminal observation")
 
 	// Sanity: nothing crashed and the warn log mentions the key.
 	require.True(t, strings.Contains(logBuf.String(), "elapsed"))
@@ -545,4 +520,31 @@ func TestHoldLeadership_DrainTimeoutNotTrippedWhenCallbackCooperates(t *testing.
 	})
 	require.ErrorContains(t, err, "handle reports lost")
 	require.NotErrorIs(t, err, ErrCallbackDrainTimeout)
+}
+
+// drainedHistogramHasObservation reports whether the drain histogram
+// recorded a drained-state observation for target.
+func drainedHistogramHasObservation(drainDuration prometheus.Collector, target string) bool {
+	ch := make(chan prometheus.Metric, 16)
+	drainDuration.Collect(ch)
+	close(ch)
+	for m := range ch {
+		out := &dto.Metric{}
+		if err := m.Write(out); err != nil {
+			continue
+		}
+		var key, state string
+		for _, lp := range out.Label {
+			switch lp.GetName() {
+			case "target":
+				key = lp.GetValue()
+			case "state":
+				state = lp.GetValue()
+			}
+		}
+		if key == target && state == drainStateDrained && out.Histogram != nil && out.Histogram.GetSampleCount() > 0 {
+			return true
+		}
+	}
+	return false
 }

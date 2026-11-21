@@ -315,17 +315,6 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 	// concurrent* Run loses the CAS above and is rejected.
 	defer e.started.Store(false)
 
-	lock := &resourcelock.LeaseLock{
-		LeaseMeta: metav1.ObjectMeta{
-			Namespace: e.namespace,
-			Name:      e.name,
-		},
-		Client: e.client.CoordinationV1(),
-		LockConfig: resourcelock.ResourceLockConfig{
-			Identity: e.identity,
-		},
-	}
-
 	// tm coordinates the two halves of a single client-go leadership
 	// term — OnStartedLeading (its own goroutine) and OnStoppedLeading
 	// (Run's goroutine, deferred) — so the claim/skip decision is
@@ -339,7 +328,7 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 	var lostErrSlot atomic.Pointer[error]
 
 	config := clientgoleaderelection.LeaderElectionConfig{
-		Lock:          lock,
+		Lock:          e.leaseLock(),
 		LeaseDuration: e.leaseDuration,
 		RenewDeadline: e.renewDeadline,
 		RetryPeriod:   e.retryPeriod,
@@ -353,21 +342,7 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 				e.onStartedLeading(leaderCtx, tm, cb)
 			},
 			OnStoppedLeading: func() {
-				if !e.onStoppedLeading(tm, cb) {
-					return
-				}
-				// Wait for the OnAcquired goroutine to drain, then call
-				// OnLost synchronously. awaitCallbackDrain handles warn
-				// ticks, optional drain-timeout, and terminal metrics.
-				drainResult := e.awaitCallbackDrain(tm.cbDone)
-				// Re-assert leader=false AFTER the OnAcquired goroutine
-				// has drained. onStartedLeading may still race past
-				// claim() and Store(true) after stop() if it was
-				// preempted between claim and the true-store; without
-				// this post-drain clear, IsLeader() sticks true forever.
-				e.leader.Store(false)
-				lostErr := e.runOnLost(cb)
-				if perr := joinStoppedLeadingErrors(lostErr, drainResult); perr != nil {
+				if perr := e.endTerm(tm, cb); perr != nil {
 					lostErrSlot.Store(&perr)
 				}
 			},
@@ -793,3 +768,35 @@ var _ leaderelection.Elector = (*Elector)(nil)
 // Compile-time guard that the upstream Lease type is the one we
 // reference; prevents accidental drift if client-go renames the GVK.
 var _ = coordinationv1.Lease{}
+
+func (e *Elector) leaseLock() *resourcelock.LeaseLock {
+	return &resourcelock.LeaseLock{
+		LeaseMeta: metav1.ObjectMeta{
+			Namespace: e.namespace,
+			Name:      e.name,
+		},
+		Client: e.client.CoordinationV1(),
+		LockConfig: resourcelock.ResourceLockConfig{
+			Identity: e.identity,
+		},
+	}
+}
+
+// endTerm is the OnStoppedLeading half of a term: when the term was
+// acquired it waits for the OnAcquired goroutine to drain, then calls
+// OnLost synchronously and returns its error joined with the drain's.
+// awaitCallbackDrain handles warn ticks, optional drain-timeout, and
+// terminal metrics.
+func (e *Elector) endTerm(tm *term, cb leaderelection.Callbacks) error {
+	if !e.onStoppedLeading(tm, cb) {
+		return nil
+	}
+	drainResult := e.awaitCallbackDrain(tm.cbDone)
+	// Re-assert leader=false AFTER the OnAcquired goroutine has drained.
+	// onStartedLeading may still race past claim() and Store(true) after
+	// stop() if it was preempted between claim and the true-store;
+	// without this post-drain clear, IsLeader() sticks true forever.
+	e.leader.Store(false)
+	lostErr := e.runOnLost(cb)
+	return joinStoppedLeadingErrors(lostErr, drainResult)
+}
