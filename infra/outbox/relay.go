@@ -286,30 +286,10 @@ func (r *Relay) Start(ctx context.Context) error {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
-	r.mu.Lock()
-	// Check stopped before started so a relay that already ran and was
-	// stopped reports the actual terminal state ("already stopped") on a
-	// restart attempt, rather than the misleading "already started". A
-	// relay that is currently running (started && !stopped) still reports
-	// "already started" via the second branch.
-	if r.stopped {
-		started := r.started
-		r.mu.Unlock()
+	if err := r.markStarted(cancel, done); err != nil {
 		cancel()
-		if !started {
-			return fmt.Errorf("outbox: Relay already stopped: %w", lifecycle.ErrStoppedBeforeStart)
-		}
-		return errors.New("outbox: Relay already stopped")
+		return err
 	}
-	if r.started {
-		r.mu.Unlock()
-		cancel()
-		return errors.New("outbox: Relay already started")
-	}
-	r.started = true
-	r.cancel = cancel
-	r.done = done
-	r.mu.Unlock()
 
 	defer func() {
 		// The poll loop has returned, so no publish goroutine is still
@@ -340,16 +320,7 @@ func (r *Relay) Start(ctx context.Context) error {
 	ticker := time.NewTicker(r.pollInterval)
 	defer ticker.Stop()
 
-	// Cleanup ticker runs less frequently.
-	cleanupBase := r.retention
-	if r.failedRetention < cleanupBase {
-		cleanupBase = r.failedRetention
-	}
-	cleanupInterval := cleanupBase / 10
-	if cleanupInterval < time.Minute {
-		cleanupInterval = time.Minute
-	}
-	cleanupTicker := time.NewTicker(cleanupInterval)
+	cleanupTicker := time.NewTicker(r.cleanupInterval())
 	defer cleanupTicker.Stop()
 
 	for {
@@ -365,6 +336,36 @@ func (r *Relay) Start(ctx context.Context) error {
 			r.cleanup(runCtx)
 		}
 	}
+}
+
+// markStarted records the run's cancel and done under the lock, or
+// reports why the relay cannot start. Stopped is checked before started
+// so a relay that already ran and was stopped reports the actual terminal
+// state ("already stopped") on a restart attempt, rather than the
+// misleading "already started"; a relay that is currently running
+// (started && !stopped) still reports "already started".
+func (r *Relay) markStarted(cancel context.CancelFunc, done chan struct{}) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		if !r.started {
+			return fmt.Errorf("outbox: Relay already stopped: %w", lifecycle.ErrStoppedBeforeStart)
+		}
+		return errors.New("outbox: Relay already stopped")
+	}
+	if r.started {
+		return errors.New("outbox: Relay already started")
+	}
+	r.started = true
+	r.cancel = cancel
+	r.done = done
+	return nil
+}
+
+// cleanupInterval is a tenth of the shorter retention, at least a minute,
+// so cleanup runs less often than polling.
+func (r *Relay) cleanupInterval() time.Duration {
+	return max(min(r.retention, r.failedRetention)/10, time.Minute)
 }
 
 // Stop cancels the relay context and waits for the poll loop to finish.
@@ -496,23 +497,34 @@ func (r *Relay) poll(ctx context.Context) {
 	heartbeat := r.startBatchHeartbeat(ctx, entries)
 	defer heartbeat.stop()
 
-	concurrency := r.maxConcurrentPublish
-	if concurrency <= 1 {
-		// Serial fast path. Preserves FIFO ordering across the batch.
-		for i := range entries {
-			if ctx.Err() != nil {
-				return
-			}
-			r.publishEntry(ctx, entries[i], heartbeat)
+	if r.maxConcurrentPublish <= 1 {
+		if !r.publishInOrder(ctx, entries, heartbeat) {
+			return
 		}
-		r.updatePendingGauge(ctx)
-		return
+	} else {
+		r.publishConcurrently(ctx, entries, heartbeat)
 	}
+	r.updatePendingGauge(ctx)
+}
 
-	// Bounded worker pool. Order across in-flight publishes is no longer
-	// preserved; callers that need strict ordering must keep the default
-	// concurrency=1.
-	sem := make(chan struct{}, concurrency)
+// publishInOrder is the serial fast path: it preserves FIFO ordering across
+// the batch and reports false when ctx ended before the batch did.
+func (r *Relay) publishInOrder(ctx context.Context, entries []Entry, heartbeat *batchHeartbeat) bool {
+	for i := range entries {
+		if ctx.Err() != nil {
+			return false
+		}
+		r.publishEntry(ctx, entries[i], heartbeat)
+	}
+	return true
+}
+
+// publishConcurrently publishes the batch through a worker pool bounded by
+// maxConcurrentPublish. Order across in-flight publishes is no longer
+// preserved; callers that need strict ordering must keep the default
+// concurrency=1.
+func (r *Relay) publishConcurrently(ctx context.Context, entries []Entry, heartbeat *batchHeartbeat) {
+	sem := make(chan struct{}, r.maxConcurrentPublish)
 	var wg sync.WaitGroup
 	for i := range entries {
 		if ctx.Err() != nil {
@@ -538,8 +550,6 @@ func (r *Relay) poll(ctx context.Context) {
 		}()
 	}
 	wg.Wait()
-
-	r.updatePendingGauge(ctx)
 }
 
 // publishEntry attempts to publish a single entry via the Publisher. The

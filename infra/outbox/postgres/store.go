@@ -201,10 +201,39 @@ func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, er
 	// Select exact route tuples before LIMIT and row locking. Filtering a claimed
 	// batch afterwards could starve eligible routes and mutate deferred rows.
 	routePredicate, args := s.routeSelection([]any{limit})
-	// claim_token = gen_random_uuid() mints a fresh per-row token on every
-	// claim; it is RETURNed (last column) so the store can remember
-	// id->token and later fence the outcome UPDATEs on claim ownership.
-	q := `
+	rows, err := s.pool.Query(ctx, fetchPendingQuery(routePredicate), args...)
+	if err != nil {
+		return nil, redact.WrapError("outbox/postgres: fetch pending", err)
+	}
+	defer rows.Close()
+	out := make([]outbox.Entry, 0, limit)
+	type claim struct{ id, token string }
+	claims := make([]claim, 0, limit)
+	for rows.Next() {
+		e, token, scanErr := scanClaimedEntry(rows)
+		if scanErr != nil {
+			return nil, redact.WrapError("outbox/postgres: fetch pending scan", scanErr)
+		}
+		out = append(out, e)
+		claims = append(claims, claim{id: e.ID.String(), token: token})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, redact.WrapError("outbox/postgres: fetch pending iterate", err)
+	}
+	// Remember tokens only after a clean iteration so a mid-scan failure
+	// does not leave half a batch fenced under this process.
+	for _, c := range claims {
+		s.rememberClaim(c.id, c.token)
+	}
+	return out, nil
+}
+
+// fetchPendingQuery claims up to $1 pending rows matching routePredicate.
+// claim_token = gen_random_uuid() mints a fresh per-row token on every
+// claim; it is RETURNed (last column) so the store can remember
+// id->token and later fence the outcome UPDATEs on claim ownership.
+func fetchPendingQuery(routePredicate string) string {
+	return `
 WITH locked AS (
     SELECT id, created_at
     FROM outbox_entries
@@ -236,31 +265,6 @@ SELECT id, topic, routing_key, message_id, message_type, schema_version, payload
        claim_token
 FROM updated
 ORDER BY ord`
-	rows, err := s.pool.Query(ctx, q, args...)
-	if err != nil {
-		return nil, redact.WrapError("outbox/postgres: fetch pending", err)
-	}
-	defer rows.Close()
-	out := make([]outbox.Entry, 0, limit)
-	type claim struct{ id, token string }
-	claims := make([]claim, 0, limit)
-	for rows.Next() {
-		e, token, scanErr := scanClaimedEntry(rows)
-		if scanErr != nil {
-			return nil, redact.WrapError("outbox/postgres: fetch pending scan", scanErr)
-		}
-		out = append(out, e)
-		claims = append(claims, claim{id: e.ID.String(), token: token})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, redact.WrapError("outbox/postgres: fetch pending iterate", err)
-	}
-	// Remember tokens only after a clean iteration so a mid-scan failure
-	// does not leave half a batch fenced under this process.
-	for _, c := range claims {
-		s.rememberClaim(c.id, c.token)
-	}
-	return out, nil
 }
 
 // Heartbeat extends the updated_at watermark on the listed processing

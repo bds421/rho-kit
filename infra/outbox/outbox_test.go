@@ -555,6 +555,83 @@ func TestWriter_Write_EmptyRoutingKey(t *testing.T) {
 	assert.Contains(t, err.Error(), "routing key must not be empty")
 }
 
+// unsafeEntryFieldCase mutates a valid entry into one Write must reject.
+type unsafeEntryFieldCase struct {
+	name        string
+	mutate      func(*outbox.WriteParams)
+	want        string
+	wantErrorIs error
+}
+
+var unsafeEntryFieldCases = []unsafeEntryFieldCase{
+	{
+		name: "invalid topic route",
+		mutate: func(p *outbox.WriteParams) {
+			p.Topic = "orders prod"
+		},
+		want:        "invalid publish route",
+		wantErrorIs: messaging.ErrInvalidRoute,
+	},
+	{
+		name: "invalid routing key route",
+		mutate: func(p *outbox.WriteParams) {
+			p.RoutingKey = "order\ncreated"
+		},
+		want:        "invalid publish route",
+		wantErrorIs: messaging.ErrInvalidRoute,
+	},
+	{
+		name: "missing message id",
+		mutate: func(p *outbox.WriteParams) {
+			p.MessageID = ""
+		},
+		want: "message id must not be empty",
+	},
+	{
+		name: "unsafe message id",
+		mutate: func(p *outbox.WriteParams) {
+			p.MessageID = "msg\n1"
+		},
+		want: "message id contains whitespace or control characters",
+	},
+	{
+		name: "message id too long",
+		mutate: func(p *outbox.WriteParams) {
+			p.MessageID = strings.Repeat("m", messaging.MaxRouteNameBytes+1)
+		},
+		want: "message id exceeds maximum length",
+	},
+	{
+		name: "missing message type",
+		mutate: func(p *outbox.WriteParams) {
+			p.MessageType = ""
+		},
+		want: "message type must not be empty",
+	},
+	{
+		name: "empty payload",
+		mutate: func(p *outbox.WriteParams) {
+			p.Payload = nil
+		},
+		want: "payload must not be empty",
+	},
+	{
+		name: "invalid payload",
+		mutate: func(p *outbox.WriteParams) {
+			p.Payload = []byte(`{"unterminated"`)
+		},
+		want: "payload must be valid JSON",
+	},
+	{
+		name: "invalid headers",
+		mutate: func(p *outbox.WriteParams) {
+			p.Headers = map[string]string{"Bad Header": "value"}
+		},
+		want:        "invalid headers",
+		wantErrorIs: messaging.ErrInvalidMessageHeader,
+	},
+}
+
 func TestWriter_Write_RejectsUnsafeEntryFields(t *testing.T) {
 	valid := outbox.WriteParams{
 		Topic:       "orders",
@@ -564,81 +641,7 @@ func TestWriter_Write_RejectsUnsafeEntryFields(t *testing.T) {
 		Payload:     []byte(`{}`),
 	}
 
-	tests := []struct {
-		name        string
-		mutate      func(*outbox.WriteParams)
-		want        string
-		wantErrorIs error
-	}{
-		{
-			name: "invalid topic route",
-			mutate: func(p *outbox.WriteParams) {
-				p.Topic = "orders prod"
-			},
-			want:        "invalid publish route",
-			wantErrorIs: messaging.ErrInvalidRoute,
-		},
-		{
-			name: "invalid routing key route",
-			mutate: func(p *outbox.WriteParams) {
-				p.RoutingKey = "order\ncreated"
-			},
-			want:        "invalid publish route",
-			wantErrorIs: messaging.ErrInvalidRoute,
-		},
-		{
-			name: "missing message id",
-			mutate: func(p *outbox.WriteParams) {
-				p.MessageID = ""
-			},
-			want: "message id must not be empty",
-		},
-		{
-			name: "unsafe message id",
-			mutate: func(p *outbox.WriteParams) {
-				p.MessageID = "msg\n1"
-			},
-			want: "message id contains whitespace or control characters",
-		},
-		{
-			name: "message id too long",
-			mutate: func(p *outbox.WriteParams) {
-				p.MessageID = strings.Repeat("m", messaging.MaxRouteNameBytes+1)
-			},
-			want: "message id exceeds maximum length",
-		},
-		{
-			name: "missing message type",
-			mutate: func(p *outbox.WriteParams) {
-				p.MessageType = ""
-			},
-			want: "message type must not be empty",
-		},
-		{
-			name: "empty payload",
-			mutate: func(p *outbox.WriteParams) {
-				p.Payload = nil
-			},
-			want: "payload must not be empty",
-		},
-		{
-			name: "invalid payload",
-			mutate: func(p *outbox.WriteParams) {
-				p.Payload = []byte(`{"unterminated"`)
-			},
-			want: "payload must be valid JSON",
-		},
-		{
-			name: "invalid headers",
-			mutate: func(p *outbox.WriteParams) {
-				p.Headers = map[string]string{"Bad Header": "value"}
-			},
-			want:        "invalid headers",
-			wantErrorIs: messaging.ErrInvalidMessageHeader,
-		},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range unsafeEntryFieldCases {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &fakeStore{}
 			writer := outbox.NewWriterWithoutTransactionCheck(store)
