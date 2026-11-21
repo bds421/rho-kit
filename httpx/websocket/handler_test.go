@@ -167,26 +167,11 @@ func TestHandle_NormalClosureReturnedByHandlerIsNotInternalError(t *testing.T) {
 	// inspect the close metric: a 1011 here would mean the kit
 	// escalated a routine disconnect into a handler-error close.
 	require.Eventually(t, func() bool {
-		families, gerr := reg.Gather()
-		if gerr != nil {
-			return false
+		code, recorded := firstCloseCode(reg)
+		if code == "1011" {
+			t.Fatalf("routine normal close escalated to StatusInternalError (1011)")
 		}
-		for _, f := range families {
-			if f.GetName() != "httpx_websocket_close_total" {
-				continue
-			}
-			for _, m := range f.GetMetric() {
-				for _, lp := range m.GetLabel() {
-					if lp.GetName() == "code" {
-						if lp.GetValue() == "1011" {
-							t.Fatalf("routine normal close escalated to StatusInternalError (1011)")
-						}
-					}
-				}
-				return true
-			}
-		}
-		return false
+		return recorded
 	}, 2*time.Second, 20*time.Millisecond, "close metric was never recorded")
 }
 
@@ -477,21 +462,8 @@ func TestHandle_MaxConnections_Rejects503(t *testing.T) {
 	assert.Equal(t, "1", resp.Header.Get("Retry-After"))
 
 	// Counter must be bumped with the bounded reason label.
-	families, err := reg.Gather()
+	rejected, _, err := counterValue(reg, "httpx_websocket_rejected_total", "reason", "max_connections")
 	require.NoError(t, err)
-	var rejected float64
-	for _, f := range families {
-		if f.GetName() != "httpx_websocket_rejected_total" {
-			continue
-		}
-		for _, m := range f.GetMetric() {
-			for _, lp := range m.GetLabel() {
-				if lp.GetName() == "reason" && lp.GetValue() == "max_connections" {
-					rejected = m.GetCounter().GetValue()
-				}
-			}
-		}
-	}
 	assert.Equal(t, float64(1), rejected,
 		"rejected_total{reason=max_connections} must be 1 after the over-cap upgrade")
 
@@ -523,18 +495,7 @@ func TestHandle_PushOnlyHeartbeat_KilledWithoutReadDrain(t *testing.T) {
 	handler := websocket.Handle(
 		websocket.WithHandler(func(ctx context.Context, c *websocket.Conn) error {
 			defer func() { ended <- struct{}{} }()
-			ticker := time.NewTicker(20 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return nil
-				case <-ticker.C:
-					if err := c.WriteMessage(websocket.MessageText, []byte("tick")); err != nil {
-						return err
-					}
-				}
-			}
+			return pushTicks(ctx, c, func() {})
 		}),
 		websocket.WithPingInterval(30*time.Millisecond),
 		websocket.WithPongTimeout(30*time.Millisecond),
@@ -552,13 +513,7 @@ func TestHandle_PushOnlyHeartbeat_KilledWithoutReadDrain(t *testing.T) {
 	defer func() { _ = conn.Close(coderws.StatusNormalClosure, "") }()
 
 	// Client reads continuously so it auto-responds to pings.
-	go func() {
-		for {
-			if _, _, e := conn.Read(ctx); e != nil {
-				return
-			}
-		}
-	}()
+	go readUntilClosed(ctx, conn)
 
 	// The heartbeat must time out and close the push-only connection.
 	select {
@@ -568,24 +523,8 @@ func TestHandle_PushOnlyHeartbeat_KilledWithoutReadDrain(t *testing.T) {
 	}
 
 	require.Eventually(t, func() bool {
-		families, gerr := reg.Gather()
-		if gerr != nil {
-			return false
-		}
-		for _, f := range families {
-			if f.GetName() != "httpx_websocket_pings_total" {
-				continue
-			}
-			for _, m := range f.GetMetric() {
-				for _, lp := range m.GetLabel() {
-					if lp.GetName() == "result" && lp.GetValue() == "timeout" &&
-						m.GetCounter().GetValue() >= 1 {
-						return true
-					}
-				}
-			}
-		}
-		return false
+		timeouts, _, gerr := counterValue(reg, "httpx_websocket_pings_total", "result", "timeout")
+		return gerr == nil && timeouts >= 1
 	}, 2*time.Second, 20*time.Millisecond, "ping timeout was never recorded")
 }
 
@@ -599,22 +538,12 @@ func TestHandle_PushOnlyHeartbeat_SurvivesWithReadDrain(t *testing.T) {
 
 	handler := websocket.Handle(
 		websocket.WithHandler(func(ctx context.Context, c *websocket.Conn) error {
-			ticker := time.NewTicker(20 * time.Millisecond)
-			defer ticker.Stop()
-			for {
+			return pushTicks(ctx, c, func() {
 				select {
-				case <-ctx.Done():
-					return nil
-				case <-ticker.C:
-					if err := c.WriteMessage(websocket.MessageText, []byte("tick")); err != nil {
-						return err
-					}
-					select {
-					case writes <- struct{}{}:
-					default:
-					}
+				case writes <- struct{}{}:
+				default:
 				}
-			}
+			})
 		}),
 		websocket.WithReadDrain(),
 		websocket.WithPingInterval(30*time.Millisecond),
@@ -634,13 +563,7 @@ func TestHandle_PushOnlyHeartbeat_SurvivesWithReadDrain(t *testing.T) {
 	require.NoError(t, err)
 
 	// Client reads continuously so it auto-responds to pings.
-	go func() {
-		for {
-			if _, _, e := conn.Read(ctx); e != nil {
-				return
-			}
-		}
-	}()
+	go readUntilClosed(ctx, conn)
 
 	// Run for well past several ping intervals; the connection must
 	// survive — i.e. writes keep flowing and no ping timeout is logged.
@@ -660,19 +583,10 @@ loop:
 	assert.Greater(t, count, 5, "expected continuous push writes across multiple ping intervals")
 
 	// No ping must have timed out.
-	families, gerr := reg.Gather()
+	timeouts, found, gerr := counterValue(reg, "httpx_websocket_pings_total", "result", "timeout")
 	require.NoError(t, gerr)
-	for _, f := range families {
-		if f.GetName() != "httpx_websocket_pings_total" {
-			continue
-		}
-		for _, m := range f.GetMetric() {
-			for _, lp := range m.GetLabel() {
-				if lp.GetName() == "result" && lp.GetValue() == "timeout" {
-					t.Fatalf("ping timed out despite WithReadDrain (count=%v)", m.GetCounter().GetValue())
-				}
-			}
-		}
+	if found {
+		t.Fatalf("ping timed out despite WithReadDrain (count=%v)", timeouts)
 	}
 
 	_ = conn.Close(coderws.StatusNormalClosure, "done")
@@ -805,24 +719,8 @@ func TestHub_IndependentOfPackageShutdown(t *testing.T) {
 	hubEntered := make(chan struct{})
 	hubDone := make(chan struct{})
 
-	pkgHandler := websocket.Handle(
-		websocket.WithHandler(func(ctx context.Context, c *websocket.Conn) error {
-			close(pkgEntered)
-			<-c.Context().Done()
-			close(pkgDone)
-			return nil
-		}),
-		websocket.WithReadDrain(),
-	)
-	hub := websocket.NewHub(
-		websocket.WithHandler(func(ctx context.Context, c *websocket.Conn) error {
-			close(hubEntered)
-			<-c.Context().Done()
-			close(hubDone)
-			return nil
-		}),
-		websocket.WithReadDrain(),
-	)
+	pkgHandler := websocket.Handle(parkedUntilCancelled(pkgEntered, pkgDone), websocket.WithReadDrain())
+	hub := websocket.NewHub(parkedUntilCancelled(hubEntered, hubDone), websocket.WithReadDrain())
 
 	pkgSrv := httptest.NewServer(pkgHandler)
 	defer pkgSrv.Close()
@@ -832,47 +730,24 @@ func TestHub_IndependentOfPackageShutdown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	pkgConn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(pkgSrv.URL, "http"), nil)
-	require.NoError(t, err)
-	defer func() { _ = pkgConn.Close(coderws.StatusNormalClosure, "") }()
-	pkgClientDone := pkgConn.CloseRead(ctx)
+	pkgClientDone := dialClosingReader(ctx, t, pkgSrv.URL)
+	hubClientDone := dialClosingReader(ctx, t, hubSrv.URL)
 
-	hubConn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(hubSrv.URL, "http"), nil)
-	require.NoError(t, err)
-	defer func() { _ = hubConn.Close(coderws.StatusNormalClosure, "") }()
-	hubClientDone := hubConn.CloseRead(ctx)
-
-	select {
-	case <-pkgEntered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("package Handle handler did not start")
-	}
-	select {
-	case <-hubEntered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Hub handler did not start")
-	}
+	waitClosed(t, pkgEntered, "package Handle handler did not start")
+	waitClosed(t, hubEntered, "Hub handler did not start")
 
 	// Package Shutdown must cancel Handle conns only.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer shutdownCancel()
 	require.NoError(t, websocket.Shutdown(shutdownCtx))
-	select {
-	case <-pkgClientDone.Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("package Handle client did not complete close handshake")
-	}
+	waitClosed(t, pkgClientDone.Done(), "package Handle client did not complete close handshake")
 	select {
 	case <-hubClientDone.Done():
 		t.Fatal("Hub client must remain open during package-level Shutdown")
 	default:
 	}
 
-	select {
-	case <-pkgDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("package Handle did not observe websocket.Shutdown")
-	}
+	waitClosed(t, pkgDone, "package Handle did not observe websocket.Shutdown")
 	select {
 	case <-hubDone:
 		t.Fatal("Hub conn must not be cancelled by package-level Shutdown")
@@ -884,15 +759,109 @@ func TestHub_IndependentOfPackageShutdown(t *testing.T) {
 	hubShutdownCtx, hubShutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer hubShutdownCancel()
 	require.NoError(t, hub.Shutdown(hubShutdownCtx))
-	select {
-	case <-hubClientDone.Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("Hub client did not complete close handshake")
-	}
+	waitClosed(t, hubClientDone.Done(), "Hub client did not complete close handshake")
+	waitClosed(t, hubDone, "Hub handler did not observe Hub.Shutdown")
+}
 
+// parkedUntilCancelled is a handler that signals entered, parks until its
+// connection's context is cancelled, then signals done.
+func parkedUntilCancelled(entered, done chan struct{}) websocket.Option {
+	return websocket.WithHandler(func(_ context.Context, c *websocket.Conn) error {
+		close(entered)
+		<-c.Context().Done()
+		close(done)
+		return nil
+	})
+}
+
+// dialClosingReader dials serverURL and lets the client read only close
+// frames; the returned context ends with the close handshake.
+func dialClosingReader(ctx context.Context, t *testing.T, serverURL string) context.Context {
+	t.Helper()
+	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(serverURL, "http"), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close(coderws.StatusNormalClosure, "") })
+	return conn.CloseRead(ctx)
+}
+
+// waitClosed fails the test unless ch closes within two seconds.
+func waitClosed(t *testing.T, ch <-chan struct{}, failure string) {
+	t.Helper()
 	select {
-	case <-hubDone:
+	case <-ch:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Hub handler did not observe Hub.Shutdown")
+		t.Fatal(failure)
+	}
+}
+
+// firstCloseCode returns the code label of the first recorded close, and
+// whether a close was recorded at all.
+func firstCloseCode(reg *prometheus.Registry) (code string, recorded bool) {
+	families, err := reg.Gather()
+	if err != nil {
+		return "", false
+	}
+	for _, f := range families {
+		if f.GetName() != "httpx_websocket_close_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "code" {
+					code = lp.GetValue()
+				}
+			}
+			return code, true
+		}
+	}
+	return "", false
+}
+
+// counterValue returns the value of the family's counter whose label has
+// the given value, and whether such a series exists.
+func counterValue(reg *prometheus.Registry, family, label, value string) (float64, bool, error) {
+	families, err := reg.Gather()
+	if err != nil {
+		return 0, false, err
+	}
+	for _, f := range families {
+		if f.GetName() != family {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == label && lp.GetValue() == value {
+					return m.GetCounter().GetValue(), true, nil
+				}
+			}
+		}
+	}
+	return 0, false, nil
+}
+
+// pushTicks is a push-only handler: it writes a tick every 20ms, calling
+// wrote after each write, and never reads.
+func pushTicks(ctx context.Context, c *websocket.Conn, wrote func()) error {
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := c.WriteMessage(websocket.MessageText, []byte("tick")); err != nil {
+				return err
+			}
+			wrote()
+		}
+	}
+}
+
+// readUntilClosed reads continuously so the client answers pings.
+func readUntilClosed(ctx context.Context, conn *coderws.Conn) {
+	for {
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
 	}
 }

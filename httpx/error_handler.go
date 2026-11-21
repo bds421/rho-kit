@@ -38,6 +38,15 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 	} else if logger == nil {
 		logger = slog.Default()
 	}
+	logFailure := func(msg string, extra ...any) {
+		attrs := []any{
+			logattr.Error(err),
+			logattr.RequestID(contextutil.RequestID(ctx)),
+			logattr.Method(method),
+			logattr.Path(path),
+		}
+		logger.Error(msg, append(attrs, extra...)...)
+	}
 	switch {
 	case apperror.IsValidation(err):
 		WriteValidationError(w, logger, err)
@@ -64,55 +73,38 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 		WriteError(w, http.StatusForbidden, "forbidden")
 
 	case apperror.IsUnavailable(err):
-		logAttrs := []any{
-			logattr.Error(err),
-			logattr.RequestID(contextutil.RequestID(ctx)),
-			logattr.Method(method),
-			logattr.Path(path),
-		}
-		if ue, ok := apperror.AsUnavailable(err); ok && ue.Dependency != "" {
-			logAttrs = append(logAttrs, slog.String("dependency", ue.Dependency))
-		}
-		logger.Error("upstream unavailable", logAttrs...)
-		// IMPORTANT: Do not send internal error details to clients.
-		// The dependency name is only included in logs, not in the response.
-		status := HTTPStatus(err)
-		msg := "service unavailable"
-		if ue, ok := apperror.AsUnavailable(err); ok && ue.RetryAfter > 0 {
-			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(ue.RetryAfter.Seconds()))))
-		}
-		WriteError(w, status, msg)
+		writeUnavailable(w, err, logFailure)
 
 	case apperror.IsStorageFull(err):
-		logger.Error("storage capacity exhausted",
-			logattr.Error(err),
-			logattr.RequestID(contextutil.RequestID(ctx)),
-			logattr.Method(method),
-			logattr.Path(path),
-		)
+		logFailure("storage capacity exhausted")
 		// 507 Insufficient Storage: the request was well-formed but
 		// the server cannot store the representation needed to
 		// complete it. Do not leak the underlying provider error.
 		WriteError(w, HTTPStatus(err), "insufficient storage")
 
 	case apperror.IsOperationFailed(err):
-		logger.Error("operation failed",
-			logattr.Error(err),
-			logattr.RequestID(contextutil.RequestID(ctx)),
-			logattr.Method(method),
-			logattr.Path(path),
-		)
+		logFailure("operation failed")
 		WriteError(w, http.StatusInternalServerError, "internal error")
 
 	default:
-		logger.Error("unhandled service error",
-			logattr.Error(err),
-			logattr.RequestID(contextutil.RequestID(ctx)),
-			logattr.Method(method),
-			logattr.Path(path),
-		)
+		logFailure("unhandled service error")
 		WriteError(w, http.StatusInternalServerError, "internal error")
 	}
+}
+
+// writeUnavailable answers an unavailable dependency. The dependency name
+// goes only into the log, never into the response.
+func writeUnavailable(w http.ResponseWriter, err error, logFailure func(msg string, extra ...any)) {
+	ue, isUnavailable := apperror.AsUnavailable(err)
+	var dependency []any
+	if isUnavailable && ue.Dependency != "" {
+		dependency = append(dependency, slog.String("dependency", ue.Dependency))
+	}
+	logFailure("upstream unavailable", dependency...)
+	if isUnavailable && ue.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(ue.RetryAfter.Seconds()))))
+	}
+	WriteError(w, HTTPStatus(err), "service unavailable")
 }
 
 // WriteValidationError writes a structured validation error response with

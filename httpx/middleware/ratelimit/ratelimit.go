@@ -198,7 +198,7 @@ func (rl *Limiter) ready() error {
 // getShard returns the shard for the given IP using FNV-1a hashing.
 func (rl *Limiter) getShard(ip string) *shard {
 	h := fnv.New32a()
-	h.Write([]byte(ip))
+	_, _ = h.Write([]byte(ip)) // a hash.Hash Write never fails
 	return &rl.shards[h.Sum32()%numShards]
 }
 
@@ -390,15 +390,7 @@ func Middleware(rl *Limiter) func(http.Handler) http.Handler {
 			panic("middleware/ratelimit: Middleware requires a non-nil next handler")
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			skip, handled, outcome := handleDegradation(w, r, rl.health, rl.degradation)
-			if outcome != "" {
-				rl.observeDecision(outcome)
-			}
-			if handled {
-				return
-			}
-			if skip {
-				next.ServeHTTP(w, r)
+			if admitDegraded(w, r, next, rl.health, rl.degradation, rl.observeDecision) {
 				return
 			}
 

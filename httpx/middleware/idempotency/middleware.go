@@ -70,299 +70,324 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 		panic("middleware/idempotency: Middleware requires WithUserExtractor (multi-tenant safety) — pass WithAllowSharedKeys to opt out for single-tenant / unauthenticated services")
 	}
 
+	g := &guard{store: store, cfg: &cfg}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !cfg.requiredMethods[r.Method] {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			rawKey, ok := singleHeaderValue(r.Header, cfg.header)
-			if !ok {
-				if cfg.optionalKey && len(r.Header.Values(cfg.header)) == 0 {
-					next.ServeHTTP(w, r)
-					return
-				}
-				httpx.WriteError(w, http.StatusBadRequest, "idempotency key is required exactly once")
-				return
-			}
-			if strings.Contains(rawKey, ",") {
-				httpx.WriteError(w, http.StatusBadRequest, "idempotency key is invalid")
-				return
-			}
-			if err := idem.ValidateKey(rawKey); err != nil {
-				httpx.WriteError(w, http.StatusBadRequest, "idempotency key is invalid")
-				return
-			}
-
-			userID := ""
-			if cfg.userExtractor != nil {
-				var ok bool
-				userID, ok = safeUserExtractor(cfg.logger, cfg.userExtractor, r)
-				if !ok {
-					httpx.WriteError(w, http.StatusBadRequest,
-						"idempotency requires authenticated request")
-					return
-				}
-				if userID == "" {
-					// Fail closed: collapsing to (method, path, rawKey) here
-					// would let an anonymous request share a cache slot with
-					// another anonymous (or extractor-failed) caller and
-					// replay the previous response body via the same key.
-					httpx.WriteError(w, http.StatusBadRequest,
-						"idempotency requires authenticated request")
-					return
-				}
-				if err := idem.ValidateKey(userID); err != nil {
-					httpx.WriteError(w, http.StatusBadRequest,
-						"idempotency requires valid authenticated identity")
-					return
-				}
-			}
-			// FR-029 [HIGH]: include canonical query string and any
-			// configured semantic headers in the fingerprint so two
-			// requests that differ on query/header (e.g., dry_run=true vs
-			// false) do not collide on the same body+key.
-			key, keyErr := fingerprintKey(r, rawKey, userID, cfg.semanticHeaders)
-			if keyErr != nil {
-				httpx.WriteError(w, http.StatusBadRequest,
-					"configured semantic idempotency headers are required exactly once")
-				return
-			}
-
-			var bodyFingerprint []byte
-			if cfg.fingerprintBody {
-				fp, body, fpErr := readAndFingerprintBody(r)
-				if fpErr != nil {
-					if errors.Is(fpErr, errBodyTooLarge) {
-						httpx.WriteError(w, http.StatusRequestEntityTooLarge,
-							fmt.Sprintf("request body exceeds idempotency fingerprint limit (%d bytes)", maxFingerprintBodySize))
-						return
-					}
-					if errors.Is(fpErr, errInvalidFingerprintHeader) {
-						httpx.WriteError(w, http.StatusBadRequest,
-							"idempotency fingerprint headers are invalid")
-						return
-					}
-					var maxBytesErr *http.MaxBytesError
-					if errors.As(fpErr, &maxBytesErr) {
-						// An upstream maxbody (http.MaxBytesReader) cap below the
-						// fingerprint limit tripped while buffering the body. This
-						// is a client/oversized-payload failure, not a store error:
-						// surface 413 and do NOT bump the store-errors counter.
-						httpx.WriteError(w, http.StatusRequestEntityTooLarge,
-							"request body exceeds configured maximum size")
-						return
-					}
-					// A read failure here is a client/transport problem (client
-					// disconnect, truncated upload), not a store error — do not
-					// bump the store-errors counter for it.
-					httpx.WriteError(w, http.StatusBadRequest, "could not read request body")
-					return
-				}
-				bodyFingerprint = fp
-				// Replace the request body so the downstream handler can
-				// still read it.
-				r.Body = io.NopCloser(bytes.NewReader(body))
-			}
-
-			cached, fpMismatch, err := store.Get(r.Context(), key, bodyFingerprint)
-			if err != nil {
-				cfg.logger.Error("idempotency: store Get failed",
-					redact.Error(err), redact.String("key", rawKey))
-				if cfg.metrics != nil {
-					cfg.metrics.errors.Inc()
-				}
-				httpx.WriteError(w, http.StatusInternalServerError, "idempotency store error")
-				return
-			}
-			if fpMismatch {
-				if cfg.metrics != nil {
-					cfg.metrics.conflicts.Inc()
-				}
-				httpx.WriteError(w, http.StatusUnprocessableEntity,
-					"idempotency key reused with a different request body")
-				return
-			}
-			if cached != nil {
-				if cfg.metrics != nil {
-					cfg.metrics.hits.Inc()
-				}
-				replay(w, cached, cfg.replayHeader)
-				return
-			}
-
-			token, fpMismatchOnLock, locked, lockErr := store.TryLock(r.Context(), key, bodyFingerprint, cfg.lockOrCacheTTL())
-			if lockErr != nil {
-				cfg.logger.Error("idempotency: store TryLock failed",
-					redact.Error(lockErr), redact.String("key", rawKey))
-				if cfg.metrics != nil {
-					cfg.metrics.errors.Inc()
-				}
-				httpx.WriteError(w, http.StatusInternalServerError, "idempotency store error")
-				return
-			}
-			if fpMismatchOnLock {
-				if cfg.metrics != nil {
-					cfg.metrics.conflicts.Inc()
-				}
-				httpx.WriteError(w, http.StatusUnprocessableEntity,
-					"idempotency key reused with a different request body")
-				return
-			}
-			if !locked {
-				// A concurrent request may have completed between our Get miss
-				// and TryLock, leaving a cached response now. Re-Get once so
-				// we replay the success instead of returning a spurious 409.
-				cached, fpMismatch2, getErr := store.Get(r.Context(), key, bodyFingerprint)
-				if getErr != nil {
-					cfg.logger.Error("idempotency: store Get after contended TryLock failed",
-						redact.Error(getErr), redact.String("key", rawKey))
-					if cfg.metrics != nil {
-						cfg.metrics.errors.Inc()
-					}
-					httpx.WriteError(w, http.StatusInternalServerError, "idempotency store error")
-					return
-				}
-				if fpMismatch2 {
-					if cfg.metrics != nil {
-						cfg.metrics.conflicts.Inc()
-					}
-					httpx.WriteError(w, http.StatusUnprocessableEntity,
-						"idempotency key reused with a different request body")
-					return
-				}
-				if cached != nil {
-					if cfg.metrics != nil {
-						cfg.metrics.hits.Inc()
-					}
-					replay(w, cached, cfg.replayHeader)
-					return
-				}
-				if cfg.metrics != nil {
-					cfg.metrics.conflicts.Inc()
-				}
-				httpx.WriteError(w, http.StatusConflict, "request already in progress")
-				return
-			}
-			if cfg.metrics != nil {
-				cfg.metrics.misses.Inc()
-			}
-
-			rec := &responseCapture{
-				ResponseWriter:  w,
-				capturedHeaders: make(http.Header),
-				statusCode:      http.StatusOK,
-				body:            &bytes.Buffer{},
-			}
-
-			panicked := true
-			defer func() {
-				if panicked {
-					ctx, cancel := postHandlerContext(r.Context(), cfg.postHandlerTimeout)
-					defer cancel()
-					if unlockErr := store.Unlock(ctx, key, token); unlockErr != nil {
-						cfg.logger.Error("idempotency: failed to unlock after panic",
-							redact.Error(unlockErr), redact.String("key", rawKey))
-					}
-				}
-			}()
-
-			next.ServeHTTP(rec, r)
-			panicked = false
-
-			// A handler that set headers via w.Header() but returned without
-			// calling Write/WriteHeader produces an implicit 200. Until now
-			// captured headers were only copied to the real writer inside
-			// WriteHeader, so the first caller received a bare 200 while the
-			// cache snapshot below recorded the unsent headers — every replay
-			// then carried headers the original response never emitted. Flush
-			// the captured headers to the underlying writer so the first
-			// caller and the cached/replayed response agree. Skip when the
-			// connection was hijacked — WriteHeader on a hijacked conn only
-			// produces a spurious net/http error log.
-			if !rec.wroteHeader && !rec.hijacked {
-				rec.WriteHeader(rec.statusCode)
-			}
-			if rec.hijacked {
-				ctx, cancel := postHandlerContext(r.Context(), cfg.postHandlerTimeout)
-				defer cancel()
-				if unlockErr := store.Unlock(ctx, key, token); unlockErr != nil {
-					cfg.logger.Error("idempotency: failed to unlock after hijack",
-						redact.Error(unlockErr), redact.String("key", rawKey))
-				}
-				return
-			}
-
-			if rec.bodyOverflow {
-				cfg.logger.Warn("idempotency: response too large to cache, skipping",
-					redact.String("key", rawKey))
-				ctx, cancel := postHandlerContext(r.Context(), cfg.postHandlerTimeout)
-				defer cancel()
-				if unlockErr := store.Unlock(ctx, key, token); unlockErr != nil {
-					cfg.logger.Error("idempotency: failed to unlock after overflow",
-						redact.Error(unlockErr), redact.String("key", rawKey))
-				}
-				return
-			}
-
-			if cfg.uncachedStatuses[rec.statusCode] {
-				// The caller opted this status out of caching (typically
-				// transient 5xx). Release the lock instead of storing the
-				// response so a retry with the same key re-runs the handler
-				// and can recover, rather than replaying the error for the
-				// full cache TTL.
-				ctx, cancel := postHandlerContext(r.Context(), cfg.postHandlerTimeout)
-				defer cancel()
-				if unlockErr := store.Unlock(ctx, key, token); unlockErr != nil {
-					cfg.logger.Error("idempotency: failed to unlock after uncached status",
-						redact.Error(unlockErr), redact.String("key", rawKey))
-				}
-				return
-			}
-
-			headers := make(map[string][]string, len(rec.Header()))
-			for k, vals := range rec.Header() {
-				// Canonicalise the key for BOTH the preserve override and the
-				// strip list. preserveHeaders keys are stored canonical, so a
-				// handler that wrote an identity header via direct map access
-				// (rc.Header()["set-cookie"] = ...) would otherwise miss the
-				// override and be stripped even when WithPreserveHeaders named it.
-				canonical := http.CanonicalHeaderKey(k)
-				if !cfg.preserveHeaders[canonical] && identityResponseHeaders[canonical] {
-					continue
-				}
-				cp := make([]string, len(vals))
-				copy(cp, vals)
-				headers[k] = cp
-			}
-			resp := idem.CachedResponse{
-				StatusCode: rec.statusCode,
-				Headers:    headers,
-				Body:       append([]byte(nil), rec.body.Bytes()...),
-			}
-			setCtx, setCancel := postHandlerContext(r.Context(), cfg.postHandlerTimeout)
-			defer setCancel()
-			if setErr := store.Set(setCtx, key, token, resp, cfg.ttl); setErr != nil {
-				if errors.Is(setErr, idem.ErrLockLost) {
-					// TTL expired and another caller has taken the slot —
-					// don't fight them. Their response will be the one
-					// future requests replay.
-					cfg.logger.Warn("idempotency: lock lost before Set; another caller now owns the slot",
-						redact.String("key", rawKey))
-				} else {
-					if cfg.metrics != nil {
-						cfg.metrics.errors.Inc()
-					}
-					cfg.logger.Error("idempotency: failed to cache response, lock held until TTL expiry",
-						redact.Error(setErr), redact.String("key", rawKey))
-					// Do NOT unlock — keeping the lock prevents duplicate execution
-					// during the TTL window. The lock expires naturally.
-				}
-			}
-			// On success, Set has already replaced the lock with the response;
-			// no separate Unlock is needed.
+			g.serve(w, r, next)
 		})
+	}
+}
+
+// guard is the configured middleware over its store.
+type guard struct {
+	store idem.Store
+	cfg   *config
+}
+
+// slot is one request's place in the store: its store key, the raw
+// Idempotency-Key the logs name and the request body's fingerprint.
+type slot struct {
+	key         string
+	rawKey      string
+	fingerprint []byte
+}
+
+func (g *guard) serve(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	if !g.cfg.requiredMethods[r.Method] {
+		next.ServeHTTP(w, r)
+		return
+	}
+	rawKey, ok := singleHeaderValue(r.Header, g.cfg.header)
+	if !ok {
+		if g.cfg.optionalKey && len(r.Header.Values(g.cfg.header)) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		httpx.WriteError(w, http.StatusBadRequest, "idempotency key is required exactly once")
+		return
+	}
+	if strings.Contains(rawKey, ",") || idem.ValidateKey(rawKey) != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "idempotency key is invalid")
+		return
+	}
+	s, ok := g.requestSlot(w, r, rawKey)
+	if !ok {
+		return
+	}
+	if g.replayed(w, r, s, "idempotency: store Get failed") {
+		return
+	}
+	token, ok := g.lock(w, r, s)
+	if !ok {
+		return
+	}
+	g.metrics().miss()
+	g.execute(w, r, next, s, token)
+}
+
+// requestSlot derives the request's slot from its key, user and body. It
+// writes the error and returns false when the request cannot have one.
+func (g *guard) requestSlot(w http.ResponseWriter, r *http.Request, rawKey string) (slot, bool) {
+	userID, ok := g.userID(w, r)
+	if !ok {
+		return slot{}, false
+	}
+	// FR-029 [HIGH]: include canonical query string and any
+	// configured semantic headers in the fingerprint so two
+	// requests that differ on query/header (e.g., dry_run=true vs
+	// false) do not collide on the same body+key.
+	key, err := fingerprintKey(r, rawKey, userID, g.cfg.semanticHeaders)
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest,
+			"configured semantic idempotency headers are required exactly once")
+		return slot{}, false
+	}
+	s := slot{key: key, rawKey: rawKey}
+	if g.cfg.fingerprintBody {
+		s.fingerprint, ok = fingerprintRequestBody(w, r)
+	}
+	return s, ok
+}
+
+// userID returns the identifier that scopes the key, or "" for shared keys.
+// It writes the error and returns false when the extractor yields no valid
+// user.
+func (g *guard) userID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if g.cfg.userExtractor == nil {
+		return "", true
+	}
+	userID, ok := safeUserExtractor(g.cfg.logger, g.cfg.userExtractor, r)
+	// Fail closed on an empty user: collapsing to (method, path, rawKey)
+	// would let an anonymous request share a cache slot with another
+	// anonymous (or extractor-failed) caller and replay the previous
+	// response body via the same key.
+	if !ok || userID == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "idempotency requires authenticated request")
+		return "", false
+	}
+	if err := idem.ValidateKey(userID); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "idempotency requires valid authenticated identity")
+		return "", false
+	}
+	return userID, true
+}
+
+// fingerprintRequestBody fingerprints the request body and puts the buffered
+// body back so the downstream handler can still read it. It writes the error
+// and returns false when the body cannot be read. A read failure is a
+// client or transport problem (oversized payload, disconnect, truncated
+// upload), not a store error, so it never bumps the store-errors counter.
+func fingerprintRequestBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	fp, body, err := readAndFingerprintBody(r)
+	var maxBytesErr *http.MaxBytesError
+	switch {
+	case err == nil:
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		return fp, true
+	case errors.Is(err, errBodyTooLarge):
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("request body exceeds idempotency fingerprint limit (%d bytes)", maxFingerprintBodySize))
+	case errors.Is(err, errInvalidFingerprintHeader):
+		httpx.WriteError(w, http.StatusBadRequest, "idempotency fingerprint headers are invalid")
+	case errors.As(err, &maxBytesErr):
+		// An upstream maxbody (http.MaxBytesReader) cap below the
+		// fingerprint limit tripped while buffering the body.
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request body exceeds configured maximum size")
+	default:
+		httpx.WriteError(w, http.StatusBadRequest, "could not read request body")
+	}
+	return nil, false
+}
+
+// replayed answers the request from the store when its slot holds a
+// response or rejects it when the slot was taken by a different body. It
+// reports whether the request is done; failure is the log message of a
+// store error.
+func (g *guard) replayed(w http.ResponseWriter, r *http.Request, s slot, failure string) bool {
+	cached, fpMismatch, err := g.store.Get(r.Context(), s.key, s.fingerprint)
+	switch {
+	case err != nil:
+		g.storeFailed(w, failure, err, s)
+	case fpMismatch:
+		g.rejectReuse(w)
+	case cached != nil:
+		g.metrics().hit()
+		replay(w, cached, g.cfg.replayHeader)
+	default:
+		return false
+	}
+	return true
+}
+
+// lock takes the slot for this request. It writes the response and returns
+// false when the slot cannot be taken.
+func (g *guard) lock(w http.ResponseWriter, r *http.Request, s slot) (string, bool) {
+	token, fpMismatch, locked, err := g.store.TryLock(r.Context(), s.key, s.fingerprint, g.cfg.lockOrCacheTTL())
+	switch {
+	case err != nil:
+		g.storeFailed(w, "idempotency: store TryLock failed", err, s)
+		return "", false
+	case fpMismatch:
+		g.rejectReuse(w)
+		return "", false
+	case locked:
+		return token, true
+	}
+	// A concurrent request may have completed between our Get miss
+	// and TryLock, leaving a cached response now. Re-Get once so
+	// we replay the success instead of returning a spurious 409.
+	if g.replayed(w, r, s, "idempotency: store Get after contended TryLock failed") {
+		return "", false
+	}
+	g.metrics().conflict()
+	httpx.WriteError(w, http.StatusConflict, "request already in progress")
+	return "", false
+}
+
+func (g *guard) storeFailed(w http.ResponseWriter, msg string, err error, s slot) {
+	g.cfg.logger.Error(msg, redact.Error(err), redact.String("key", s.rawKey))
+	g.metrics().storeError()
+	httpx.WriteError(w, http.StatusInternalServerError, "idempotency store error")
+}
+
+func (g *guard) rejectReuse(w http.ResponseWriter) {
+	g.metrics().conflict()
+	httpx.WriteError(w, http.StatusUnprocessableEntity,
+		"idempotency key reused with a different request body")
+}
+
+// execute runs the handler on the locked slot and caches its response, or
+// releases the slot when the response must not be cached.
+func (g *guard) execute(w http.ResponseWriter, r *http.Request, next http.Handler, s slot, token string) {
+	rec := &responseCapture{
+		ResponseWriter:  w,
+		capturedHeaders: make(http.Header),
+		statusCode:      http.StatusOK,
+		body:            &bytes.Buffer{},
+	}
+
+	panicked := true
+	defer func() {
+		if panicked {
+			g.unlock(r, s, token, "panic")
+		}
+	}()
+
+	next.ServeHTTP(rec, r)
+	panicked = false
+
+	// A handler that set headers via w.Header() but returned without
+	// calling Write/WriteHeader produces an implicit 200. Captured headers
+	// reach the real writer only inside WriteHeader, so flush them here or
+	// the first caller would receive a bare 200 while the cached response
+	// carries headers the original never emitted. Skip when the connection
+	// was hijacked — WriteHeader on a hijacked conn only produces a
+	// spurious net/http error log.
+	if !rec.wroteHeader && !rec.hijacked {
+		rec.WriteHeader(rec.statusCode)
+	}
+	switch {
+	case rec.hijacked:
+		g.unlock(r, s, token, "hijack")
+	case rec.bodyOverflow:
+		g.cfg.logger.Warn("idempotency: response too large to cache, skipping",
+			redact.String("key", s.rawKey))
+		g.unlock(r, s, token, "overflow")
+	case g.cfg.uncachedStatuses[rec.statusCode]:
+		// The caller opted this status out of caching (typically
+		// transient 5xx). Release the lock instead of storing the
+		// response so a retry with the same key re-runs the handler
+		// and can recover, rather than replaying the error for the
+		// full cache TTL.
+		g.unlock(r, s, token, "uncached status")
+	default:
+		g.cache(r, s, token, rec)
+	}
+}
+
+// unlock releases the slot; after names the reason in the log of a failure.
+func (g *guard) unlock(r *http.Request, s slot, token, after string) {
+	ctx, cancel := postHandlerContext(r.Context(), g.cfg.postHandlerTimeout)
+	defer cancel()
+	if err := g.store.Unlock(ctx, s.key, token); err != nil {
+		g.cfg.logger.Error("idempotency: failed to unlock after "+after,
+			redact.Error(err), redact.String("key", s.rawKey))
+	}
+}
+
+// cache stores the captured response in the slot. On success Set replaces
+// the lock with the response, so no separate Unlock is needed.
+func (g *guard) cache(r *http.Request, s slot, token string, rec *responseCapture) {
+	resp := idem.CachedResponse{
+		StatusCode: rec.statusCode,
+		Headers:    g.cacheableHeaders(rec.Header()),
+		Body:       append([]byte(nil), rec.body.Bytes()...),
+	}
+	ctx, cancel := postHandlerContext(r.Context(), g.cfg.postHandlerTimeout)
+	defer cancel()
+	err := g.store.Set(ctx, s.key, token, resp, g.cfg.ttl)
+	switch {
+	case err == nil:
+	case errors.Is(err, idem.ErrLockLost):
+		// TTL expired and another caller has taken the slot —
+		// don't fight them. Their response will be the one
+		// future requests replay.
+		g.cfg.logger.Warn("idempotency: lock lost before Set; another caller now owns the slot",
+			redact.String("key", s.rawKey))
+	default:
+		g.metrics().storeError()
+		// Keep the lock: it prevents duplicate execution during the
+		// TTL window and expires naturally.
+		g.cfg.logger.Error("idempotency: failed to cache response, lock held until TTL expiry",
+			redact.Error(err), redact.String("key", s.rawKey))
+	}
+}
+
+// cacheableHeaders copies the response headers without the identity-bearing
+// ones the caller did not preserve.
+func (g *guard) cacheableHeaders(h http.Header) map[string][]string {
+	headers := make(map[string][]string, len(h))
+	for k, vals := range h {
+		// Canonicalise the key for BOTH the preserve override and the
+		// strip list. preserveHeaders keys are stored canonical, so a
+		// handler that wrote an identity header via direct map access
+		// (rc.Header()["set-cookie"] = ...) would otherwise miss the
+		// override and be stripped even when WithPreserveHeaders named it.
+		canonical := http.CanonicalHeaderKey(k)
+		if !g.cfg.preserveHeaders[canonical] && identityResponseHeaders[canonical] {
+			continue
+		}
+		cp := make([]string, len(vals))
+		copy(cp, vals)
+		headers[k] = cp
+	}
+	return headers
+}
+
+func (g *guard) metrics() *Metrics { return g.cfg.metrics }
+
+// The counters are nil-safe so the middleware runs without [WithMetrics].
+func (m *Metrics) hit() {
+	if m != nil {
+		m.hits.Inc()
+	}
+}
+
+func (m *Metrics) miss() {
+	if m != nil {
+		m.misses.Inc()
+	}
+}
+
+func (m *Metrics) conflict() {
+	if m != nil {
+		m.conflicts.Inc()
+	}
+}
+
+func (m *Metrics) storeError() {
+	if m != nil {
+		m.errors.Inc()
 	}
 }
 

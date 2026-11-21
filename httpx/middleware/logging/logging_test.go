@@ -318,7 +318,7 @@ func TestLogger_Logs500AndRepanicsWhenHandlerPanicsBeforeHeaders(t *testing.T) {
 
 	defer func() {
 		got := recover()
-		if got != handlerPanic {
+		if err, _ := got.(error); !errors.Is(err, handlerPanic) {
 			t.Fatalf("panic = %v, want original panic", got)
 		}
 		logOutput := buf.String()
@@ -423,7 +423,7 @@ func TestLogger_PanicAfterHeaderLogsWrittenStatusAndRepanics(t *testing.T) {
 
 	defer func() {
 		got := recover()
-		if got != handlerPanic {
+		if err, _ := got.(error); !errors.Is(err, handlerPanic) {
 			t.Fatalf("panic = %v, want original panic", got)
 		}
 		logOutput := buf.String()

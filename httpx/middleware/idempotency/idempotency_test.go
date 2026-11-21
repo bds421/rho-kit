@@ -1526,52 +1526,24 @@ func TestFingerprintKey_SemanticHeadersAreCaseInsensitive(t *testing.T) {
 
 func TestFingerprintKey_RejectsAmbiguousSemanticHeaders(t *testing.T) {
 	headers := []string{"X-Tenant-Id"}
+	tenant := func(values ...string) func(*http.Request) {
+		return func(r *http.Request) {
+			for _, v := range values {
+				r.Header.Add("X-Tenant-Id", v)
+			}
+		}
+	}
 	cases := []struct {
 		name  string
 		setup func(*http.Request)
 	}{
-		{
-			name:  "missing",
-			setup: func(*http.Request) {},
-		},
-		{
-			name: "blank",
-			setup: func(r *http.Request) {
-				r.Header.Set("X-Tenant-Id", " \t ")
-			},
-		},
-		{
-			name: "duplicate",
-			setup: func(r *http.Request) {
-				r.Header.Add("X-Tenant-Id", "tenant-a")
-				r.Header.Add("X-Tenant-Id", "tenant-b")
-			},
-		},
-		{
-			name: "comma alias source",
-			setup: func(r *http.Request) {
-				r.Header.Add("X-Tenant-Id", "tenant-a,tenant-b")
-				r.Header.Add("X-Tenant-Id", "tenant-c")
-			},
-		},
-		{
-			name: "edge whitespace",
-			setup: func(r *http.Request) {
-				r.Header.Set("X-Tenant-Id", " tenant-a")
-			},
-		},
-		{
-			name: "control",
-			setup: func(r *http.Request) {
-				r.Header.Set("X-Tenant-Id", "tenant-a\n")
-			},
-		},
-		{
-			name: "invalid utf8",
-			setup: func(r *http.Request) {
-				r.Header.Set("X-Tenant-Id", string([]byte{'t', 0xff}))
-			},
-		},
+		{name: "missing", setup: tenant()},
+		{name: "blank", setup: tenant(" \t ")},
+		{name: "duplicate", setup: tenant("tenant-a", "tenant-b")},
+		{name: "comma alias source", setup: tenant("tenant-a,tenant-b", "tenant-c")},
+		{name: "edge whitespace", setup: tenant(" tenant-a")},
+		{name: "control", setup: tenant("tenant-a\n")},
+		{name: "invalid utf8", setup: tenant(string([]byte{'t', 0xff}))},
 	}
 
 	for _, tc := range cases {

@@ -349,7 +349,7 @@ func (t *circuitBreakerTransport) RoundTrip(req *http.Request) (*http.Response, 
 	// follows the net/http convention where non-2xx is not an error.
 	// The circuit breaker has already recorded this as a failure internally.
 	if resp != nil && err != nil {
-		if _, ok := err.(*serverError); ok {
+		if _, ok := errors.AsType[*serverError](err); ok {
 			return resp, nil
 		}
 		// Non-serverError with a response: close body to prevent leak.

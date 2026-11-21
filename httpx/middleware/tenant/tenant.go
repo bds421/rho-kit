@@ -189,52 +189,60 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			id, err := safeExtractTenant(cfg.extractor, r)
-			if err != nil {
-				if errors.Is(err, errExtractorPanicked) {
-					httpx.WriteError(w, http.StatusInternalServerError, "internal error")
-					return
-				}
-				// Present-but-invalid tenant ID. Reject with 400 so
-				// downstream cache/idempotency/log/metric keys never
-				// see malformed tenant material, without reflecting
-				// validator internals back to the caller.
-				httpx.WriteError(w, http.StatusBadRequest, "tenant: invalid tenant ID")
-				return
-			}
-			if !id.IsZero() {
-				if err := coretenant.ValidateID(id.String()); err != nil {
-					httpx.WriteError(w, http.StatusBadRequest, "tenant: invalid tenant ID")
-					return
-				}
-				ctx, err := coretenant.WithID(r.Context(), id)
-				if err != nil {
-					httpx.WriteError(w, http.StatusConflict, "tenant: context already carries a different tenant ID")
-					return
-				}
-				r = r.WithContext(ctx)
-				next.ServeHTTP(w, r)
-				return
-			}
-			if cfg.allowMissingTenantOnSafeMethods {
-				switch r.Method {
-				case http.MethodGet, http.MethodHead, http.MethodOptions:
-					// Explicit opt-out: pre-auth GET/HEAD/OPTIONS
-					// short-circuit through with no tenant on ctx.
-					// Downstream tenant-keyed middleware decides its
-					// own missing-key policy; the budget middleware
-					// fails closed by default.
-					next.ServeHTTP(w, r)
-					return
-				}
-			}
-			if cfg.required {
-				httpx.WriteError(w, http.StatusBadRequest, "tenant: required tenant ID is missing")
-				return
-			}
-			next.ServeHTTP(w, r)
+			cfg.serve(w, r, next)
 		})
 	}
+}
+
+func (cfg *config) serve(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	id, err := safeExtractTenant(cfg.extractor, r)
+	if err != nil {
+		if errors.Is(err, errExtractorPanicked) {
+			httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		// Present-but-invalid tenant ID. Reject with 400 so
+		// downstream cache/idempotency/log/metric keys never
+		// see malformed tenant material, without reflecting
+		// validator internals back to the caller.
+		httpx.WriteError(w, http.StatusBadRequest, "tenant: invalid tenant ID")
+		return
+	}
+	if !id.IsZero() {
+		serveWithTenant(w, r, next, id)
+		return
+	}
+	if cfg.allowMissingTenantOnSafeMethods {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			// Explicit opt-out: pre-auth GET/HEAD/OPTIONS
+			// short-circuit through with no tenant on ctx.
+			// Downstream tenant-keyed middleware decides its
+			// own missing-key policy; the budget middleware
+			// fails closed by default.
+			next.ServeHTTP(w, r)
+			return
+		}
+	}
+	if cfg.required {
+		httpx.WriteError(w, http.StatusBadRequest, "tenant: required tenant ID is missing")
+		return
+	}
+	next.ServeHTTP(w, r)
+}
+
+// serveWithTenant serves the request with the tenant ID on its context.
+func serveWithTenant(w http.ResponseWriter, r *http.Request, next http.Handler, id coretenant.ID) {
+	if err := coretenant.ValidateID(id.String()); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "tenant: invalid tenant ID")
+		return
+	}
+	ctx, err := coretenant.WithID(r.Context(), id)
+	if err != nil {
+		httpx.WriteError(w, http.StatusConflict, "tenant: context already carries a different tenant ID")
+		return
+	}
+	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
 var errExtractorPanicked = errors.New("tenant: extractor panicked")

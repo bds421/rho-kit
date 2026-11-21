@@ -77,37 +77,13 @@ func ClientIPWithTrustedProxies(r *http.Request, trusted []*net.IPNet) string {
 	}
 
 	if forwarded := strings.Join(r.Header.Values("X-Forwarded-For"), ","); forwarded != "" {
-		// Cap the joined XFF length and parts count so a misconfigured
-		// upstream proxy that forwards client XFFs verbatim cannot turn
-		// this into an unbounded-parse vector. The cap is generous: even
-		// a chain of 32 hops with full IPv6 addresses fits comfortably
-		// in 8 KiB.
-		if len(forwarded) > maxForwardedForBytes {
+		client, untrusted := forwardedClient(forwarded, trusted)
+		if untrusted {
 			return remoteIPString(r.RemoteAddr)
 		}
-		parts := strings.Split(forwarded, ",")
-		if len(parts) > maxForwardedForParts {
-			return remoteIPString(r.RemoteAddr)
+		if client != nil {
+			return client.String()
 		}
-		for i := len(parts) - 1; i >= 0; i-- {
-			candidate := strings.TrimSpace(parts[i])
-			if candidate == "" {
-				continue
-			}
-			candidateIP := parseForwardedForIP(candidate)
-			if candidateIP == nil {
-				// An entry that is neither a bare IP nor a valid host:port
-				// (hostnames, truncated values, garbage) means the chain can
-				// no longer be trusted: walking further left would return an
-				// earlier, fully client-controlled hop. Fail closed to
-				// RemoteAddr rather than continuing into untrusted territory.
-				return remoteIPString(r.RemoteAddr)
-			}
-			if !isIPInTrustedCIDRs(candidateIP, trusted) {
-				return candidateIP.String()
-			}
-		}
-		// All XFF hops were trusted — fall through to X-Real-IP / RemoteAddr.
 	}
 
 	if realIP, ok := singletonHeaderValue(r.Header, "X-Real-IP"); ok && realIP != "" {
@@ -117,6 +93,43 @@ func ClientIPWithTrustedProxies(r *http.Request, trusted []*net.IPNet) string {
 	}
 
 	return remoteIPString(r.RemoteAddr)
+}
+
+// forwardedClient walks the joined X-Forwarded-For chain from the right and
+// returns the first hop outside the trusted CIDRs. It returns nil when every
+// hop is trusted, and untrusted when the chain cannot be trusted at all.
+func forwardedClient(forwarded string, trusted []*net.IPNet) (client net.IP, untrusted bool) {
+	// Cap the joined XFF length and parts count so a misconfigured
+	// upstream proxy that forwards client XFFs verbatim cannot turn
+	// this into an unbounded-parse vector. The cap is generous: even
+	// a chain of 32 hops with full IPv6 addresses fits comfortably
+	// in 8 KiB.
+	if len(forwarded) > maxForwardedForBytes {
+		return nil, true
+	}
+	parts := strings.Split(forwarded, ",")
+	if len(parts) > maxForwardedForParts {
+		return nil, true
+	}
+	for i := len(parts) - 1; i >= 0; i-- {
+		candidate := strings.TrimSpace(parts[i])
+		if candidate == "" {
+			continue
+		}
+		candidateIP := parseForwardedForIP(candidate)
+		if candidateIP == nil {
+			// An entry that is neither a bare IP nor a valid host:port
+			// (hostnames, truncated values, garbage) means the chain can
+			// no longer be trusted: walking further left would return an
+			// earlier, fully client-controlled hop. Fail closed to
+			// RemoteAddr rather than continuing into untrusted territory.
+			return nil, true
+		}
+		if !isIPInTrustedCIDRs(candidateIP, trusted) {
+			return candidateIP, false
+		}
+	}
+	return nil, false
 }
 
 // parseForwardedForIP parses a single X-Forwarded-For entry into an IP. It

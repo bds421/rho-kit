@@ -38,6 +38,21 @@ func TestCaptureRoute_PropagatesPatternPastWithContextClone(t *testing.T) {
 		t.Fatalf("status=%d", rec.Code)
 	}
 
+	routes := routeLabels(t, reg)
+	for i, route := range routes {
+		if route == "unmatched" {
+			t.Fatalf("route=unmatched after CaptureRoute; labels=%v", routes[:i+1])
+		}
+		if route == "/api/v1/items/{id}" {
+			return // success
+		}
+	}
+	t.Fatalf("expected route=/api/v1/items/{id}, got %v", routes)
+}
+
+// routeLabels returns the route labels of http_requests_total in gather order.
+func routeLabels(t *testing.T, reg *prometheus.Registry) []string {
+	t.Helper()
 	families, err := reg.Gather()
 	if err != nil {
 		t.Fatal(err)
@@ -51,17 +66,11 @@ func TestCaptureRoute_PropagatesPatternPastWithContextClone(t *testing.T) {
 			for _, lp := range met.GetLabel() {
 				if lp.GetName() == "route" {
 					routes = append(routes, lp.GetValue())
-					if lp.GetValue() == "unmatched" {
-						t.Fatalf("route=unmatched after CaptureRoute; labels=%v", routes)
-					}
-					if lp.GetValue() == "/api/v1/items/{id}" {
-						return // success
-					}
 				}
 			}
 		}
 	}
-	t.Fatalf("expected route=/api/v1/items/{id}, got %v", routes)
+	return routes
 }
 
 // The slot is written by CaptureRoute on the goroutine that serves the

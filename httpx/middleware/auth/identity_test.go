@@ -75,24 +75,27 @@ func TestFormatActor(t *testing.T) {
 	}))
 }
 
+// seenIdentity is what a handler behind [auth.Strategy] reads from its
+// request context.
+type seenIdentity struct {
+	subject string
+	actor   string
+	kind    auth.ActorKind
+	machine bool
+}
+
 func TestStrategy_IdentityMatrix(t *testing.T) {
 	cases := []struct {
-		name        string
-		id          auth.Identity
-		wantCode    int
-		wantSubj    string
-		wantActor   string
-		wantKind    auth.ActorKind
-		wantMachine bool
+		name     string
+		id       auth.Identity
+		wantCode int
+		want     seenIdentity
 	}{
 		{
-			name: "human session",
-			id: auth.Identity{
-				Subject: testUserID, Actor: testUserID, ActorKind: auth.ActorUser,
-				Tenant: "t1",
-			},
-			wantCode: http.StatusNoContent, wantSubj: testUserID, wantActor: testUserID,
-			wantKind: auth.ActorUser,
+			name:     "human session",
+			id:       auth.Identity{Subject: testUserID, Actor: testUserID, ActorKind: auth.ActorUser, Tenant: "t1"},
+			wantCode: http.StatusNoContent,
+			want:     seenIdentity{subject: testUserID, actor: testUserID, kind: auth.ActorUser},
 		},
 		{
 			name: "scoped key bound",
@@ -100,16 +103,14 @@ func TestStrategy_IdentityMatrix(t *testing.T) {
 				Subject: testUserID, Actor: "keyid1", ActorKind: auth.ActorAPIKey,
 				Tenant: "t1", ScopeList: []string{"read"},
 			},
-			wantCode: http.StatusNoContent, wantSubj: testUserID, wantActor: "keyid1",
-			wantKind: auth.ActorAPIKey, wantMachine: true,
+			wantCode: http.StatusNoContent,
+			want:     seenIdentity{subject: testUserID, actor: "keyid1", kind: auth.ActorAPIKey, machine: true},
 		},
 		{
-			name: "scoped key unbound",
-			id: auth.Identity{
-				Actor: "keyid2", ActorKind: auth.ActorAPIKey, Tenant: "t1",
-			},
-			wantCode: http.StatusNoContent, wantActor: "keyid2",
-			wantKind: auth.ActorAPIKey, wantMachine: true,
+			name:     "scoped key unbound",
+			id:       auth.Identity{Actor: "keyid2", ActorKind: auth.ActorAPIKey, Tenant: "t1"},
+			wantCode: http.StatusNoContent,
+			want:     seenIdentity{actor: "keyid2", kind: auth.ActorAPIKey, machine: true},
 		},
 		{
 			name: "oauth client",
@@ -117,8 +118,8 @@ func TestStrategy_IdentityMatrix(t *testing.T) {
 				Subject: testUserID, Actor: "oauth1", ActorKind: auth.ActorOAuthClient,
 				Tenant: "t1",
 			},
-			wantCode: http.StatusNoContent, wantSubj: testUserID, wantActor: "oauth1",
-			wantKind: auth.ActorOAuthClient, wantMachine: true,
+			wantCode: http.StatusNoContent,
+			want:     seenIdentity{subject: testUserID, actor: "oauth1", kind: auth.ActorOAuthClient, machine: true},
 		},
 		{
 			name:     "non-uuid subject",
@@ -134,28 +135,32 @@ func TestStrategy_IdentityMatrix(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var gotSubj, gotActor string
-			var gotKind auth.ActorKind
-			var gotMachine bool
-			h := auth.Strategy(auth.AuthenticatorFunc(func(*http.Request) (auth.Identity, error) {
-				return tc.id, nil
-			}))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotSubj = auth.Subject(r.Context())
-				gotActor = auth.Actor(r.Context())
-				gotKind = auth.ActorKindFromContext(r.Context())
-				gotMachine = auth.IsMachine(r.Context())
-				w.WriteHeader(http.StatusNoContent)
-			}))
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-			require.Equal(t, tc.wantCode, rec.Code)
+			code, seen := serveStrategyIdentity(tc.id)
+			require.Equal(t, tc.wantCode, code)
 			if tc.wantCode != http.StatusNoContent {
 				return
 			}
-			assert.Equal(t, tc.wantSubj, gotSubj)
-			assert.Equal(t, tc.wantActor, gotActor)
-			assert.Equal(t, tc.wantKind, gotKind)
-			assert.Equal(t, tc.wantMachine, gotMachine)
+			assert.Equal(t, tc.want, seen)
 		})
 	}
+}
+
+// serveStrategyIdentity serves one request whose authenticator returns id
+// and reports the status and what the handler saw.
+func serveStrategyIdentity(id auth.Identity) (int, seenIdentity) {
+	var seen seenIdentity
+	h := auth.Strategy(auth.AuthenticatorFunc(func(*http.Request) (auth.Identity, error) {
+		return id, nil
+	}))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = seenIdentity{
+			subject: auth.Subject(r.Context()),
+			actor:   auth.Actor(r.Context()),
+			kind:    auth.ActorKindFromContext(r.Context()),
+			machine: auth.IsMachine(r.Context()),
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	return rec.Code, seen
 }

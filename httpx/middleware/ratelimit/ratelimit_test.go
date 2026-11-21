@@ -307,7 +307,7 @@ func TestLimiterRun_RejectsNilContext(t *testing.T) {
 
 func TestLimiterRun_RejectsInvalidLimiter(t *testing.T) {
 	var rl Limiter
-	if err := rl.Start(context.Background()); err != limiter.ErrInvalidLimiter {
+	if err := rl.Start(context.Background()); !errors.Is(err, limiter.ErrInvalidLimiter) {
 		t.Fatalf("Run error = %v, want limiter.ErrInvalidLimiter", err)
 	}
 }

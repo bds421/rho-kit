@@ -72,9 +72,15 @@ func EmitPathsJSON(title string, routes []RouteMeta) ([]byte, error) {
 		op.OperationID = sanitizeOperationID(method, path)
 		item[method] = op
 	}
-	// Ensure operationId uniqueness after sanitisation (e.g. /a/b vs /a_b).
+	uniqueOperationIDs(doc.Paths)
+	return json.MarshalIndent(doc, "", "  ")
+}
+
+// uniqueOperationIDs makes operationIds unique after sanitisation (e.g.
+// /a/b vs /a_b) by suffixing a duplicate with _2, _3, ….
+func uniqueOperationIDs(paths map[string]pathItem) {
 	seen := make(map[string]string) // opID -> method+path
-	for path, item := range doc.Paths {
+	for path, item := range paths {
 		for method, op := range item {
 			base := op.OperationID
 			id := base
@@ -91,7 +97,6 @@ func EmitPathsJSON(title string, routes []RouteMeta) ([]byte, error) {
 			}
 		}
 	}
-	return json.MarshalIndent(doc, "", "  ")
 }
 
 // sanitizeOperationID builds a code-generator-safe operationId from method+path.

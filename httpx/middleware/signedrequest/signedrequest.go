@@ -419,59 +419,14 @@ func Middleware(resolver KeyResolver, nonceStore NonceStore, opts ...Option) fun
 }
 
 func verify(r *http.Request, cfg *config) error {
-	ts, err := requiredSingletonHeaderBounded(r, HeaderTimestamp, timestampMaxLen)
+	sh, err := readSignatureHeaders(r, cfg)
 	if err != nil {
 		return err
 	}
-	nonce, err := requiredSingletonHeaderBounded(r, HeaderNonce, nonceMaxLen)
-	if err != nil {
+	if err := checkTimestamp(sh.timestamp, cfg); err != nil {
 		return err
 	}
-	keyID, err := requiredSingletonHeaderBounded(r, HeaderKeyID, keyIDMaxLen)
-	if err != nil {
-		return err
-	}
-	sig, err := requiredSingletonHeaderBounded(r, HeaderSignature, signatureMaxLen)
-	if err != nil {
-		return err
-	}
-	// FR-026 [MED]: validate nonce format/length before it can become
-	// a Redis key. The wire contract is "16 random bytes,
-	// base64-RawURL-encoded" which is exactly 22 ASCII characters.
-	// Capping length and demanding the canonical encoding prevents an
-	// attacker from inflating nonce-store keys to pathological sizes
-	// or smuggling unprintable bytes into Redis.
-	if !validNonce(nonce) {
-		return ErrNonceInvalid
-	}
-	for _, h := range cfg.requiredHeaders {
-		if err := validateRequiredHeaderValue(r, h); err != nil {
-			return err
-		}
-	}
-	if err := validateOptionalHeaderValue(r, canonicalContentTypeHeader); err != nil {
-		return err
-	}
-	if err := validateCanonicalRequest(r); err != nil {
-		return err
-	}
-
-	tsUnix, err := strconv.ParseInt(ts, 10, 64)
-	if err != nil {
-		return ErrTimestampInvalid
-	}
-	if direction := classifyTimestampSkew(tsUnix, cfg.now(), cfg.maxClockSkew); direction != 0 {
-		// Both branches still satisfy errors.Is(_, ErrTimestampInvalid),
-		// so writeError keeps returning 400 unchanged; the wrappers
-		// exist so the metrics layer can split "future-skew" from
-		// "past-maxAge" without re-deriving the direction.
-		if direction > 0 {
-			return fmt.Errorf("%w: %w", ErrTimestampInvalid, errTimestampClockSkew)
-		}
-		return fmt.Errorf("%w: %w", ErrTimestampInvalid, errTimestampExpired)
-	}
-
-	gotMAC, err := decodeSignatureMAC(sig)
+	gotMAC, err := decodeSignatureMAC(sh.signature)
 	if err != nil {
 		return ErrSignatureInvalid
 	}
@@ -480,30 +435,14 @@ func verify(r *http.Request, cfg *config) error {
 	// unauthenticated caller can force the server to buffer up to
 	// bodyMaxSize bytes per request — a memory-amplification primitive
 	// against any endpoint that mounts this middleware.
-	resolved, err := cfg.resolver(r.Context(), keyID)
-	if err != nil || len(resolved) == 0 {
-		return ErrSignatureInvalid
-	}
-	// Copy before any zeroing. KeyResolver does not transfer ownership
-	// of the returned slice — resolvers typically hand back a shared
-	// cached key (see examples/webhook-receiver). Mutating that slice
-	// would zero the operator's live key after the first request.
-	secret := append([]byte(nil), resolved...)
-	if len(secret) < minSecretLen {
-		// Wipe the over-short copy before returning.
-		for i := range secret {
-			secret[i] = 0
-		}
-		return ErrSecretTooShort
+	secret, err := resolveSecret(r.Context(), cfg, sh.keyID)
+	if err != nil {
+		return err
 	}
 	// Zero only the middleware-owned copy before verify() returns —
 	// bounds the lifetime of plaintext key bytes to the duration of a
 	// single MAC compute (Lens F A.7).
-	defer func() {
-		for i := range secret {
-			secret[i] = 0
-		}
-	}()
+	defer clear(secret)
 
 	// Stream the body through a SHA-256 hasher. Up to inMemoryBodyMax
 	// bytes are kept in memory; anything beyond spools to a private
@@ -516,27 +455,11 @@ func verify(r *http.Request, cfg *config) error {
 	if err != nil {
 		return err
 	}
-
-	canonical := buildCanonicalFromHash(r, ts, nonce, bodyHash, cfg.requiredHeaders)
-	expected := hmacSHA256(secret, canonical)
-	if !hmac.Equal(gotMAC, expected) {
-		// MAC mismatch: discard the spooled body (and the temp file,
-		// if any) before returning. The downstream handler will not
-		// run, so we own cleanup here.
+	if err := acceptSigned(r, cfg, sh, secret, gotMAC, bodyHash); err != nil {
+		// The downstream handler will not run, so we own cleanup of
+		// the spooled body (and the temp file, if any) here.
 		spooled.cleanup()
-		return ErrSignatureInvalid
-	}
-
-	// Scope the nonce by key ID so a holder of key A cannot burn
-	// nonces observed for key B (cross-key nonce-burning DoS).
-	first, err := cfg.nonceStore.SeenOrStore(r.Context(), storeNonceKey(keyID, nonce))
-	if err != nil {
-		spooled.cleanup()
-		return newNonceStoreError(err)
-	}
-	if !first {
-		spooled.cleanup()
-		return ErrNonceReplayed
+		return err
 	}
 
 	// Only after MAC verifies AND nonce checks do we expose the body
@@ -545,6 +468,103 @@ func verify(r *http.Request, cfg *config) error {
 	// (it only closes the original it captured before the handler ran),
 	// so the Middleware wrapper closes it after the handler returns.
 	r.Body = spooled.Body()
+	return nil
+}
+
+// signatureHeaders are the signing headers of one request.
+type signatureHeaders struct {
+	timestamp, nonce, keyID, signature string
+}
+
+// readSignatureHeaders reads the signing headers and validates the request
+// parts the signature covers.
+func readSignatureHeaders(r *http.Request, cfg *config) (signatureHeaders, error) {
+	var sh signatureHeaders
+	var err error
+	if sh.timestamp, err = requiredSingletonHeaderBounded(r, HeaderTimestamp, timestampMaxLen); err != nil {
+		return sh, err
+	}
+	if sh.nonce, err = requiredSingletonHeaderBounded(r, HeaderNonce, nonceMaxLen); err != nil {
+		return sh, err
+	}
+	if sh.keyID, err = requiredSingletonHeaderBounded(r, HeaderKeyID, keyIDMaxLen); err != nil {
+		return sh, err
+	}
+	if sh.signature, err = requiredSingletonHeaderBounded(r, HeaderSignature, signatureMaxLen); err != nil {
+		return sh, err
+	}
+	// FR-026 [MED]: validate nonce format/length before it can become
+	// a Redis key. The wire contract is "16 random bytes,
+	// base64-RawURL-encoded" which is exactly 22 ASCII characters.
+	// Capping length and demanding the canonical encoding prevents an
+	// attacker from inflating nonce-store keys to pathological sizes
+	// or smuggling unprintable bytes into Redis.
+	if !validNonce(sh.nonce) {
+		return sh, ErrNonceInvalid
+	}
+	for _, h := range cfg.requiredHeaders {
+		if err := validateRequiredHeaderValue(r, h); err != nil {
+			return sh, err
+		}
+	}
+	if err := validateOptionalHeaderValue(r, canonicalContentTypeHeader); err != nil {
+		return sh, err
+	}
+	return sh, validateCanonicalRequest(r)
+}
+
+// checkTimestamp rejects a timestamp outside the allowed clock skew.
+func checkTimestamp(ts string, cfg *config) error {
+	tsUnix, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return ErrTimestampInvalid
+	}
+	// Both skew directions still satisfy errors.Is(_, ErrTimestampInvalid),
+	// so writeError keeps returning 400 unchanged; the wrappers exist so
+	// the metrics layer can split "future-skew" from "past-maxAge" without
+	// re-deriving the direction.
+	switch direction := classifyTimestampSkew(tsUnix, cfg.now(), cfg.maxClockSkew); {
+	case direction > 0:
+		return fmt.Errorf("%w: %w", ErrTimestampInvalid, errTimestampClockSkew)
+	case direction < 0:
+		return fmt.Errorf("%w: %w", ErrTimestampInvalid, errTimestampExpired)
+	}
+	return nil
+}
+
+// resolveSecret returns a middleware-owned copy of the key's secret. The
+// copy matters because KeyResolver does not transfer ownership of the
+// returned slice — resolvers typically hand back a shared cached key (see
+// examples/webhook-receiver), and zeroing that slice would wipe the
+// operator's live key after the first request.
+func resolveSecret(ctx context.Context, cfg *config, keyID string) ([]byte, error) {
+	resolved, err := cfg.resolver(ctx, keyID)
+	if err != nil || len(resolved) == 0 {
+		return nil, ErrSignatureInvalid
+	}
+	secret := append([]byte(nil), resolved...)
+	if len(secret) < minSecretLen {
+		clear(secret)
+		return nil, ErrSecretTooShort
+	}
+	return secret, nil
+}
+
+// acceptSigned checks the MAC over the canonical request and then records
+// the nonce, scoped by key ID so a holder of key A cannot burn nonces
+// observed for key B (cross-key nonce-burning DoS).
+func acceptSigned(r *http.Request, cfg *config, sh signatureHeaders, secret, gotMAC []byte, bodyHash [32]byte) error {
+	canonical := buildCanonicalFromHash(r, sh.timestamp, sh.nonce, bodyHash, cfg.requiredHeaders)
+	if !hmac.Equal(gotMAC, hmacSHA256(secret, canonical)) {
+		return ErrSignatureInvalid
+	}
+	first, err := cfg.nonceStore.SeenOrStore(r.Context(), storeNonceKey(sh.keyID, sh.nonce))
+	if err != nil {
+		return newNonceStoreError(err)
+	}
+	if !first {
+		return ErrNonceReplayed
+	}
 	return nil
 }
 

@@ -127,3 +127,20 @@ func safeOnUnavailable(handler DegradationHandler, ctx context.Context) (err err
 	}()
 	return handler.OnUnavailable(ctx), true
 }
+
+// admitDegraded applies the degradation policy and reports whether the
+// request is done: answered by the policy, or served without a rate limit.
+func admitDegraded(w http.ResponseWriter, r *http.Request, next http.Handler, health HealthIndicator, handler DegradationHandler, observe func(outcome string)) bool {
+	skip, handled, outcome := handleDegradation(w, r, health, handler)
+	if outcome != "" {
+		observe(outcome)
+	}
+	if handled {
+		return true
+	}
+	if skip {
+		next.ServeHTTP(w, r)
+		return true
+	}
+	return false
+}

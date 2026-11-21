@@ -54,34 +54,37 @@ func AppendPaths(u *url.URL, parts ...string) *url.URL {
 
 	escapedPath := out.EscapedPath()
 	for _, part := range filtered {
-		trailingSlash := strings.HasSuffix(part, "/")
-		trimmed := strings.TrimLeft(part, "/")
-		trimmed = strings.TrimRight(trimmed, "/")
-		if trimmed == "" {
-			if trailingSlash {
-				if escapedPath == "" {
-					escapedPath = "/"
-				} else if !strings.HasSuffix(escapedPath, "/") {
-					escapedPath += "/"
-				}
-			}
-			continue
-		}
-
-		if escapedPath == "" {
-			escapedPath = "/" + escapeOpaquePathSegment(trimmed)
-		} else if strings.HasSuffix(escapedPath, "/") {
-			escapedPath += escapeOpaquePathSegment(trimmed)
-		} else {
-			escapedPath += "/" + escapeOpaquePathSegment(trimmed)
-		}
-		if trailingSlash && !strings.HasSuffix(escapedPath, "/") {
-			escapedPath += "/"
-		}
+		escapedPath = appendPathPart(escapedPath, part)
 	}
 
 	setEscapedPath(out, escapedPath)
 	return out
+}
+
+// appendPathPart appends one part to an escaped path as one segment,
+// keeping the part's trailing slash.
+func appendPathPart(escapedPath, part string) string {
+	trailingSlash := strings.HasSuffix(part, "/")
+	trimmed := strings.Trim(part, "/")
+	switch {
+	case trimmed == "":
+	case escapedPath == "":
+		escapedPath = "/" + escapeOpaquePathSegment(trimmed)
+	case strings.HasSuffix(escapedPath, "/"):
+		escapedPath += escapeOpaquePathSegment(trimmed)
+	default:
+		escapedPath += "/" + escapeOpaquePathSegment(trimmed)
+	}
+	if !trailingSlash {
+		return escapedPath
+	}
+	if escapedPath == "" {
+		return "/"
+	}
+	if !strings.HasSuffix(escapedPath, "/") {
+		escapedPath += "/"
+	}
+	return escapedPath
 }
 
 // Copy returns a deep copy of u. The returned URL is safe to mutate without

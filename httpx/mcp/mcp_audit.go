@@ -49,110 +49,137 @@ func wrapToolHandler[In any, Out any](s *Server, name string, h Handler[In, Out]
 		}
 		httpReq = httpReq.WithContext(ctx)
 
-		// Decode arguments. The SDK has already validated the JSON
-		// payload against the inputSchema before reaching us; we still
-		// decode strictly (DisallowUnknownFields) so an extra field
-		// surfaces as the kit's stable "invalid request" message
-		// rather than leaking the field name.
 		var rawArgs json.RawMessage
 		if req != nil && req.Params != nil && len(req.Params.Arguments) > 0 {
 			rawArgs = req.Params.Arguments
 		}
 		var in In
-		if len(rawArgs) > 0 {
-			dec := json.NewDecoder(bytes.NewReader(rawArgs))
-			dec.DisallowUnknownFields()
-			if err := dec.Decode(&in); err != nil {
-				s.logInternalError(ctx, "mcp: argument decode failed", err)
-				_ = s.recordActionLog(ctx, httpReq, name, errInvalidArguments)
-				return errorResult("invalid arguments"), nil
-			}
-			if tok, err := dec.Token(); err != io.EOF {
-				if err != nil {
-					s.logInternalError(ctx, "mcp: trailing token after arguments", err)
-				} else {
-					// dec.Token returns a nil interface for a JSON null token;
-					// reflect.TypeOf(nil) is nil and .String() would panic.
-					kind := "null"
-					if tok != nil {
-						kind = reflect.TypeOf(tok).String()
-					}
-					s.cfg.logger.Warn("mcp: rejected request with trailing JSON tokens",
-						redact.String("tool", name),
-						redact.String("token_kind", kind),
-					)
-				}
-				_ = s.recordActionLog(ctx, httpReq, name, errInvalidArguments)
-				return errorResult("invalid arguments"), nil
-			}
+		if refused := s.decodeArguments(ctx, httpReq, name, rawArgs, &in); refused != nil {
+			return refused, nil
 		}
-
-		// Destructive-gate enforcement.
 		if destructive {
-			gatePayload := rawArgs
-			if len(gatePayload) == 0 {
-				gatePayload = json.RawMessage("{}")
-			}
-			if s.cfg.destructiveGate != nil {
-				if gateErr := s.cfg.destructiveGate(ctx, name, gatePayload); gateErr != nil {
-					_ = s.recordActionLog(ctx, httpReq, name, gateErr)
-					return errorResult("destructive call refused"), nil
-				}
-			} else if !s.cfg.destructiveGateAcknowledged {
-				_ = s.recordActionLog(ctx, httpReq, name, ErrDestructiveGateRequired)
-				return errorResult("destructive tool not configured"), nil
+			if refused := s.gateDestructive(ctx, httpReq, name, rawArgs); refused != nil {
+				return refused, nil
 			}
 		}
-
 		if err := validate.Struct(in); err != nil {
 			_ = s.recordActionLog(ctx, httpReq, name, err)
 			return errorResult(mapErrorForCaller(s, ctx, err)), nil
 		}
 
 		out, callErr, panicked := callHandlerSafely(s, ctx, name, h, in)
+		return s.toolResult(ctx, httpReq, name, out, callErr, panicked), nil
+	}
+}
 
-		// Marshal the response payload BEFORE auditing so a
-		// marshal-failure on a "successful" handler return surfaces
-		// to the audit as a failure rather than a phantom success.
-		// The audit invariant is "every executed tool call produces
-		// an entry whose outcome matches what the caller saw"; we
-		// can only honour it if the audit reason reflects the
-		// post-marshal outcome.
-		var outBytes []byte
-		marshalFailed := false
-		if callErr == nil {
-			b, marshalErr := json.Marshal(out)
-			if marshalErr != nil {
-				s.logInternalError(ctx, "mcp: marshal tool output", marshalErr)
-				callErr = marshalErr
-				marshalFailed = true
-			} else {
-				outBytes = b
-			}
-		}
+// decodeArguments decodes rawArgs into in. The SDK has already validated
+// the JSON payload against the inputSchema before reaching us; we still
+// decode strictly (DisallowUnknownFields) so an extra field surfaces as
+// the kit's stable "invalid request" message rather than leaking the
+// field name. It returns the audited refusal, or nil when in is decoded.
+func (s *Server) decodeArguments(ctx context.Context, httpReq *http.Request, name string, rawArgs json.RawMessage, in any) *sdkmcp.CallToolResult {
+	if len(rawArgs) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(rawArgs))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(in); err != nil {
+		s.logInternalError(ctx, "mcp: argument decode failed", err)
+		_ = s.recordActionLog(ctx, httpReq, name, errInvalidArguments)
+		return errorResult("invalid arguments")
+	}
+	if s.hasTrailingTokens(ctx, dec, name) {
+		_ = s.recordActionLog(ctx, httpReq, name, errInvalidArguments)
+		return errorResult("invalid arguments")
+	}
+	return nil
+}
 
-		if auditErr := s.recordActionLog(ctx, httpReq, name, callErr); auditErr != nil {
-			if s.cfg.strictAudit && !s.cfg.asyncAudit {
-				return errorResult("internal error"), nil
-			}
-		}
-		if callErr != nil {
-			if marshalFailed || panicked {
-				// Already logged above (marshal) or inside
-				// callHandlerSafely (panic); skip the default-branch
-				// logInternalError inside mapErrorForCaller to avoid a
-				// duplicate server-side entry.
-				return errorResult("internal error"), nil
-			}
-			return errorResult(mapErrorForCaller(s, ctx, callErr)), nil
-		}
+// hasTrailingTokens reports whether anything follows the decoded arguments.
+func (s *Server) hasTrailingTokens(ctx context.Context, dec *json.Decoder, name string) bool {
+	tok, err := dec.Token()
+	if err == io.EOF {
+		return false
+	}
+	if err != nil {
+		s.logInternalError(ctx, "mcp: trailing token after arguments", err)
+		return true
+	}
+	// dec.Token returns a nil interface for a JSON null token;
+	// reflect.TypeOf(nil) is nil and .String() would panic.
+	kind := "null"
+	if tok != nil {
+		kind = reflect.TypeOf(tok).String()
+	}
+	s.cfg.logger.Warn("mcp: rejected request with trailing JSON tokens",
+		redact.String("tool", name),
+		redact.String("token_kind", kind),
+	)
+	return true
+}
 
-		return &sdkmcp.CallToolResult{
-			Content: []sdkmcp.Content{
-				&sdkmcp.TextContent{Text: string(outBytes)},
-			},
-			StructuredContent: json.RawMessage(outBytes),
-		}, nil
+// gateDestructive enforces the destructive gate. It returns the audited
+// refusal, or nil when the call may proceed.
+func (s *Server) gateDestructive(ctx context.Context, httpReq *http.Request, name string, rawArgs json.RawMessage) *sdkmcp.CallToolResult {
+	gatePayload := rawArgs
+	if len(gatePayload) == 0 {
+		gatePayload = json.RawMessage("{}")
+	}
+	if s.cfg.destructiveGate != nil {
+		if gateErr := s.cfg.destructiveGate(ctx, name, gatePayload); gateErr != nil {
+			_ = s.recordActionLog(ctx, httpReq, name, gateErr)
+			return errorResult("destructive call refused")
+		}
+		return nil
+	}
+	if !s.cfg.destructiveGateAcknowledged {
+		_ = s.recordActionLog(ctx, httpReq, name, ErrDestructiveGateRequired)
+		return errorResult("destructive tool not configured")
+	}
+	return nil
+}
+
+// toolResult audits the handler's outcome and builds what the caller sees.
+//
+// The response payload is marshalled BEFORE auditing so a marshal failure
+// on a "successful" handler return surfaces to the audit as a failure
+// rather than a phantom success. The audit invariant is "every executed
+// tool call produces an entry whose outcome matches what the caller saw";
+// we can only honour it if the audit reason reflects the post-marshal
+// outcome.
+func (s *Server) toolResult(ctx context.Context, httpReq *http.Request, name string, out any, callErr error, panicked bool) *sdkmcp.CallToolResult {
+	var outBytes []byte
+	marshalFailed := false
+	if callErr == nil {
+		b, marshalErr := json.Marshal(out)
+		if marshalErr != nil {
+			s.logInternalError(ctx, "mcp: marshal tool output", marshalErr)
+			callErr = marshalErr
+			marshalFailed = true
+		} else {
+			outBytes = b
+		}
+	}
+
+	if auditErr := s.recordActionLog(ctx, httpReq, name, callErr); auditErr != nil && s.cfg.strictAudit && !s.cfg.asyncAudit {
+		return errorResult("internal error")
+	}
+	if callErr != nil {
+		if marshalFailed || panicked {
+			// Already logged above (marshal) or inside
+			// callHandlerSafely (panic); skip the default-branch
+			// logInternalError inside mapErrorForCaller to avoid a
+			// duplicate server-side entry.
+			return errorResult("internal error")
+		}
+		return errorResult(mapErrorForCaller(s, ctx, callErr))
+	}
+
+	return &sdkmcp.CallToolResult{
+		Content: []sdkmcp.Content{
+			&sdkmcp.TextContent{Text: string(outBytes)},
+		},
+		StructuredContent: json.RawMessage(outBytes),
 	}
 }
 

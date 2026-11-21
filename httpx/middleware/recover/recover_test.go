@@ -51,44 +51,45 @@ type unwrapFlushWriter struct{ http.ResponseWriter }
 
 func (w unwrapFlushWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+// nativeFlushChain builds the writer chain of one flush mode over a native
+// flusher: native is the innermost writer, writer what recovery wraps, and
+// nested the inner recovery writer of the "nested" mode.
+func nativeFlushChain(mode string) (native *nativeFlushFailure, writer http.ResponseWriter, nested *recordingWriter) {
+	inner := httptest.NewRecorder()
+	native = &nativeFlushFailure{ResponseWriter: inner, inner: inner}
+	switch mode {
+	case "success":
+	case "native-unsupported":
+		native.err = http.ErrNotSupported
+	default:
+		native.err = errors.New("invented native flush failure")
+	}
+	writer = native
+	switch mode {
+	case "unwrap-only":
+		writer = unwrapFlushWriter{ResponseWriter: writer}
+	case "nested":
+		nested = &recordingWriter{ResponseWriter: writer, statusCode: http.StatusOK}
+		writer = middleware.NewResponseRecorder(nested)
+	}
+	return native, writer, nested
+}
+
 func TestRecordingWriterControllerFlushPreservesErrorAndStartedStatus(t *testing.T) {
 	for _, mode := range []string{"success", "error", "explicit", "unwrap-only", "nested", "native-unsupported"} {
 		t.Run(mode, func(t *testing.T) {
-			inner := httptest.NewRecorder()
-			native := &nativeFlushFailure{ResponseWriter: inner, inner: inner}
-			if mode != "success" {
-				native.err = errors.New("invented native flush failure")
-			}
-			if mode == "native-unsupported" {
-				native.err = http.ErrNotSupported
-			}
-			var writer http.ResponseWriter = native
-			if mode == "unwrap-only" {
-				writer = unwrapFlushWriter{ResponseWriter: writer}
-			}
-			var nested *recordingWriter
-			if mode == "nested" {
-				nested = &recordingWriter{ResponseWriter: writer, statusCode: http.StatusOK}
-				writer = middleware.NewResponseRecorder(nested)
-			}
+			native, writer, nested := nativeFlushChain(mode)
 			rw := &recordingWriter{ResponseWriter: writer, statusCode: http.StatusOK}
 			want := http.StatusOK
 			if mode == "explicit" {
 				want = http.StatusAccepted
 				rw.WriteHeader(want)
 			}
-			native.before = func() {
-				if !rw.wroteHeader || rw.statusCode != want {
-					t.Error("recovery did not record supported flush before delegation")
-				}
-				if nested != nil && !nested.wroteHeader {
-					t.Error("nested recovery did not record supported flush")
-				}
-			}
-			if err := http.NewResponseController(rw).Flush(); err != native.err || native.calls != 1 {
+			native.before = recordedBeforeFlush(t, rw, nested, want)
+			if err := http.NewResponseController(rw).Flush(); !errors.Is(err, native.err) || native.calls != 1 {
 				t.Fatal("recovery hid native flush identity/count", err, native.calls)
 			}
-			if !rw.wroteHeader || rw.statusCode != want || inner.Code != want || !inner.Flushed {
+			if !rw.wroteHeader || rw.statusCode != want || native.inner.Code != want || !native.inner.Flushed {
 				t.Fatal("recovery flush status changed")
 			}
 		})
@@ -194,7 +195,7 @@ func TestMiddleware_AbortHandlerNotRecovered(t *testing.T) {
 		if rv == nil {
 			t.Fatal("ErrAbortHandler should re-panic so net/http's outer recover sees it")
 		}
-		if rv != http.ErrAbortHandler {
+		if err, _ := rv.(error); !errors.Is(err, http.ErrAbortHandler) {
 			t.Fatalf("re-raised value = %v, want ErrAbortHandler", rv)
 		}
 		if buf.Len() != 0 {
@@ -467,4 +468,17 @@ func readCounter(t *testing.T, c prometheus.Counter) float64 {
 		t.Fatalf("counter Write: %v", err)
 	}
 	return m.GetCounter().GetValue()
+}
+
+// recordedBeforeFlush checks, from inside the native flush, that recovery
+// recorded the started response before delegating.
+func recordedBeforeFlush(t *testing.T, rw, nested *recordingWriter, want int) func() {
+	return func() {
+		if !rw.wroteHeader || rw.statusCode != want {
+			t.Error("recovery did not record supported flush before delegation")
+		}
+		if nested != nil && !nested.wroteHeader {
+			t.Error("nested recovery did not record supported flush")
+		}
+	}
 }

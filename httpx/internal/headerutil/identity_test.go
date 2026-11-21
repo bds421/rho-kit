@@ -6,22 +6,17 @@ import (
 )
 
 func TestSingletonIdentity(t *testing.T) {
+	userID := func(value string) func(http.Header) {
+		return func(h http.Header) { h.Set("X-User-Id", value) }
+	}
 	tests := []struct {
 		name string
 		set  func(http.Header)
 		want string
 		ok   bool
 	}{
-		{
-			name: "single",
-			set:  func(h http.Header) { h.Set("X-User-Id", "alice") },
-			want: "alice",
-			ok:   true,
-		},
-		{
-			name: "missing",
-			set:  func(http.Header) {},
-		},
+		{name: "single", set: userID("alice"), want: "alice", ok: true},
+		{name: "missing", set: func(http.Header) {}},
 		{
 			name: "duplicate",
 			set: func(h http.Header) {
@@ -29,30 +24,12 @@ func TestSingletonIdentity(t *testing.T) {
 				h.Add("X-User-Id", "bob")
 			},
 		},
-		{
-			name: "blank",
-			set:  func(h http.Header) { h.Set("X-User-Id", "") },
-		},
-		{
-			name: "edge whitespace",
-			set:  func(h http.Header) { h.Set("X-User-Id", " alice ") },
-		},
-		{
-			name: "internal whitespace",
-			set:  func(h http.Header) { h.Set("X-User-Id", "alice bob") },
-		},
-		{
-			name: "comma combined",
-			set:  func(h http.Header) { h.Set("X-User-Id", "alice,bob") },
-		},
-		{
-			name: "invalid field value",
-			set:  func(h http.Header) { h.Set("X-User-Id", "alice\nbob") },
-		},
-		{
-			name: "invalid utf8",
-			set:  func(h http.Header) { h.Set("X-User-Id", string([]byte{0xff})) },
-		},
+		{name: "blank", set: userID("")},
+		{name: "edge whitespace", set: userID(" alice ")},
+		{name: "internal whitespace", set: userID("alice bob")},
+		{name: "comma combined", set: userID("alice,bob")},
+		{name: "invalid field value", set: userID("alice\nbob")},
+		{name: "invalid utf8", set: userID(string([]byte{0xff}))},
 	}
 
 	for _, tt := range tests {

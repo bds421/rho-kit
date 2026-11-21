@@ -330,15 +330,28 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		return nil, err
 	}
-	// FR-023 [HIGH]: http.Request.Clone shares the Body field with the
-	// source request, so reading clone.Body drains req.Body too.
-	// Outer retry/auth middleware that re-reads the original request
-	// would see an empty body. Buffer once, restore independent fresh
-	// readers on BOTH req and clone, and set GetBody on the clone so
-	// the standard library's redirect / 100-Continue replay path works.
-	body, err := bufferBody(req, t.cfg.bodyMaxSize)
+	clone, body, err := cloneWithBufferedBody(req, t.cfg.bodyMaxSize)
 	if err != nil {
 		return nil, err
+	}
+	if err := t.sign(clone, body); err != nil {
+		return nil, err
+	}
+	return t.base.RoundTrip(clone)
+}
+
+// cloneWithBufferedBody returns the clone to sign and the buffered body.
+//
+// FR-023 [HIGH]: http.Request.Clone shares the Body field with the
+// source request, so reading clone.Body drains req.Body too.
+// Outer retry/auth middleware that re-reads the original request
+// would see an empty body. Buffer once, restore independent fresh
+// readers on BOTH req and clone, and set GetBody on the clone so
+// the standard library's redirect / 100-Continue replay path works.
+func cloneWithBufferedBody(req *http.Request, maxSize int64) (*http.Request, []byte, error) {
+	body, err := bufferBody(req, maxSize)
+	if err != nil {
+		return nil, nil, err
 	}
 	if body != nil {
 		req.Body = io.NopCloser(bytes.NewReader(body))
@@ -356,29 +369,27 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return io.NopCloser(bytes.NewReader(body)), nil
 		}
 	}
+	return clone, body, nil
+}
 
+// sign sets the signature headers on the clone with the current key.
+func (t *transport) sign(clone *http.Request, body []byte) error {
 	ts := strconv.FormatInt(t.cfg.now().UTC().Unix(), 10)
 	nonce, err := t.cfg.nonceFn()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	keyID, secret, err := t.keys.CurrentKeyID(req.Context())
+	keyID, secret, err := t.keys.CurrentKeyID(clone.Context())
 	if err != nil {
-		return nil, fmt.Errorf("sign: resolve current key: %w", err)
+		return fmt.Errorf("sign: resolve current key: %w", err)
 	}
 	// Per the KeyStore contract, CurrentKeyID returns a fresh per-call
-	// secret copy the transport owns. Zero it immediately after
-	// SignCanonical — not after RoundTrip — so the plaintext key does
-	// not sit on the heap for the full network exchange. Defer remains
-	// as a safety net for early-error paths before that wipe.
-	wipe := func() {
-		for i := range secret {
-			secret[i] = 0
-		}
-	}
-	defer wipe()
+	// secret copy the transport owns. Zero it as soon as signing is done,
+	// so the plaintext key does not sit on the heap for the full network
+	// exchange.
+	defer clear(secret)
 	if err := validateSigningKey(keyID, secret); err != nil {
-		return nil, err
+		return err
 	}
 
 	clone.Header.Set(signedrequest.HeaderTimestamp, ts)
@@ -394,12 +405,10 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		RequiredHeaders: t.cfg.includeHeaders,
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	wipe() // drop secret before the network round trip
 	clone.Header.Set(signedrequest.HeaderSignature, sig)
-
-	return t.base.RoundTrip(clone)
+	return nil
 }
 
 func validateRequest(req *http.Request) error {

@@ -265,42 +265,47 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 		opt(&cfg)
 	}
 
+	fixed := cfg.fixedHeaders()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := w.Header()
-			if cfg.contentTypeOpt {
-				h.Set("X-Content-Type-Options", "nosniff")
-			}
-			if cfg.frameOption != "" {
-				h.Set("X-Frame-Options", string(cfg.frameOption))
-			}
-			if cfg.referrerPolicy != "" {
-				h.Set("Referrer-Policy", cfg.referrerPolicy)
-			}
-			if cfg.permissionsPolicy != "" {
-				h.Set("Permissions-Policy", cfg.permissionsPolicy)
+			for _, f := range fixed {
+				h.Set(f.name, f.value)
 			}
 			if cfg.hsts != "" && shouldSetHSTS(r, &cfg) {
 				h.Set("Strict-Transport-Security", cfg.hsts)
 			}
-			if cfg.cacheControl != "" {
-				h.Set("Cache-Control", cfg.cacheControl)
-			}
-			if cfg.csp != "" {
-				h.Set("Content-Security-Policy", cfg.csp)
-			}
-			if cfg.coop != "" {
-				h.Set("Cross-Origin-Opener-Policy", cfg.coop)
-			}
-			if cfg.coep != "" {
-				h.Set("Cross-Origin-Embedder-Policy", cfg.coep)
-			}
-			if cfg.corp != "" {
-				h.Set("Cross-Origin-Resource-Policy", cfg.corp)
-			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// fixedHeader is a header every response gets, whatever the request.
+type fixedHeader struct {
+	name, value string
+}
+
+// fixedHeaders lists the configured headers that do not depend on the
+// request; an empty value leaves its header out.
+func (cfg *config) fixedHeaders() []fixedHeader {
+	var fixed []fixedHeader
+	add := func(name, value string) {
+		if value != "" {
+			fixed = append(fixed, fixedHeader{name: name, value: value})
+		}
+	}
+	if cfg.contentTypeOpt {
+		add("X-Content-Type-Options", "nosniff")
+	}
+	add("X-Frame-Options", string(cfg.frameOption))
+	add("Referrer-Policy", cfg.referrerPolicy)
+	add("Permissions-Policy", cfg.permissionsPolicy)
+	add("Cache-Control", cfg.cacheControl)
+	add("Content-Security-Policy", cfg.csp)
+	add("Cross-Origin-Opener-Policy", cfg.coop)
+	add("Cross-Origin-Embedder-Policy", cfg.coep)
+	add("Cross-Origin-Resource-Policy", cfg.corp)
+	return fixed
 }
 
 // shouldSetHSTS reports whether HSTS should be sent for this request. The
