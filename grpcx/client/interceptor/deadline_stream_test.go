@@ -121,7 +121,7 @@ func TestDeadlineStream_CancelsBoundedCtxOnTerminalRecvMsg(t *testing.T) {
 	}
 
 	// RecvMsg returns the terminal error and must fire cancel.
-	if got := cs.RecvMsg(nil); got != io.EOF {
+	if got := cs.RecvMsg(nil); !errors.Is(got, io.EOF) {
 		t.Fatalf("RecvMsg = %v, want io.EOF", got)
 	}
 	select {
@@ -133,7 +133,7 @@ func TestDeadlineStream_CancelsBoundedCtxOnTerminalRecvMsg(t *testing.T) {
 
 	// A second RecvMsg after EOF must be safe (idempotent cancel) and still
 	// surface the terminal error.
-	if got := cs.RecvMsg(nil); got != io.EOF {
+	if got := cs.RecvMsg(nil); !errors.Is(got, io.EOF) {
 		t.Fatalf("second RecvMsg = %v, want io.EOF", got)
 	}
 }

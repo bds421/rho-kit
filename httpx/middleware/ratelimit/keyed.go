@@ -153,7 +153,7 @@ func NewKeyedLimiter(limit int, window time.Duration, opts ...KeyedOption) *Keye
 // getShard returns the shard for the given key using FNV-1a hashing.
 func (rl *KeyedLimiter) getShard(key string) *keyedShard {
 	h := fnv.New32a()
-	h.Write([]byte(key))
+	_, _ = h.Write([]byte(key)) // a hash.Hash Write never fails
 	return &rl.shards[h.Sum32()%numShards]
 }
 
@@ -338,15 +338,7 @@ func KeyedMiddleware(rl *KeyedLimiter, keyFunc func(r *http.Request) string) fun
 			panic("middleware/ratelimit: KeyedMiddleware requires a non-nil next handler")
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			skip, handled, outcome := handleDegradation(w, r, rl.health, rl.degradation)
-			if outcome != "" {
-				rl.observeDecision(outcome)
-			}
-			if handled {
-				return
-			}
-			if skip {
-				next.ServeHTTP(w, r)
+			if admitDegraded(w, r, next, rl.health, rl.degradation, rl.observeDecision) {
 				return
 			}
 
@@ -357,15 +349,14 @@ func KeyedMiddleware(rl *KeyedLimiter, keyFunc func(r *http.Request) string) fun
 				return
 			}
 			allowed, retryAfter, err := rl.Allow(r.Context(), key)
-			if err != nil {
-				if errors.Is(err, limiter.ErrInvalidKey) {
-					httpx.WriteError(w, http.StatusBadRequest, "invalid rate limit key")
-					return
-				}
+			switch {
+			case errors.Is(err, limiter.ErrInvalidKey):
+				httpx.WriteError(w, http.StatusBadRequest, "invalid rate limit key")
+				return
+			case err != nil:
 				httpx.WriteError(w, http.StatusServiceUnavailable, "rate limit unavailable")
 				return
-			}
-			if !allowed {
+			case !allowed:
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(retryAfter)))
 				httpx.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return

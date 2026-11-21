@@ -188,55 +188,26 @@ func (m *mockDNSResolver) LookupIPAddr(_ context.Context, _ string) ([]net.IPAdd
 }
 
 func TestResolveAndValidate_WithMockResolver(t *testing.T) {
+	addrs := func(ips ...string) []net.IPAddr {
+		out := []net.IPAddr{}
+		for _, ip := range ips {
+			out = append(out, net.IPAddr{IP: net.ParseIP(ip)})
+		}
+		return out
+	}
 	tests := []struct {
 		name      string
 		ips       []net.IPAddr
 		wantErr   bool
 		errSubstr string
 	}{
-		{
-			name:    "public IP passes",
-			ips:     []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}},
-			wantErr: false,
-		},
-		{
-			name:      "private IP rejected",
-			ips:       []net.IPAddr{{IP: net.ParseIP("10.0.0.1")}},
-			wantErr:   true,
-			errSubstr: "private/reserved",
-		},
-		{
-			name:      "IPv6 loopback rejected",
-			ips:       []net.IPAddr{{IP: net.ParseIP("::1")}},
-			wantErr:   true,
-			errSubstr: "private/reserved",
-		},
-		{
-			name:      "IPv6 ULA rejected",
-			ips:       []net.IPAddr{{IP: net.ParseIP("fd00::1")}},
-			wantErr:   true,
-			errSubstr: "private/reserved",
-		},
-		{
-			name:      "IPv4-mapped private rejected",
-			ips:       []net.IPAddr{{IP: net.ParseIP("::ffff:10.0.0.1")}},
-			wantErr:   true,
-			errSubstr: "private/reserved",
-		},
-		{
-			name: "mixed IPs returns first public",
-			ips: []net.IPAddr{
-				{IP: net.ParseIP("10.0.0.1")},
-				{IP: net.ParseIP("8.8.8.8")},
-			},
-			wantErr: false,
-		},
-		{
-			name:      "empty result",
-			ips:       []net.IPAddr{},
-			wantErr:   true,
-			errSubstr: "no addresses",
-		},
+		{name: "public IP passes", ips: addrs("93.184.216.34")},
+		{name: "private IP rejected", ips: addrs("10.0.0.1"), wantErr: true, errSubstr: "private/reserved"},
+		{name: "IPv6 loopback rejected", ips: addrs("::1"), wantErr: true, errSubstr: "private/reserved"},
+		{name: "IPv6 ULA rejected", ips: addrs("fd00::1"), wantErr: true, errSubstr: "private/reserved"},
+		{name: "IPv4-mapped private rejected", ips: addrs("::ffff:10.0.0.1"), wantErr: true, errSubstr: "private/reserved"},
+		{name: "mixed IPs returns first public", ips: addrs("10.0.0.1", "8.8.8.8")},
+		{name: "empty result", ips: addrs(), wantErr: true, errSubstr: "no addresses"},
 	}
 
 	for _, tt := range tests {

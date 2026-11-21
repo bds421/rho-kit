@@ -70,16 +70,13 @@ func TestMaxConcurrentStreamsServer_AcceptsUpToMax(t *testing.T) {
 	}
 
 	info := &grpc.StreamServerInfo{FullMethod: "/test.Service/Stream"}
-
-	type result struct {
-		err error
+	serve := func(h grpc.StreamHandler) <-chan error {
+		result := make(chan error, 1)
+		go func() { result <- interc(nil, &fakeServerStream{ctx: context.Background()}, info, h) }()
+		return result
 	}
-	r1 := make(chan result, 1)
-	r2 := make(chan result, 1)
-	r3 := make(chan result, 1)
-
-	go func() { r1 <- result{interc(nil, &fakeServerStream{ctx: context.Background()}, info, handler)} }()
-	go func() { r2 <- result{interc(nil, &fakeServerStream{ctx: context.Background()}, info, handler)} }()
+	r1 := serve(handler)
+	r2 := serve(handler)
 
 	// Wait until both acceptable streams hold their slots before trying the
 	// over-cap stream. This is deterministic and avoids scheduler sleeps.
@@ -92,37 +89,33 @@ func TestMaxConcurrentStreamsServer_AcceptsUpToMax(t *testing.T) {
 	}
 
 	// Third stream is over cap → ResourceExhausted, handler never runs.
-	go func() { r3 <- result{interc(nil, &fakeServerStream{ctx: context.Background()}, info, handler)} }()
-	select {
-	case res := <-r3:
-		require.Error(t, res.err)
-		st, ok := status.FromError(res.err)
-		require.True(t, ok)
-		assert.Equal(t, codes.ResourceExhausted, st.Code())
-	case <-time.After(time.Second):
-		t.Fatal("over-cap stream did not return promptly")
-	}
+	err := streamResult(t, serve(handler), "over-cap stream did not return promptly")
+	require.Error(t, err)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.ResourceExhausted, st.Code())
 
 	// Release the first two; they must complete.
 	close(release)
-	for _, ch := range []chan result{r1, r2} {
-		select {
-		case res := <-ch:
-			require.NoError(t, res.err)
-		case <-time.After(time.Second):
-			t.Fatal("accepted stream did not finish")
-		}
+	for _, ch := range []<-chan error{r1, r2} {
+		require.NoError(t, streamResult(t, ch, "accepted stream did not finish"))
 	}
 
 	// Slot must now be free.
-	r4 := make(chan result, 1)
 	releasedHandler := func(_ any, _ grpc.ServerStream) error { return nil }
-	go func() { r4 <- result{interc(nil, &fakeServerStream{ctx: context.Background()}, info, releasedHandler)} }()
+	require.NoError(t, streamResult(t, serve(releasedHandler), "post-release stream did not run"),
+		"slot must free up after streams complete")
+}
+
+// streamResult waits up to a second for a stream's result.
+func streamResult(t *testing.T, result <-chan error, failure string) error {
+	t.Helper()
 	select {
-	case res := <-r4:
-		require.NoError(t, res.err, "slot must free up after streams complete")
+	case err := <-result:
+		return err
 	case <-time.After(time.Second):
-		t.Fatal("post-release stream did not run")
+		t.Fatal(failure)
+		return nil
 	}
 }
 

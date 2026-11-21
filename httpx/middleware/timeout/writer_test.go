@@ -72,18 +72,7 @@ func TestTimeout_WriteHeaderContract(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler := Timeout(5 * time.Second)(http.HandlerFunc(tt.handler))
-
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-
-			if rec.Code != tt.wantCode {
-				t.Errorf("status = %d, want %d", rec.Code, tt.wantCode)
-			}
-			if got := rec.Body.String(); got != tt.wantBody {
-				t.Errorf("body = %q, want %q", got, tt.wantBody)
-			}
+			checkFlushedResponse(t, tt.handler, tt.wantCode, tt.wantBody)
 		})
 	}
 }
@@ -99,31 +88,7 @@ func TestTimeout_BufferLimitIsAtomic(t *testing.T) {
 		{"ignored partial writer error", []string{"1234", "56789", "x"}, http.StatusInternalServerError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := Timeout(time.Second, WithMaxBufferSize(8))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Length", "8")
-				w.Header().Set("ETag", "old")
-				w.Header().Set("Content-Encoding", "gzip")
-				w.Header().Set("Content-Range", "bytes 0-8/9")
-				w.Header().Set("Set-Cookie", "partial=bad")
-				w.Header().Set("Trailer", "X-Partial")
-				w.WriteHeader(http.StatusCreated)
-				accepted := 0
-				failed := false
-				for _, chunk := range tc.chunks {
-					n, err := w.Write([]byte(chunk))
-					if failed || len(chunk) > 8-accepted {
-						failed = true
-						if n != 0 || !errors.Is(err, ErrResponseTooLarge) {
-							t.Errorf("overflow Write = (%d, %v), want (0, ErrResponseTooLarge)", n, err)
-						}
-					} else {
-						accepted += len(chunk)
-						if n != len(chunk) || err != nil {
-							t.Errorf("bounded Write = (%d, %v)", n, err)
-						}
-					}
-				}
-			}))
+			h := Timeout(time.Second, WithMaxBufferSize(8))(staleRepresentationWriter(t, 8, tc.chunks))
 			rec := httptest.NewRecorder()
 			rec.Header().Set("X-Trace-ID", "kept")
 			rec.Header().Set("Strict-Transport-Security", "max-age=123")
@@ -137,21 +102,73 @@ func TestTimeout_BufferLimitIsAtomic(t *testing.T) {
 				}
 				return
 			}
-			if rec.Body.String() != "{\"error\":\"internal error\",\"code\":\"INTERNAL\"}\n" {
-				t.Errorf("overflow body = %q", rec.Body.String())
-			}
-			for _, name := range []string{"Content-Length", "ETag", "Content-Encoding", "Content-Range", "Set-Cookie", "Trailer"} {
-				if rec.Header().Get(name) != "" {
-					t.Errorf("stale %s survived", name)
-				}
-			}
-			if rec.Header().Get("Content-Type") != "application/json" || rec.Header().Get("Cache-Control") != "no-store" {
-				t.Error("missing canonical error headers")
-			}
-			if rec.Header().Get("X-Trace-ID") != "kept" || rec.Header().Get("Strict-Transport-Security") != "max-age=123" {
-				t.Error("outer security/tracing headers lost")
-			}
+			checkOverflowResponse(t, rec)
 		})
+	}
+}
+
+// checkFlushedResponse serves handler under a generous timeout and checks
+// the status and body that reach the client.
+func checkFlushedResponse(t *testing.T, handler http.HandlerFunc, wantCode int, wantBody string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	Timeout(5*time.Second)(handler).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != wantCode {
+		t.Errorf("status = %d, want %d", rec.Code, wantCode)
+	}
+	if got := rec.Body.String(); got != wantBody {
+		t.Errorf("body = %q, want %q", got, wantBody)
+	}
+}
+
+// staleRepresentationWriter sets representation headers an overflow must
+// drop, then writes chunks and checks that each Write within limit succeeds
+// and every Write from the first overflow on fails atomically.
+func staleRepresentationWriter(t *testing.T, limit int, chunks []string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "8")
+		w.Header().Set("ETag", "old")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Range", "bytes 0-8/9")
+		w.Header().Set("Set-Cookie", "partial=bad")
+		w.Header().Set("Trailer", "X-Partial")
+		w.WriteHeader(http.StatusCreated)
+		accepted := 0
+		failed := false
+		for _, chunk := range chunks {
+			n, err := w.Write([]byte(chunk))
+			if failed || len(chunk) > limit-accepted {
+				failed = true
+				if n != 0 || !errors.Is(err, ErrResponseTooLarge) {
+					t.Errorf("overflow Write = (%d, %v), want (0, ErrResponseTooLarge)", n, err)
+				}
+				continue
+			}
+			accepted += len(chunk)
+			if n != len(chunk) || err != nil {
+				t.Errorf("bounded Write = (%d, %v)", n, err)
+			}
+		}
+	}
+}
+
+// checkOverflowResponse checks the canonical 500 of an overflow: no stale
+// representation headers, the error headers, and the outer headers kept.
+func checkOverflowResponse(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if rec.Body.String() != "{\"error\":\"internal error\",\"code\":\"INTERNAL\"}\n" {
+		t.Errorf("overflow body = %q", rec.Body.String())
+	}
+	for _, name := range []string{"Content-Length", "ETag", "Content-Encoding", "Content-Range", "Set-Cookie", "Trailer"} {
+		if rec.Header().Get(name) != "" {
+			t.Errorf("stale %s survived", name)
+		}
+	}
+	if rec.Header().Get("Content-Type") != "application/json" || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Error("missing canonical error headers")
+	}
+	if rec.Header().Get("X-Trace-ID") != "kept" || rec.Header().Get("Strict-Transport-Security") != "max-age=123" {
+		t.Error("outer security/tracing headers lost")
 	}
 }
 

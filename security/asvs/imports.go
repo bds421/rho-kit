@@ -204,19 +204,12 @@ func ScanImports(root string) (ImportReport, error) {
 			return asvsFileError("inspect source tree", walkErr)
 		}
 		if d.IsDir() {
-			if filepath.Clean(path) == filepath.Clean(root) {
-				return nil
-			}
-			name := d.Name()
-			if name == "vendor" || strings.HasPrefix(name, ".") || name == "node_modules" || name == "testdata" {
+			if skippedSourceDir(path, root, d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		if !scannedSourceFile(path, d) {
 			return nil
 		}
 		fileImports, skip, err := scanFileImports(path, registry)
@@ -345,4 +338,22 @@ func (r ImportReport) EvidenceSummary() []EvidenceEntry {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// skippedSourceDir reports whether the walk skips a directory below root:
+// vendored, hidden, node_modules and testdata trees.
+func skippedSourceDir(path, root, name string) bool {
+	if filepath.Clean(path) == filepath.Clean(root) {
+		return false
+	}
+	return name == "vendor" || strings.HasPrefix(name, ".") || name == "node_modules" || name == "testdata"
+}
+
+// scannedSourceFile reports whether the walk scans a file: a Go source
+// file that is neither a test nor a symlink.
+func scannedSourceFile(path string, d fs.DirEntry) bool {
+	if d.Type()&os.ModeSymlink != 0 {
+		return false
+	}
+	return strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go")
 }

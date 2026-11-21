@@ -197,12 +197,9 @@ func TestNewServer_MaxConcurrentStreamsCapsInflightStreams(t *testing.T) {
 	// pending a slot. Releasing one open stream lets the 3rd proceed,
 	// proving the cap (and not some unrelated client serialisation)
 	// gates new streams.
-	const bufSize = 1024 * 1024
 	const streamCap = 2
 
-	lis := bufconn.Listen(bufSize)
 	health := &blockingWatchHealth{started: make(chan struct{}, streamCap+1)}
-
 	srv := grpcx.NewServer(
 		grpcx.WithMaxConcurrentStreams(streamCap),
 		// The 30s default-deadline interceptor would race the test if
@@ -211,45 +208,19 @@ func TestNewServer_MaxConcurrentStreamsCapsInflightStreams(t *testing.T) {
 		grpcx.WithoutDefaultDeadline(),
 	)
 	healthpb.RegisterHealthServer(srv, health)
-
-	serveDone := make(chan struct{})
-	go func() {
-		defer close(serveDone)
-		_ = srv.Serve(lis)
-	}()
-
-	conn, err := grpc.NewClient("passthrough:///bufconn",
-		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	require.NoError(t, err)
-
-	// Track every client-side cancel so the test always returns the
-	// server to a quiescent state — GracefulStop below blocks on any
-	// stream that is still parked in the handler.
-	var allCancels []context.CancelFunc
-	t.Cleanup(func() {
-		for _, c := range allCancels {
-			c()
-		}
-		_ = conn.Close()
-		// Force a hard Stop on shutdown — GracefulStop would deadlock
-		// if a handler cancel race left a stream parked. Stop is the
-		// correct shutdown semantic for a test that intentionally
-		// holds streams open.
-		srv.Stop()
-		<-serveDone
-	})
-
-	client := healthpb.NewHealthClient(conn)
+	client, track := serveOnBufconn(t, srv)
 
 	// Open `streamCap` long-running Watch streams and confirm each
 	// reaches its handler.
+	var firstCancel context.CancelFunc
 	for i := 0; i < streamCap; i++ {
 		ctx, cancel := context.WithCancel(context.Background())
 		_, err := client.Watch(ctx, &healthpb.HealthCheckRequest{})
 		require.NoError(t, err)
-		allCancels = append(allCancels, cancel)
+		track(cancel)
+		if firstCancel == nil {
+			firstCancel = cancel
+		}
 		select {
 		case <-health.started:
 		case <-time.After(2 * time.Second):
@@ -262,7 +233,7 @@ func TestNewServer_MaxConcurrentStreamsCapsInflightStreams(t *testing.T) {
 	// SETTINGS_MAX_CONCURRENT_STREAMS budget is saturated) and must NOT
 	// reach the server handler.
 	thirdCtx, thirdCancel := context.WithCancel(context.Background())
-	allCancels = append(allCancels, thirdCancel)
+	track(thirdCancel)
 	thirdOpened := make(chan struct{})
 	go func() {
 		defer close(thirdOpened)
@@ -280,13 +251,47 @@ func TestNewServer_MaxConcurrentStreamsCapsInflightStreams(t *testing.T) {
 
 	// Release one stream; the 3rd should now make it past the
 	// transport and reach the handler.
-	allCancels[0]()
+	firstCancel()
 	select {
 	case <-health.started:
 		// Expected.
 	case <-time.After(2 * time.Second):
 		t.Fatal("3rd Watch never started after freeing a slot — cap may be too tight or release did not propagate")
 	}
+}
+
+// serveOnBufconn serves srv on an in-memory listener and returns a health
+// client. Every cancel passed to track runs at cleanup, so the test always
+// returns the server to a quiescent state before it stops.
+func serveOnBufconn(t *testing.T, srv *grpc.Server) (healthpb.HealthClient, func(context.CancelFunc)) {
+	t.Helper()
+	lis := bufconn.Listen(1024 * 1024)
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = srv.Serve(lis)
+	}()
+
+	conn, err := grpc.NewClient("passthrough:///bufconn",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+
+	var cancels []context.CancelFunc
+	t.Cleanup(func() {
+		for _, c := range cancels {
+			c()
+		}
+		_ = conn.Close()
+		// Force a hard Stop on shutdown — GracefulStop would deadlock
+		// if a handler cancel race left a stream parked. Stop is the
+		// correct shutdown semantic for a test that intentionally
+		// holds streams open.
+		srv.Stop()
+		<-serveDone
+	})
+	return healthpb.NewHealthClient(conn), func(cancel context.CancelFunc) { cancels = append(cancels, cancel) }
 }
 
 // TestNewServer_RawOptionsDoNotOverrideHardenedDefaults guards L083:

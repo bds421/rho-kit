@@ -152,107 +152,118 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Bypass the timeout only when the route opted into
-			// WebSocket via cfg.allowWebSocketUpgrade. Honoring the
-			// header alone is a generic timeout bypass: any client
-			// could send `Upgrade: websocket` against a non-WS route
-			// to run unbounded. Routes that genuinely upgrade should
-			// be mounted via a builder that sets the option.
-			if cfg.allowWebSocketUpgrade && isWebSocketUpgrade(r) {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			ctx, cancel := context.WithTimeout(r.Context(), d)
-			defer cancel()
-
-			done := make(chan handlerResult, 1)
-			tw := &timeoutWriter{
-				w:         w,
-				h:         make(http.Header),
-				maxBuffer: cfg.maxBuffer,
-				logger:    cfg.logger,
-				head:      r.Method == http.MethodHead,
-			}
-
-			go func() {
-				var result handlerResult
-				defer func() {
-					if rv := recover(); rv != nil {
-						result.panicValue = rv
-						result.panicStack = debug.Stack()
-					}
-					done <- result
-				}()
-				next.ServeHTTP(tw, r.WithContext(ctx))
-			}()
-
-			select {
-			case result := <-done:
-				if result.panicValue != nil {
-					panic(panicWithStack{value: result.panicValue, stack: result.panicStack})
-				}
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					tw.writeTimeout()
-				} else {
-					tw.writeToReal()
-				}
-			case <-ctx.Done():
-				// Only emit the TIMEOUT 503 when our deadline fired.
-				// Parent cancellation (client disconnect, server shutdown)
-				// must not be counted/logged as a server timeout.
-				if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					// Best-effort: if the handler finished before we observe
-					// cancellation, still flush its response.
-					select {
-					case result := <-done:
-						if result.panicValue != nil {
-							panic(panicWithStack{value: result.panicValue, stack: result.panicStack})
-						}
-						tw.writeToReal()
-					default:
-						// Handler still running; leave connection without a
-						// forged timeout body. Drain so panics still surface.
-						lateLogger := cfg.logger
-						if lateLogger == nil {
-							lateLogger = slog.Default()
-						}
-						go drainLateHandler(done, lateLogger)
-					}
-					return
-				}
-				tw.writeTimeout()
-				// Drain the late goroutine in the background so a
-				// post-timeout panic still surfaces in logs even
-				// though the request has already returned 503. We
-				// always drain — without it the buffered channel
-				// pins the handler goroutine's deferred sender at
-				// process exit and, more importantly, a panic that
-				// fires after the request returns is invisible.
-				// If no explicit logger was wired, fall back to
-				// slog.Default() rather than silently dropping the
-				// panic value (L-073).
-				lateLogger := cfg.logger
-				if lateLogger == nil {
-					lateLogger = slog.Default()
-				}
-				if cfg.postTimeoutWait == 0 {
-					go drainLateHandler(done, lateLogger)
-					return
-				}
-				timer := time.NewTimer(cfg.postTimeoutWait)
-				defer timer.Stop()
-				select {
-				case result := <-done:
-					if result.panicValue != nil {
-						panic(panicWithStack{value: result.panicValue, stack: result.panicStack})
-					}
-				case <-timer.C:
-					go drainLateHandler(done, lateLogger)
-				}
-			}
+			cfg.serve(w, r, next, d)
 		})
 	}
+}
+
+func (cfg *timeoutOptions) serve(w http.ResponseWriter, r *http.Request, next http.Handler, d time.Duration) {
+	// Bypass the timeout only when the route opted into
+	// WebSocket via cfg.allowWebSocketUpgrade. Honoring the
+	// header alone is a generic timeout bypass: any client
+	// could send `Upgrade: websocket` against a non-WS route
+	// to run unbounded. Routes that genuinely upgrade should
+	// be mounted via a builder that sets the option.
+	if cfg.allowWebSocketUpgrade && isWebSocketUpgrade(r) {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), d)
+	defer cancel()
+
+	done := make(chan handlerResult, 1)
+	tw := &timeoutWriter{
+		w:         w,
+		h:         make(http.Header),
+		maxBuffer: cfg.maxBuffer,
+		logger:    cfg.logger,
+		head:      r.Method == http.MethodHead,
+	}
+	go runHandler(next, tw, r.WithContext(ctx), done)
+
+	select {
+	case result := <-done:
+		result.repanic()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			tw.writeTimeout()
+		} else {
+			tw.writeToReal()
+		}
+	case <-ctx.Done():
+		// Only emit the TIMEOUT 503 when our deadline fired.
+		// Parent cancellation (client disconnect, server shutdown)
+		// must not be counted/logged as a server timeout.
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			cfg.finishCancelled(tw, done)
+			return
+		}
+		tw.writeTimeout()
+		cfg.awaitLateHandler(done)
+	}
+}
+
+// runHandler serves the request and reports its result, a panic included.
+func runHandler(next http.Handler, tw *timeoutWriter, r *http.Request, done chan<- handlerResult) {
+	var result handlerResult
+	defer func() {
+		if rv := recover(); rv != nil {
+			result.panicValue = rv
+			result.panicStack = debug.Stack()
+		}
+		done <- result
+	}()
+	next.ServeHTTP(tw, r)
+}
+
+// repanic re-raises the handler's panic on the serving goroutine.
+func (result handlerResult) repanic() {
+	if result.panicValue != nil {
+		panic(panicWithStack{value: result.panicValue, stack: result.panicStack})
+	}
+}
+
+// finishCancelled ends a request whose parent context was cancelled. If the
+// handler already finished, its response is still flushed (best effort);
+// otherwise the connection is left without a forged timeout body and the
+// handler drained so its panics still surface.
+func (cfg *timeoutOptions) finishCancelled(tw *timeoutWriter, done <-chan handlerResult) {
+	select {
+	case result := <-done:
+		result.repanic()
+		tw.writeToReal()
+	default:
+		go drainLateHandler(done, cfg.lateLogger())
+	}
+}
+
+// awaitLateHandler waits up to the post-timeout grace for the handler after
+// the 503 was written, then drains it in the background. Always draining
+// keeps a post-timeout panic visible in the logs although the request has
+// already returned; without it the buffered channel would also pin the
+// handler goroutine's deferred sender at process exit.
+func (cfg *timeoutOptions) awaitLateHandler(done <-chan handlerResult) {
+	if cfg.postTimeoutWait == 0 {
+		go drainLateHandler(done, cfg.lateLogger())
+		return
+	}
+	timer := time.NewTimer(cfg.postTimeoutWait)
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		result.repanic()
+	case <-timer.C:
+		go drainLateHandler(done, cfg.lateLogger())
+	}
+}
+
+// lateLogger is the configured logger, or slog.Default() rather than
+// silently dropping a late panic value (L-073).
+func (cfg *timeoutOptions) lateLogger() *slog.Logger {
+	if cfg.logger == nil {
+		return slog.Default()
+	}
+	return cfg.logger
 }
 
 // drainLateHandler consumes the abandoned handler-goroutine result so

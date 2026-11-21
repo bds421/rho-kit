@@ -100,147 +100,158 @@ func handleWithHooks(opts []Option, onOpen, onClose func(*Conn)) http.HandlerFun
 		acceptOpts.CompressionMode = coderws.CompressionContextTakeover
 	}
 
-	maxBytes := cfg.maxMessageSize
-	handler := cfg.handler
-	metrics := cfg.metrics
-	writeTimeout := cfg.writeTimeout
-	pingInterval := cfg.pingInterval
-	pongTimeout := cfg.pongTimeout
-	readDrain := cfg.readDrain
-	limiter := newConnLimiter(cfg.maxConnections)
-	keyLimits := cfg.keyLimits
-
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Reject before Accept so a saturated server does not waste
-		// the per-conn allocation just to immediately close. The
-		// limiter is a no-op when no cap is configured.
-		if !limiter.tryAcquire() {
-			metrics.observeRejected(rejectReasonMaxConnections)
-			w.Header().Set("Retry-After", "1")
-			http.Error(w, "websocket: server at capacity", http.StatusServiceUnavailable)
-			return
-		}
-		defer limiter.release()
-		hold, ok := acquireKeys(keyLimits, r)
-		if !ok {
-			metrics.observeRejected(rejectReasonMaxConnectionsPerKey)
-			w.Header().Set("Retry-After", "30")
-			http.Error(w, "websocket: too many connections for this client", http.StatusTooManyRequests)
-			return
-		}
-		defer hold.release()
-
-		raw, err := coderws.Accept(w, r, acceptOpts)
-		if err != nil {
-			// coder/websocket has already written an HTTP error
-			// response by this point; we only need to surface the
-			// failure in logs without leaking driver text.
-			logger.WarnContext(r.Context(), "websocket: upgrade failed",
-				redact.Error(err),
-			)
-			return
-		}
-		raw.SetReadLimit(maxBytes)
-
-		// Derive a per-connection context that closes when the
-		// request body closes or when the connection is torn down,
-		// whichever comes first. Use [context.WithoutCancel] on the
-		// request context so the connection lifetime is not bounded
-		// by the upgrade handler's stdlib timeout (the handshake is
-		// done — further reads happen on the hijacked TCP connection).
-		//
-		// Graceful process shutdown is not linked through the request
-		// context: call package [Shutdown] (for [Handle]) or
-		// [Hub.Shutdown] (for isolated hubs) to cancel open conns.
-		ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
-		defer cancel()
-
-		conn := &Conn{
-			inner:        raw,
-			ctx:          ctx,
-			cancel:       cancel,
-			logger:       logger,
-			metrics:      metrics,
-			writeTimeout: writeTimeout,
-		}
-		metrics.connOpened()
-		if onOpen != nil {
-			onOpen(conn)
-		}
-		defer func() {
-			if onClose != nil {
-				onClose(conn)
-			}
-		}()
-
-		// WithReadDrain: own the read side so push-only handlers that
-		// never Read still detect peer disconnect. CloseRead is
-		// independent of the heartbeat; it is not silently dropped when
-		// WithPingInterval is unset.
-		//
-		// coder/websocket's CloseRead closes the raw socket when its input
-		// context is cancelled. Do not bind that input to conn.ctx: Conn.Close
-		// intentionally cancels conn.ctx before sending its close frame, and a
-		// bound CloseRead could otherwise win that race and turn graceful 1001
-		// shutdown into an abnormal EOF. The drain still exits when the raw
-		// connection closes; its derived context then cancels conn.ctx for peer
-		// disconnects.
-		if readDrain {
-			drainCtx := raw.CloseRead(context.WithoutCancel(ctx))
-			go func() {
-				<-drainCtx.Done()
-				// Cancel promptly so push handlers parked on
-				// conn.Context().Done() exit without waiting for
-				// the next heartbeat failure.
-				conn.cancelCtx()
-			}()
-		}
-		// Idle keepalive — default on (DefaultPingInterval); opt out via
-		// WithNoHeartbeat. Closes the connection if the peer stops
-		// responding to pings, unblocking in-flight reads/writes.
-		if pingInterval > 0 {
-			go runHeartbeat(ctx, conn, pingInterval, pongTimeout, logger, metrics)
-		}
-
-		closeCode := coderws.StatusNormalClosure
-		closeReason := ""
-
-		// Recover panics from the user handler so a misbehaving
-		// callback cannot crash the entire HTTP server. The recovery
-		// writes a [StatusInternalError] close frame with a
-		// non-leaking reason and lets the deferred Close clean up.
-		func() {
-			defer func() {
-				if rv := recover(); rv != nil {
-					closeCode = coderws.StatusInternalError
-					closeReason = "internal error"
-					logger.ErrorContext(ctx, "websocket: handler panicked",
-						redact.Panic(rv),
-					)
-				}
-			}()
-			if err := handler(ctx, conn); err != nil {
-				// A handler that surfaces the read error on a routine
-				// peer disconnect (the natural read-loop pattern) must
-				// not have that normal close escalated into a
-				// StatusInternalError / WARN. Treat a normal (1000) or
-				// going-away (1001) close as the graceful shutdown it
-				// is; everything else is a genuine handler error.
-				if IsNormalClosure(err) {
-					closeCode = coderws.CloseStatus(err)
-				} else {
-					closeCode = coderws.StatusInternalError
-					closeReason = "handler error"
-					logger.WarnContext(ctx, "websocket: handler returned error",
-						redact.Error(err),
-					)
-				}
-			}
-		}()
-
-		// Delegate to Conn.Close so cancel-before-handshake ordering is
-		// preserved (heartbeat re-check classifies teardown as graceful)
-		// and the close path cannot drift from the exported API.
-		_ = conn.Close(StatusCode(closeCode), closeReason)
+	u := &upgrader{
+		cfg:        cfg,
+		logger:     logger,
+		acceptOpts: acceptOpts,
+		limiter:    newConnLimiter(cfg.maxConnections),
+		onOpen:     onOpen,
+		onClose:    onClose,
 	}
+	return u.serve
+}
+
+// upgrader is the configured upgrade path of one handler.
+type upgrader struct {
+	cfg             config
+	logger          *slog.Logger
+	acceptOpts      *coderws.AcceptOptions
+	limiter         *connLimiter
+	onOpen, onClose func(*Conn)
+}
+
+func (u *upgrader) serve(w http.ResponseWriter, r *http.Request) {
+	// Reject before Accept so a saturated server does not waste
+	// the per-conn allocation just to immediately close. The
+	// limiter is a no-op when no cap is configured.
+	if !u.limiter.tryAcquire() {
+		u.cfg.metrics.observeRejected(rejectReasonMaxConnections)
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "websocket: server at capacity", http.StatusServiceUnavailable)
+		return
+	}
+	defer u.limiter.release()
+	hold, ok := acquireKeys(u.cfg.keyLimits, r)
+	if !ok {
+		u.cfg.metrics.observeRejected(rejectReasonMaxConnectionsPerKey)
+		w.Header().Set("Retry-After", "30")
+		http.Error(w, "websocket: too many connections for this client", http.StatusTooManyRequests)
+		return
+	}
+	defer hold.release()
+
+	raw, err := coderws.Accept(w, r, u.acceptOpts)
+	if err != nil {
+		// coder/websocket has already written an HTTP error
+		// response by this point; we only need to surface the
+		// failure in logs without leaking driver text.
+		u.logger.WarnContext(r.Context(), "websocket: upgrade failed",
+			redact.Error(err),
+		)
+		return
+	}
+	raw.SetReadLimit(u.cfg.maxMessageSize)
+
+	// Derive a per-connection context that closes when the
+	// request body closes or when the connection is torn down,
+	// whichever comes first. Use [context.WithoutCancel] on the
+	// request context so the connection lifetime is not bounded
+	// by the upgrade handler's stdlib timeout (the handshake is
+	// done — further reads happen on the hijacked TCP connection).
+	//
+	// Graceful process shutdown is not linked through the request
+	// context: call package [Shutdown] (for [Handle]) or
+	// [Hub.Shutdown] (for isolated hubs) to cancel open conns.
+	ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
+	defer cancel()
+
+	conn := &Conn{
+		inner:        raw,
+		ctx:          ctx,
+		cancel:       cancel,
+		logger:       u.logger,
+		metrics:      u.cfg.metrics,
+		writeTimeout: u.cfg.writeTimeout,
+	}
+	u.cfg.metrics.connOpened()
+	if u.onOpen != nil {
+		u.onOpen(conn)
+	}
+	defer func() {
+		if u.onClose != nil {
+			u.onClose(conn)
+		}
+	}()
+	u.watch(ctx, raw, conn)
+
+	closeCode, closeReason := u.runHandler(ctx, conn)
+	// Delegate to Conn.Close so cancel-before-handshake ordering is
+	// preserved (heartbeat re-check classifies teardown as graceful)
+	// and the close path cannot drift from the exported API.
+	_ = conn.Close(StatusCode(closeCode), closeReason)
+}
+
+// watch starts the read drain and the heartbeat the configuration asks for.
+func (u *upgrader) watch(ctx context.Context, raw *coderws.Conn, conn *Conn) {
+	// WithReadDrain: own the read side so push-only handlers that
+	// never Read still detect peer disconnect. CloseRead is
+	// independent of the heartbeat; it is not silently dropped when
+	// WithPingInterval is unset.
+	//
+	// coder/websocket's CloseRead closes the raw socket when its input
+	// context is cancelled. Do not bind that input to conn.ctx: Conn.Close
+	// intentionally cancels conn.ctx before sending its close frame, and a
+	// bound CloseRead could otherwise win that race and turn graceful 1001
+	// shutdown into an abnormal EOF. The drain still exits when the raw
+	// connection closes; its derived context then cancels conn.ctx for peer
+	// disconnects.
+	if u.cfg.readDrain {
+		drainCtx := raw.CloseRead(context.WithoutCancel(ctx))
+		go func() {
+			<-drainCtx.Done()
+			// Cancel promptly so push handlers parked on
+			// conn.Context().Done() exit without waiting for
+			// the next heartbeat failure.
+			conn.cancelCtx()
+		}()
+	}
+	// Idle keepalive — default on (DefaultPingInterval); opt out via
+	// WithNoHeartbeat. Closes the connection if the peer stops
+	// responding to pings, unblocking in-flight reads/writes.
+	if u.cfg.pingInterval > 0 {
+		go runHeartbeat(ctx, conn, u.cfg.pingInterval, u.cfg.pongTimeout, u.logger, u.cfg.metrics)
+	}
+}
+
+// runHandler runs the user handler and returns the close frame to send.
+// A panic is recovered so a misbehaving callback cannot crash the entire
+// HTTP server; it closes with [StatusInternalError] and a non-leaking
+// reason.
+func (u *upgrader) runHandler(ctx context.Context, conn *Conn) (closeCode coderws.StatusCode, closeReason string) {
+	closeCode = coderws.StatusNormalClosure
+	defer func() {
+		if rv := recover(); rv != nil {
+			closeCode = coderws.StatusInternalError
+			closeReason = "internal error"
+			u.logger.ErrorContext(ctx, "websocket: handler panicked",
+				redact.Panic(rv),
+			)
+		}
+	}()
+	err := u.cfg.handler(ctx, conn)
+	if err == nil {
+		return closeCode, ""
+	}
+	// A handler that surfaces the read error on a routine peer
+	// disconnect (the natural read-loop pattern) must not have that
+	// normal close escalated into a StatusInternalError / WARN. Treat a
+	// normal (1000) or going-away (1001) close as the graceful shutdown
+	// it is; everything else is a genuine handler error.
+	if IsNormalClosure(err) {
+		return coderws.CloseStatus(err), ""
+	}
+	u.logger.WarnContext(ctx, "websocket: handler returned error",
+		redact.Error(err),
+	)
+	return coderws.StatusInternalError, "handler error"
 }

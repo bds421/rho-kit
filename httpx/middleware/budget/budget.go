@@ -15,6 +15,7 @@ package budget
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -142,41 +143,54 @@ func Middleware(b budget.Budget, opts ...Option) func(http.Handler) http.Handler
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key, ok, keyErr := safeKeyFunc(cfg.key, r)
-			if keyErr != nil {
-				httpx.WriteError(w, http.StatusServiceUnavailable, "budget unavailable")
-				return
-			}
-			if !ok {
-				if !cfg.allowMissingKey {
-					httpx.WriteError(w, http.StatusBadRequest, "budget key required")
-					return
-				}
-				next.ServeHTTP(w, r)
-				return
-			}
-			if err := budget.ValidateKey(key); err != nil {
-				httpx.WriteError(w, http.StatusBadRequest, "invalid budget key")
-				return
-			}
-			allowed, remaining, retryAfter, err := b.Consume(r.Context(), key, cfg.amount)
-			if err != nil {
-				// Backend errors are surfaced as 503; we don't fail
-				// open silently because that would defeat the budget.
-				httpx.Logger(r.Context(), slog.Default()).Error(
-					"middleware/budget: consume failed",
-					redact.Error(err),
-				)
-				httpx.WriteError(w, http.StatusServiceUnavailable, "budget unavailable")
-				return
-			}
-			if !allowed {
-				writeRejected(w, cfg.scope, remaining, retryAfter)
-				return
-			}
-			next.ServeHTTP(w, r)
+			cfg.charge(w, r, next, b)
 		})
 	}
+}
+
+// charge consumes the configured amount from the request's key and serves
+// the request when the budget allows it.
+func (cfg *config) charge(w http.ResponseWriter, r *http.Request, next http.Handler, b budget.Budget) {
+	key, ok := cfg.requestKey(w, r, next)
+	if !ok {
+		return
+	}
+	allowed, remaining, retryAfter, err := b.Consume(r.Context(), key, cfg.amount)
+	if err != nil {
+		// Backend errors are surfaced as 503; we don't fail
+		// open silently because that would defeat the budget.
+		httpx.Logger(r.Context(), slog.Default()).Error(
+			"middleware/budget: consume failed",
+			redact.Error(err),
+		)
+		httpx.WriteError(w, http.StatusServiceUnavailable, "budget unavailable")
+		return
+	}
+	if !allowed {
+		writeRejected(w, cfg.scope, remaining, retryAfter)
+		return
+	}
+	next.ServeHTTP(w, r)
+}
+
+// requestKey resolves the budget key. It returns false when the request is
+// done: rejected, or served uncharged because its key is missing and
+// [WithAllowMissingKey] lets it pass.
+func (cfg *config) requestKey(w http.ResponseWriter, r *http.Request, next http.Handler) (string, bool) {
+	key, ok, keyErr := safeKeyFunc(cfg.key, r)
+	switch {
+	case keyErr != nil:
+		httpx.WriteError(w, http.StatusServiceUnavailable, "budget unavailable")
+	case !ok && cfg.allowMissingKey:
+		next.ServeHTTP(w, r)
+	case !ok:
+		httpx.WriteError(w, http.StatusBadRequest, "budget key required")
+	case budget.ValidateKey(key) != nil:
+		httpx.WriteError(w, http.StatusBadRequest, "invalid budget key")
+	default:
+		return key, true
+	}
+	return "", false
 }
 
 func safeKeyFunc(fn KeyFunc, r *http.Request) (key string, ok bool, err error) {
@@ -213,5 +227,5 @@ func writeRejected(w http.ResponseWriter, scope string, remaining int64, retryAf
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusTooManyRequests)
-	_, _ = fmt.Fprintf(w, `{"error":"budget exceeded","code":"BUDGET_EXCEEDED","remaining":%d}`, remaining)
+	_, _ = io.WriteString(w, `{"error":"budget exceeded","code":"BUDGET_EXCEEDED","remaining":`+strconv.FormatInt(remaining, 10)+`}`)
 }

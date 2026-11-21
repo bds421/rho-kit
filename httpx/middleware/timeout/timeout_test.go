@@ -484,7 +484,7 @@ func TestTimeout_WriteAfterTimeout(t *testing.T) {
 
 	// Once the timeout latched, Write must report http.ErrHandlerTimeout.
 	err := <-writeErr
-	if err != http.ErrHandlerTimeout {
+	if !errors.Is(err, http.ErrHandlerTimeout) {
 		t.Errorf("expected http.ErrHandlerTimeout from Write after timeout, got %v", err)
 	}
 }
@@ -601,24 +601,31 @@ func TestTimeout_OverflowThenDeadlineKeepsTimeoutAndFencesLateWrite(t *testing.T
 			case <-time.After(time.Second):
 				t.Fatal("late handler did not exit")
 			}
-			wantBody := "{\"error\":\"request timeout\",\"code\":\"TIMEOUT\"}\n"
-			if method == http.MethodHead {
-				wantBody = ""
-			}
-			if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != wantBody {
-				t.Fatalf("deadline after overflow = %d, %q", rec.Code, rec.Body.String())
-			}
-			for _, name := range []string{"Content-Length", "ETag", "Content-Encoding"} {
-				if rec.Header().Get(name) != "" {
-					t.Errorf("stale %s survived timeout", name)
-				}
-			}
-			if rec.Header().Get("X-Trace-ID") != "kept" {
-				t.Error("outer tracing header lost")
-			}
+			checkTimeoutAfterOverflow(t, rec, method)
 			if err := <-lateErr; !errors.Is(err, http.ErrHandlerTimeout) {
 				t.Errorf("late write = %v", err)
 			}
 		})
+	}
+}
+
+// checkTimeoutAfterOverflow checks that a deadline after a buffer overflow
+// still answers 503 without the stale representation headers.
+func checkTimeoutAfterOverflow(t *testing.T, rec *httptest.ResponseRecorder, method string) {
+	t.Helper()
+	wantBody := "{\"error\":\"request timeout\",\"code\":\"TIMEOUT\"}\n"
+	if method == http.MethodHead {
+		wantBody = ""
+	}
+	if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != wantBody {
+		t.Fatalf("deadline after overflow = %d, %q", rec.Code, rec.Body.String())
+	}
+	for _, name := range []string{"Content-Length", "ETag", "Content-Encoding"} {
+		if rec.Header().Get(name) != "" {
+			t.Errorf("stale %s survived timeout", name)
+		}
+	}
+	if rec.Header().Get("X-Trace-ID") != "kept" {
+		t.Error("outer tracing header lost")
 	}
 }

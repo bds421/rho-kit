@@ -211,61 +211,56 @@ type unwrapOnlyWriter struct{ http.ResponseWriter }
 
 func (w unwrapOnlyWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+// errorFlushChain builds the writer chain of one flush mode over a native
+// error-reporting flusher: native is the innermost writer, both its variant
+// that also has the void Flush, writer what the recorder wraps, and nested
+// the recorders of the "nested" mode.
+func errorFlushChain(mode string) (native *errorFlushWriter, both *bothFlushWriter, writer http.ResponseWriter, nested []*middleware.ResponseRecorder) {
+	inner := httptest.NewRecorder()
+	native = &errorFlushWriter{ResponseWriter: inner, inner: inner}
+	switch mode {
+	case "success":
+	case "native-unsupported":
+		native.err = http.ErrNotSupported
+	default:
+		native.err = errors.New("invented native flush failure")
+	}
+	writer = native
+	both = &bothFlushWriter{errorFlushWriter: native}
+	switch mode {
+	case "both-interfaces":
+		writer = both
+	case "unwrap-only":
+		writer = unwrapOnlyWriter{ResponseWriter: writer}
+	case "nested":
+		for range 3 {
+			rec := middleware.NewResponseRecorder(writer)
+			nested = append(nested, rec)
+			writer = rec
+		}
+	}
+	return native, both, writer, nested
+}
+
 func TestResponseRecorder_ControllerFlushPreservesNativeErrorAndStatus(t *testing.T) {
 	for _, mode := range []string{"success", "native-error", "both-interfaces", "nested", "unwrap-only", "explicit-status", "native-unsupported"} {
 		t.Run(mode, func(t *testing.T) {
-			inner := httptest.NewRecorder()
-			native := &errorFlushWriter{ResponseWriter: inner, inner: inner}
-			if mode != "success" {
-				native.err = errors.New("invented native flush failure")
-			}
-			if mode == "native-unsupported" {
-				native.err = http.ErrNotSupported
-			}
-			var writer http.ResponseWriter = native
-			both := &bothFlushWriter{errorFlushWriter: native}
-			if mode == "both-interfaces" {
-				writer = both
-			}
-			if mode == "unwrap-only" {
-				writer = unwrapOnlyWriter{ResponseWriter: writer}
-			}
-			var nested []*middleware.ResponseRecorder
-			if mode == "nested" {
-				for range 3 {
-					rec := middleware.NewResponseRecorder(writer)
-					nested = append(nested, rec)
-					writer = rec
-				}
-			}
+			native, both, writer, nested := errorFlushChain(mode)
 			rec := middleware.NewResponseRecorder(writer)
 			want := http.StatusOK
 			if mode == "explicit-status" {
 				want = http.StatusAccepted
 				rec.WriteHeader(want)
 			}
-			native.before = func() {
-				if !rec.WroteHeader() {
-					t.Error("supported flush did not latch before actual operation")
-				}
-				for _, r := range nested {
-					if !r.WroteHeader() {
-						t.Error("nested supported flush did not latch before operation")
-					}
-				}
-			}
+			native.before = latchedBeforeFlush(t, rec, nested)
 			err := http.NewResponseController(rec).Flush()
-			if err != native.err || native.calls != 1 || both.voidCalls != 0 {
+			if !errors.Is(err, native.err) || native.calls != 1 || both.voidCalls != 0 {
 				t.Fatal("native flush identity/count/preference lost", err, native.calls, both.voidCalls)
 			}
-			if !rec.WroteHeader() || rec.Status() != want || inner.Code != want || !inner.Flushed {
+			if !rec.WroteHeader() || rec.Status() != want || native.inner.Code != want || !native.inner.Flushed {
 				t.Fatal("native flush/status semantics changed")
 			}
-			for _, r := range nested {
-				if !r.WroteHeader() || r.Status() != want {
-					t.Fatal("nested recorder did not retain committed status")
-				}
-			}
+			checkNestedCommitted(t, nested, want)
 		})
 	}
 }
@@ -274,14 +269,13 @@ func TestResponseRecorder_ControllerUnsupportedDoesNotLatch(t *testing.T) {
 	for _, mode := range []string{"nil", "plain", "unwrap-only", "nested"} {
 		t.Run(mode, func(t *testing.T) {
 			var writer http.ResponseWriter = &nonFlusher{}
-			if mode == "nil" {
-				writer = nil
-			}
-			if mode == "unwrap-only" {
-				writer = unwrapOnlyWriter{ResponseWriter: writer}
-			}
 			var nested *middleware.ResponseRecorder
-			if mode == "nested" {
+			switch mode {
+			case "nil":
+				writer = nil
+			case "unwrap-only":
+				writer = unwrapOnlyWriter{ResponseWriter: writer}
+			case "nested":
 				nested = middleware.NewResponseRecorder(writer)
 				writer = nested
 			}
@@ -326,7 +320,7 @@ func TestResponseRecorder_DefaultNativeStackPreservesFlushError(t *testing.T) {
 			// Only the buffering timeout is disabled for this native flush test.
 			// Real recovery/metrics/tracing/access logging remain in the actual chain.
 			h.ServeHTTP(native, httptest.NewRequest(http.MethodPost, "/internal/v1/organization-events", nil))
-			if actual != native.err || native.calls != 1 || native.voidCalls != 0 {
+			if !errors.Is(actual, native.err) || native.calls != 1 || native.voidCalls != 0 {
 				t.Fatal("actual maintained stack hid the native flush error", actual, native.calls, native.voidCalls)
 			}
 			if inner.Code != http.StatusAccepted || !inner.Flushed {
@@ -348,7 +342,7 @@ func TestResponseRecorder_PrefersFunctionalFlushErrorBeforeUnwrap(t *testing.T) 
 		inner := httptest.NewRecorder()
 		native := &errorFlushWriter{ResponseWriter: inner, inner: inner, err: errors.New("invented functional wrapper flush error")}
 		rec := middleware.NewResponseRecorder(&functionalFlushWriter{errorFlushWriter: native, unwrapped: leaf})
-		if err := http.NewResponseController(rec).Flush(); err != native.err || native.calls != 1 || !rec.WroteHeader() {
+		if err := http.NewResponseController(rec).Flush(); !errors.Is(err, native.err) || native.calls != 1 || !rec.WroteHeader() {
 			t.Fatal("functional FlushError was skipped through Unwrap", err, native.calls)
 		}
 	}
@@ -450,7 +444,7 @@ func TestResponseRecorder_PushForwarded(t *testing.T) {
 
 func TestResponseRecorder_PushUnsupported(t *testing.T) {
 	rec := middleware.NewResponseRecorder(httptest.NewRecorder())
-	if err := rec.Push("/asset.js", nil); err != http.ErrNotSupported {
+	if err := rec.Push("/asset.js", nil); !errors.Is(err, http.ErrNotSupported) {
 		t.Fatalf("Push error = %v, want http.ErrNotSupported", err)
 	}
 }
@@ -493,5 +487,29 @@ func TestResponseRecorder_ReadFromFallback(t *testing.T) {
 	}
 	if rec.Status() != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Status())
+	}
+}
+
+// latchedBeforeFlush checks, from inside the native flush, that every
+// recorder latched the response before delegating.
+func latchedBeforeFlush(t *testing.T, rec *middleware.ResponseRecorder, nested []*middleware.ResponseRecorder) func() {
+	return func() {
+		if !rec.WroteHeader() {
+			t.Error("supported flush did not latch before actual operation")
+		}
+		for _, r := range nested {
+			if !r.WroteHeader() {
+				t.Error("nested supported flush did not latch before operation")
+			}
+		}
+	}
+}
+
+func checkNestedCommitted(t *testing.T, nested []*middleware.ResponseRecorder, want int) {
+	t.Helper()
+	for _, r := range nested {
+		if !r.WroteHeader() || r.Status() != want {
+			t.Fatal("nested recorder did not retain committed status")
+		}
 	}
 }

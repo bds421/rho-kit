@@ -146,40 +146,9 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 		return nil
 	}
 
-	// Prefer the identity resolved in auditPrecheck so a second extraction
-	// cannot silently drop the audit entry after the tool has executed.
-	var tenantID, actor string
-	if id, ok := auditIdentityFrom(ctx); ok {
-		if id.tenantMissing {
-			return nil
-		}
-		tenantID = id.tenantID
-		actor = id.actor
-		if !id.actorOK || actor == "" {
-			if s.cfg.strictAudit {
-				return errAuditActorMissing
-			}
-			actor = AnonymousActor
-		}
-	} else {
-		// Fallback for callers that invoke recordActionLog without precheck
-		// (should not happen on the hot path).
-		var ok bool
-		tenantID, ok = s.extractTenant(ctx)
-		if !ok || tenantID == "" {
-			if s.cfg.strictAudit {
-				return errors.New("mcp: action log tenant not resolved")
-			}
-			return nil
-		}
-		var actorOK bool
-		actor, actorOK = s.extractActor(r)
-		if !actorOK {
-			if s.cfg.strictAudit {
-				return errAuditActorMissing
-			}
-			actor = AnonymousActor
-		}
+	tenantID, actor, record, err := s.auditParties(ctx, r)
+	if !record || err != nil {
+		return err
 	}
 
 	outcome := actionlog.OutcomeSuccess
@@ -217,6 +186,44 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 	)
 	defer cancel()
 	return s.appendActionLog(appendCtx, entry, tool, tenantID)
+}
+
+// auditParties returns the tenant and actor of the audit entry. record is
+// false when loose mode skips the entry; err is set when strict mode
+// refuses it.
+func (s *Server) auditParties(ctx context.Context, r *http.Request) (tenantID, actor string, record bool, err error) {
+	// Prefer the identity resolved in auditPrecheck so a second extraction
+	// cannot silently drop the audit entry after the tool has executed.
+	if id, ok := auditIdentityFrom(ctx); ok {
+		if id.tenantMissing {
+			return "", "", false, nil
+		}
+		actor = id.actor
+		if !id.actorOK || actor == "" {
+			if s.cfg.strictAudit {
+				return "", "", false, errAuditActorMissing
+			}
+			actor = AnonymousActor
+		}
+		return id.tenantID, actor, true, nil
+	}
+	// Fallback for callers that invoke recordActionLog without precheck
+	// (should not happen on the hot path).
+	tenantID, ok := s.extractTenant(ctx)
+	if !ok || tenantID == "" {
+		if s.cfg.strictAudit {
+			return "", "", false, errors.New("mcp: action log tenant not resolved")
+		}
+		return "", "", false, nil
+	}
+	actor, actorOK := s.extractActor(r)
+	if !actorOK {
+		if s.cfg.strictAudit {
+			return "", "", false, errAuditActorMissing
+		}
+		actor = AnonymousActor
+	}
+	return tenantID, actor, true, nil
 }
 
 func (s *Server) extractTenant(ctx context.Context) (tenantID string, ok bool) {

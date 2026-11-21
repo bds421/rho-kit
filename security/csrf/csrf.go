@@ -32,6 +32,7 @@ import (
 
 	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/core/v2/safecast"
 )
 
 // Token is an opaque CSRF token. The wire format is intentionally
@@ -222,7 +223,9 @@ func (i *Issuer) Verify(t Token, sessionID string) error {
 	}
 
 	prefix := raw[:sessionPrefixLen]
-	iat := int64(binary.BigEndian.Uint64(raw[sessionPrefixLen : sessionPrefixLen+8]))
+	// Issue never mints a negative iat, so saturating a top-bit-set value
+	// only turns an already unverifiable MAC input into another one.
+	iat := safecast.Uint64ToInt64(binary.BigEndian.Uint64(raw[sessionPrefixLen : sessionPrefixLen+8]))
 	nonce := raw[sessionPrefixLen+8 : sessionPrefixLen+8+nonceLen]
 	mac := raw[sessionPrefixLen+8+nonceLen:]
 
@@ -275,11 +278,11 @@ func computeMAC(secret []byte, sessionID string, iat int64, nonce []byte) []byte
 	// by splitting the field boundary differently (collisions when the
 	// MAC input is just sessionID || iat || nonce).
 	var lp4 [4]byte
-	binary.BigEndian.PutUint32(lp4[:], uint32(len(sessionID)))
+	binary.BigEndian.PutUint32(lp4[:], safecast.IntToUint32(len(sessionID)))
 	h.Write(lp4[:])
 	h.Write([]byte(sessionID))
 	var lp8 [8]byte
-	binary.BigEndian.PutUint64(lp8[:], uint64(iat))
+	binary.BigEndian.PutUint64(lp8[:], uint64(max(iat, 0)))
 	h.Write(lp8[:])
 	h.Write(nonce)
 	return h.Sum(nil)

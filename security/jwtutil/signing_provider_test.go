@@ -505,52 +505,57 @@ func TestSigningProvider_RefreshRejectsWrongShapeKey(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			good := tc.good(t)
-			wrong := tc.wrong(t)
-			var cur atomic.Pointer[crypto.PrivateKey]
-			cur.Store(&good)
-			src := func(_ context.Context) (crypto.PrivateKey, error) { return *cur.Load(), nil }
-
-			var cbErr atomic.Pointer[error]
-			p, err := NewSigningProvider(context.Background(), src,
-				WithSigningRotationInterval(time.Hour),
-				WithSigningExpectedIssuer("svc"), WithSigningAllowAnyAudience(),
-				WithSigningDefaultLifetime(time.Minute),
-				WithSigningMethod(tc.alg),
-				WithOnSigningRefreshError(func(e error) { cbErr.Store(&e) }),
-			)
-			if err != nil {
-				t.Fatalf("NewSigningProvider: %v", err)
-			}
-			defer func() { _ = p.Close() }()
-
-			// Baseline: the good key signs fine.
-			if _, err := p.Sign(Claims{Subject: "alice"}); err != nil {
-				t.Fatalf("initial Sign: %v", err)
-			}
-
-			// Rotate to a wrong-shape key. refresh must reject it.
-			cur.Store(&wrong)
-			rerr := p.refresh(context.Background())
-			if rerr == nil {
-				t.Fatalf("refresh accepted a %s key for alg %s; want rejection", tc.wantKty, tc.alg)
-			}
-			if !strings.Contains(rerr.Error(), "incompatible") {
-				t.Fatalf("refresh error = %v, want it to mention incompatibility", rerr)
-			}
-
-			// The loop path surfaces refresh errors via the callback;
-			// exercise that wiring directly so a stalled rotation alerts.
-			p.callOnRefreshError(rerr)
-			if got := cbErr.Load(); got == nil || *got == nil {
-				t.Fatal("OnSigningRefreshError callback was not invoked for the wrong-shape rotation")
-			}
-
-			// The previously-good key must be retained: Sign still works.
-			if _, err := p.Sign(Claims{Subject: "bob"}); err != nil {
-				t.Fatalf("Sign after rejected rotation should use the retained key, got: %v", err)
-			}
+			checkWrongShapeRotationRejected(t, tc.alg, tc.good(t), tc.wrong(t), tc.wantKty)
 		})
+	}
+}
+
+// checkWrongShapeRotationRejected rotates a provider signing with good to
+// wrong and checks that refresh rejects it, reports it and keeps good.
+func checkWrongShapeRotationRejected(t *testing.T, alg jwa.SignatureAlgorithm, good, wrong crypto.PrivateKey, wantKty string) {
+	t.Helper()
+	var cur atomic.Pointer[crypto.PrivateKey]
+	cur.Store(&good)
+	src := func(_ context.Context) (crypto.PrivateKey, error) { return *cur.Load(), nil }
+
+	var cbErr atomic.Pointer[error]
+	p, err := NewSigningProvider(context.Background(), src,
+		WithSigningRotationInterval(time.Hour),
+		WithSigningExpectedIssuer("svc"), WithSigningAllowAnyAudience(),
+		WithSigningDefaultLifetime(time.Minute),
+		WithSigningMethod(alg),
+		WithOnSigningRefreshError(func(e error) { cbErr.Store(&e) }),
+	)
+	if err != nil {
+		t.Fatalf("NewSigningProvider: %v", err)
+	}
+	defer func() { _ = p.Close() }()
+
+	// Baseline: the good key signs fine.
+	if _, err := p.Sign(Claims{Subject: "alice"}); err != nil {
+		t.Fatalf("initial Sign: %v", err)
+	}
+
+	// Rotate to a wrong-shape key. refresh must reject it.
+	cur.Store(&wrong)
+	rerr := p.refresh(context.Background())
+	if rerr == nil {
+		t.Fatalf("refresh accepted a %s key for alg %s; want rejection", wantKty, alg)
+	}
+	if !strings.Contains(rerr.Error(), "incompatible") {
+		t.Fatalf("refresh error = %v, want it to mention incompatibility", rerr)
+	}
+
+	// The loop path surfaces refresh errors via the callback;
+	// exercise that wiring directly so a stalled rotation alerts.
+	p.callOnRefreshError(rerr)
+	if got := cbErr.Load(); got == nil || *got == nil {
+		t.Fatal("OnSigningRefreshError callback was not invoked for the wrong-shape rotation")
+	}
+
+	// The previously-good key must be retained: Sign still works.
+	if _, err := p.Sign(Claims{Subject: "bob"}); err != nil {
+		t.Fatalf("Sign after rejected rotation should use the retained key, got: %v", err)
 	}
 }
 

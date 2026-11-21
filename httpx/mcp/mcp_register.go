@@ -48,71 +48,27 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 		return err
 	}
 
-	var inZero In
-
-	inSchema, err := resolveInputSchema[In](cfg.inputSchema)
+	inSchema, outSchema, err := toolSchemas[In, Out](cfg)
 	if err != nil {
-		return fmt.Errorf("mcp: Register: input schema: %w", err)
-	}
-	outSchema, err := resolveOutputSchema[Out](cfg.outputSchema)
-	if err != nil {
-		return fmt.Errorf("mcp: Register: output schema: %w", err)
+		return err
 	}
 
 	desc := cfg.description
 	if desc == "" {
+		var inZero In
 		desc = defaultDescription(reflect.TypeOf(inZero), name)
 	}
 
-	if cfg.destructive {
-		// Vendor-extension: clients that understand the kit's MCP
-		// dialect see `x-destructive: true` and can prompt for
-		// confirmation. The kit-side gate is the actual enforcement.
-		schema, err := withVendorExtension(inSchema, "x-destructive", true)
-		if err != nil {
-			return fmt.Errorf("mcp: Register: annotate input schema: %w", err)
-		}
-		inSchema = schema
-	}
-
-	// Reserve the registration slot first so concurrent
-	// Register(same-name) races are caught before the SDK side-effect.
-	s.mu.Lock()
-	if _, dup := s.toolMeta[name]; dup {
-		s.mu.Unlock()
-		return fmt.Errorf("mcp: Register: tool already registered")
-	}
-	s.toolMeta[name] = &toolMeta{destructive: cfg.destructive}
-	s.tools = append(s.tools, Tool{
+	tool := Tool{
 		Name:         name,
 		Description:  desc,
 		InputSchema:  inSchema,
 		OutputSchema: outSchema,
-	})
-	s.mu.Unlock()
-
-	// Use the SDK's low-level Server.AddTool with a kit-owned
-	// ToolHandler. We avoid sdkmcp.AddTool[In, Out] because that
-	// generic helper unmarshals arguments with internaljson and
-	// surfaces the raw decode error string back to the caller —
-	// breaking the kit's "do not leak caller-controlled bytes" invariant
-	// (security review L-4 / decode-failure tests). Owning decode here
-	// lets us rewrite the error to a stable "invalid arguments" message
-	// while logging the verbose form server-side.
-	sdkTool := &sdkmcp.Tool{
-		Name:        name,
-		Description: desc,
-		InputSchema: inSchema,
 	}
-	if len(outSchema) > 0 {
-		sdkTool.OutputSchema = outSchema
+	if err := s.reserveTool(tool, cfg.destructive); err != nil {
+		return err
 	}
-	if cfg.destructive {
-		destHint := true
-		sdkTool.Annotations = &sdkmcp.ToolAnnotations{
-			DestructiveHint: &destHint,
-		}
-	}
+	sdkTool := sdkToolFor(tool, cfg.destructive)
 
 	// Commit kit catalog only after SDK registration succeeds. AddTool
 	// panics on non-object/missing schemas; pre-validation makes that
@@ -134,6 +90,45 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 		s.sdk.AddTool(sdkTool, wrapToolHandler[In, Out](s, name, h, cfg.destructive))
 	}()
 	return nil
+}
+
+// reserveTool claims the tool's registration slot before the SDK
+// side-effect, so concurrent Register(same-name) races are caught first.
+func (s *Server) reserveTool(tool Tool, destructive bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, dup := s.toolMeta[tool.Name]; dup {
+		return fmt.Errorf("mcp: Register: tool already registered")
+	}
+	s.toolMeta[tool.Name] = &toolMeta{destructive: destructive}
+	s.tools = append(s.tools, tool)
+	return nil
+}
+
+// sdkToolFor describes the tool to the SDK's low-level Server.AddTool,
+// which takes a kit-owned ToolHandler. We avoid sdkmcp.AddTool[In, Out]
+// because that generic helper unmarshals arguments with internaljson and
+// surfaces the raw decode error string back to the caller — breaking the
+// kit's "do not leak caller-controlled bytes" invariant (security review
+// L-4 / decode-failure tests). Owning decode lets us rewrite the error to
+// a stable "invalid arguments" message while logging the verbose form
+// server-side.
+func sdkToolFor(tool Tool, destructive bool) *sdkmcp.Tool {
+	sdkTool := &sdkmcp.Tool{
+		Name:        tool.Name,
+		Description: tool.Description,
+		InputSchema: tool.InputSchema,
+	}
+	if len(tool.OutputSchema) > 0 {
+		sdkTool.OutputSchema = tool.OutputSchema
+	}
+	if destructive {
+		destHint := true
+		sdkTool.Annotations = &sdkmcp.ToolAnnotations{
+			DestructiveHint: &destHint,
+		}
+	}
+	return sdkTool
 }
 
 // resolveInputSchema returns the JSON-Schema bytes to set on the SDK
@@ -360,4 +355,26 @@ func validToolNameRune(r rune) bool {
 	default:
 		return false
 	}
+}
+
+// toolSchemas resolves a tool's input and output schemas. A destructive
+// tool's input schema carries the vendor extension `x-destructive: true`,
+// so clients that understand the kit's MCP dialect can prompt for
+// confirmation; the kit-side gate is the actual enforcement.
+func toolSchemas[In any, Out any](cfg toolConfig) (inSchema, outSchema json.RawMessage, err error) {
+	inSchema, err = resolveInputSchema[In](cfg.inputSchema)
+	if err != nil {
+		return nil, nil, fmt.Errorf("mcp: Register: input schema: %w", err)
+	}
+	outSchema, err = resolveOutputSchema[Out](cfg.outputSchema)
+	if err != nil {
+		return nil, nil, fmt.Errorf("mcp: Register: output schema: %w", err)
+	}
+	if cfg.destructive {
+		inSchema, err = withVendorExtension(inSchema, "x-destructive", true)
+		if err != nil {
+			return nil, nil, fmt.Errorf("mcp: Register: annotate input schema: %w", err)
+		}
+	}
+	return inSchema, outSchema, nil
 }

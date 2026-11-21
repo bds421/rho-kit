@@ -53,47 +53,31 @@ func TestSignedRequestMetrics_CountsByReason(t *testing.T) {
 		WithMetrics(metrics),
 	)
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
-
-	// missing_header: omit X-Signature-Timestamp.
-	{
-		req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(""))
-		req.Header.Set(HeaderNonce, makeNonce("missing"))
-		req.Header.Set(HeaderKeyID, keyID)
-		req.Header.Set(HeaderSignature, "hmac-sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	serve := func(req *http.Request) int {
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, req)
-		require.Equal(t, http.StatusBadRequest, rr.Code)
+		return rr.Code
 	}
+
+	// missing_header: omit X-Signature-Timestamp.
+	require.Equal(t, http.StatusBadRequest, serve(unsignedRequest("", makeNonce("missing"))))
 
 	// malformed_signature: bad timestamp value -> ErrTimestampInvalid
 	// (not a skew direction).
-	{
-		req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(""))
-		req.Header.Set(HeaderTimestamp, "not-a-number")
-		req.Header.Set(HeaderNonce, makeNonce("malformed"))
-		req.Header.Set(HeaderKeyID, keyID)
-		req.Header.Set(HeaderSignature, "hmac-sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-		rr := httptest.NewRecorder()
-		h.ServeHTTP(rr, req)
-		require.Equal(t, http.StatusBadRequest, rr.Code)
-	}
+	require.Equal(t, http.StatusBadRequest, serve(unsignedRequest("not-a-number", makeNonce("malformed"))))
 
 	// expired: timestamp older than maxClockSkew window.
 	{
 		past := now.Add(-time.Hour)
 		req := signRequest(t, "POST", "/x", "", past, makeNonce("expired"), nil, nil)
-		rr := httptest.NewRecorder()
-		h.ServeHTTP(rr, req)
-		require.Equal(t, http.StatusBadRequest, rr.Code)
+		require.Equal(t, http.StatusBadRequest, serve(req))
 	}
 
 	// clock_skew: timestamp too far in the future.
 	{
 		future := now.Add(time.Hour)
 		req := signRequest(t, "POST", "/x", "", future, makeNonce("future"), nil, nil)
-		rr := httptest.NewRecorder()
-		h.ServeHTTP(rr, req)
-		require.Equal(t, http.StatusBadRequest, rr.Code)
+		require.Equal(t, http.StatusBadRequest, serve(req))
 	}
 
 	// bad_signature: valid envelope but the MAC will not verify because
@@ -101,9 +85,7 @@ func TestSignedRequestMetrics_CountsByReason(t *testing.T) {
 	{
 		req := signRequest(t, "POST", "/x", "", now, makeNonce("bad-sig"), nil, nil)
 		req.Header.Set(HeaderSignature, "hmac-sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-		rr := httptest.NewRecorder()
-		h.ServeHTTP(rr, req)
-		require.Equal(t, http.StatusUnauthorized, rr.Code)
+		require.Equal(t, http.StatusUnauthorized, serve(req))
 	}
 
 	// replay_nonce: send the same valid request twice; the second
@@ -111,22 +93,22 @@ func TestSignedRequestMetrics_CountsByReason(t *testing.T) {
 	{
 		nonce := makeNonce("replay")
 		r1 := signRequest(t, "POST", "/x", "", now, nonce, nil, nil)
-		rr1 := httptest.NewRecorder()
-		h.ServeHTTP(rr1, r1)
-		require.Equal(t, http.StatusOK, rr1.Code)
+		require.Equal(t, http.StatusOK, serve(r1))
 
 		r2 := signRequest(t, "POST", "/x", "", now, nonce, nil, nil)
-		rr2 := httptest.NewRecorder()
-		h.ServeHTTP(rr2, r2)
-		require.Equal(t, http.StatusUnauthorized, rr2.Code)
+		require.Equal(t, http.StatusUnauthorized, serve(r2))
 	}
 
-	require.Equal(t, float64(1), testutil.ToFloat64(metrics.verifyFailures.WithLabelValues(verifyReasonMissingHeader)), "missing_header")
-	require.Equal(t, float64(1), testutil.ToFloat64(metrics.verifyFailures.WithLabelValues(verifyReasonMalformedSignature)), "malformed_signature")
-	require.Equal(t, float64(1), testutil.ToFloat64(metrics.verifyFailures.WithLabelValues(verifyReasonExpired)), "expired")
-	require.Equal(t, float64(1), testutil.ToFloat64(metrics.verifyFailures.WithLabelValues(verifyReasonClockSkew)), "clock_skew")
-	require.Equal(t, float64(1), testutil.ToFloat64(metrics.verifyFailures.WithLabelValues(verifyReasonBadSignature)), "bad_signature")
-	require.Equal(t, float64(1), testutil.ToFloat64(metrics.verifyFailures.WithLabelValues(verifyReasonReplayNonce)), "replay_nonce")
+	for _, reason := range []string{
+		verifyReasonMissingHeader,
+		verifyReasonMalformedSignature,
+		verifyReasonExpired,
+		verifyReasonClockSkew,
+		verifyReasonBadSignature,
+		verifyReasonReplayNonce,
+	} {
+		require.Equal(t, float64(1), testutil.ToFloat64(metrics.verifyFailures.WithLabelValues(reason)), reason)
+	}
 }
 
 // TestClassifyVerifyFailure_KnownSentinels guards the bounded
@@ -245,4 +227,17 @@ type failingNonceStore struct{ err error }
 
 func (f failingNonceStore) SeenOrStore(context.Context, string) (bool, error) {
 	return false, f.err
+}
+
+// unsignedRequest carries the signing headers with a constant signature;
+// an empty timestamp leaves its header out.
+func unsignedRequest(timestamp, nonce string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(""))
+	if timestamp != "" {
+		req.Header.Set(HeaderTimestamp, timestamp)
+	}
+	req.Header.Set(HeaderNonce, nonce)
+	req.Header.Set(HeaderKeyID, keyID)
+	req.Header.Set(HeaderSignature, "hmac-sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	return req
 }

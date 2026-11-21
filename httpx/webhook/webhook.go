@@ -283,7 +283,7 @@ func safeWebhookCheckRedirect(req *http.Request, via []*http.Request) error {
 		ctx = context.Background()
 	}
 	if _, err := netutil.ResolveAndValidate(ctx, host, nil); err != nil {
-		return fmt.Errorf("%w: %v", errWebhookRedirectRefused, err)
+		return fmt.Errorf("%w: %w", errWebhookRedirectRefused, err)
 	}
 	// Cap the hop count at Go's default (10) so a long public-https chain
 	// cannot burn the Send retry budget unbounded.
@@ -297,26 +297,10 @@ func safeWebhookCheckRedirect(req *http.Request, via []*http.Request) error {
 // retryable error on 5xx / network failures, and a permanent error
 // on 4xx (so the retry policy gives up).
 func (d *Dispatcher) attempt(ctx context.Context, del Delivery, signature string, timestamp int64) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, del.URL, bytes.NewReader(del.Body))
+	req, err := d.deliveryRequest(ctx, del, signature, timestamp)
 	if err != nil {
 		return permanent(fmt.Errorf("webhook: build request: %w", err))
 	}
-	for k, vs := range del.Headers {
-		// Content-Type is owned by Delivery.ContentType (set below);
-		// skip caller entries so we never emit a duplicate header.
-		if strings.EqualFold(k, "Content-Type") {
-			continue
-		}
-		for _, v := range vs {
-			req.Header.Add(k, v)
-		}
-	}
-	// Kit headers (and Content-Type) take precedence over caller-supplied headers.
-	req.Header.Set("Content-Type", del.ContentType)
-	req.Header.Set(d.signatureHeader, signature)
-	req.Header.Set(d.timestampHeader, strconv.FormatInt(timestamp, 10))
-	req.Header.Set(d.idHeader, del.DeliveryID)
-
 	resp, err := d.cfg.HTTPClient.Do(req)
 	if err != nil {
 		if isPermanentTransportError(err) {
@@ -334,49 +318,67 @@ func (d *Dispatcher) attempt(ctx context.Context, del Delivery, signature string
 		_, _ = io.CopyN(io.Discard, resp.Body, maxDrainBytes)
 		_ = resp.Body.Close()
 	}()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		d.logger.Debug("webhook delivered",
+	return d.outcome(del, resp.StatusCode)
+}
+
+// deliveryRequest builds the signed POST of one delivery.
+func (d *Dispatcher) deliveryRequest(ctx context.Context, del Delivery, signature string, timestamp int64) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, del.URL, bytes.NewReader(del.Body))
+	if err != nil {
+		return nil, err
+	}
+	for k, vs := range del.Headers {
+		// Content-Type is owned by Delivery.ContentType (set below);
+		// skip caller entries so we never emit a duplicate header.
+		if strings.EqualFold(k, "Content-Type") {
+			continue
+		}
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	// Kit headers (and Content-Type) take precedence over caller-supplied headers.
+	req.Header.Set("Content-Type", del.ContentType)
+	req.Header.Set(d.signatureHeader, signature)
+	req.Header.Set(d.timestampHeader, strconv.FormatInt(timestamp, 10))
+	req.Header.Set(d.idHeader, del.DeliveryID)
+	return req, nil
+}
+
+// outcome classifies the receiver's status: nil on 2xx, retryable on
+// transient pressure and 5xx, permanent otherwise.
+func (d *Dispatcher) outcome(del Delivery, status int) error {
+	log := func(level slog.Level, msg string) {
+		d.logger.Log(context.Background(), level, msg,
 			slog.String("url", logURL(del.URL)),
 			slog.String("delivery_id", del.DeliveryID),
-			slog.Int("status", resp.StatusCode),
+			slog.Int("status", status),
 		)
+	}
+	err := fmt.Errorf("webhook: receiver returned %d", status)
+	switch {
+	case status >= 200 && status < 300:
+		log(slog.LevelDebug, "webhook delivered")
 		return nil
-	}
-	// 429 / 408 are transient receiver pressure — retry (honour Retry-After
-	// at the policy layer via retry.DoWith; we only classify retryability).
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusRequestTimeout {
-		d.logger.Warn("webhook rate-limited/timeout; will retry",
-			slog.String("url", logURL(del.URL)),
-			slog.String("delivery_id", del.DeliveryID),
-			slog.Int("status", resp.StatusCode),
-		)
-		return retryable(fmt.Errorf("webhook: receiver returned %d", resp.StatusCode))
-	}
-	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+	case status == http.StatusTooManyRequests || status == http.StatusRequestTimeout:
+		// 429 / 408 are transient receiver pressure — retry (honour
+		// Retry-After at the policy layer via retry.DoWith; we only
+		// classify retryability).
+		log(slog.LevelWarn, "webhook rate-limited/timeout; will retry")
+		return retryable(err)
+	case status >= 300 && status < 400:
 		// Redirect responses that survived CheckRedirect are permanent —
 		// retrying will observe the same 3xx. Do not mislabel as 4xx.
-		d.logger.Warn("webhook 3xx; giving up",
-			slog.String("url", logURL(del.URL)),
-			slog.String("delivery_id", del.DeliveryID),
-			slog.Int("status", resp.StatusCode),
-		)
-		return permanent(fmt.Errorf("webhook: receiver returned %d", resp.StatusCode))
+		log(slog.LevelWarn, "webhook 3xx; giving up")
+		return permanent(err)
+	case status >= 500:
+		log(slog.LevelWarn, "webhook 5xx; will retry")
+		return retryable(err)
+	default:
+		// 4xx (and other non-2xx/3xx/5xx): receiver said "don't retry".
+		log(slog.LevelWarn, "webhook 4xx; giving up")
+		return permanent(err)
 	}
-	if resp.StatusCode >= 500 {
-		d.logger.Warn("webhook 5xx; will retry",
-			slog.String("url", logURL(del.URL)),
-			slog.String("delivery_id", del.DeliveryID),
-			slog.Int("status", resp.StatusCode),
-		)
-		return retryable(fmt.Errorf("webhook: receiver returned %d", resp.StatusCode))
-	}
-	// 4xx (and other non-2xx/3xx/5xx): receiver said "don't retry".
-	d.logger.Warn("webhook 4xx; giving up",
-		slog.String("url", logURL(del.URL)),
-		slog.String("delivery_id", del.DeliveryID),
-		slog.Int("status", resp.StatusCode),
-	)
-	return permanent(fmt.Errorf("webhook: receiver returned %d", resp.StatusCode))
 }
 
 // isPermanentTransportError reports Do errors that will not succeed on

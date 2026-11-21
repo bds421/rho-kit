@@ -501,25 +501,9 @@ func (p *SigningProvider) signContext(ctx context.Context, claims Claims, fields
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	keyPtr := p.current.Load()
-	if keyPtr == nil {
-		// Re-check the closed flag: Close stores closed=true before it
-		// nils current, so a Sign that races Close should report
-		// ErrSigningProviderClosed rather than ErrSigningKeyUnavailable.
-		// Go's atomic Load establishes the happens-before edge we need.
-		if p.closed.Load() {
-			return "", ErrSigningProviderClosed
-		}
-		return "", ErrSigningKeyUnavailable
-	}
-	if p.maxStale > 0 {
-		last := p.lastSuccessfulRefresh.Load()
-		if last == 0 {
-			return "", ErrSigningKeyUnavailable
-		}
-		if p.clock().Sub(time.Unix(0, last)) > p.maxStale {
-			return "", ErrSigningKeyUnavailable
-		}
+	keyPtr, err := p.signingKey()
+	if err != nil {
+		return "", err
 	}
 	stringsToIssue, err := p.copySigningStringClaims(fields)
 	if err != nil {
@@ -528,68 +512,23 @@ func (p *SigningProvider) signContext(ctx context.Context, claims Claims, fields
 	if claims.Subject == "" {
 		return "", errors.New("jwtutil: Claims.Subject must not be empty")
 	}
-
-	now := p.clock()
-	issuedAt := now
-	if claims.IssuedAt > 0 {
-		issuedAt = time.Unix(claims.IssuedAt, 0)
-	}
-	var expiresAt time.Time
-	switch {
-	case claims.ExpiresAt > 0:
-		expiresAt = time.Unix(claims.ExpiresAt, 0)
-	case p.defaultLifetime > 0:
-		expiresAt = issuedAt.Add(p.defaultLifetime)
-	default:
-		return "", errors.New("jwtutil: Claims.ExpiresAt is required when no default lifetime is configured")
-	}
-	if !expiresAt.After(issuedAt) {
-		return "", errors.New("jwtutil: Claims.ExpiresAt must be after IssuedAt")
+	issuedAt, expiresAt, err := p.tokenLifetime(claims)
+	if err != nil {
+		return "", err
 	}
 
 	jti := claims.ID
 	if jti == "" {
-		var err error
 		jti, err = newRandomJTI()
 		if err != nil {
 			return "", fmt.Errorf("jwtutil: mint jti: %w", err)
 		}
 	}
 
-	builder := jwt.NewBuilder().
-		Subject(claims.Subject).
-		IssuedAt(issuedAt).
-		Expiration(expiresAt).
-		JwtID(jti)
-	if !p.allowAnyIssuer && p.expectedIssuer != "" {
-		builder = builder.Issuer(p.expectedIssuer)
-	}
-	if !p.allowAnyAudience && p.expectedAudience != "" {
-		builder = builder.Audience([]string{p.expectedAudience})
-	}
-	if claims.NotBefore > 0 {
-		builder = builder.NotBefore(time.Unix(claims.NotBefore, 0))
-	}
-	tok, err := builder.Build()
+	tok, err := p.buildToken(claims, jti, issuedAt, expiresAt, stringsToIssue)
 	if err != nil {
-		return "", fmt.Errorf("jwtutil: build token: %w", err)
+		return "", err
 	}
-	if len(claims.Permissions) > 0 {
-		if err := tok.Set("permissions", claims.Permissions); err != nil {
-			return "", fmt.Errorf("jwtutil: set permissions claim: %w", err)
-		}
-	}
-	if claims.Scopes != "" {
-		if err := tok.Set("scopes", claims.Scopes); err != nil {
-			return "", fmt.Errorf("jwtutil: set scopes claim: %w", err)
-		}
-	}
-	for name, value := range stringsToIssue {
-		if err := tok.Set(name, value); err != nil {
-			return "", ErrSigningStringClaims
-		}
-	}
-
 	signed, err := jwt.Sign(tok, jwt.WithKey(p.alg, *keyPtr))
 	if err != nil {
 		return "", fmt.Errorf("jwtutil: sign token: %w", err)
@@ -606,6 +545,89 @@ func (p *SigningProvider) signContext(ctx context.Context, claims Claims, fields
 	}
 
 	return string(signed), nil
+}
+
+// signingKey returns the current key, unless none is loaded or the last
+// successful refresh is older than the configured staleness bound.
+func (p *SigningProvider) signingKey() (*jwk.Key, error) {
+	keyPtr := p.current.Load()
+	if keyPtr == nil {
+		// Re-check the closed flag: Close stores closed=true before it
+		// nils current, so a Sign that races Close should report
+		// ErrSigningProviderClosed rather than ErrSigningKeyUnavailable.
+		// Go's atomic Load establishes the happens-before edge we need.
+		if p.closed.Load() {
+			return nil, ErrSigningProviderClosed
+		}
+		return nil, ErrSigningKeyUnavailable
+	}
+	if p.maxStale > 0 {
+		last := p.lastSuccessfulRefresh.Load()
+		if last == 0 || p.clock().Sub(time.Unix(0, last)) > p.maxStale {
+			return nil, ErrSigningKeyUnavailable
+		}
+	}
+	return keyPtr, nil
+}
+
+// tokenLifetime returns the token's issue and expiry times: the claims'
+// own, else now and the default lifetime.
+func (p *SigningProvider) tokenLifetime(claims Claims) (issuedAt, expiresAt time.Time, err error) {
+	issuedAt = p.clock()
+	if claims.IssuedAt > 0 {
+		issuedAt = time.Unix(claims.IssuedAt, 0)
+	}
+	switch {
+	case claims.ExpiresAt > 0:
+		expiresAt = time.Unix(claims.ExpiresAt, 0)
+	case p.defaultLifetime > 0:
+		expiresAt = issuedAt.Add(p.defaultLifetime)
+	default:
+		return time.Time{}, time.Time{}, errors.New("jwtutil: Claims.ExpiresAt is required when no default lifetime is configured")
+	}
+	if !expiresAt.After(issuedAt) {
+		return time.Time{}, time.Time{}, errors.New("jwtutil: Claims.ExpiresAt must be after IssuedAt")
+	}
+	return issuedAt, expiresAt, nil
+}
+
+// buildToken builds the unsigned token with the registered claims, the
+// pinned issuer and audience, the entitlements and the string claims.
+func (p *SigningProvider) buildToken(claims Claims, jti string, issuedAt, expiresAt time.Time, stringsToIssue map[string]string) (jwt.Token, error) {
+	builder := jwt.NewBuilder().
+		Subject(claims.Subject).
+		IssuedAt(issuedAt).
+		Expiration(expiresAt).
+		JwtID(jti)
+	if !p.allowAnyIssuer && p.expectedIssuer != "" {
+		builder = builder.Issuer(p.expectedIssuer)
+	}
+	if !p.allowAnyAudience && p.expectedAudience != "" {
+		builder = builder.Audience([]string{p.expectedAudience})
+	}
+	if claims.NotBefore > 0 {
+		builder = builder.NotBefore(time.Unix(claims.NotBefore, 0))
+	}
+	tok, err := builder.Build()
+	if err != nil {
+		return nil, fmt.Errorf("jwtutil: build token: %w", err)
+	}
+	if len(claims.Permissions) > 0 {
+		if err := tok.Set("permissions", claims.Permissions); err != nil {
+			return nil, fmt.Errorf("jwtutil: set permissions claim: %w", err)
+		}
+	}
+	if claims.Scopes != "" {
+		if err := tok.Set("scopes", claims.Scopes); err != nil {
+			return nil, fmt.Errorf("jwtutil: set scopes claim: %w", err)
+		}
+	}
+	for name, value := range stringsToIssue {
+		if err := tok.Set(name, value); err != nil {
+			return nil, ErrSigningStringClaims
+		}
+	}
+	return tok, nil
 }
 
 // newRandomJTI returns a 128-bit hex-encoded random value. 128 bits is

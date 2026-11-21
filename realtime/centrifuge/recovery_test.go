@@ -59,25 +59,15 @@ func TestWithSubscriptionRecovery_AppliesAfterAuthorization(t *testing.T) {
 			}
 			return nil
 		}),
-		WithSubscriptionRecovery(func(channel string) SubscriptionRecovery {
-			policyCalls.Add(1)
-			switch channel {
-			case "stream":
-				return SubscriptionRecovery{Recovery: true}
-			case "positioned":
-				return SubscriptionRecovery{Positioning: true}
-			}
-			return SubscriptionRecovery{}
-		}))
+		WithSubscriptionRecovery(countedRecoveryByChannel(&policyCalls)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	conn, ctx := fixtureSocket(t, n)
-	if _, err := n.Publish("stream", []byte(`{"v":1}`), cfg.WithHistory(10, time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := n.Publish("positioned", []byte(`{"v":1}`), cfg.WithHistory(10, time.Minute)); err != nil {
-		t.Fatal(err)
+	for _, channel := range []string{"stream", "positioned"} {
+		if _, err := n.Publish(channel, []byte(`{"v":1}`), cfg.WithHistory(10, time.Minute)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	socketCommand(t, ctx, conn, map[string]any{"id": 1, "connect": map[string]any{"token": sign(fixtureSubject)}})
 	if r := readSocketReply(t, ctx, conn, 1); r.Error != nil {
@@ -131,5 +121,20 @@ func TestSubscribe_DefaultHasNoRecovery(t *testing.T) {
 	r := readSubscribeResult(t, ctx, conn, 2)
 	if r.Error != nil || r.Subscribe == nil || r.Subscribe.Recoverable || r.Subscribe.Positioned {
 		t.Fatalf("default subscribe reply = %+v, want no recovery", r.Subscribe)
+	}
+}
+
+// countedRecoveryByChannel enables recovery on "stream" and positioning on
+// "positioned", and counts its calls.
+func countedRecoveryByChannel(calls *atomic.Int64) func(string) SubscriptionRecovery {
+	return func(channel string) SubscriptionRecovery {
+		calls.Add(1)
+		switch channel {
+		case "stream":
+			return SubscriptionRecovery{Recovery: true}
+		case "positioned":
+			return SubscriptionRecovery{Positioning: true}
+		}
+		return SubscriptionRecovery{}
 	}
 }

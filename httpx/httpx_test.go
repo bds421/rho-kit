@@ -889,6 +889,13 @@ func TestNewServer_ErrorLogFollowsSetDefaultAfterConstruction(t *testing.T) {
 	}
 }
 
+// negotiationCase is one server configuration of the HTTP2 negotiation test.
+type negotiationCase struct {
+	name        string
+	http1Only   bool
+	customHTTP2 bool
+}
+
 func TestNewServer_HTTP2TLSNegotiationAndLimits(t *testing.T) {
 	// Use the declared httptest certificate and trust roots, then serve the
 	// kit server through net/http's real TLS path on an isolated listener.
@@ -898,124 +905,155 @@ func TestNewServer_HTTP2TLSNegotiationAndLimits(t *testing.T) {
 	certFixture.Close()
 	clientTLS.NextProtos = []string{"h2", "http/1.1"}
 
-	for _, tc := range []struct {
-		name        string
-		http1Only   bool
-		customHTTP2 bool
-	}{
+	for _, tc := range []negotiationCase{
 		{name: "defaults"},
 		{name: "caller HTTP2 options", customHTTP2: true},
 		{name: "caller HTTP1 only", http1Only: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			callerTLS := &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12}
-			var callerHTTP2 *http.HTTP2Config
-			opts := []ServerOption{WithTLSConfig(callerTLS)}
-			if tc.customHTTP2 {
-				callerHTTP2 = &http.HTTP2Config{
-					MaxReadFrameSize:          1 << 15,
-					MaxConcurrentStreams:      12,
-					MaxDecoderHeaderTableSize: 8192,
-				}
-				opts = append(opts, func(s *http.Server) { s.HTTP2 = callerHTTP2 })
-			}
-			if tc.http1Only {
-				protocols := new(http.Protocols)
-				protocols.SetHTTP1(true)
-				opts = append(opts, func(s *http.Server) { s.Protocols = protocols })
-			}
-			srv := NewServer(":0", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			}), opts...)
-			if callerHTTP2 != nil {
-				if srv.HTTP2 == callerHTTP2 || callerHTTP2.MaxReadFrameSize != 1<<15 || callerHTTP2.MaxConcurrentStreams != 12 {
-					t.Fatal("server must own HTTP2 limits without mutating the caller's configuration")
-				}
-			}
+			srv := newNegotiationServer(t, tc, callerTLS)
+			addr := serveTLSOnLoopback(t, srv)
 
-			ln, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatalf("listen: %v", err)
-			}
-			done := make(chan error, 1)
-			go func() { done <- srv.ServeTLS(ln, "", "") }()
-			t.Cleanup(func() {
-				_ = srv.Close()
-				if err := <-done; !errors.Is(err, http.ErrServerClosed) {
-					t.Errorf("ServeTLS: %v", err)
-				}
-			})
-
-			dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: clientTLS.Clone()}
-			connection, err := dialer.DialContext(t.Context(), "tcp", ln.Addr().String())
-			if err != nil {
-				t.Fatalf("TLS handshake: %v", err)
-			}
-			t.Cleanup(func() { _ = connection.Close() })
-			if err := connection.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-				t.Fatalf("set connection deadline: %v", err)
-			}
 			wantProtocol, wantMajor := "h2", 2
 			if tc.http1Only {
 				wantProtocol, wantMajor = "http/1.1", 1
 			}
-			if got := connection.(*tls.Conn).ConnectionState().NegotiatedProtocol; got != wantProtocol {
-				t.Fatalf("ALPN = %q, want %q", got, wantProtocol)
-			}
-			if !tc.http1Only {
-				if _, err := io.WriteString(connection, http2.ClientPreface); err != nil {
-					t.Fatalf("HTTP2 preface: %v", err)
-				}
-				framer := http2.NewFramer(connection, connection)
-				if err := framer.WriteSettings(); err != nil {
-					t.Fatalf("client SETTINGS: %v", err)
-				}
-				frame, err := framer.ReadFrame()
-				if err != nil {
-					t.Fatalf("server SETTINGS: %v", err)
-				}
-				settings, ok := frame.(*http2.SettingsFrame)
-				if !ok || settings.IsAck() {
-					t.Fatalf("first frame = %T, want initial SETTINGS", frame)
-				}
-				for id, want := range map[http2.SettingID]uint32{
-					http2.SettingMaxFrameSize:         defaultHTTP2MaxReadFrameSize,
-					http2.SettingMaxConcurrentStreams: defaultHTTP2MaxConcurrentStreams,
-				} {
-					if got, ok := settings.Value(id); !ok || got != want {
-						t.Fatalf("SETTINGS %v = %d (present %t), want %d", id, got, ok, want)
-					}
-				}
-				if tc.customHTTP2 {
-					if got, ok := settings.Value(http2.SettingHeaderTableSize); !ok || got != 8192 {
-						t.Fatalf("caller header table setting = %d (present %t), want 8192", got, ok)
-					}
-				}
-			}
-			_ = connection.Close()
-
-			protocols := new(http.Protocols)
-			protocols.SetHTTP1(true)
-			protocols.SetHTTP2(true)
-			transport := &http.Transport{TLSClientConfig: clientTLS.Clone(), Protocols: protocols}
-			t.Cleanup(transport.CloseIdleConnections)
-			client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+ln.Addr().String()+"/ping", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			response, err := client.Do(request)
-			if err != nil {
-				t.Fatalf("TLS request: %v", err)
-			}
-			_ = response.Body.Close()
-			if response.StatusCode != http.StatusOK || response.ProtoMajor != wantMajor {
-				t.Fatalf("response = %d %s, want 200 HTTP/%d", response.StatusCode, response.Proto, wantMajor)
-			}
+			checkNegotiation(t, tc, addr, clientTLS, wantProtocol)
+			checkTLSRequest(t, addr, clientTLS, wantMajor)
 			if len(callerTLS.NextProtos) != 0 {
 				t.Fatalf("serving mutated caller TLS protocols: %v", callerTLS.NextProtos)
 			}
 		})
+	}
+}
+
+// newNegotiationServer builds the kit server of tc and checks that it owns
+// its HTTP2 limits without mutating the caller's configuration.
+func newNegotiationServer(t *testing.T, tc negotiationCase, callerTLS *tls.Config) *http.Server {
+	t.Helper()
+	var callerHTTP2 *http.HTTP2Config
+	opts := []ServerOption{WithTLSConfig(callerTLS)}
+	if tc.customHTTP2 {
+		callerHTTP2 = &http.HTTP2Config{
+			MaxReadFrameSize:          1 << 15,
+			MaxConcurrentStreams:      12,
+			MaxDecoderHeaderTableSize: 8192,
+		}
+		opts = append(opts, func(s *http.Server) { s.HTTP2 = callerHTTP2 })
+	}
+	if tc.http1Only {
+		protocols := new(http.Protocols)
+		protocols.SetHTTP1(true)
+		opts = append(opts, func(s *http.Server) { s.Protocols = protocols })
+	}
+	srv := NewServer(":0", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), opts...)
+	if callerHTTP2 != nil {
+		if srv.HTTP2 == callerHTTP2 || callerHTTP2.MaxReadFrameSize != 1<<15 || callerHTTP2.MaxConcurrentStreams != 12 {
+			t.Fatal("server must own HTTP2 limits without mutating the caller's configuration")
+		}
+	}
+	return srv
+}
+
+// serveTLSOnLoopback serves srv over TLS on a loopback listener until the
+// test ends and returns its address.
+func serveTLSOnLoopback(t *testing.T, srv *http.Server) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- srv.ServeTLS(ln, "", "") }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		if err := <-done; !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("ServeTLS: %v", err)
+		}
+	})
+	return ln.Addr().String()
+}
+
+// checkNegotiation dials addr, checks the negotiated ALPN protocol and, on
+// HTTP2, the server's initial SETTINGS.
+func checkNegotiation(t *testing.T, tc negotiationCase, addr string, clientTLS *tls.Config, wantProtocol string) {
+	t.Helper()
+	dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: clientTLS.Clone()}
+	connection, err := dialer.DialContext(t.Context(), "tcp", addr)
+	if err != nil {
+		t.Fatalf("TLS handshake: %v", err)
+	}
+	defer func() { _ = connection.Close() }()
+	if err := connection.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set connection deadline: %v", err)
+	}
+	if got := connection.(*tls.Conn).ConnectionState().NegotiatedProtocol; got != wantProtocol {
+		t.Fatalf("ALPN = %q, want %q", got, wantProtocol)
+	}
+	if !tc.http1Only {
+		checkInitialSettings(t, connection, tc.customHTTP2)
+	}
+}
+
+// checkInitialSettings sends the HTTP2 preface and checks the server's
+// initial SETTINGS frame for the kit's limits and, with custom options,
+// the caller's header table size.
+func checkInitialSettings(t *testing.T, connection net.Conn, customHTTP2 bool) {
+	t.Helper()
+	if _, err := io.WriteString(connection, http2.ClientPreface); err != nil {
+		t.Fatalf("HTTP2 preface: %v", err)
+	}
+	framer := http2.NewFramer(connection, connection)
+	if err := framer.WriteSettings(); err != nil {
+		t.Fatalf("client SETTINGS: %v", err)
+	}
+	frame, err := framer.ReadFrame()
+	if err != nil {
+		t.Fatalf("server SETTINGS: %v", err)
+	}
+	settings, ok := frame.(*http2.SettingsFrame)
+	if !ok || settings.IsAck() {
+		t.Fatalf("first frame = %T, want initial SETTINGS", frame)
+	}
+	for id, want := range map[http2.SettingID]uint32{
+		http2.SettingMaxFrameSize:         defaultHTTP2MaxReadFrameSize,
+		http2.SettingMaxConcurrentStreams: defaultHTTP2MaxConcurrentStreams,
+	} {
+		if got, ok := settings.Value(id); !ok || got != want {
+			t.Fatalf("SETTINGS %v = %d (present %t), want %d", id, got, ok, want)
+		}
+	}
+	if customHTTP2 {
+		if got, ok := settings.Value(http2.SettingHeaderTableSize); !ok || got != 8192 {
+			t.Fatalf("caller header table setting = %d (present %t), want 8192", got, ok)
+		}
+	}
+}
+
+// checkTLSRequest sends a request through a client that offers both
+// protocols and checks status and protocol version.
+func checkTLSRequest(t *testing.T, addr string, clientTLS *tls.Config, wantMajor int) {
+	t.Helper()
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	transport := &http.Transport{TLSClientConfig: clientTLS.Clone(), Protocols: protocols}
+	t.Cleanup(transport.CloseIdleConnections)
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+addr+"/ping", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("TLS request: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.ProtoMajor != wantMajor {
+		t.Fatalf("response = %d %s, want 200 HTTP/%d", response.StatusCode, response.Proto, wantMajor)
 	}
 }
 

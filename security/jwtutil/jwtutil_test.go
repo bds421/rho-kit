@@ -969,36 +969,18 @@ func TestNewProvider_RejectsInvalidJWKSURLs(t *testing.T) {
 		opts []ProviderOption
 		leak string
 	}{
-		{
-			name: "http without opt-in",
-			url:  "http://example.com/jwks",
-		},
+		{name: "http without opt-in", url: "http://example.com/jwks"},
 		{
 			name: "unsupported scheme with opt-in",
 			url:  "secret-token://example.com/jwks",
 			opts: []ProviderOption{WithAllowInsecureURL()},
 			leak: "secret-token",
 		},
-		{
-			name: "relative URL",
-			url:  "/jwks",
-		},
-		{
-			name: "userinfo credentials",
-			url:  "https://user:secret@example.com/jwks",
-		},
-		{
-			name: "query string",
-			url:  "https://example.com/jwks?token=secret",
-		},
-		{
-			name: "fragment",
-			url:  "https://example.com/jwks#kid",
-		},
-		{
-			name: "invalid port",
-			url:  "https://example.com:0/jwks",
-		},
+		{name: "relative URL", url: "/jwks"},
+		{name: "userinfo credentials", url: "https://user:secret@example.com/jwks"},
+		{name: "query string", url: "https://example.com/jwks?token=secret"},
+		{name: "fragment", url: "https://example.com/jwks#kid"},
+		{name: "invalid port", url: "https://example.com:0/jwks"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2230,45 +2212,7 @@ func TestVerify_RejectsHS256SignedWithECPublicKeyBytes(t *testing.T) {
 		"iat": now.Unix(),
 	}
 
-	// Three attacker-controlled shapes for "the public key as a
-	// symmetric HMAC secret". A verifier with even one path of
-	// alg-confusion exposure would accept exactly one of these; the
-	// kit must reject all three.
-	pubDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	if err != nil {
-		t.Fatalf("MarshalPKIXPublicKey: %v", err)
-	}
-
-	// SEC1 uncompressed point: 0x04 || X || Y. This is the shape jwx
-	// would surface as "the raw key material" for an EC public key
-	// and the one most likely to be re-borrowed as an HMAC secret.
-	// ecdsa.PublicKey.Bytes (Go 1.25+) returns the SEC1 uncompressed
-	// encoding directly — the prior raw-coordinate route via
-	// PublicKey.X/Y was deprecated in Go 1.26.
-	pubPoint, err := key.PublicKey.Bytes()
-	if err != nil {
-		t.Fatalf("PublicKey.Bytes: %v", err)
-	}
-
-	pubJWK, err := jwk.Import(key.PublicKey)
-	if err != nil {
-		t.Fatalf("jwk.Import: %v", err)
-	}
-	_ = pubJWK.Set(jwk.KeyIDKey, kid)
-	pubJWKJSON, err := json.Marshal(pubJWK)
-	if err != nil {
-		t.Fatalf("marshal pub JWK: %v", err)
-	}
-
-	shapes := map[string][]byte{
-		"DER-SubjectPublicKeyInfo":  pubDER,
-		"SEC1-uncompressed-point":   pubPoint,
-		"JWK-JSON":                  pubJWKJSON,
-		"PEM":                       ecdsaPublicKeyPEM(t, &key.PublicKey),
-		"base64url-of-uncompressed": []byte(base64.RawURLEncoding.EncodeToString(pubPoint)),
-	}
-
-	for shapeName, hmacSecret := range shapes {
+	for shapeName, hmacSecret := range publicKeyAsHMACSecrets(t, key, kid) {
 		t.Run(shapeName, func(t *testing.T) {
 			forged := forgeHS256Token(t, kid, hmacSecret, claims)
 
@@ -2549,5 +2493,45 @@ func TestVerify_WithExpectedHelpersIndependentFreeze(t *testing.T) {
 	ks2 := ks.WithExpectedIssuer("https://issuer").WithExpectedAudience("svc")
 	if _, err := ks2.Verify(token, now); err != nil {
 		t.Fatalf("WithExpected* copy should verify: %v", err)
+	}
+}
+
+// publicKeyAsHMACSecrets returns the attacker-controlled shapes of "the
+// public key as a symmetric HMAC secret". A verifier with even one path of
+// alg-confusion exposure would accept a token signed with one of these.
+func publicKeyAsHMACSecrets(t *testing.T, key *ecdsa.PrivateKey, kid string) map[string][]byte {
+	t.Helper()
+	pubDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey: %v", err)
+	}
+
+	// SEC1 uncompressed point: 0x04 || X || Y. This is the shape jwx
+	// would surface as "the raw key material" for an EC public key
+	// and the one most likely to be re-borrowed as an HMAC secret.
+	// ecdsa.PublicKey.Bytes (Go 1.25+) returns the SEC1 uncompressed
+	// encoding directly — the prior raw-coordinate route via
+	// PublicKey.X/Y was deprecated in Go 1.26.
+	pubPoint, err := key.PublicKey.Bytes()
+	if err != nil {
+		t.Fatalf("PublicKey.Bytes: %v", err)
+	}
+
+	pubJWK, err := jwk.Import(key.PublicKey)
+	if err != nil {
+		t.Fatalf("jwk.Import: %v", err)
+	}
+	_ = pubJWK.Set(jwk.KeyIDKey, kid)
+	pubJWKJSON, err := json.Marshal(pubJWK)
+	if err != nil {
+		t.Fatalf("marshal pub JWK: %v", err)
+	}
+
+	return map[string][]byte{
+		"DER-SubjectPublicKeyInfo":  pubDER,
+		"SEC1-uncompressed-point":   pubPoint,
+		"JWK-JSON":                  pubJWKJSON,
+		"PEM":                       ecdsaPublicKeyPEM(t, &key.PublicKey),
+		"base64url-of-uncompressed": []byte(base64.RawURLEncoding.EncodeToString(pubPoint)),
 	}
 }

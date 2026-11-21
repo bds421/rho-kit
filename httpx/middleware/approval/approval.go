@@ -275,86 +275,103 @@ func Middleware(store approval.Store, opts ...Option) func(http.Handler) http.Ha
 		panic("approval: Middleware requires WithActorExtractor; the kit will not default actors to anonymous on destructive operations")
 	}
 
-	return func(next http.Handler) http.Handler {
+	// next is unused on the pending path: the downstream handler runs only
+	// when an executor replays the request after a Decide=approved.
+	return func(_ http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tenantID, ok := safeTenantSource(cfg.logger, cfg.tenantSource, r)
-			if !ok || tenantID == "" {
-				httpx.WriteError(w, http.StatusBadRequest, "tenant id missing")
-				return
-			}
-
-			actor, ok := safeActorExtractor(cfg.logger, cfg.actorExtractor, r)
-			if !ok || actor == "" {
-				httpx.WriteError(w, http.StatusUnauthorized, "actor not resolved")
-				return
-			}
-
-			body, err := readBody(r, cfg.maxBodyBytes)
-			if errors.Is(err, errBodyTooLarge) {
-				httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request body exceeds approval cap")
-				return
-			}
-			if err != nil {
-				cfg.logger.Error("approval: read body", redact.Error(err))
-				httpx.WriteError(w, http.StatusBadRequest, "could not read request body")
-				return
-			}
-			if len(body) > 0 && !json.Valid(body) {
-				httpx.WriteError(w, http.StatusBadRequest, "request body must be valid JSON")
-				return
-			}
-
-			id, ok := safeIDFunc(cfg.logger, cfg.idFunc)
-			if !ok {
-				httpx.WriteError(w, http.StatusInternalServerError, "could not record approval")
-				return
-			}
-			action, ok := safeStringExtractor(cfg.logger, "action extractor", cfg.actionExtractor, r)
-			if !ok {
-				httpx.WriteError(w, http.StatusInternalServerError, "could not record approval")
-				return
-			}
-			resource, ok := safeStringExtractor(cfg.logger, "resource extractor", cfg.resourceExtractor, r)
-			if !ok {
-				httpx.WriteError(w, http.StatusInternalServerError, "could not record approval")
-				return
-			}
-
-			now := time.Now().UTC()
-			req := approval.Request{
-				ID:        id,
-				TenantID:  tenantID,
-				Actor:     actor,
-				Action:    action,
-				Resource:  resource,
-				Payload:   body,
-				CreatedAt: now,
-				ExpiresAt: now.Add(cfg.expiry),
-			}
-
-			created, err := store.Create(r.Context(), req)
-			if err != nil {
-				cfg.logger.Error("approval: create", redact.Error(err), redact.String("approval_id", req.ID))
-				httpx.WriteError(w, http.StatusInternalServerError, "could not record approval")
-				return
-			}
-
-			// next intentionally unused on the pending path — the
-			// downstream handler runs only when an executor replays
-			// the request after a Decide=approved. Keep the parameter
-			// in the closure so the option to wire a non-blocking
-			// pre-flight (e.g. a fast schema check) stays reachable
-			// via composition without a breaking signature change.
-			_ = next
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(w).Encode(Response{
-				ApprovalID: created.ID,
-				Status:     string(created.State),
-			})
+			cfg.recordPending(w, r, store)
 		})
 	}
+}
+
+// recordPending stores the request as a pending approval and answers 202.
+func (cfg *config) recordPending(w http.ResponseWriter, r *http.Request, store approval.Store) {
+	req, ok := cfg.pendingRequest(w, r)
+	if !ok {
+		return
+	}
+	created, err := store.Create(r.Context(), req)
+	if err != nil {
+		cfg.logger.Error("approval: create", redact.Error(err), redact.String("approval_id", req.ID))
+		httpx.WriteError(w, http.StatusInternalServerError, "could not record approval")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(Response{
+		ApprovalID: created.ID,
+		Status:     string(created.State),
+	})
+}
+
+// pendingRequest builds the approval request. It writes the error and
+// returns false when the request cannot be recorded.
+func (cfg *config) pendingRequest(w http.ResponseWriter, r *http.Request) (approval.Request, bool) {
+	tenantID, ok := safeTenantSource(cfg.logger, cfg.tenantSource, r)
+	if !ok || tenantID == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "tenant id missing")
+		return approval.Request{}, false
+	}
+	actor, ok := safeActorExtractor(cfg.logger, cfg.actorExtractor, r)
+	if !ok || actor == "" {
+		httpx.WriteError(w, http.StatusUnauthorized, "actor not resolved")
+		return approval.Request{}, false
+	}
+	body, ok := cfg.payload(w, r)
+	if !ok {
+		return approval.Request{}, false
+	}
+	id, action, resource, ok := cfg.describe(r)
+	if !ok {
+		httpx.WriteError(w, http.StatusInternalServerError, "could not record approval")
+		return approval.Request{}, false
+	}
+	now := time.Now().UTC()
+	return approval.Request{
+		ID:        id,
+		TenantID:  tenantID,
+		Actor:     actor,
+		Action:    action,
+		Resource:  resource,
+		Payload:   body,
+		CreatedAt: now,
+		ExpiresAt: now.Add(cfg.expiry),
+	}, true
+}
+
+// payload reads the request body, which must be empty or valid JSON. It
+// writes the error and returns false otherwise.
+func (cfg *config) payload(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := readBody(r, cfg.maxBodyBytes)
+	if errors.Is(err, errBodyTooLarge) {
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request body exceeds approval cap")
+		return nil, false
+	}
+	if err != nil {
+		cfg.logger.Error("approval: read body", redact.Error(err))
+		httpx.WriteError(w, http.StatusBadRequest, "could not read request body")
+		return nil, false
+	}
+	if len(body) > 0 && !json.Valid(body) {
+		httpx.WriteError(w, http.StatusBadRequest, "request body must be valid JSON")
+		return nil, false
+	}
+	return body, true
+}
+
+// describe returns the approval's ID, action and resource from the
+// configured callbacks; ok is false when one of them failed.
+func (cfg *config) describe(r *http.Request) (id, action, resource string, ok bool) {
+	if id, ok = safeIDFunc(cfg.logger, cfg.idFunc); !ok {
+		return "", "", "", false
+	}
+	if action, ok = safeStringExtractor(cfg.logger, "action extractor", cfg.actionExtractor, r); !ok {
+		return "", "", "", false
+	}
+	if resource, ok = safeStringExtractor(cfg.logger, "resource extractor", cfg.resourceExtractor, r); !ok {
+		return "", "", "", false
+	}
+	return id, action, resource, true
 }
 
 func safeTenantSource(logger *slog.Logger, fn func(*http.Request) (string, bool), r *http.Request) (tenantID string, ok bool) {

@@ -159,8 +159,14 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		cfg.Logger = slog.Default()
 	}
 
-	h := handler
+	h := cfg.handlerLayers(handler)
+	h = cfg.requestLayers(h)
+	return cfg.boundaryLayers(h)
+}
 
+// handlerLayers wraps the handler in the layers closest to it: route
+// capture, audit log, inner, compression and the body cap.
+func (cfg *Config) handlerLayers(h http.Handler) http.Handler {
 	// CaptureRoute must sit immediately around the mux so r.Pattern is
 	// recorded into the shared context slot after ServeMux sets it.
 	// Without this, every WithContext clone between metrics/tracing
@@ -198,11 +204,17 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		h = maxbody.MaxBodySize(cfg.MaxBodyBytes)(h)
 	}
 
-	// Both the access-log Logger (via extraAttrs below) and the per-handler
-	// WithRequestLogger emit request_id and correlation_id by design:
-	// the access-log middleware produces structured access log lines, while
-	// WithRequestLogger builds the handler-scoped logger returned by
-	// httpx.Logger(ctx, fallback). The duplication is intentional.
+	return h
+}
+
+// accessLogAttrs are the extra attributes of every access log line.
+//
+// Both the access-log Logger and the per-handler
+// WithRequestLogger emit request_id and correlation_id by design:
+// the access-log middleware produces structured access log lines, while
+// WithRequestLogger builds the handler-scoped logger returned by
+// httpx.Logger(ctx, fallback). The duplication is intentional.
+func (cfg *Config) accessLogAttrs() []func(*http.Request) slog.Attr {
 	var extraAttrs []func(*http.Request) slog.Attr
 	if cfg.EnableRequestID {
 		extraAttrs = append(extraAttrs, func(r *http.Request) slog.Attr {
@@ -221,8 +233,11 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		})
 	}
 
-	extraAttrs = append(extraAttrs, cfg.LogAttrs...)
+	return append(extraAttrs, cfg.LogAttrs...)
+}
 
+// requestLayers adds the request logger, the timeout and the access log.
+func (cfg *Config) requestLayers(h http.Handler) http.Handler {
 	if cfg.EnableReqLogger {
 		h = mwlogging.WithRequestLogger(cfg.Logger, cfg.LogAttrs...)(h)
 	}
@@ -234,8 +249,14 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		if len(cfg.TrustedProxies) > 0 {
 			logOpts = append(logOpts, mwlogging.WithTrustedProxies(cfg.TrustedProxies))
 		}
-		h = mwlogging.LoggerWithOptions(cfg.Logger, cfg.QuietPaths, logOpts, extraAttrs...)(h)
+		h = mwlogging.LoggerWithOptions(cfg.Logger, cfg.QuietPaths, logOpts, cfg.accessLogAttrs()...)(h)
 	}
+	return h
+}
+
+// boundaryLayers adds tracing, the correlation and request IDs, metrics,
+// security headers, outer and, outermost, recovery.
+func (cfg *Config) boundaryLayers(h http.Handler) http.Handler {
 	if cfg.EnableTracing {
 		h = mwtracing.HTTPMiddleware(h)
 	}

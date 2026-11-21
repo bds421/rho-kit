@@ -74,21 +74,8 @@ func RequirePermission(policy Policy, action string, resource ResourceFunc, subj
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			sub, ok := safeSubject(cfg.logger, subject, r)
+			sub, ok := cfg.requestSubject(w, r, subject, action)
 			if !ok {
-				httpx.WriteError(w, http.StatusUnauthorized, "missing subject identity")
-				return
-			}
-			if sub == "" {
-				httpx.WriteError(w, http.StatusUnauthorized, "missing subject identity")
-				return
-			}
-			if err := kitauthz.ValidateRequest(kitauthz.Request{Subject: sub, Action: action, Resource: "resource"}); err != nil {
-				cfg.logger.Warn("authorization invalid subject",
-					redact.Error(err),
-					"action", action,
-				)
-				httpx.WriteError(w, http.StatusUnauthorized, "missing subject identity")
 				return
 			}
 			res, ok := safeResource(cfg.logger, resource, r)
@@ -104,31 +91,56 @@ func RequirePermission(policy Policy, action string, resource ResourceFunc, subj
 				httpx.WriteError(w, http.StatusForbidden, "forbidden")
 				return
 			}
-
-			allowed, err := safeAllowed(cfg.logger, policy, r.Context(), sub, action, res)
-			if err != nil {
-				cfg.logger.Error("authorization policy error",
-					redact.Error(err),
-					redact.String("subject", sub),
-					"action", action,
-					redact.String("resource", res),
-				)
-				httpx.WriteError(w, http.StatusInternalServerError, "internal error")
-				return
+			if cfg.allowed(w, r, policy, sub, action, res) {
+				next.ServeHTTP(w, r)
 			}
-			if !allowed {
-				cfg.logger.Warn("authorization denied",
-					redact.String("subject", sub),
-					"action", action,
-					redact.String("resource", res),
-				)
-				httpx.WriteError(w, http.StatusForbidden, "forbidden")
-				return
-			}
-
-			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// requestSubject resolves the request's subject. It writes 401 and returns
+// false when there is no valid subject.
+func (cfg *middlewareConfig) requestSubject(w http.ResponseWriter, r *http.Request, subject SubjectFunc, action string) (string, bool) {
+	sub, ok := safeSubject(cfg.logger, subject, r)
+	if !ok || sub == "" {
+		httpx.WriteError(w, http.StatusUnauthorized, "missing subject identity")
+		return "", false
+	}
+	if err := kitauthz.ValidateRequest(kitauthz.Request{Subject: sub, Action: action, Resource: "resource"}); err != nil {
+		cfg.logger.Warn("authorization invalid subject",
+			redact.Error(err),
+			"action", action,
+		)
+		httpx.WriteError(w, http.StatusUnauthorized, "missing subject identity")
+		return "", false
+	}
+	return sub, true
+}
+
+// allowed asks the policy. It writes the error and returns false when the
+// policy denies the request or fails.
+func (cfg *middlewareConfig) allowed(w http.ResponseWriter, r *http.Request, policy Policy, sub, action, res string) bool {
+	allowed, err := safeAllowed(cfg.logger, policy, r.Context(), sub, action, res)
+	if err != nil {
+		cfg.logger.Error("authorization policy error",
+			redact.Error(err),
+			redact.String("subject", sub),
+			"action", action,
+			redact.String("resource", res),
+		)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+		return false
+	}
+	if !allowed {
+		cfg.logger.Warn("authorization denied",
+			redact.String("subject", sub),
+			"action", action,
+			redact.String("resource", res),
+		)
+		httpx.WriteError(w, http.StatusForbidden, "forbidden")
+		return false
+	}
+	return true
 }
 
 func safeSubject(logger *slog.Logger, subject SubjectFunc, r *http.Request) (value string, ok bool) {

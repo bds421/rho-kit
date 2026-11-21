@@ -1722,38 +1722,23 @@ func TestRequireS2SAuthWithIdentity_GuardReceivesPrefixedIdentity(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	clientCert := func(cn string, dnsNames []string, uris []*url.URL) *x509.Certificate {
+		return &x509.Certificate{
+			Subject:     pkix.Name{CommonName: cn},
+			DNSNames:    dnsNames,
+			URIs:        uris,
+			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		}
+	}
 
 	for _, tt := range []struct {
 		name         string
 		cert         *x509.Certificate
 		wantIdentity string
 	}{
-		{
-			name: "cn",
-			cert: &x509.Certificate{
-				Subject:     pkix.Name{CommonName: "backend"},
-				ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-			},
-			wantIdentity: "cn:backend",
-		},
-		{
-			name: "dns",
-			cert: &x509.Certificate{
-				Subject:     pkix.Name{CommonName: ""},
-				DNSNames:    []string{"svc-a.internal"},
-				ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-			},
-			wantIdentity: "dns:svc-a.internal",
-		},
-		{
-			name: "uri",
-			cert: &x509.Certificate{
-				Subject:     pkix.Name{CommonName: ""},
-				URIs:        []*url.URL{uri},
-				ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-			},
-			wantIdentity: "uri:spiffe://example.org/svc-a",
-		},
+		{name: "cn", cert: clientCert("backend", nil, nil), wantIdentity: "cn:backend"},
+		{name: "dns", cert: clientCert("", []string{"svc-a.internal"}, nil), wantIdentity: "dns:svc-a.internal"},
+		{name: "uri", cert: clientCert("", nil, []*url.URL{uri}), wantIdentity: "uri:spiffe://example.org/svc-a"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var gotIdentity string

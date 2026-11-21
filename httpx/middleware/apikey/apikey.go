@@ -27,8 +27,8 @@ var (
 	scopesKey = contextutil.NewKey[scopes]("httpx.apikey.scopes")
 )
 
-// apiKeyHeader is the fallback header checked when no Bearer token is present.
-const apiKeyHeader = "X-API-Key"
+// fallbackHeader is the fallback header checked when no Bearer token is present.
+const fallbackHeader = "X-API-Key"
 
 // maxTokenLen caps credential length before repository lookup, matching
 // middleware/auth's maxBearerTokenLen so oversized headers cannot force
@@ -130,7 +130,7 @@ func extractToken(r *http.Request) (string, bool) {
 		// X-API-Key (would change auth mode mid-request).
 		return "", false
 	}
-	keyValues := r.Header.Values(apiKeyHeader)
+	keyValues := r.Header.Values(fallbackHeader)
 	switch len(keyValues) {
 	case 0:
 		return "", false

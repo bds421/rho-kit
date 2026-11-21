@@ -58,8 +58,8 @@ type config struct {
 	cookieName string
 	headerName string
 	// secure controls Cookie.Secure on the CSRF cookie. Default
-	// (when secureSet is false) is TRUE — see [New]. WithSecure
-	// flips secureSet so callers can explicitly opt out for local
+	// (when secureSet is false) is TRUE — see [New].
+	// WithoutSecureCookieForLocalHTTP sets secureSet so callers can opt out for local
 	// plain-HTTP development.
 	secure    bool
 	secureSet bool
@@ -359,6 +359,33 @@ func WithSkipCheck(skip func(r *http.Request) bool) Option {
 //
 // Panics if the HMAC secret is provided but shorter than 32 bytes.
 func New(opts ...Option) func(http.Handler) http.Handler {
+	cfg := newConfig(opts)
+	cfg.ensureSecret()
+
+	// SameSite=None requires Secure: every modern browser rejects a cookie
+	// with that combination if Secure is missing, so the middleware would
+	// silently fail to set the cookie at all. Catch the misconfig at startup.
+	if cfg.sameSite == http.SameSiteNoneMode && !cfg.secure {
+		panic("csrf: New SameSite=None requires the default Secure cookie — drop WithoutSecureCookieForLocalHTTP() when SameSite=None is set")
+	}
+
+	// Bare double-submit (no session binding, no Origin allowlist) is the
+	// known weaker posture: a token minted for user A validates for user B,
+	// and sibling-subdomain Set-Cookie planting can forge both halves.
+	// Require an explicit mitigation so operators consciously accept it.
+	if cfg.sessionExtractor == nil && len(cfg.allowedOrigins) == 0 {
+		slog.Default().Warn("csrf: double-submit mode without WithSessionExtractor or WithAllowedOrigins; tokens are not bound to a user/session — configure one for multi-tenant / shared-parent-domain deployments")
+	}
+
+	if cfg.sessionExtractor != nil {
+		issuer, currentIssuer := cfg.sessionIssuers()
+		return sessionBoundMiddleware(&cfg, issuer, currentIssuer)
+	}
+	return doubleSubmitMiddleware(&cfg)
+}
+
+// newConfig applies opts over the defaults.
+func newConfig(opts []Option) config {
 	cfg := config{
 		cookieName: defaultCookieName,
 		headerName: defaultHeaderName,
@@ -384,199 +411,119 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			cfg.sameSite = http.SameSiteLaxMode
 		}
 	}
-	// FR-020 [HIGH]: default Secure to true. Pre-fix the default was
-	// false, so production users that only configured the secret
-	// emitted CSRF cookies without Secure and rode along plain-HTTP
-	// same-host requests. WithSecure(false) is now an explicit local-
-	// development opt-out (and should be paired with WithDevSecret).
+	// FR-020 [HIGH]: Secure defaults to true, so a production caller that
+	// only configures the secret never emits a CSRF cookie that rides along
+	// plain-HTTP requests. WithoutSecureCookieForLocalHTTP is the explicit
+	// local-development opt-out (and should be paired with WithDevSecret).
 	if !cfg.secureSet {
 		cfg.secure = true
 	}
+	return cfg
+}
 
-	if len(cfg.secrets) == 0 {
-		if !cfg.allowDevSecret {
-			panic("csrf: New no HMAC secret configured — call WithSecret (or WithDevSecret to opt into a per-process random fallback for local development); without a shared secret, multi-instance deployments break — each pod generates a different secret and tokens minted by pod A are rejected by pod B")
-		}
-		raw := make([]byte, 32)
-		if _, err := io.ReadFull(tokenRandReader, raw); err != nil {
-			panic("csrf: New failed to generate HMAC secret")
-		}
-		cfg.secrets = []*secret.String{secret.New(raw)}
-		// secret.New copied the bytes; wipe the local stack-allocated
-		// copy so the dev-mode key has the same one-place-only memory
-		// footprint as production secrets.
-		for i := range raw {
-			raw[i] = 0
-		}
+// ensureSecret fills in the per-process random secret when the caller opted
+// into it with [WithDevSecret], and panics when no secret is configured.
+func (cfg *config) ensureSecret() {
+	if len(cfg.secrets) > 0 {
+		return
 	}
-
-	// SameSite=None requires Secure: every modern browser rejects a cookie
-	// with that combination if Secure is missing, so the middleware would
-	// silently fail to set the cookie at all. Catch the misconfig at startup.
-	if cfg.sameSite == http.SameSiteNoneMode && !cfg.secure {
-		panic("csrf: New SameSite=None requires the default Secure cookie — drop WithoutSecureCookieForLocalHTTP() when SameSite=None is set")
+	if !cfg.allowDevSecret {
+		panic("csrf: New no HMAC secret configured — call WithSecret (or WithDevSecret to opt into a per-process random fallback for local development); without a shared secret, multi-instance deployments break — each pod generates a different secret and tokens minted by pod A are rejected by pod B")
 	}
-
-	// Bare double-submit (no session binding, no Origin allowlist) is the
-	// known weaker posture: a token minted for user A validates for user B,
-	// and sibling-subdomain Set-Cookie planting can forge both halves.
-	// Require an explicit mitigation so operators consciously accept it.
-	if cfg.sessionExtractor == nil && len(cfg.allowedOrigins) == 0 {
-		slog.Default().Warn("csrf: double-submit mode without WithSessionExtractor or WithAllowedOrigins; tokens are not bound to a user/session — configure one for multi-tenant / shared-parent-domain deployments")
+	raw := make([]byte, 32)
+	if _, err := io.ReadFull(tokenRandReader, raw); err != nil {
+		panic("csrf: New failed to generate HMAC secret")
 	}
+	cfg.secrets = []*secret.String{secret.New(raw)}
+	// secret.New copied the bytes; wipe the local copy so the dev-mode key
+	// has the same one-place-only memory footprint as production secrets.
+	clear(raw)
+}
 
-	// Session-bound mode: build the security/csrf Issuer once and route
-	// every request through it. The legacy double-submit path stays in
-	// place for callers that haven't supplied an extractor.
-	if cfg.sessionExtractor != nil {
-		issuerOpts := []securitycsrf.Option{}
-		if cfg.sessionTTL > 0 {
-			issuerOpts = append(issuerOpts, securitycsrf.WithTTL(cfg.sessionTTL))
-		}
-		// Reveal the wrapped secrets only for the duration of Issuer
-		// construction. The Issuer keeps its own copy of the bytes so
-		// the locals zero cleanly afterwards.
-		current := activeSecretBytes(cfg.secrets)
-		previous := make([][]byte, 0, len(cfg.secrets)-1)
-		for _, s := range cfg.secrets[1:] {
-			previous = append(previous, s.Reveal())
-		}
-		issuer := securitycsrf.MustNewIssuerWithSecrets(current, previous, issuerOpts...)
-		currentIssuer := securitycsrf.MustNewIssuer(current, issuerOpts...)
-		for i := range current {
-			current[i] = 0
-		}
-		for _, p := range previous {
-			for i := range p {
-				p[i] = 0
-			}
-		}
-		return sessionBoundMiddleware(&cfg, issuer, currentIssuer)
+// sessionIssuers builds the security/csrf issuers of the session-bound flow:
+// one that accepts every secret of the ring and one that accepts only the
+// current secret. The secrets are revealed only for their construction; the
+// issuers keep their own copies so the locals zero cleanly afterwards.
+func (cfg *config) sessionIssuers() (issuer, currentIssuer *securitycsrf.Issuer) {
+	issuerOpts := []securitycsrf.Option{}
+	if cfg.sessionTTL > 0 {
+		issuerOpts = append(issuerOpts, securitycsrf.WithTTL(cfg.sessionTTL))
 	}
+	current := activeSecretBytes(cfg.secrets)
+	previous := make([][]byte, 0, len(cfg.secrets)-1)
+	for _, s := range cfg.secrets[1:] {
+		previous = append(previous, s.Reveal())
+	}
+	issuer = securitycsrf.MustNewIssuerWithSecrets(current, previous, issuerOpts...)
+	currentIssuer = securitycsrf.MustNewIssuer(current, issuerOpts...)
+	clear(current)
+	for _, p := range previous {
+		clear(p)
+	}
+	return issuer, currentIssuer
+}
 
+// tokenCookie is the cookie that carries a CSRF token. HttpOnly is false on
+// purpose: the frontend reads the token from it to send it back in the
+// header. Secure is the default, which only
+// [WithoutSecureCookieForLocalHTTP] turns off.
+func (cfg *config) tokenCookie(token string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name:     cfg.cookieName,
+		Value:    token,
+		Path:     cfg.path,
+		MaxAge:   maxAge,
+		HttpOnly: false,
+		Secure:   cfg.secure,
+		SameSite: cfg.sameSite,
+	}
+}
+
+// doubleSubmitTokenMaxAge bounds a double-submit token's lifetime (24h) for
+// secret rotation.
+const doubleSubmitTokenMaxAge = 86400
+
+// doubleSubmitMiddleware is the flow without session binding: the cookie and
+// the header carry the same token signed with the HMAC secret.
+func doubleSubmitMiddleware(cfg *config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Ensure a CSRF cookie exists on every response.
-			cookie, err := r.Cookie(cfg.cookieName)
-			cookieRegenerated := false
-			if err != nil || !isValidSignedTokenAny(cookie.Value, cfg.secrets) {
-				// Generate a new token and set it as a cookie.
-				token, err := mintSignedToken(cfg.secrets[0])
-				if err != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
-					return
-				}
-				http.SetCookie(w, &http.Cookie{
-					Name:     cfg.cookieName,
-					Value:    token,
-					Path:     cfg.path,
-					MaxAge:   86400, // 24h — bounds token lifetime for rotation
-					HttpOnly: false, // Must be readable by JavaScript
-					Secure:   cfg.secure,
-					SameSite: cfg.sameSite,
-				})
-				// The local cookie ref must reflect the freshly-issued
-				// token; otherwise the validation block below compares
-				// against the stale invalid cookie and 403s the same
-				// request that just received a new cookie.
-				cookie = &http.Cookie{Name: cfg.cookieName, Value: token}
-				cookieRegenerated = true
-			} else if !isValidSignedToken(cookie.Value, cfg.secrets[0]) {
-				// Previous-secret token accepted during rotation. Reissue a
-				// current-secret cookie for the next request, but keep the
-				// incoming cookie as the value to compare against this request's
-				// header.
-				token, err := mintSignedToken(cfg.secrets[0])
-				if err != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
-					return
-				}
-				http.SetCookie(w, &http.Cookie{
-					Name:     cfg.cookieName,
-					Value:    token,
-					Path:     cfg.path,
-					MaxAge:   86400,
-					HttpOnly: false,
-					Secure:   cfg.secure,
-					SameSite: cfg.sameSite,
-				})
-			}
-
-			// Safe methods are exempt from CSRF validation.
-			switch r.Method {
-			case http.MethodGet, http.MethodHead, http.MethodOptions:
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// Origin/Referer validation runs BEFORE the skip-check
-			// predicate. Defense-in-depth: a consumer that uses both
-			// WithSkipCheck(HasBearerToken) and WithAllowedOrigins(...)
-			// expects bearer-token requests to skip the cookie match
-			// AND unfamiliar-origin POSTs to be rejected. Reordering
-			// the skip-check ahead of the origin check would let a
-			// bearer-bearing POST from any origin pass — defeating the
-			// allowlist for the very class of caller most likely to
-			// be impersonated by an attacker who phished a token.
-			if len(cfg.allowedOrigins) > 0 {
-				if !originAllowed(r, cfg.allowedOrigins) {
-					httpx.WriteError(w, http.StatusForbidden, "untrusted origin")
-					return
-				}
-			}
-
-			// If the skip predicate matches, bypass CSRF token validation.
-			// The cookie was already set above, so browser clients still
-			// receive a token for later use.
-			if cfg.skipCheck != nil && safeSkipCheck(cfg.skipCheck, r) {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// State-changing methods require a valid CSRF token. If the
-			// cookie was regenerated above (incoming was missing or
-			// tampered), short-circuit with a clear 403: the client
-			// has only just received the new cookie in this response,
-			// so its current request necessarily can't have matched it.
-			if cookieRegenerated {
-				httpx.WriteError(w, http.StatusForbidden, "CSRF cookie was reissued; retry with the new cookie")
-				return
-			}
-			// Invariant: cookieRegenerated is false here, so the regeneration
-			// branch at the top of the handler (cookie missing OR token
-			// invalid) was NOT taken — cookie is therefore non-nil, err is
-			// nil, and the token already passed isValidSignedTokenAny. Only
-			// the degenerate empty value needs a defensive reject.
-			if cookie.Value == "" {
-				httpx.WriteError(w, http.StatusForbidden, "missing CSRF cookie")
-				return
-			}
-
-			headerToken, present, ok := strictSingleHeaderValue(r.Header, cfg.headerName)
-			if !present {
-				httpx.WriteError(w, http.StatusForbidden, "missing CSRF header")
-				return
-			}
+			cookieToken, reissued, ok := cfg.ensureDoubleSubmitCookie(w, r)
 			if !ok {
-				httpx.WriteError(w, http.StatusForbidden, "invalid CSRF header")
 				return
 			}
-
-			// Constant-time comparison of cookie and header values.
-			if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(headerToken)) != 1 {
-				httpx.WriteError(w, http.StatusForbidden, "CSRF token mismatch")
+			if cfg.passesWithoutToken(w, r, next) {
 				return
 			}
-
-			// Verify the token was signed by this server.
-			if !isValidSignedTokenAny(headerToken, cfg.secrets) {
-				httpx.WriteError(w, http.StatusForbidden, "invalid CSRF token")
-				return
-			}
-
-			next.ServeHTTP(w, r)
+			cfg.serveSubmittedToken(w, r, next, cookieToken, reissued, func(headerToken string) bool {
+				return isValidSignedTokenAny(headerToken, cfg.secrets)
+			})
 		})
 	}
+}
+
+// ensureDoubleSubmitCookie makes sure the response carries a cookie signed
+// with the current secret. It returns the token this request's header must
+// match and whether the cookie was reissued because the incoming one was
+// missing or invalid. A token signed with a previous secret is still
+// accepted for this request while a current-secret cookie replaces it for
+// the next. ok is false when minting failed and the error was written.
+func (cfg *config) ensureDoubleSubmitCookie(w http.ResponseWriter, r *http.Request) (cookieToken string, reissued, ok bool) {
+	cookie, err := r.Cookie(cfg.cookieName)
+	invalid := err != nil || !isValidSignedTokenAny(cookie.Value, cfg.secrets)
+	if !invalid && isValidSignedToken(cookie.Value, cfg.secrets[0]) {
+		return cookie.Value, false, true
+	}
+	token, err := mintSignedToken(cfg.secrets[0])
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
+		return "", false, false
+	}
+	http.SetCookie(w, cfg.tokenCookie(token, doubleSubmitTokenMaxAge))
+	if invalid {
+		return token, true, true
+	}
+	return cookie.Value, false, true
 }
 
 // sessionBoundMiddleware is the session-bound flow: tokens are minted
@@ -592,119 +539,82 @@ func sessionBoundMiddleware(cfg *config, issuer, currentIssuer *securitycsrf.Iss
 	if effectiveTTL <= 0 {
 		effectiveTTL = securitycsrf.DefaultTTL
 	}
-	cookieMaxAge := int(effectiveTTL.Seconds())
+	bound := sessionBinding{cfg: cfg, issuer: issuer, currentIssuer: currentIssuer, cookieMaxAge: int(effectiveTTL.Seconds())}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			session, ok := safeSessionExtractor(cfg.sessionExtractor, r)
-			if !ok {
-				// The extractor panicked — fail closed rather than guess
-				// at an anonymous-vs-authenticated state.
-				httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
-				return
-			}
-			if session == "" {
-				// Anonymous request: there is no session to bind a token
-				// to, so no cookie is issued. The session requirement is
-				// scoped (per WithSessionExtractor docs) to authenticated
-				// state-changing requests; safe methods and skip-matched
-				// requests must still pass so a globally-mounted middleware
-				// does not 403 every anonymous page load or break the
-				// documented WithSkipCheck bearer/API-key contract.
-				handleAnonymousSessionBound(cfg, next, w, r)
-				return
-			}
-			if securitycsrf.ValidateSessionID(session) != nil {
-				// A session value is present but malformed (control chars,
-				// over-length, …): treat as a security signal and reject
-				// before issuing a cookie, for every method.
-				httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
-				return
-			}
-
-			// Issue a fresh token cookie when the request lacks one OR
-			// the existing cookie no longer verifies under the current
-			// session (logout/login swap, expired token).
-			cookie, err := r.Cookie(cfg.cookieName)
-			cookieRegenerated := false
-			if err != nil || issuer.Verify(securitycsrf.Token(cookie.Value), session) != nil {
-				token, mintErr := issuer.Issue(session)
-				if mintErr != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
-					return
-				}
-				http.SetCookie(w, &http.Cookie{
-					Name:     cfg.cookieName,
-					Value:    string(token),
-					Path:     cfg.path,
-					MaxAge:   cookieMaxAge,
-					HttpOnly: false,
-					Secure:   cfg.secure,
-					SameSite: cfg.sameSite,
-				})
-				cookie = &http.Cookie{Name: cfg.cookieName, Value: string(token)}
-				cookieRegenerated = true
-			} else if currentIssuer.Verify(securitycsrf.Token(cookie.Value), session) != nil {
-				token, mintErr := issuer.Issue(session)
-				if mintErr != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
-					return
-				}
-				http.SetCookie(w, &http.Cookie{
-					Name:     cfg.cookieName,
-					Value:    string(token),
-					Path:     cfg.path,
-					MaxAge:   cookieMaxAge,
-					HttpOnly: false,
-					Secure:   cfg.secure,
-					SameSite: cfg.sameSite,
-				})
-			}
-
-			switch r.Method {
-			case http.MethodGet, http.MethodHead, http.MethodOptions:
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// Origin allowlist runs BEFORE the skip-check predicate
-			// for the same defense-in-depth reasoning as the
-			// double-submit flow above.
-			if len(cfg.allowedOrigins) > 0 && !originAllowed(r, cfg.allowedOrigins) {
-				httpx.WriteError(w, http.StatusForbidden, "untrusted origin")
-				return
-			}
-
-			if cfg.skipCheck != nil && safeSkipCheck(cfg.skipCheck, r) {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			if cookieRegenerated {
-				httpx.WriteError(w, http.StatusForbidden, "CSRF cookie was reissued; retry with the new cookie")
-				return
-			}
-
-			headerToken, present, ok := strictSingleHeaderValue(r.Header, cfg.headerName)
-			if !present {
-				httpx.WriteError(w, http.StatusForbidden, "missing CSRF header")
-				return
-			}
-			if !ok {
-				httpx.WriteError(w, http.StatusForbidden, "invalid CSRF header")
-				return
-			}
-			if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(headerToken)) != 1 {
-				httpx.WriteError(w, http.StatusForbidden, "CSRF token mismatch")
-				return
-			}
-			if err := issuer.Verify(securitycsrf.Token(headerToken), session); err != nil {
-				httpx.WriteError(w, http.StatusForbidden, "invalid CSRF token")
-				return
-			}
-
-			next.ServeHTTP(w, r)
+			bound.serve(w, r, next)
 		})
 	}
+}
+
+// sessionBinding holds what the session-bound flow needs per request.
+type sessionBinding struct {
+	cfg           *config
+	issuer        *securitycsrf.Issuer
+	currentIssuer *securitycsrf.Issuer
+	cookieMaxAge  int
+}
+
+func (b sessionBinding) serve(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	session, ok := safeSessionExtractor(b.cfg.sessionExtractor, r)
+	if !ok {
+		// The extractor panicked — fail closed rather than guess
+		// at an anonymous-vs-authenticated state.
+		httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
+		return
+	}
+	if session == "" {
+		// Anonymous request: there is no session to bind a token
+		// to, so no cookie is issued. The session requirement is
+		// scoped (per WithSessionExtractor docs) to authenticated
+		// state-changing requests; safe methods and skip-matched
+		// requests must still pass so a globally-mounted middleware
+		// does not 403 every anonymous page load or break the
+		// documented WithSkipCheck bearer/API-key contract.
+		handleAnonymousSessionBound(b.cfg, next, w, r)
+		return
+	}
+	if securitycsrf.ValidateSessionID(session) != nil {
+		// A session value is present but malformed (control chars,
+		// over-length, …): treat as a security signal and reject
+		// before issuing a cookie, for every method.
+		httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
+		return
+	}
+	cookieToken, reissued, ok := b.ensureCookie(w, r, session)
+	if !ok {
+		return
+	}
+	if b.cfg.passesWithoutToken(w, r, next) {
+		return
+	}
+	b.cfg.serveSubmittedToken(w, r, next, cookieToken, reissued, func(headerToken string) bool {
+		return b.issuer.Verify(securitycsrf.Token(headerToken), session) == nil
+	})
+}
+
+// ensureCookie issues a fresh token cookie when the request lacks one or the
+// existing cookie no longer verifies under the current session
+// (logout/login swap, expired token), and refreshes a cookie that verifies
+// only under a previous secret. It returns the token this request's header
+// must match and whether the cookie was reissued. ok is false when minting
+// failed and the error was written.
+func (b sessionBinding) ensureCookie(w http.ResponseWriter, r *http.Request, session string) (cookieToken string, reissued, ok bool) {
+	cookie, err := r.Cookie(b.cfg.cookieName)
+	invalid := err != nil || b.issuer.Verify(securitycsrf.Token(cookie.Value), session) != nil
+	if !invalid && b.currentIssuer.Verify(securitycsrf.Token(cookie.Value), session) == nil {
+		return cookie.Value, false, true
+	}
+	token, err := b.issuer.Issue(session)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
+		return "", false, false
+	}
+	http.SetCookie(w, b.cfg.tokenCookie(string(token), b.cookieMaxAge))
+	if invalid {
+		return string(token), true, true
+	}
+	return cookie.Value, false, true
 }
 
 // handleAnonymousSessionBound serves a request whose session extractor
@@ -714,28 +624,77 @@ func sessionBoundMiddleware(cfg *config, issuer, currentIssuer *securitycsrf.Iss
 // skip predicate (same ordering as the authenticated path) before the
 // session-required gate finally rejects mutating requests.
 func handleAnonymousSessionBound(cfg *config, next http.Handler, w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		next.ServeHTTP(w, r)
+	if cfg.passesWithoutToken(w, r, next) {
 		return
 	}
-
-	// Origin allowlist runs BEFORE the skip-check predicate for the same
-	// defense-in-depth reasoning as the authenticated path above.
-	if len(cfg.allowedOrigins) > 0 && !originAllowed(r, cfg.allowedOrigins) {
-		httpx.WriteError(w, http.StatusForbidden, "untrusted origin")
-		return
-	}
-
-	if cfg.skipCheck != nil && safeSkipCheck(cfg.skipCheck, r) {
-		next.ServeHTTP(w, r)
-		return
-	}
-
 	// A state-changing request without a session is rejected rather than
 	// falling back to per-process pinning, which would defeat the purpose
 	// of session binding.
 	httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
+}
+
+// passesWithoutToken serves safe methods and skip-matched requests and
+// rejects state-changing requests from an untrusted origin. It reports
+// whether the request is done; when false, its token must be checked.
+//
+// The origin allowlist runs BEFORE the skip predicate (defense-in-depth): a
+// consumer that uses both WithSkipCheck(HasBearerToken) and
+// WithAllowedOrigins(...) expects bearer-token requests to skip the cookie
+// match AND unfamiliar-origin POSTs to be rejected. The other order would let
+// a bearer-bearing POST from any origin pass — defeating the allowlist for
+// the very class of caller most likely to be impersonated by an attacker who
+// phished a token. A skip-matched request still received its cookie, so
+// browser clients get a token for later use.
+func (cfg *config) passesWithoutToken(w http.ResponseWriter, r *http.Request, next http.Handler) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		next.ServeHTTP(w, r)
+		return true
+	}
+	if len(cfg.allowedOrigins) > 0 && !originAllowed(r, cfg.allowedOrigins) {
+		httpx.WriteError(w, http.StatusForbidden, "untrusted origin")
+		return true
+	}
+	if cfg.skipCheck != nil && safeSkipCheck(cfg.skipCheck, r) {
+		next.ServeHTTP(w, r)
+		return true
+	}
+	return false
+}
+
+// serveSubmittedToken checks a state-changing request's header token against
+// its cookie token and verifyHeader, then serves it. A request whose cookie
+// was just reissued is rejected with a clear 403: the client has only now
+// received the new cookie, so its current request cannot have matched it.
+func (cfg *config) serveSubmittedToken(w http.ResponseWriter, r *http.Request, next http.Handler, cookieToken string, reissued bool, verifyHeader func(string) bool) {
+	if reissued {
+		httpx.WriteError(w, http.StatusForbidden, "CSRF cookie was reissued; retry with the new cookie")
+		return
+	}
+	// A cookie that was not reissued already verified, so only the
+	// degenerate empty value needs a defensive reject.
+	if cookieToken == "" {
+		httpx.WriteError(w, http.StatusForbidden, "missing CSRF cookie")
+		return
+	}
+	headerToken, present, ok := strictSingleHeaderValue(r.Header, cfg.headerName)
+	if !present {
+		httpx.WriteError(w, http.StatusForbidden, "missing CSRF header")
+		return
+	}
+	if !ok {
+		httpx.WriteError(w, http.StatusForbidden, "invalid CSRF header")
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(cookieToken), []byte(headerToken)) != 1 {
+		httpx.WriteError(w, http.StatusForbidden, "CSRF token mismatch")
+		return
+	}
+	if !verifyHeader(headerToken) {
+		httpx.WriteError(w, http.StatusForbidden, "invalid CSRF token")
+		return
+	}
+	next.ServeHTTP(w, r)
 }
 
 func safeSkipCheck(skip func(*http.Request) bool, r *http.Request) (matched bool) {
