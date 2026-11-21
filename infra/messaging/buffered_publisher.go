@@ -346,106 +346,19 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 	if len(o.pending) == 0 && !o.directInFlight && healthy {
 		o.directInFlight = true
 		o.mu.Unlock()
-
-		// Guarantee directInFlight is cleared even if publishFn panics.
-		// Without this, a panic permanently freezes the drain loop.
-		published := false
-		defer func() {
-			if !published {
-				o.mu.Lock()
-				o.directInFlight = false
-				o.mu.Unlock()
-			}
-		}()
-
-		if err := o.publishFn(ctx, exchange, routingKey, msg.Clone()); err == nil {
-			o.mu.Lock()
-			o.directInFlight = false
-			published = true
-			o.mu.Unlock()
-			o.onDirectPublish()
-			return nil
-		} else if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-			// Caller's own cancellation/deadline must not convert into
-			// guaranteed later delivery — return the context error instead of
-			// buffering (broker failures still buffer for at-least-once).
-			o.mu.Lock()
-			o.directInFlight = false
-			published = true
-			o.mu.Unlock()
-			return ctx.Err()
-		}
-
-		// Direct publish failed — buffer the message.
-		o.logger.Warn("direct publish failed, buffering message",
-			redact.String("exchange", exchange),
-			redact.String("routing_key", routingKey),
-			redact.String("msg_id", msg.ID))
-
-		o.mu.Lock()
-		o.directInFlight = false
-		published = true // defer cleanup no longer needed
-		// Re-check capacity after re-acquiring lock — the buffer may have
-		// been filled by concurrent Publish calls or the drain loop.
-		if o.maxSize > 0 && len(o.pending) >= o.maxSize {
-			o.mu.Unlock()
-			o.onDrop()
-			return ErrBufferFull
-		}
-		o.addPendingLocked(pendingMessage{
-			Exchange:   exchange,
-			RoutingKey: routingKey,
-			Msg:        msg,
-		})
-		saveErr := o.persistAppendLocked()
-		if saveErr != nil && !o.lossyMode {
-			// Roll back the buffered append so memory state matches what
-			// was successfully persisted. Without this, a later successful
-			// save would persist a message the caller was told failed.
-			o.dropLastPendingLocked()
-			o.mu.Unlock()
-			return redact.WrapError("buffered publisher: persist message after direct publish failure", saveErr)
-		}
-		pending := len(o.pending)
-		bytes := o.pendingBytesLocked()
-		o.mu.Unlock()
-
-		o.reportPending(pending, bytes)
-		o.onBuffer()
-		o.logger.Info("message buffered",
-			redact.String("exchange", exchange),
-			redact.String("routing_key", routingKey),
-			redact.String("msg_id", msg.ID),
-			"pending", pending)
-		return nil
+		return o.publishDirect(ctx, exchange, routingKey, msg)
 	}
 
 	// Buffer path: broker unhealthy, pending messages exist, or direct publish in flight.
-	// Reserve one slot when a direct publish is in flight — if it fails,
-	// the message will be appended to pending, so we must not be at capacity.
-	// Skip check when maxSize <= 0 (unlimited buffer).
-	//
-	// Edge case: maxSize=1 + directInFlight=true → effectiveMax=0 would
-	// reject any second message during normal operation, even when the
-	// in-flight publish succeeds and clears the slot moments later. Skip
-	// the reservation in that pathological config — the worst case is
-	// a single buffered message exceeding the cap by 1, which is
-	// strictly better than rejecting valid traffic.
-	if o.maxSize > 0 {
-		effectiveMax := o.maxSize
-		if o.directInFlight && o.maxSize > 1 {
-			effectiveMax--
-		}
-		if len(o.pending) >= effectiveMax {
-			o.mu.Unlock()
-			o.logger.Error("buffer full, dropping message",
-				redact.String("exchange", exchange),
-				redact.String("routing_key", routingKey),
-				redact.String("msg_id", msg.ID),
-				"buffer_size", o.maxSize)
-			o.onDrop()
-			return ErrBufferFull
-		}
+	if o.bufferFullLocked() {
+		o.mu.Unlock()
+		o.logger.Error("buffer full, dropping message",
+			redact.String("exchange", exchange),
+			redact.String("routing_key", routingKey),
+			redact.String("msg_id", msg.ID),
+			"buffer_size", o.maxSize)
+		o.onDrop()
+		return ErrBufferFull
 	}
 
 	o.addPendingLocked(pendingMessage{
@@ -466,6 +379,105 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 	o.reportPending(pending, bytes)
 	o.onBuffer()
 
+	o.logger.Info("message buffered",
+		redact.String("exchange", exchange),
+		redact.String("routing_key", routingKey),
+		redact.String("msg_id", msg.ID),
+		"pending", pending)
+	return nil
+}
+
+// bufferFullLocked reports whether the buffer path has no room for another
+// message. It reserves one slot when a direct publish is in flight — if that
+// fails, its message will be appended to pending, so the buffer must not be
+// at capacity. A maxSize <= 0 is an unlimited buffer.
+//
+// Edge case: maxSize=1 + directInFlight=true → effectiveMax=0 would reject
+// any second message during normal operation, even when the in-flight
+// publish succeeds and clears the slot moments later. The reservation is
+// skipped in that pathological config — the worst case is a single buffered
+// message exceeding the cap by 1, which is strictly better than rejecting
+// valid traffic. Must be called with o.mu held.
+func (o *BufferedPublisher) bufferFullLocked() bool {
+	if o.maxSize <= 0 {
+		return false
+	}
+	effectiveMax := o.maxSize
+	if o.directInFlight && o.maxSize > 1 {
+		effectiveMax--
+	}
+	return len(o.pending) >= effectiveMax
+}
+
+// publishDirect publishes msg straight to the broker; the caller has set
+// directInFlight and released the lock. When the publish fails for any
+// reason but the caller's own cancellation, msg goes into the buffer.
+func (o *BufferedPublisher) publishDirect(ctx context.Context, exchange, routingKey string, msg Message) error {
+	// Guarantee directInFlight is cleared even if publishFn panics.
+	// Without this, a panic permanently freezes the drain loop.
+	published := false
+	defer func() {
+		if !published {
+			o.mu.Lock()
+			o.directInFlight = false
+			o.mu.Unlock()
+		}
+	}()
+
+	if err := o.publishFn(ctx, exchange, routingKey, msg.Clone()); err == nil {
+		o.mu.Lock()
+		o.directInFlight = false
+		published = true
+		o.mu.Unlock()
+		o.onDirectPublish()
+		return nil
+	} else if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		// Caller's own cancellation/deadline must not convert into
+		// guaranteed later delivery — return the context error instead of
+		// buffering (broker failures still buffer for at-least-once).
+		o.mu.Lock()
+		o.directInFlight = false
+		published = true
+		o.mu.Unlock()
+		return ctx.Err()
+	}
+
+	// Direct publish failed — buffer the message.
+	o.logger.Warn("direct publish failed, buffering message",
+		redact.String("exchange", exchange),
+		redact.String("routing_key", routingKey),
+		redact.String("msg_id", msg.ID))
+
+	o.mu.Lock()
+	o.directInFlight = false
+	published = true // defer cleanup no longer needed
+	// Re-check capacity after re-acquiring lock — the buffer may have
+	// been filled by concurrent Publish calls or the drain loop.
+	if o.maxSize > 0 && len(o.pending) >= o.maxSize {
+		o.mu.Unlock()
+		o.onDrop()
+		return ErrBufferFull
+	}
+	o.addPendingLocked(pendingMessage{
+		Exchange:   exchange,
+		RoutingKey: routingKey,
+		Msg:        msg,
+	})
+	saveErr := o.persistAppendLocked()
+	if saveErr != nil && !o.lossyMode {
+		// Roll back the buffered append so memory state matches what
+		// was successfully persisted. Without this, a later successful
+		// save would persist a message the caller was told failed.
+		o.dropLastPendingLocked()
+		o.mu.Unlock()
+		return redact.WrapError("buffered publisher: persist message after direct publish failure", saveErr)
+	}
+	pending := len(o.pending)
+	bytes := o.pendingBytesLocked()
+	o.mu.Unlock()
+
+	o.reportPending(pending, bytes)
+	o.onBuffer()
 	o.logger.Info("message buffered",
 		redact.String("exchange", exchange),
 		redact.String("routing_key", routingKey),
@@ -626,23 +638,7 @@ func (o *BufferedPublisher) drainBatch(ctx context.Context) (published int, more
 		}
 	}()
 
-	for _, pm := range batch {
-		if ctx.Err() != nil {
-			break
-		}
-		// Re-check broker health before each publish to avoid sequential
-		// timeout waits when the broker goes down mid-batch.
-		if !o.healthyFn() {
-			o.logger.Warn("buffered publisher drain: broker unhealthy, pausing batch")
-			break
-		}
-		if err := o.publishFn(ctx, pm.Exchange, pm.RoutingKey, pm.Msg.Clone()); err != nil {
-			o.logger.Warn("buffered publisher drain publish failed, will retry",
-				redact.Error(err), redact.String("msg_id", pm.Msg.ID))
-			break
-		}
-		published++
-	}
+	published = o.publishBatch(ctx, batch)
 
 	o.mu.Lock()
 	o.directInFlight = false
@@ -652,17 +648,7 @@ func (o *BufferedPublisher) drainBatch(ctx context.Context) (published int, more
 	pending := -1
 	bytes := 0
 	if published > 0 {
-		// Compact the slice to allow the backing array to be GC'd.
-		// Without this, o.pending[published:] retains the original array
-		// forever since we only ever shrink from the front.
-		remaining := len(o.pending) - published
-		compacted := make([]pendingMessage, remaining)
-		copy(compacted, o.pending[published:])
-		o.pending = compacted
-		o.pendingBytes = 0
-		for i := range o.pending {
-			o.pendingBytes += len(o.pending[i].Msg.Payload)
-		}
+		o.dropPublishedLocked(published)
 		// FR-068 [HIGH]: surface the save error instead of swallowing
 		// it. On disk-full / EROFS / quota the on-disk pending list
 		// still contains the messages we just delivered to the broker,
@@ -696,6 +682,45 @@ func (o *BufferedPublisher) drainBatch(ctx context.Context) (published int, more
 	// restart-replay window. Surface "no more progress" so the caller
 	// retries on the next tick after the save error has been observed.
 	return published, saveErr == nil && remaining > 0
+}
+
+// publishBatch publishes batch in order until the context ends, the broker
+// turns unhealthy or a publish fails, and returns how many it published.
+func (o *BufferedPublisher) publishBatch(ctx context.Context, batch []pendingMessage) int {
+	published := 0
+	for _, pm := range batch {
+		if ctx.Err() != nil {
+			break
+		}
+		// Re-check broker health before each publish to avoid sequential
+		// timeout waits when the broker goes down mid-batch.
+		if !o.healthyFn() {
+			o.logger.Warn("buffered publisher drain: broker unhealthy, pausing batch")
+			break
+		}
+		if err := o.publishFn(ctx, pm.Exchange, pm.RoutingKey, pm.Msg.Clone()); err != nil {
+			o.logger.Warn("buffered publisher drain publish failed, will retry",
+				redact.Error(err), redact.String("msg_id", pm.Msg.ID))
+			break
+		}
+		published++
+	}
+	return published
+}
+
+// dropPublishedLocked removes the first published messages from the
+// pending buffer. It compacts the slice so the backing array can be
+// collected: o.pending[published:] would otherwise retain the original
+// array forever since the buffer only ever shrinks from the front.
+// Must be called with o.mu held.
+func (o *BufferedPublisher) dropPublishedLocked(published int) {
+	compacted := make([]pendingMessage, len(o.pending)-published)
+	copy(compacted, o.pending[published:])
+	o.pending = compacted
+	o.pendingBytes = 0
+	for i := range o.pending {
+		o.pendingBytes += len(o.pending[i].Msg.Payload)
+	}
 }
 
 // saveLocked persists the current pending slice to disk. Must be called

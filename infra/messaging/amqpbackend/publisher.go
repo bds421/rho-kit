@@ -129,31 +129,7 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 		return redact.WrapError("marshal message", err)
 	}
 
-	pub := amqp.Publishing{
-		ContentType:  "application/json",
-		DeliveryMode: amqp.Persistent,
-		MessageId:    msg.ID,
-		Timestamp:    msg.Timestamp,
-		Body:         body,
-	}
-	headerCount := len(msg.Headers)
-	if msg.SchemaVersion != 0 {
-		headerCount++
-	}
-	if headerCount > 0 {
-		pub.Headers = make(amqp.Table, headerCount)
-		for k, v := range msg.Headers {
-			pub.Headers[k] = v
-		}
-		if msg.SchemaVersion != 0 {
-			// Clamp to int32 range for AMQP wire format safety.
-			sv := msg.SchemaVersion
-			if sv > math.MaxInt32 {
-				sv = math.MaxInt32
-			}
-			pub.Headers[messaging.HeaderSchemaVersion] = int32(sv)
-		}
-	}
+	pub := publishingFor(msg, body)
 
 	if err := p.publishConfirmed(ctx, exchange, routingKey, pub); err != nil {
 		outcome = publishOutcomeForError(err)
@@ -293,3 +269,34 @@ func (p *Publisher) publishConfirmed(ctx context.Context, exchange, routingKey s
 // Close is a no-op — channels are opened and closed per-publish.
 // Retained for interface compatibility.
 func (p *Publisher) Close() {}
+
+// publishingFor is the persistent JSON publishing of msg, its headers
+// carrying the schema version when set.
+func publishingFor(msg messaging.Message, body []byte) amqp.Publishing {
+	pub := amqp.Publishing{
+		ContentType:  "application/json",
+		DeliveryMode: amqp.Persistent,
+		MessageId:    msg.ID,
+		Timestamp:    msg.Timestamp,
+		Body:         body,
+	}
+	headerCount := len(msg.Headers)
+	if msg.SchemaVersion != 0 {
+		headerCount++
+	}
+	if headerCount > 0 {
+		pub.Headers = make(amqp.Table, headerCount)
+		for k, v := range msg.Headers {
+			pub.Headers[k] = v
+		}
+		if msg.SchemaVersion != 0 {
+			// Clamp to int32 range for AMQP wire format safety.
+			sv := msg.SchemaVersion
+			if sv > math.MaxInt32 {
+				sv = math.MaxInt32
+			}
+			pub.Headers[messaging.HeaderSchemaVersion] = int32(sv)
+		}
+	}
+	return pub
+}

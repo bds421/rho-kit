@@ -39,6 +39,44 @@ func StartConsumers(
 		logger = slog.Default()
 	}
 
+	if err := checkHandlerCoverage(declared, handlers); err != nil {
+		return err
+	}
+
+	for _, b := range declared {
+		binding := b
+		h := handlers[b.RoutingKey]
+		wg.Go(func() { runConsumer(ctx, c, binding, h, logger, shutdownFn) })
+	}
+	return nil
+}
+
+// runConsumer consumes binding until ctx ends. A panic or a failure that is
+// not the context ending is logged and triggers shutdownFn when set.
+func runConsumer(ctx context.Context, c Consumer, binding Binding, h Handler, logger *slog.Logger, shutdownFn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("consumer panicked",
+				redact.String("routing_key", binding.RoutingKey),
+				redact.Panic(r),
+				"stack", string(debug.Stack()),
+			)
+			if shutdownFn != nil {
+				shutdownFn()
+			}
+		}
+	}()
+	if err := c.Consume(ctx, binding, h); err != nil && ctx.Err() == nil {
+		logger.Error("consumer permanently failed", redact.String("consumer_group", binding.ConsumerGroup), redact.Error(err))
+		if shutdownFn != nil {
+			shutdownFn()
+		}
+	}
+}
+
+// checkHandlerCoverage reports declared bindings whose routing key has no
+// handler or a nil one.
+func checkHandlerCoverage(declared []Binding, handlers map[string]Handler) error {
 	var missing []string
 	var nilHandlers []string
 	for _, b := range declared {
@@ -56,31 +94,6 @@ func StartConsumers(
 	}
 	if len(nilHandlers) > 0 {
 		return fmt.Errorf("messaging: nil handlers registered for declared bindings (count=%d keys=%v)", len(nilHandlers), nilHandlers)
-	}
-
-	for _, b := range declared {
-		binding := b
-		h := handlers[b.RoutingKey]
-		wg.Go(func() {
-			defer func() {
-				if r := recover(); r != nil {
-					logger.Error("consumer panicked",
-						redact.String("routing_key", binding.RoutingKey),
-						redact.Panic(r),
-						"stack", string(debug.Stack()),
-					)
-					if shutdownFn != nil {
-						shutdownFn()
-					}
-				}
-			}()
-			if err := c.Consume(ctx, binding, h); err != nil && ctx.Err() == nil {
-				logger.Error("consumer permanently failed", redact.String("consumer_group", binding.ConsumerGroup), redact.Error(err))
-				if shutdownFn != nil {
-					shutdownFn()
-				}
-			}
-		})
 	}
 	return nil
 }

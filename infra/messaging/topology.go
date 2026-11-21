@@ -140,45 +140,60 @@ func NormalizeBindingSpecs(specs []BindingSpec) []string {
 // backend-specific DeclareAll do this for you.
 func ValidateBindingSpecs(specs []BindingSpec) error {
 	for _, b := range specs {
-		if err := ValidateExchangeName(b.Exchange); err != nil {
+		if err := validateBindingRoute(b); err != nil {
 			return err
 		}
-		if err := validateConsumerGroup(b.ConsumerGroup, b.Retry != nil); err != nil {
+		if err := validateBindingRetry(b); err != nil {
 			return err
 		}
-		switch b.ExchangeType {
-		case ExchangeDirect, ExchangeFanout, ExchangeTopic, ExchangeHeaders:
-		default:
-			return errors.New("unsupported exchange type")
-		}
-		if b.RoutingKey == "" && (b.ExchangeType == ExchangeDirect || b.ExchangeType == ExchangeTopic) {
-			return fmt.Errorf("routing key required for %s exchange", b.ExchangeType)
-		}
-		if err := ValidateRoutingKey(b.RoutingKey); err != nil {
-			return err
-		}
-		if b.Retry != nil && b.WithoutRetry {
-			return errors.New("retry and WithoutRetry are mutually exclusive — set Retry to override the default policy, or set WithoutRetry=true for ack-and-discard semantics")
-		}
-		if b.Retry != nil {
-			if b.Retry.MaxRetries < 1 {
-				return errors.New("retry policy MaxRetries must be >= 1")
-			}
-			// Reject sub-millisecond delays. The amqpbackend topology emits
-			// x-message-ttl as `int64(Delay / time.Millisecond)` which
-			// truncates to 0 for sub-ms inputs — and a 0-TTL retry queue
-			// re-delivers immediately, producing a tight loop on every
-			// transient handler error.
-			if b.Retry.Delay < time.Millisecond {
-				return errors.New("retry policy Delay must be >= 1ms; sub-ms delays truncate to 0 in the AMQP TTL")
-			}
-			// ComputeBindings derives Exchange+".retry"/".dead"; keep the
-			// stem short enough that derived exchange names stay within
-			// MaxRouteNameBytes (mirrors validateConsumerGroup).
-			if len(b.Exchange) > MaxRouteNameBytes-len(retryExchangeSuffix) {
-				return errors.New("exchange name too long: derived retry/dead exchange name would exceed the portable route-name limit")
-			}
-		}
+	}
+	return nil
+}
+
+// validateBindingRoute checks b's exchange, consumer group, exchange type
+// and routing key.
+func validateBindingRoute(b BindingSpec) error {
+	if err := ValidateExchangeName(b.Exchange); err != nil {
+		return err
+	}
+	if err := validateConsumerGroup(b.ConsumerGroup, b.Retry != nil); err != nil {
+		return err
+	}
+	switch b.ExchangeType {
+	case ExchangeDirect, ExchangeFanout, ExchangeTopic, ExchangeHeaders:
+	default:
+		return errors.New("unsupported exchange type")
+	}
+	if b.RoutingKey == "" && (b.ExchangeType == ExchangeDirect || b.ExchangeType == ExchangeTopic) {
+		return fmt.Errorf("routing key required for %s exchange", b.ExchangeType)
+	}
+	return ValidateRoutingKey(b.RoutingKey)
+}
+
+// validateBindingRetry checks b's retry policy and the names derived from it.
+func validateBindingRetry(b BindingSpec) error {
+	if b.Retry == nil {
+		return nil
+	}
+	if b.WithoutRetry {
+		return errors.New("retry and WithoutRetry are mutually exclusive — set Retry to override the default policy, or set WithoutRetry=true for ack-and-discard semantics")
+	}
+	if b.Retry.MaxRetries < 1 {
+		return errors.New("retry policy MaxRetries must be >= 1")
+	}
+	// Reject sub-millisecond delays. The amqpbackend topology emits
+	// x-message-ttl as `int64(Delay / time.Millisecond)` which
+	// truncates to 0 for sub-ms inputs — and a 0-TTL retry queue
+	// re-delivers immediately, producing a tight loop on every
+	// transient handler error.
+	if b.Retry.Delay < time.Millisecond {
+		return errors.New("retry policy Delay must be >= 1ms; sub-ms delays truncate to 0 in the AMQP TTL")
+	}
+	// ComputeBindings derives Exchange+".retry"/".dead"; keep the
+	// stem short enough that derived exchange names stay within
+	// MaxRouteNameBytes (mirrors validateConsumerGroup).
+	if len(b.Exchange) > MaxRouteNameBytes-len(retryExchangeSuffix) {
+		return errors.New("exchange name too long: derived retry/dead exchange name would exceed the portable route-name limit")
 	}
 	return nil
 }
@@ -211,7 +226,7 @@ func validateConsumerGroup(consumerGroup string, withRetry bool) error {
 		// Reuse the routing-key token rules (length, UTF-8, control,
 		// whitespace) but re-label the field. Preserve both the generic
 		// sentinel (for errors.Is) and the specific validation cause.
-		return fmt.Errorf("consumer group invalid: %w: %v", ErrInvalidRoute, err)
+		return fmt.Errorf("consumer group invalid: %w: %w", ErrInvalidRoute, err)
 	}
 	if consumerGroup == "" {
 		return errors.New("consumer group must not be empty")

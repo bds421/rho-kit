@@ -84,65 +84,74 @@ func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.
 	result := make([]messaging.Binding, 0, len(bindings))
 
 	for _, b := range bindings {
-		if err := ch.ExchangeDeclare(
-			b.Exchange,
-			b.ExchangeType,
-			true,  // durable
-			false, // auto-delete
-			false, // internal
-			false, // no-wait
-			nil,
-		); err != nil {
-			return nil, redact.WrapError("declare exchange", err)
-		}
-
-		db := messaging.Binding{BindingSpec: b}
-
-		if b.Retry != nil {
-			db.RetryExchange = b.Exchange + ".retry"
-			db.RetryQueue = b.ConsumerGroup + ".retry"
-			db.DeadExchange = messaging.DeadExchangeName(b.Exchange)
-			db.DeadQueue = b.ConsumerGroup + ".dead"
-
-			if err := declareRetryTopology(ch, b, db); err != nil {
-				return nil, err
-			}
-		}
-
-		var queueArgs amqp.Table
-		if b.Retry != nil {
-			queueArgs = amqp.Table{
-				"x-dead-letter-exchange":    db.RetryExchange,
-				"x-dead-letter-routing-key": b.ConsumerGroup,
-			}
-		}
-
-		_, err = ch.QueueDeclare(
-			b.ConsumerGroup,
-			true,  // durable
-			false, // auto-delete
-			false, // exclusive
-			false, // no-wait
-			queueArgs,
-		)
+		db, err := declareBinding(ch, b)
 		if err != nil {
-			return nil, redact.WrapError("declare queue", err)
+			return nil, err
 		}
-
-		if err := ch.QueueBind(
-			b.ConsumerGroup,
-			b.RoutingKey,
-			b.Exchange,
-			false, // no-wait
-			nil,
-		); err != nil {
-			return nil, redact.WrapError("bind queue to exchange", err)
-		}
-
 		result = append(result, db)
 	}
 
 	return result, nil
+}
+
+// declareBinding declares b's exchange, queue and binding on ch, and its
+// retry topology when b has a retry policy.
+func declareBinding(ch *amqp.Channel, b messaging.BindingSpec) (messaging.Binding, error) {
+	if err := ch.ExchangeDeclare(
+		b.Exchange,
+		b.ExchangeType,
+		true,  // durable
+		false, // auto-delete
+		false, // internal
+		false, // no-wait
+		nil,
+	); err != nil {
+		return messaging.Binding{}, redact.WrapError("declare exchange", err)
+	}
+
+	db := messaging.Binding{BindingSpec: b}
+
+	if b.Retry != nil {
+		db.RetryExchange = b.Exchange + ".retry"
+		db.RetryQueue = b.ConsumerGroup + ".retry"
+		db.DeadExchange = messaging.DeadExchangeName(b.Exchange)
+		db.DeadQueue = b.ConsumerGroup + ".dead"
+
+		if err := declareRetryTopology(ch, b, db); err != nil {
+			return messaging.Binding{}, err
+		}
+	}
+
+	var queueArgs amqp.Table
+	if b.Retry != nil {
+		queueArgs = amqp.Table{
+			"x-dead-letter-exchange":    db.RetryExchange,
+			"x-dead-letter-routing-key": b.ConsumerGroup,
+		}
+	}
+
+	_, err := ch.QueueDeclare(
+		b.ConsumerGroup,
+		true,  // durable
+		false, // auto-delete
+		false, // exclusive
+		false, // no-wait
+		queueArgs,
+	)
+	if err != nil {
+		return messaging.Binding{}, redact.WrapError("declare queue", err)
+	}
+
+	if err := ch.QueueBind(
+		b.ConsumerGroup,
+		b.RoutingKey,
+		b.Exchange,
+		false, // no-wait
+		nil,
+	); err != nil {
+		return messaging.Binding{}, redact.WrapError("bind queue to exchange", err)
+	}
+	return db, nil
 }
 
 // declareRetryTopology creates the retry exchange, retry queue, dead exchange,

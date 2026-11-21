@@ -170,23 +170,14 @@ func UnguardedPublishHandler(pub messaging.Publisher, allowedExchanges []string,
 	if logger == nil {
 		logger = slog.Default()
 	}
-	// nil allowedExchanges is now treated as "deny all" rather than the
-	// previous "allow all" — a missing allowlist on a publish endpoint
-	// is RCE-equivalent and is the kind of misconfiguration a strict
-	// kit must refuse. Operators that genuinely want every exchange
-	// must pass an explicit "*" entry (handled below).
+	// A missing allowlist on a publish endpoint is RCE-equivalent and is
+	// the kind of misconfiguration a strict kit must refuse. Operators
+	// that genuinely want every exchange must pass an explicit "*" entry
+	// (see exchangeAllowlist).
 	if allowedExchanges == nil {
 		panic("debughttp: PublishHandler requires a non-nil allowedExchanges (use []string{\"*\"} to opt into open-publish, []string{} to deny all)")
 	}
-	allowAny := false
-	allowed := make(map[string]struct{}, len(allowedExchanges))
-	for _, e := range allowedExchanges {
-		if e == "*" {
-			allowAny = true
-			continue
-		}
-		allowed[e] = struct{}{}
-	}
+	allowed := newExchangeAllowlist(allowedExchanges)
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req publishRequest
@@ -202,11 +193,9 @@ func UnguardedPublishHandler(pub messaging.Publisher, allowedExchanges []string,
 		// messaging.ValidatePublishRoute. Message type defaults to routing_key
 		// for backward compatibility when "type" is omitted.
 
-		if !allowAny {
-			if _, ok := allowed[req.Exchange]; !ok {
-				httpx.WriteError(w, http.StatusBadRequest, "exchange not allowed")
-				return
-			}
+		if !allowed.permits(req.Exchange) {
+			httpx.WriteError(w, http.StatusBadRequest, "exchange not allowed")
+			return
 		}
 
 		msgType := req.Type
@@ -243,4 +232,31 @@ func UnguardedPublishHandler(pub messaging.Publisher, allowedExchanges []string,
 
 		_ = httpx.WriteJSON(w, r, http.StatusOK, response{OK: true, MessageID: msg.ID})
 	}
+}
+
+// exchangeAllowlist is the set of exchanges the debug endpoint may publish
+// to; a "*" entry allows every exchange.
+type exchangeAllowlist struct {
+	any       bool
+	exchanges map[string]struct{}
+}
+
+func newExchangeAllowlist(entries []string) exchangeAllowlist {
+	l := exchangeAllowlist{exchanges: make(map[string]struct{}, len(entries))}
+	for _, e := range entries {
+		if e == "*" {
+			l.any = true
+			continue
+		}
+		l.exchanges[e] = struct{}{}
+	}
+	return l
+}
+
+func (l exchangeAllowlist) permits(exchange string) bool {
+	if l.any {
+		return true
+	}
+	_, ok := l.exchanges[exchange]
+	return ok
 }

@@ -358,23 +358,9 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 	if err := cfg.validateAuth(serverURL); err != nil {
 		return nil, err
 	}
-	if cfg.PublishAckWait < 0 {
-		return nil, errors.New("natsbackend: PublishAckWait must not be negative")
-	}
-	if cfg.MaxReconnects < -1 {
-		return nil, errors.New("natsbackend: MaxReconnects must be >= -1")
-	}
-	if cfg.ReconnectWait < 0 {
-		return nil, errors.New("natsbackend: ReconnectWait must not be negative")
-	}
-	if cfg.Name == "" {
-		cfg.Name = "rho-kit"
-	}
-	if cfg.MaxReconnects == 0 {
-		cfg.MaxReconnects = -1 // infinite
-	}
-	if cfg.ReconnectWait <= 0 {
-		cfg.ReconnectWait = 2 * time.Second
+	cfg, err = withConnectDefaults(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	opts := []nats.Option{
@@ -389,6 +375,85 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 	if cfg.TLS != nil {
 		opts = append(opts, nats.Secure(cfg.TLS))
 	}
+	credentials, err := credentialOptions(cfg)
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, credentials...)
+	opts = withExtraOptions(opts, cfg)
+	// Honour ctx deadline for the dial. nats.Connect itself does not
+	// accept a context, so we derive a finite Timeout from the deadline
+	// when present. Without this, a cancelled ctx would not abort the
+	// dial.
+	if deadline, ok := ctx.Deadline(); ok {
+		if d := time.Until(deadline); d > 0 {
+			opts = append(opts, nats.Timeout(d))
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, redact.WrapError("natsbackend: connect", err)
+	}
+
+	nc, err := nats.Connect(cfg.URL, opts...)
+	if err != nil {
+		return nil, redact.WrapError("natsbackend: connect", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		nc.Close()
+		return nil, redact.WrapError("natsbackend: jetstream", err)
+	}
+	return &Connection{nc: nc, js: js, publishAckWait: cfg.PublishAckWait}, nil
+}
+
+// withExtraOptions appends cfg.ExtraOptions BEFORE the security-critical
+// re-apply so callers can extend behaviour (custom error handlers, custom
+// dialers, inbox prefixes) but cannot disable kit-hardened defaults. The
+// re-applied set covers every kit-owned option that alters trust, lifecycle
+// bounds, or reconnect behaviour: DrainTimeout (bounded shutdown), TLS
+// (transport security), MaxReconnects + ReconnectWait (bounded reconnect
+// storm), and the connection Name (operator-visible identifier in NATS
+// server logs).
+func withExtraOptions(opts []nats.Option, cfg Config) []nats.Option {
+	opts = append(opts, cfg.ExtraOptions...)
+	opts = append(opts, nats.DrainTimeout(closeDrainTimeout))
+	if cfg.TLS != nil {
+		opts = append(opts, nats.Secure(cfg.TLS))
+	}
+	opts = append(opts, nats.MaxReconnects(cfg.MaxReconnects))
+	opts = append(opts, nats.ReconnectWait(cfg.ReconnectWait))
+	return append(opts, nats.Name(cfg.Name))
+}
+
+// withConnectDefaults rejects out-of-range connection settings and fills in
+// the defaults for the ones left unset.
+func withConnectDefaults(cfg Config) (Config, error) {
+	if cfg.PublishAckWait < 0 {
+		return Config{}, errors.New("natsbackend: PublishAckWait must not be negative")
+	}
+	if cfg.MaxReconnects < -1 {
+		return Config{}, errors.New("natsbackend: MaxReconnects must be >= -1")
+	}
+	if cfg.ReconnectWait < 0 {
+		return Config{}, errors.New("natsbackend: ReconnectWait must not be negative")
+	}
+	if cfg.Name == "" {
+		cfg.Name = "rho-kit"
+	}
+	if cfg.MaxReconnects == 0 {
+		cfg.MaxReconnects = -1 // infinite
+	}
+	if cfg.ReconnectWait <= 0 {
+		cfg.ReconnectWait = 2 * time.Second
+	}
+	return cfg, nil
+}
+
+// credentialOptions turns cfg's credentials into dial options; a provider
+// takes precedence over the static value of the same kind.
+func credentialOptions(cfg Config) ([]nats.Option, error) {
+	var opts []nats.Option
 	timeout := cfg.CredentialProviderTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -415,49 +480,7 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 		}
 		opts = append(opts, nkeyOpt)
 	}
-	// ExtraOptions are appended BEFORE the security-critical re-apply
-	// so callers can extend behaviour (custom error handlers, custom
-	// dialers, inbox prefixes) but cannot disable kit-hardened
-	// defaults. The re-applied set covers every kit-owned option that
-	// alters trust, lifecycle bounds, or reconnect behaviour:
-	// DrainTimeout (bounded shutdown), TLS (transport security),
-	// MaxReconnects + ReconnectWait (bounded reconnect storm), and
-	// the connection Name (operator-visible identifier in NATS server
-	// logs). L138 added Name and ReconnectWait to the re-apply set
-	// after the prior round only covered TLS, DrainTimeout, and
-	// MaxReconnects.
-	opts = append(opts, cfg.ExtraOptions...)
-	opts = append(opts, nats.DrainTimeout(closeDrainTimeout))
-	if cfg.TLS != nil {
-		opts = append(opts, nats.Secure(cfg.TLS))
-	}
-	opts = append(opts, nats.MaxReconnects(cfg.MaxReconnects))
-	opts = append(opts, nats.ReconnectWait(cfg.ReconnectWait))
-	opts = append(opts, nats.Name(cfg.Name))
-	// Honour ctx deadline for the dial. nats.Connect itself does not
-	// accept a context, so we derive a finite Timeout from the deadline
-	// when present. Without this, a cancelled ctx would not abort the
-	// dial.
-	if deadline, ok := ctx.Deadline(); ok {
-		if d := time.Until(deadline); d > 0 {
-			opts = append(opts, nats.Timeout(d))
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, redact.WrapError("natsbackend: connect", err)
-	}
-
-	nc, err := nats.Connect(cfg.URL, opts...)
-	if err != nil {
-		return nil, redact.WrapError("natsbackend: connect", err)
-	}
-
-	js, err := jetstream.New(nc)
-	if err != nil {
-		nc.Close()
-		return nil, redact.WrapError("natsbackend: jetstream", err)
-	}
-	return &Connection{nc: nc, js: js, publishAckWait: cfg.PublishAckWait}, nil
+	return opts, nil
 }
 
 // Healthy reports whether the underlying NATS connection is currently
@@ -917,11 +940,7 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 			// same payload through the same handler will panic again,
 			// burning the entire MaxDeliver budget for nothing. Term
 			// hands it straight to the JetStream DLQ.
-			if err := jm.Term(); err != nil {
-				c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeTermFailed)
-			} else {
-				c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeHandlerPanic)
-			}
+			c.terminate(jm, natsConsumeOutcomeHandlerPanic)
 			c.logger.Error("natsbackend: handler panicked — terminating message",
 				redact.Panic(r),
 			)
@@ -931,59 +950,8 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 	subject := jm.Subject()
 	exchange, routingKey := extractExchangeAndRoutingKey(jm)
 
-	// Cap delivery bytes before json.Unmarshal so a JetStream-side
-	// configuration that produces unusually large messages cannot OOM
-	// the consumer at parse time. NATS's own max_msg_size operates at
-	// the broker; this is the kit-side safety net.
-	if data := jm.Data(); len(data) > maxConsumerDeliveryBytes {
-		c.logger.Error("natsbackend: oversized message — discarding",
-			redact.String("subject", subject),
-			"size_bytes", len(data),
-		)
-		if err := jm.Term(); err != nil {
-			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeTermFailed)
-		} else {
-			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeDecodeError)
-		}
-		return
-	}
-	var msg messaging.Message
-	if err := json.Unmarshal(jm.Data(), &msg); err != nil {
-		c.logger.Error("natsbackend: malformed message — discarding",
-			redact.String("subject", subject),
-			redact.Error(err),
-		)
-		if err := jm.Term(); err != nil {
-			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeTermFailed)
-		} else {
-			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeDecodeError)
-		}
-		return
-	}
-
-	headers, msgHeaders := deliveryHeaderMaps(jm.Headers())
-	msg = msg.Clone()
-	msg.Headers = msgHeaders
-
-	// Validate the post-extraction message contract before invoking the
-	// handler. Publishers call messaging.ValidateMessage before sending,
-	// but a foreign producer (or a misconfigured peer) can bypass the kit
-	// publisher path entirely. Without this guard, handlers receive
-	// metadata the messaging.Message contract says cannot exist —
-	// oversized IDs/types, too many headers, invalid header bytes, etc.
-	// Term rather than Nak: a malformed message will never validate, so
-	// JetStream redelivery would burn the entire MaxDeliver budget.
-	if err := messaging.ValidateMessage(msg); err != nil {
-		c.logger.Error("natsbackend: inbound message failed validation — terminating",
-			redact.String("subject", subject),
-			redact.String("msg_id", msg.ID),
-			redact.Error(err),
-		)
-		if err := jm.Term(); err != nil {
-			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeTermFailed)
-		} else {
-			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeValidateError)
-		}
+	msg, headers, ok := c.decodeDelivery(jm, subject)
+	if !ok {
 		return
 	}
 
@@ -1004,53 +972,13 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 		Headers:       headers,
 	}
 
-	// Detach a cancelled parent so shutdown still grants handlers a
-	// bounded grace window (parity with amqpbackend handlerTimeout).
-	handlerBase := ctx
-	if ctx != nil && ctx.Err() != nil {
-		handlerBase = context.WithoutCancel(ctx)
-	}
-	if handlerBase == nil {
-		handlerBase = context.Background()
-	}
-	handlerCtx, handlerCancel := context.WithTimeout(handlerBase, handlerTimeout)
+	handlerCtx, handlerCancel := context.WithTimeout(handlerBaseContext(ctx), handlerTimeout)
 	defer handlerCancel()
-
 	handlerStarted = time.Now()
 	handlerStartedSet = true
 	if err := handler(handlerCtx, delivery); err != nil {
 		c.metrics.observeHandler(c.cfg.Stream, c.cfg.Durable, natsHandlerOutcomeError, handlerStarted)
-		// Permanent errors (apperror.PermanentError) get Term'd so
-		// JetStream stops redelivering immediately, mirroring the
-		// AMQP backend's poison-pill handling. Without this every
-		// permanent failure burns the entire MaxDeliver budget.
-		if apperror.IsPermanent(err) {
-			c.logger.Error("natsbackend: permanent error — terminating message",
-				redact.String("subject", subject),
-				redact.String("msg_id", msg.ID),
-				redact.Error(err),
-			)
-			if err := jm.Term(); err != nil {
-				c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeTermFailed)
-			} else {
-				c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomePermanent)
-			}
-			return
-		}
-		// Delayed Nak: immediate Nak() burns MaxDeliver in milliseconds
-		// under a short transient outage and then permanently stalls the
-		// message with no DLQ. Escalate delay from delivery count.
-		delay := natsNakDelay(numDelivered)
-		c.logger.Warn("natsbackend: handler returned error — nacking with delay",
-			redact.String("subject", subject),
-			redact.String("msg_id", msg.ID),
-			redact.Error(err),
-		)
-		if err := jm.NakWithDelay(delay); err != nil {
-			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeNakFailed)
-		} else {
-			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeRetry)
-		}
+		c.settleHandlerError(jm, subject, msg.ID, numDelivered, err)
 		return
 	}
 	c.metrics.observeHandler(c.cfg.Stream, c.cfg.Durable, natsHandlerOutcomeSuccess, handlerStarted)
@@ -1059,6 +987,108 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 		return
 	}
 	c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeAcked)
+}
+
+// decodeDelivery parses and validates jm's message and splits its headers.
+// A delivery that cannot become a valid message is terminated, and ok is
+// false.
+func (c *Consumer) decodeDelivery(jm jetstream.Msg, subject string) (msg messaging.Message, headers map[string]any, ok bool) {
+	// Cap delivery bytes before json.Unmarshal so a JetStream-side
+	// configuration that produces unusually large messages cannot OOM
+	// the consumer at parse time. NATS's own max_msg_size operates at
+	// the broker; this is the kit-side safety net.
+	if data := jm.Data(); len(data) > maxConsumerDeliveryBytes {
+		c.logger.Error("natsbackend: oversized message — discarding",
+			redact.String("subject", subject),
+			"size_bytes", len(data),
+		)
+		c.terminate(jm, natsConsumeOutcomeDecodeError)
+		return messaging.Message{}, nil, false
+	}
+	if err := json.Unmarshal(jm.Data(), &msg); err != nil {
+		c.logger.Error("natsbackend: malformed message — discarding",
+			redact.String("subject", subject),
+			redact.Error(err),
+		)
+		c.terminate(jm, natsConsumeOutcomeDecodeError)
+		return messaging.Message{}, nil, false
+	}
+
+	headers, msgHeaders := deliveryHeaderMaps(jm.Headers())
+	msg = msg.Clone()
+	msg.Headers = msgHeaders
+
+	// Validate the post-extraction message contract before invoking the
+	// handler. Publishers call messaging.ValidateMessage before sending,
+	// but a foreign producer (or a misconfigured peer) can bypass the kit
+	// publisher path entirely. Without this guard, handlers receive
+	// metadata the messaging.Message contract says cannot exist —
+	// oversized IDs/types, too many headers, invalid header bytes, etc.
+	// Term rather than Nak: a malformed message will never validate, so
+	// JetStream redelivery would burn the entire MaxDeliver budget.
+	if err := messaging.ValidateMessage(msg); err != nil {
+		c.logger.Error("natsbackend: inbound message failed validation — terminating",
+			redact.String("subject", subject),
+			redact.String("msg_id", msg.ID),
+			redact.Error(err),
+		)
+		c.terminate(jm, natsConsumeOutcomeValidateError)
+		return messaging.Message{}, nil, false
+	}
+	return msg, headers, true
+}
+
+// handlerBaseContext detaches a cancelled parent so shutdown still grants
+// handlers a bounded grace window (parity with amqpbackend handlerTimeout).
+func handlerBaseContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	if ctx.Err() != nil {
+		return context.WithoutCancel(ctx)
+	}
+	return ctx
+}
+
+// settleHandlerError terminates the message after a permanent handler error
+// and naks it with an escalating delay after a transient one.
+func (c *Consumer) settleHandlerError(jm jetstream.Msg, subject, msgID string, numDelivered uint64, err error) {
+	// Permanent errors (apperror.PermanentError) get Term'd so
+	// JetStream stops redelivering immediately, mirroring the
+	// AMQP backend's poison-pill handling. Without this every
+	// permanent failure burns the entire MaxDeliver budget.
+	if apperror.IsPermanent(err) {
+		c.logger.Error("natsbackend: permanent error — terminating message",
+			redact.String("subject", subject),
+			redact.String("msg_id", msgID),
+			redact.Error(err),
+		)
+		c.terminate(jm, natsConsumeOutcomePermanent)
+		return
+	}
+	// Delayed Nak: immediate Nak() burns MaxDeliver in milliseconds
+	// under a short transient outage and then permanently stalls the
+	// message with no DLQ. Escalate delay from delivery count.
+	delay := natsNakDelay(numDelivered)
+	c.logger.Warn("natsbackend: handler returned error — nacking with delay",
+		redact.String("subject", subject),
+		redact.String("msg_id", msgID),
+		redact.Error(err),
+	)
+	if err := jm.NakWithDelay(delay); err != nil {
+		c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeNakFailed)
+	} else {
+		c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeRetry)
+	}
+}
+
+// terminate Terms jm and records outcome, or the failed Term.
+func (c *Consumer) terminate(jm jetstream.Msg, outcome string) {
+	if err := jm.Term(); err != nil {
+		c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeTermFailed)
+		return
+	}
+	c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, outcome)
 }
 
 func publishOutcomeForError(err error) string {

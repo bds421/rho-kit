@@ -300,12 +300,29 @@ func TestFindBinding_ClonesRetryPolicy(t *testing.T) {
 
 // --- ComputeBindings validation errors ---
 
-func TestComputeBindings_ValidationErrors(t *testing.T) {
-	tests := []struct {
-		name   string
-		spec   messaging.BindingSpec
-		errMsg string
-	}{
+type bindingValidationCase struct {
+	name   string
+	spec   messaging.BindingSpec
+	errMsg string
+}
+
+// assertComputeBindingsRejects checks that each case fails with its message
+// and that no message echoes a duration value.
+func assertComputeBindingsRejects(t *testing.T, tests []bindingValidationCase) {
+	t.Helper()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := messaging.ComputeBindings(tt.spec)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errMsg)
+			assert.NotContains(t, err.Error(), "-1s")
+			assert.NotContains(t, err.Error(), "0s")
+		})
+	}
+}
+
+func TestComputeBindings_RouteValidationErrors(t *testing.T) {
+	assertComputeBindingsRejects(t, []bindingValidationCase{
 		{
 			name: "empty exchange",
 			spec: messaging.BindingSpec{
@@ -354,6 +371,11 @@ func TestComputeBindings_ValidationErrors(t *testing.T) {
 			},
 			errMsg: "routing key required for topic exchange",
 		},
+	})
+}
+
+func TestComputeBindings_RetryValidationErrors(t *testing.T) {
+	assertComputeBindingsRejects(t, []bindingValidationCase{
 		{
 			name: "retry MaxRetries less than 1",
 			spec: messaging.BindingSpec{
@@ -387,17 +409,7 @@ func TestComputeBindings_ValidationErrors(t *testing.T) {
 			},
 			errMsg: "Delay must be >= 1ms",
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := messaging.ComputeBindings(tt.spec)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tt.errMsg)
-			assert.NotContains(t, err.Error(), "-1s")
-			assert.NotContains(t, err.Error(), "0s")
-		})
-	}
+	})
 }
 
 // TestValidateBindingSpecs_ConsumerGroupCharset verifies that the

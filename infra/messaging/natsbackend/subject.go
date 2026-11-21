@@ -60,11 +60,12 @@ func ParseSubjectToken(token string) (string, error) {
 		if c != '%' || i+2 >= len(token) {
 			return "", ErrSubjectToken
 		}
-		hi, lo := strings.IndexByte(hexDigits, token[i+1]), strings.IndexByte(hexDigits, token[i+2])
-		if hi < 0 || lo < 0 || plain(byte(hi<<4|lo)) {
+		hi, hiOK := hexNibble(token[i+1])
+		lo, loOK := hexNibble(token[i+2])
+		if !hiOK || !loOK || plain(hi<<4|lo) {
 			return "", ErrSubjectToken
 		}
-		b.WriteByte(byte(hi<<4 | lo))
+		b.WriteByte(hi<<4 | lo)
 		i += 2
 	}
 	return b.String(), nil
@@ -115,18 +116,38 @@ func validate(s string, wildcards bool) error {
 			}
 			continue
 		}
-		for j := 0; j < len(token); j++ {
-			c := token[j]
-			if c <= ' ' || c == 0x7f {
-				return ErrSubjectToken
-			}
-			if c == '*' || c == '>' {
-				if wildcards {
-					return ErrFilterWildcard
-				}
-				return ErrSubjectWildcard
-			}
+		if err := validateLiteralToken(token, wildcards); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// validateLiteralToken checks a token that is not a wildcard on its own:
+// it holds no control or space bytes and no wildcard character.
+func validateLiteralToken(token string, wildcards bool) error {
+	for j := 0; j < len(token); j++ {
+		c := token[j]
+		if c <= ' ' || c == 0x7f {
+			return ErrSubjectToken
+		}
+		if c == '*' || c == '>' {
+			if wildcards {
+				return ErrFilterWildcard
+			}
+			return ErrSubjectWildcard
+		}
+	}
+	return nil
+}
+
+// hexNibble returns the value of an upper-case hex digit, as [SubjectToken]
+// writes them.
+func hexNibble(c byte) (byte, bool) {
+	for n := byte(0); n < byte(len(hexDigits)); n++ {
+		if hexDigits[n] == c {
+			return n, true
+		}
+	}
+	return 0, false
 }
