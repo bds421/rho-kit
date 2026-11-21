@@ -120,9 +120,7 @@ func (b *Backend) collectObjects(
 	opts storage.ListOptions,
 	yield func(storage.ObjectInfo, error) bool,
 ) ([]storage.ObjectInfo, error) {
-	var objects []storage.ObjectInfo
-	var top objectMaxHeap
-	bound := opts.MaxKeys > 0
+	collected := objectCollector{maxKeys: opts.MaxKeys}
 	err := fs.WalkDir(root.FS(), walkRoot, func(p string, d fs.DirEntry, walkErr error) error {
 		if ctx.Err() != nil {
 			// Surface cancellation as an error rather than ending the walk
@@ -131,93 +129,23 @@ func (b *Backend) collectObjects(
 			return ctx.Err()
 		}
 		if walkErr != nil {
-			// Walk root missing → empty listing (prefix has no objects yet).
-			// Any other root-level Stat failure (permission, EIO, ELOOP) must
-			// surface; fs.WalkDir sets d==nil for all root Stat errors, not
-			// only ErrNotExist.
-			if d == nil {
-				if errors.Is(walkErr, fs.ErrNotExist) {
-					return fs.SkipAll
-				}
-				if !yield(storage.ObjectInfo{}, localFileError("walk object", walkErr)) {
-					return errStopWalk
-				}
-				return errStopWalk
-			}
-			// Mid-walk errors: surface once and stop (Lister contract:
-			// iteration stops on first error).
-			if !yield(storage.ObjectInfo{}, localFileError("walk object", walkErr)) {
-				return errStopWalk
-			}
+			return walkFailure(d, walkErr, yield)
+		}
+		if d.Type()&fs.ModeSymlink != 0 && !d.IsDir() {
+			yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: refusing symlink object"))
 			return errStopWalk
 		}
-
-		// Skip directories — only yield files.
-		if d.IsDir() {
-			return nil
+		obj, ok, err := listedObject(p, d, prefix, opts.StartAfter)
+		if err != nil || !ok {
+			return err
 		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			if !yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: refusing symlink object")) {
-				return errStopWalk
-			}
-			return errStopWalk
-		}
-
-		// fs.WalkDir over the os.Root FS yields root-relative slash paths,
-		// which are exactly storage keys.
-		key := p
-
-		// Skip internal atomic-write temp files (".tmp-*"): in-flight Put/Copy
-		// temporaries and crash-orphaned leftovers are not objects.
-		if strings.HasPrefix(d.Name(), ".tmp-") {
-			return nil
-		}
-
-		// Apply string-prefix filter (walkRoot may be an ancestor directory).
-		if prefix != "" && !strings.HasPrefix(key, prefix) {
-			return nil
-		}
-
-		info, err := d.Info()
-		if err != nil {
-			return localFileError("inspect object", err)
-		}
-
-		obj := storage.ObjectInfo{
-			Key:     key,
-			Size:    info.Size(),
-			ModTime: info.ModTime(),
-		}
-		if opts.StartAfter != "" && obj.Key <= opts.StartAfter {
-			return nil
-		}
-		if !bound {
-			objects = append(objects, obj)
-			return nil
-		}
-		// Bound to MaxKeys smallest keys via a max-heap (largest of the
-		// kept set at the root). When full, drop candidates larger than
-		// the current max.
-		if top.Len() < opts.MaxKeys {
-			heap.Push(&top, obj)
-			return nil
-		}
-		if obj.Key < top[0].Key {
-			heap.Pop(&top)
-			heap.Push(&top, obj)
-		}
+		collected.add(obj)
 		return nil
 	})
 
 	switch {
 	case err == nil:
-		if bound {
-			objects = make([]storage.ObjectInfo, top.Len())
-			for i := len(objects) - 1; i >= 0; i-- {
-				objects[i] = heap.Pop(&top).(storage.ObjectInfo)
-			}
-		}
-		return objects, nil
+		return collected.sorted(), nil
 	case errors.Is(err, errStopWalk):
 		// Caller stopped iteration after a yielded error.
 		return nil, err
@@ -227,6 +155,80 @@ func (b *Backend) collectObjects(
 		yield(storage.ObjectInfo{}, err)
 		return nil, err
 	}
+}
+
+// walkFailure handles an error fs.WalkDir hands the callback. A missing walk
+// root is an empty listing (prefix has no objects yet). Any other root-level
+// Stat failure (permission, EIO, ELOOP) must surface — fs.WalkDir sets d==nil
+// for all root Stat errors, not only ErrNotExist — and so must a mid-walk
+// error, once, after which the walk stops (Lister contract: iteration stops on
+// first error).
+func walkFailure(d fs.DirEntry, walkErr error, yield func(storage.ObjectInfo, error) bool) error {
+	if d == nil && errors.Is(walkErr, fs.ErrNotExist) {
+		return fs.SkipAll
+	}
+	yield(storage.ObjectInfo{}, localFileError("walk object", walkErr))
+	return errStopWalk
+}
+
+// listedObject returns the object at walk path p, or false for an entry the
+// listing skips: directories, internal atomic-write temp files (".tmp-*":
+// in-flight Put/Copy temporaries and crash-orphaned leftovers), keys outside
+// prefix (walkRoot may be an ancestor directory) and keys up to startAfter.
+// fs.WalkDir over the os.Root FS yields root-relative slash paths, which are
+// exactly storage keys.
+func listedObject(p string, d fs.DirEntry, prefix, startAfter string) (storage.ObjectInfo, bool, error) {
+	if d.IsDir() || strings.HasPrefix(d.Name(), ".tmp-") {
+		return storage.ObjectInfo{}, false, nil
+	}
+	if prefix != "" && !strings.HasPrefix(p, prefix) {
+		return storage.ObjectInfo{}, false, nil
+	}
+	info, err := d.Info()
+	if err != nil {
+		return storage.ObjectInfo{}, false, localFileError("inspect object", err)
+	}
+	if startAfter != "" && p <= startAfter {
+		return storage.ObjectInfo{}, false, nil
+	}
+	return storage.ObjectInfo{Key: p, Size: info.Size(), ModTime: info.ModTime()}, true, nil
+}
+
+// objectCollector keeps every listed object, or with maxKeys > 0 only the
+// maxKeys smallest keys via a max-heap (largest of the kept set at the root).
+type objectCollector struct {
+	maxKeys int
+	objects []storage.ObjectInfo
+	top     objectMaxHeap
+}
+
+func (c *objectCollector) add(obj storage.ObjectInfo) {
+	if c.maxKeys <= 0 {
+		c.objects = append(c.objects, obj)
+		return
+	}
+	// When full, drop candidates larger than the current max.
+	if c.top.Len() < c.maxKeys {
+		heap.Push(&c.top, obj)
+		return
+	}
+	if obj.Key < c.top[0].Key {
+		heap.Pop(&c.top)
+		heap.Push(&c.top, obj)
+	}
+}
+
+// sorted returns the kept objects; a bounded set comes out in key order, an
+// unbounded one in walk order.
+func (c *objectCollector) sorted() []storage.ObjectInfo {
+	if c.maxKeys <= 0 {
+		return c.objects
+	}
+	objects := make([]storage.ObjectInfo, c.top.Len())
+	for i := len(objects) - 1; i >= 0; i-- {
+		objects[i] = heap.Pop(&c.top).(storage.ObjectInfo)
+	}
+	return objects
 }
 
 // errStopWalk is a sentinel returned from the WalkDir callback to stop the

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -147,7 +148,7 @@ func (b *Backend) CompleteUpload(ctx context.Context, upload storage.MultipartUp
 			return fmt.Errorf("%w: multipart completion parts must be contiguous and checksummed", storage.ErrValidation)
 		}
 		completed[index] = types.CompletedPart{
-			PartNumber: aws.Int32(int32(part.PartNumber)), ETag: aws.String(part.ETag), ChecksumSHA256: aws.String(part.ChecksumSHA256),
+			PartNumber: aws.Int32(int32(min(part.PartNumber, math.MaxInt32))), ETag: aws.String(part.ETag), ChecksumSHA256: aws.String(part.ChecksumSHA256),
 		}
 	}
 	client, err := b.multipartClient()
@@ -203,7 +204,7 @@ func (b *Backend) ListMultipartUploads(ctx context.Context, prefix string, opts 
 		return storage.MultipartUploadPage{}, err
 	}
 	input := &s3.ListMultipartUploadsInput{
-		Bucket: aws.String(b.bucket), MaxUploads: aws.Int32(int32(opts.MaxUploads)),
+		Bucket: aws.String(b.bucket), MaxUploads: aws.Int32(int32(min(opts.MaxUploads, math.MaxInt32))),
 	}
 	// Native AWS honors Prefix and may enforce it in IAM policy. Some MinIO
 	// path-style endpoints return an empty page when Prefix is present even

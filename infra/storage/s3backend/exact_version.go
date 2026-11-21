@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -146,16 +147,9 @@ func (b *Backend) Versions(
 	var keyMarker, versionMarker *string
 	seenEntries := 0
 	for {
-		pageSize := int32(min(1000, limit-len(result)+1))
-		output, err := client.ListObjectVersions(
-			ctx,
-			&s3.ListObjectVersionsInput{
-				Bucket:          aws.String(b.bucket),
-				Prefix:          aws.String(key),
-				KeyMarker:       keyMarker,
-				VersionIdMarker: versionMarker,
-				MaxKeys:         aws.Int32(pageSize),
-			},
+		output, err := b.listObjectVersions(
+			ctx, client, key, keyMarker, versionMarker,
+			int32(min(1000, limit-len(result)+1)),
 		)
 		if err != nil {
 			return nil, storage.WrapSafe(
@@ -163,32 +157,12 @@ func (b *Backend) Versions(
 				err,
 			)
 		}
-		for _, marker := range output.DeleteMarkers {
-			if aws.ToString(marker.Key) == key {
-				seenEntries++
-			}
-		}
-		for _, version := range output.Versions {
-			if aws.ToString(version.Key) == key {
-				seenEntries++
-			}
-		}
+		seenEntries += countKeyEntries(output, key)
 		if seenEntries > limit {
 			return nil, storage.ErrBatchTooLarge
 		}
-		for _, version := range output.Versions {
-			if aws.ToString(version.Key) != key {
-				continue
-			}
-			versionID := aws.ToString(version.VersionId)
-			object := storage.ObjectVersion{Key: key, Version: versionID}
-			if object.Validate() != nil {
-				return nil, storage.ErrExactVersionUnavailable
-			}
-			result = append(result, object)
-			if len(result) > limit {
-				return nil, storage.ErrBatchTooLarge
-			}
+		if result, err = appendKeyVersions(result, output, key, limit); err != nil {
+			return nil, err
 		}
 		if !aws.ToBool(output.IsTruncated) {
 			break
@@ -199,13 +173,77 @@ func (b *Backend) Versions(
 			break
 		}
 		if nextKey == "" || nextVersion == "" ||
-			keyMarker != nil && nextKey == *keyMarker &&
-				versionMarker != nil && nextVersion == *versionMarker {
+			markersRepeat(keyMarker, versionMarker, nextKey, nextVersion) {
 			return nil, storage.ErrExactVersionUnavailable
 		}
 		keyMarker, versionMarker = aws.String(nextKey), aws.String(nextVersion)
 	}
 	return result, nil
+}
+
+func (b *Backend) listObjectVersions(
+	ctx context.Context,
+	client exactVersionListClient,
+	prefix string,
+	keyMarker, versionMarker *string,
+	maxKeys int32,
+) (*s3.ListObjectVersionsOutput, error) {
+	return client.ListObjectVersions(
+		ctx,
+		&s3.ListObjectVersionsInput{
+			Bucket:          aws.String(b.bucket),
+			Prefix:          aws.String(prefix),
+			KeyMarker:       keyMarker,
+			VersionIdMarker: versionMarker,
+			MaxKeys:         aws.Int32(maxKeys),
+		},
+	)
+}
+
+// countKeyEntries counts the versions and delete markers of exactly key; the
+// listing's prefix also returns longer keys.
+func countKeyEntries(output *s3.ListObjectVersionsOutput, key string) int {
+	count := 0
+	for _, marker := range output.DeleteMarkers {
+		if aws.ToString(marker.Key) == key {
+			count++
+		}
+	}
+	for _, version := range output.Versions {
+		if aws.ToString(version.Key) == key {
+			count++
+		}
+	}
+	return count
+}
+
+func appendKeyVersions(
+	result []storage.ObjectVersion,
+	output *s3.ListObjectVersionsOutput,
+	key string,
+	limit int,
+) ([]storage.ObjectVersion, error) {
+	for _, version := range output.Versions {
+		if aws.ToString(version.Key) != key {
+			continue
+		}
+		object := storage.ObjectVersion{Key: key, Version: aws.ToString(version.VersionId)}
+		if object.Validate() != nil {
+			return nil, storage.ErrExactVersionUnavailable
+		}
+		result = append(result, object)
+		if len(result) > limit {
+			return nil, storage.ErrBatchTooLarge
+		}
+	}
+	return result, nil
+}
+
+// markersRepeat reports a listing that would resume where it already started,
+// which would loop forever.
+func markersRepeat(keyMarker, versionMarker *string, nextKey, nextVersion string) bool {
+	return keyMarker != nil && nextKey == *keyMarker &&
+		versionMarker != nil && nextVersion == *versionMarker
 }
 
 func (b *Backend) VersionsByPrefix(
@@ -227,15 +265,9 @@ func (b *Backend) VersionsByPrefix(
 	var keyMarker, versionMarker *string
 	seenEntries := 0
 	for {
-		output, err := client.ListObjectVersions(
-			ctx,
-			&s3.ListObjectVersionsInput{
-				Bucket:          aws.String(b.bucket),
-				Prefix:          aws.String(prefix),
-				KeyMarker:       keyMarker,
-				VersionIdMarker: versionMarker,
-				MaxKeys:         aws.Int32(int32(min(1000, limit-seenEntries+1))),
-			},
+		output, err := b.listObjectVersions(
+			ctx, client, prefix, keyMarker, versionMarker,
+			int32(min(1000, limit-seenEntries+1)),
 		)
 		if err != nil {
 			return nil, storage.WrapSafe(
@@ -243,28 +275,12 @@ func (b *Backend) VersionsByPrefix(
 				err,
 			)
 		}
-		for _, marker := range output.DeleteMarkers {
-			if strings.HasPrefix(aws.ToString(marker.Key), prefix) {
-				seenEntries++
-			}
+		seenEntries += countPrefixDeleteMarkers(output, prefix)
+		before := len(result)
+		if result, err = appendPrefixVersions(result, output, prefix); err != nil {
+			return nil, err
 		}
-		for _, version := range output.Versions {
-			key := aws.ToString(version.Key)
-			if !strings.HasPrefix(key, prefix) {
-				continue
-			}
-			seenEntries++
-			object := storage.ObjectVersion{
-				Key: key,
-				Version: aws.ToString(
-					version.VersionId,
-				),
-			}
-			if object.Validate() != nil {
-				return nil, storage.ErrExactVersionUnavailable
-			}
-			result = append(result, object)
-		}
+		seenEntries += len(result) - before
 		if seenEntries > limit || len(result) > limit {
 			return nil, storage.ErrBatchTooLarge
 		}
@@ -273,12 +289,39 @@ func (b *Backend) VersionsByPrefix(
 		}
 		nextKey := aws.ToString(output.NextKeyMarker)
 		nextVersion := aws.ToString(output.NextVersionIdMarker)
-		if nextKey == "" ||
-			keyMarker != nil && nextKey == *keyMarker &&
-				versionMarker != nil && nextVersion == *versionMarker {
+		if nextKey == "" || markersRepeat(keyMarker, versionMarker, nextKey, nextVersion) {
 			return nil, storage.ErrExactVersionUnavailable
 		}
 		keyMarker, versionMarker = aws.String(nextKey), aws.String(nextVersion)
+	}
+	return result, nil
+}
+
+func countPrefixDeleteMarkers(output *s3.ListObjectVersionsOutput, prefix string) int {
+	count := 0
+	for _, marker := range output.DeleteMarkers {
+		if strings.HasPrefix(aws.ToString(marker.Key), prefix) {
+			count++
+		}
+	}
+	return count
+}
+
+func appendPrefixVersions(
+	result []storage.ObjectVersion,
+	output *s3.ListObjectVersionsOutput,
+	prefix string,
+) ([]storage.ObjectVersion, error) {
+	for _, version := range output.Versions {
+		key := aws.ToString(version.Key)
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		object := storage.ObjectVersion{Key: key, Version: aws.ToString(version.VersionId)}
+		if object.Validate() != nil {
+			return nil, storage.ErrExactVersionUnavailable
+		}
+		result = append(result, object)
 	}
 	return result, nil
 }
@@ -305,15 +348,9 @@ func (b *Backend) VersionsPage(
 	if err != nil {
 		return storage.ExactVersionPage{}, err
 	}
-	output, err := client.ListObjectVersions(
-		ctx,
-		&s3.ListObjectVersionsInput{
-			Bucket:          aws.String(b.bucket),
-			Prefix:          aws.String(prefix),
-			KeyMarker:       keyMarker,
-			VersionIdMarker: versionMarker,
-			MaxKeys:         aws.Int32(int32(options.Limit)),
-		},
+	output, err := b.listObjectVersions(
+		ctx, client, prefix, keyMarker, versionMarker,
+		int32(min(options.Limit, math.MaxInt32)),
 	)
 	if err != nil {
 		return storage.ExactVersionPage{}, storage.WrapSafe(
@@ -324,48 +361,63 @@ func (b *Backend) VersionsPage(
 	if output == nil {
 		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
 	}
-	seenEntries := len(output.DeleteMarkers) + len(output.Versions)
-	if seenEntries > options.Limit {
+	if len(output.DeleteMarkers)+len(output.Versions) > options.Limit {
 		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
 	}
-	page := storage.ExactVersionPage{
-		Objects: make([]storage.ObjectVersion, 0, len(output.Versions)),
+	objects, err := exactVersionPageObjects(output, prefix)
+	if err != nil {
+		return storage.ExactVersionPage{}, err
 	}
+	page := storage.ExactVersionPage{Objects: objects}
+	if !aws.ToBool(output.IsTruncated) {
+		return page, nil
+	}
+	page.NextCursor, err = nextExactVersionPageCursor(prefix, output, keyMarker, versionMarker)
+	if err != nil {
+		return storage.ExactVersionPage{}, err
+	}
+	page.Truncated = true
+	return page, nil
+}
+
+// exactVersionPageObjects returns the page's versions; any entry outside
+// prefix or without a valid version makes the page unavailable.
+func exactVersionPageObjects(
+	output *s3.ListObjectVersionsOutput,
+	prefix string,
+) ([]storage.ObjectVersion, error) {
 	for _, marker := range output.DeleteMarkers {
 		if !strings.HasPrefix(aws.ToString(marker.Key), prefix) {
-			return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+			return nil, storage.ErrExactVersionUnavailable
 		}
 	}
+	objects := make([]storage.ObjectVersion, 0, len(output.Versions))
 	for _, version := range output.Versions {
 		object := storage.ObjectVersion{
 			Key:     aws.ToString(version.Key),
 			Version: aws.ToString(version.VersionId),
 		}
 		if !strings.HasPrefix(object.Key, prefix) || object.Validate() != nil {
-			return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+			return nil, storage.ErrExactVersionUnavailable
 		}
-		page.Objects = append(page.Objects, object)
+		objects = append(objects, object)
 	}
-	if !aws.ToBool(output.IsTruncated) {
-		return page, nil
-	}
+	return objects, nil
+}
+
+func nextExactVersionPageCursor(
+	prefix string,
+	output *s3.ListObjectVersionsOutput,
+	keyMarker, versionMarker *string,
+) (storage.ExactVersionCursor, error) {
 	nextKey := aws.ToString(output.NextKeyMarker)
 	nextVersion := aws.ToString(output.NextVersionIdMarker)
 	if nextKey == "" ||
 		nextKey == aws.ToString(keyMarker) &&
 			nextVersion == aws.ToString(versionMarker) {
-		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
+		return "", storage.ErrExactVersionUnavailable
 	}
-	page.NextCursor, err = encodeExactVersionPageCursor(
-		prefix,
-		nextKey,
-		nextVersion,
-	)
-	if err != nil {
-		return storage.ExactVersionPage{}, err
-	}
-	page.Truncated = true
-	return page, nil
+	return encodeExactVersionPageCursor(prefix, nextKey, nextVersion)
 }
 
 const exactVersionPageCursorKind = "rho-kit-s3-exact-page-v1"

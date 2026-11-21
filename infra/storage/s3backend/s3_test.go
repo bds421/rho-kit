@@ -157,6 +157,11 @@ func TestS3Backend_Put(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "application/octet-stream", aws.ToString(capturedInput.ContentType))
 	})
+}
+
+func TestS3Backend_PutFailures(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("returns error on S3 failure", func(t *testing.T) {
 		t.Parallel()
@@ -183,6 +188,11 @@ func TestS3Backend_Put(t *testing.T) {
 		err := b.Put(ctx, "", bytes.NewReader([]byte("x")), storage.ObjectMeta{})
 		require.Error(t, err)
 	})
+}
+
+func TestS3Backend_PutValidatorsAndReaderOwnership(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("applies validators with known size", func(t *testing.T) {
 		t.Parallel()
@@ -226,6 +236,11 @@ func TestS3Backend_Put(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, closed)
 	})
+}
+
+func TestS3Backend_PutMetadataAndEncryption(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("rejects invalid metadata before upload", func(t *testing.T) {
 		t.Parallel()
@@ -342,6 +357,11 @@ func TestS3Backend_Get(t *testing.T) {
 		assert.True(t, errors.Is(err, storage.ErrObjectNotFound))
 		assert.NotContains(t, err.Error(), "secret-token")
 	})
+}
+
+func TestS3Backend_GetErrorMapping(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("returns ErrObjectNotFound on typed NotFound", func(t *testing.T) {
 		t.Parallel()
@@ -565,6 +585,11 @@ func TestS3Backend_PresignPutURL(t *testing.T) {
 		require.NotNil(t, presigner.putInput)
 		assert.Nil(t, presigner.putInput.ContentLength)
 	})
+}
+
+func TestS3Backend_PresignPutURLRejections(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("rejects TTL exceeding maximum", func(t *testing.T) {
 		t.Parallel()
@@ -713,6 +738,11 @@ func TestS3Backend_List(t *testing.T) {
 
 		assert.Len(t, results, 2)
 	})
+}
+
+func TestS3Backend_ListPagination(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("handles pagination", func(t *testing.T) {
 		t.Parallel()
@@ -744,6 +774,11 @@ func TestS3Backend_List(t *testing.T) {
 		assert.Len(t, results, 2)
 		assert.Equal(t, 2, callCount)
 	})
+}
+
+func TestS3Backend_ListErrors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("yields error on S3 failure", func(t *testing.T) {
 		t.Parallel()
@@ -836,6 +871,11 @@ func TestS3Backend_Copy(t *testing.T) {
 		assert.Equal(t, "test-bucket/a%2Bb%2Fc.txt", aws.ToString(capturedInput.CopySource))
 		assert.NotContains(t, aws.ToString(capturedInput.CopySource), "+")
 	})
+}
+
+func TestS3Backend_CopyEncryption(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("applies configured KMS encryption to destination", func(t *testing.T) {
 		t.Parallel()
@@ -873,6 +913,11 @@ func TestS3Backend_Copy(t *testing.T) {
 		assert.Contains(t, err.Error(), "STORAGE_S3_SSE")
 		assert.False(t, called)
 	})
+}
+
+func TestS3Backend_CopyErrors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("rejects empty key", func(t *testing.T) {
 		t.Parallel()
@@ -906,6 +951,12 @@ func TestS3Backend_Copy(t *testing.T) {
 	// S3's CopyObject deserializer surfaces a missing source as a generic
 	// smithy API error with code "NoSuchKey" or "NotFound" (404), so s3backend
 	// must map those codes to keep behavior consistent across backends.
+}
+
+func TestS3Backend_CopyMissingSource(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
 	t.Run("maps missing source to ErrObjectNotFound", func(t *testing.T) {
 		t.Parallel()
 		cases := []struct {
@@ -975,6 +1026,11 @@ func TestS3Backend_URL(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "https://cdn.example.com/my-bucket/photos/cat.jpg", u)
 	})
+}
+
+func TestS3Backend_URLValidatesCustomClientConfig(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("custom endpoint validates custom-client config before building URL", func(t *testing.T) {
 		t.Parallel()
@@ -1030,6 +1086,11 @@ func TestS3Backend_URL(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestS3Backend_URLHostStylesAndRejections(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("AWS uses virtual-hosted style", func(t *testing.T) {
 		t.Parallel()

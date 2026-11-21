@@ -85,7 +85,12 @@ func (b *Backend) Copy(ctx context.Context, srcKey, dstKey string) error {
 		return err
 	}
 
-	dstBase := path.Base(dstRel)
+	return replaceWithCopy(dstRoot, path.Base(dstRel), src)
+}
+
+// replaceWithCopy writes src to a temp file in dstRoot and renames it over
+// dstBase, so readers never see a partial copy.
+func replaceWithCopy(dstRoot *os.Root, dstBase string, src io.Reader) error {
 	tmpName, tmp, err := createTempIn(dstRoot)
 	if err != nil {
 		return mapUnsafeOrFileError("copy temp file", err)

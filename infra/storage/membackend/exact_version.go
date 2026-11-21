@@ -279,39 +279,19 @@ func (backend *ImmutableBackend) VersionsPage(
 	if err != nil {
 		return storage.ExactVersionPage{}, err
 	}
-	startAfter, cursorVersion := position.Key, position.Version
 	backend.mu.RLock()
 	defer backend.mu.RUnlock()
 	backend.backend.mu.RLock()
 	defer backend.backend.mu.RUnlock()
-	if startAfter != "" {
-		if _, ok := backend.backend.objects[startAfter]; !ok ||
-			backend.versions[startAfter] != cursorVersion {
-			return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
-		}
+	keys, err := backend.keysAfterCursorLocked(ctx, prefix, position)
+	if err != nil {
+		return storage.ExactVersionPage{}, err
 	}
-	keys := make([]string, 0)
-	for key := range backend.backend.objects {
-		if err := ctxErr(ctx); err != nil {
-			return storage.ExactVersionPage{}, err
-		}
-		if strings.HasPrefix(key, prefix) && key > startAfter {
-			keys = append(keys, key)
-		}
+	objects, err := backend.objectVersionsLocked(keys[:min(len(keys), options.Limit)])
+	if err != nil {
+		return storage.ExactVersionPage{}, err
 	}
-	slices.Sort(keys)
-	pageLength := min(len(keys), options.Limit)
-	page := storage.ExactVersionPage{
-		Objects: make([]storage.ObjectVersion, 0, pageLength),
-	}
-	for _, key := range keys[:pageLength] {
-		version := backend.versions[key]
-		object := storage.ObjectVersion{Key: key, Version: version}
-		if object.Validate() != nil {
-			return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
-		}
-		page.Objects = append(page.Objects, object)
-	}
+	page := storage.ExactVersionPage{Objects: objects}
 	if len(keys) <= options.Limit {
 		return page, nil
 	}
@@ -329,6 +309,46 @@ func (backend *ImmutableBackend) VersionsPage(
 	}
 	page.Truncated = true
 	return page, nil
+}
+
+// keysAfterCursorLocked returns the sorted keys under prefix after the
+// cursor's key; the cursor's object must still hold the version it recorded.
+// The caller holds both read locks.
+func (backend *ImmutableBackend) keysAfterCursorLocked(
+	ctx context.Context,
+	prefix string,
+	position exactversioncursor.Position,
+) ([]string, error) {
+	startAfter := position.Key
+	if startAfter != "" {
+		if _, ok := backend.backend.objects[startAfter]; !ok ||
+			backend.versions[startAfter] != position.Version {
+			return nil, storage.ErrExactVersionUnavailable
+		}
+	}
+	keys := make([]string, 0)
+	for key := range backend.backend.objects {
+		if err := ctxErr(ctx); err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(key, prefix) && key > startAfter {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	return keys, nil
+}
+
+func (backend *ImmutableBackend) objectVersionsLocked(keys []string) ([]storage.ObjectVersion, error) {
+	objects := make([]storage.ObjectVersion, 0, len(keys))
+	for _, key := range keys {
+		object := storage.ObjectVersion{Key: key, Version: backend.versions[key]}
+		if object.Validate() != nil {
+			return nil, storage.ErrExactVersionUnavailable
+		}
+		objects = append(objects, object)
+	}
+	return objects, nil
 }
 
 const immutablePageCursorKind = "rho-kit-memory-immutable-exact-page-v1"

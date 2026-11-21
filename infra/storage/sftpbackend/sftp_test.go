@@ -390,6 +390,11 @@ func TestSFTPBackend_Exists(t *testing.T) {
 		assert.Contains(t, err.Error(), "unsafe")
 		assert.NotContains(t, err.Error(), "secret-token")
 	})
+}
+
+func TestSFTPBackend_ExistsErrorsDoNotReflectKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("stat error does not reflect key", func(t *testing.T) {
 		t.Parallel()
@@ -669,6 +674,11 @@ func TestSFTPBackend_List(t *testing.T) {
 
 		assert.Len(t, results, 2)
 	})
+}
+
+func TestSFTPBackend_ListSymlinks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("skips symlink objects without aborting list", func(t *testing.T) {
 		t.Parallel()
@@ -685,15 +695,7 @@ func TestSFTPBackend_List(t *testing.T) {
 		mock.store["/data/ok.txt"] = []byte("ok")
 		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
 
-		var results []storage.ObjectInfo
-		var errs []error
-		for info, err := range b.List(ctx, "", storage.ListOptions{}) {
-			if err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			results = append(results, info)
-		}
+		results, errs := collectList(ctx, b, "", storage.ListOptions{})
 		require.Empty(t, errs, "symlink entries must be skipped, not abort the list")
 		require.Len(t, results, 1)
 		assert.Equal(t, "ok.txt", results[0].Key)
@@ -715,16 +717,16 @@ func TestSFTPBackend_List(t *testing.T) {
 		}
 		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
 
-		var errs []error
-		for _, err := range b.List(ctx, "", storage.ListOptions{}) {
-			if err != nil {
-				errs = append(errs, err)
-			}
-		}
+		_, errs := collectList(ctx, b, "", storage.ListOptions{})
 		require.NotEmpty(t, errs)
 		assert.Contains(t, errs[0].Error(), "unsafe")
 		assert.Equal(t, 0, readCalls)
 	})
+}
+
+func TestSFTPBackend_ListReadDirAndOptionErrors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("readdir error does not reflect remote path", func(t *testing.T) {
 		t.Parallel()
@@ -734,12 +736,7 @@ func TestSFTPBackend_List(t *testing.T) {
 		}
 		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
 
-		var errs []error
-		for _, err := range b.List(ctx, "", storage.ListOptions{}) {
-			if err != nil {
-				errs = append(errs, err)
-			}
-		}
+		_, errs := collectList(ctx, b, "", storage.ListOptions{})
 		require.NotEmpty(t, errs)
 		assert.NotContains(t, errs[0].Error(), "secret-token")
 		assert.NotContains(t, errs[0].Error(), "/data")
@@ -764,6 +761,11 @@ func TestSFTPBackend_List(t *testing.T) {
 		require.ErrorIs(t, seenErr, storage.ErrValidation)
 		assert.Equal(t, 0, calls)
 	})
+}
+
+func TestSFTPBackend_ListOrderingWithUnsortedReadDir(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("yields keys in sorted order despite unsorted readdir", func(t *testing.T) {
 		t.Parallel()
@@ -841,17 +843,9 @@ func unsortedReadDir(m *mockSFTPClient) func(string) ([]os.FileInfo, error) {
 				continue
 			}
 
-			if slashIdx := strings.Index(remainder, "/"); slashIdx == -1 {
-				if !seen[remainder] {
-					seen[remainder] = true
-					result = append(result, fakeFileInfo{name: remainder, size: int64(len(data))})
-				}
-			} else {
-				dirName := remainder[:slashIdx]
-				if !seen[dirName] {
-					seen[dirName] = true
-					result = append(result, fakeFileInfo{name: dirName, dir: true})
-				}
+			if entry := immediateChild(remainder, len(data)); !seen[entry.name] {
+				seen[entry.name] = true
+				result = append(result, entry)
 			}
 		}
 
@@ -867,6 +861,35 @@ func unsortedReadDir(m *mockSFTPClient) func(string) ([]os.FileInfo, error) {
 	}
 }
 
+// immediateChild is the directory entry a key's remainder below a listed
+// directory shows there: the file itself, or the subdirectory holding it.
+func immediateChild(remainder string, size int) fakeFileInfo {
+	if slashIdx := strings.Index(remainder, "/"); slashIdx != -1 {
+		return fakeFileInfo{name: remainder[:slashIdx], dir: true}
+	}
+	return fakeFileInfo{name: remainder, size: int64(size)}
+}
+
+// newUnsortedFlatMock serves a flat root whose ReadDir returns files in a
+// deliberately unsorted order (d, b, e, a, c), as real pkg/sftp ReadDir does
+// not sort.
+func newUnsortedFlatMock() *mockSFTPClient {
+	mock := newMockSFTPClient("/data")
+	mock.readFn = func(p string) ([]os.FileInfo, error) {
+		if p != "/data" {
+			return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+		}
+		return []os.FileInfo{
+			fakeFileInfo{name: "d.txt", size: 1},
+			fakeFileInfo{name: "b.txt", size: 1},
+			fakeFileInfo{name: "e.txt", size: 1},
+			fakeFileInfo{name: "a.txt", size: 1},
+			fakeFileInfo{name: "c.txt", size: 1},
+		}, nil
+	}
+	return mock
+}
+
 // TestSFTPBackend_List_SortsUnorderedReadDir pins the ordering/pagination
 // contract against a ReadDir that returns entries in a non-lexicographic order,
 // which is what real pkg/sftp does. List must collect-then-sort so that the
@@ -876,29 +899,9 @@ func TestSFTPBackend_List_SortsUnorderedReadDir(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	// Intentionally non-sorted: real pkg/sftp ReadDir does not sort. The
-	// readFn returns files for the flat root in reverse-lexicographic order.
-	newUnsortedMock := func() *mockSFTPClient {
-		mock := newMockSFTPClient("/data")
-		mock.readFn = func(p string) ([]os.FileInfo, error) {
-			if p != "/data" {
-				return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
-			}
-			// Deliberately unsorted (d, b, e, a, c).
-			return []os.FileInfo{
-				fakeFileInfo{name: "d.txt", size: 1},
-				fakeFileInfo{name: "b.txt", size: 1},
-				fakeFileInfo{name: "e.txt", size: 1},
-				fakeFileInfo{name: "a.txt", size: 1},
-				fakeFileInfo{name: "c.txt", size: 1},
-			}, nil
-		}
-		return mock
-	}
-
 	t.Run("yields lexicographically sorted keys", func(t *testing.T) {
 		t.Parallel()
-		b := NewWithClient(newUnsortedMock(), Config{Host: "localhost", RootPath: "/data"})
+		b := NewWithClient(newUnsortedFlatMock(), Config{Host: "localhost", RootPath: "/data"})
 
 		var keys []string
 		for info, err := range b.List(ctx, "", storage.ListOptions{}) {
@@ -910,7 +913,7 @@ func TestSFTPBackend_List_SortsUnorderedReadDir(t *testing.T) {
 
 	t.Run("StartAfter is an exclusive cursor over sorted keys", func(t *testing.T) {
 		t.Parallel()
-		b := NewWithClient(newUnsortedMock(), Config{Host: "localhost", RootPath: "/data"})
+		b := NewWithClient(newUnsortedFlatMock(), Config{Host: "localhost", RootPath: "/data"})
 
 		var keys []string
 		for info, err := range b.List(ctx, "", storage.ListOptions{StartAfter: "b.txt"}) {
@@ -924,7 +927,7 @@ func TestSFTPBackend_List_SortsUnorderedReadDir(t *testing.T) {
 
 	t.Run("StartAfter paginates without skipping keys", func(t *testing.T) {
 		t.Parallel()
-		b := NewWithClient(newUnsortedMock(), Config{Host: "localhost", RootPath: "/data"})
+		b := NewWithClient(newUnsortedFlatMock(), Config{Host: "localhost", RootPath: "/data"})
 
 		// First page of 2.
 		page1, err := storage.ListPage(ctx, b, "", storage.ListOptions{MaxKeys: 2})
@@ -956,7 +959,38 @@ func TestSFTPBackend_SymlinkRejectionRecordsMetrics(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	symlinkLstat := func(p string) (os.FileInfo, error) {
+	t.Run("delete", func(t *testing.T) {
+		t.Parallel()
+		assertSymlinkRejectionRecorded(t, "delete", func(b *Backend) error {
+			return b.Delete(ctx, "link")
+		})
+	})
+
+	t.Run("exists", func(t *testing.T) {
+		t.Parallel()
+		assertSymlinkRejectionRecorded(t, "exists", func(b *Backend) error {
+			_, err := b.Exists(ctx, "link")
+			return err
+		})
+	})
+
+	t.Run("get", func(t *testing.T) {
+		t.Parallel()
+		assertSymlinkRejectionRecorded(t, "get", func(b *Backend) error {
+			_, _, err := b.Get(ctx, "link")
+			return err
+		})
+	})
+}
+
+// assertSymlinkRejectionRecorded runs op against a root whose "link" key is a
+// symlink and checks that the rejection counts as an error and records a
+// duration sample under op.
+func assertSymlinkRejectionRecorded(t *testing.T, op string, run func(*Backend) error) {
+	t.Helper()
+	reg := prometheus.NewRegistry()
+	mock := newMockSFTPClient("/data")
+	mock.lstatFn = func(p string) (os.FileInfo, error) {
 		switch p {
 		case "/data":
 			return fakeFileInfo{name: "data", dir: true}, nil
@@ -966,63 +1000,17 @@ func TestSFTPBackend_SymlinkRejectionRecordsMetrics(t *testing.T) {
 			return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
 		}
 	}
+	b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"},
+		WithMetricsRegisterer(reg))
 
-	t.Run("delete", func(t *testing.T) {
-		t.Parallel()
-		reg := prometheus.NewRegistry()
-		mock := newMockSFTPClient("/data")
-		mock.lstatFn = symlinkLstat
-		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"},
-			WithMetricsRegisterer(reg))
+	require.Error(t, run(b))
 
-		err := b.Delete(ctx, "link")
-		require.Error(t, err)
-
-		assert.Equal(t, float64(1),
-			testutil.ToFloat64(b.metrics.opErrors.WithLabelValues("default", "delete")),
-			"symlink rejection must increment delete errors")
-		assert.Equal(t, uint64(1),
-			collectHistogramCount(t, reg, "storage_sftp_operation_duration_seconds", "delete"),
-			"symlink rejection must record a delete duration sample")
-	})
-
-	t.Run("exists", func(t *testing.T) {
-		t.Parallel()
-		reg := prometheus.NewRegistry()
-		mock := newMockSFTPClient("/data")
-		mock.lstatFn = symlinkLstat
-		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"},
-			WithMetricsRegisterer(reg))
-
-		_, err := b.Exists(ctx, "link")
-		require.Error(t, err)
-
-		assert.Equal(t, float64(1),
-			testutil.ToFloat64(b.metrics.opErrors.WithLabelValues("default", "exists")),
-			"symlink rejection must increment exists errors")
-		assert.Equal(t, uint64(1),
-			collectHistogramCount(t, reg, "storage_sftp_operation_duration_seconds", "exists"),
-			"symlink rejection must record an exists duration sample")
-	})
-
-	t.Run("get", func(t *testing.T) {
-		t.Parallel()
-		reg := prometheus.NewRegistry()
-		mock := newMockSFTPClient("/data")
-		mock.lstatFn = symlinkLstat
-		b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"},
-			WithMetricsRegisterer(reg))
-
-		_, _, err := b.Get(ctx, "link")
-		require.Error(t, err)
-
-		assert.Equal(t, float64(1),
-			testutil.ToFloat64(b.metrics.opErrors.WithLabelValues("default", "get")),
-			"symlink rejection must increment get errors")
-		assert.Equal(t, uint64(1),
-			collectHistogramCount(t, reg, "storage_sftp_operation_duration_seconds", "get"),
-			"symlink rejection must record a get duration sample")
-	})
+	assert.Equal(t, float64(1),
+		testutil.ToFloat64(b.metrics.opErrors.WithLabelValues("default", op)),
+		"symlink rejection must increment "+op+" errors")
+	assert.Equal(t, uint64(1),
+		collectHistogramCount(t, reg, "storage_sftp_operation_duration_seconds", op),
+		"symlink rejection must record a "+op+" duration sample")
 }
 
 // collectHistogramCount returns the sample count of the histogram metric
@@ -1397,3 +1385,22 @@ type atomicBool struct {
 
 func (a *atomicBool) set(v bool) { a.v.Store(v) }
 func (a *atomicBool) get() bool  { return a.v.Load() }
+
+// collectList drains a listing into its objects and its errors.
+func collectList(
+	ctx context.Context,
+	b *Backend,
+	prefix string,
+	opts storage.ListOptions,
+) ([]storage.ObjectInfo, []error) {
+	var results []storage.ObjectInfo
+	var errs []error
+	for info, err := range b.List(ctx, prefix, opts) {
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		results = append(results, info)
+	}
+	return results, errs
+}

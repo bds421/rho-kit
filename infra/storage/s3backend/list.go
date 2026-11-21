@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -40,19 +41,7 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 			attribute.Int("storage.prefix_len", len(prefix)),
 		)
 
-		input := &s3.ListObjectsV2Input{
-			Bucket: aws.String(b.bucket),
-		}
-		if prefix != "" {
-			input.Prefix = aws.String(prefix)
-		}
-		if opts.StartAfter != "" {
-			input.StartAfter = aws.String(opts.StartAfter)
-		}
-		if opts.MaxKeys > 0 {
-			input.MaxKeys = aws.Int32(int32(min(opts.MaxKeys, 1000)))
-		}
-
+		input := b.listInput(prefix, opts)
 		count := 0
 
 		for {
@@ -67,23 +56,9 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 				return
 			}
 
-			for _, obj := range out.Contents {
-				info := storage.ObjectInfo{
-					Key:  aws.ToString(obj.Key),
-					Size: aws.ToInt64(obj.Size),
-				}
-				if obj.LastModified != nil {
-					info.ModTime = *obj.LastModified
-				}
-
-				count++
-				if !yield(info, nil) {
-					return
-				}
-
-				if opts.MaxKeys > 0 && count >= opts.MaxKeys {
-					return
-				}
+			var more bool
+			if count, more = yieldListedObjects(out.Contents, opts.MaxKeys, count, yield); !more {
+				return
 			}
 
 			if !aws.ToBool(out.IsTruncated) {
@@ -99,4 +74,50 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 			input.ContinuationToken = next
 		}
 	}
+}
+
+func (b *Backend) listInput(prefix string, opts storage.ListOptions) *s3.ListObjectsV2Input {
+	input := &s3.ListObjectsV2Input{
+		Bucket: aws.String(b.bucket),
+	}
+	if prefix != "" {
+		input.Prefix = aws.String(prefix)
+	}
+	if opts.StartAfter != "" {
+		input.StartAfter = aws.String(opts.StartAfter)
+	}
+	if opts.MaxKeys > 0 {
+		input.MaxKeys = aws.Int32(int32(min(opts.MaxKeys, 1000)))
+	}
+	return input
+}
+
+// yieldListedObjects yields one page's objects and returns the running count
+// and whether the listing goes on: false once the consumer stops or maxKeys
+// objects were yielded.
+func yieldListedObjects(
+	contents []types.Object,
+	maxKeys int,
+	count int,
+	yield func(storage.ObjectInfo, error) bool,
+) (int, bool) {
+	for _, obj := range contents {
+		info := storage.ObjectInfo{
+			Key:  aws.ToString(obj.Key),
+			Size: aws.ToInt64(obj.Size),
+		}
+		if obj.LastModified != nil {
+			info.ModTime = *obj.LastModified
+		}
+
+		count++
+		if !yield(info, nil) {
+			return count, false
+		}
+
+		if maxKeys > 0 && count >= maxKeys {
+			return count, false
+		}
+	}
+	return count, true
 }

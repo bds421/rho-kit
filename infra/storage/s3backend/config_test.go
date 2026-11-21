@@ -28,11 +28,7 @@ func TestConfigValidate_Endpoint(t *testing.T) {
 		SecretAccessKey: "S3cur3-S3-Secret-Key-Value-123456",
 	}
 
-	tests := []struct {
-		name    string
-		mutate  func(*Config)
-		wantErr bool
-	}{
+	runConfigMutationCases(t, base, []configMutationCase{
 		{
 			name: "https endpoint",
 			mutate: func(cfg *Config) {
@@ -60,22 +56,7 @@ func TestConfigValidate_Endpoint(t *testing.T) {
 			},
 			wantErr: true,
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := base
-			tt.mutate(&cfg)
-			err := cfg.Validate("production")
-			if tt.wantErr && err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
-	}
+	})
 }
 
 func TestConfigLogValueRedactsResourceHandlesAndEndpointSecrets(t *testing.T) {
@@ -130,11 +111,7 @@ func TestConfigValidate_CredentialSources(t *testing.T) {
 		Bucket: "bucket",
 	}
 
-	tests := []struct {
-		name    string
-		mutate  func(*Config)
-		wantErr bool
-	}{
+	runConfigMutationCases(t, base, []configMutationCase{
 		{
 			name: "static credentials",
 			mutate: func(cfg *Config) {
@@ -184,24 +161,7 @@ func TestConfigValidate_CredentialSources(t *testing.T) {
 			},
 			wantErr: true,
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := base
-			if tt.mutate != nil {
-				tt.mutate(&cfg)
-			}
-			err := cfg.Validate("production")
-			if tt.wantErr && err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
-	}
+	})
 }
 
 func TestConfigValidate_URLTemplate(t *testing.T) {
@@ -254,11 +214,7 @@ func TestConfigValidate_SSE(t *testing.T) {
 		SecretAccessKey: "S3cur3-S3-Secret-Key-Value-123456",
 	}
 
-	tests := []struct {
-		name    string
-		mutate  func(*Config)
-		wantErr bool
-	}{
+	runConfigMutationCases(t, base, []configMutationCase{
 		{
 			name: "empty explicitly opts out",
 		},
@@ -297,24 +253,7 @@ func TestConfigValidate_SSE(t *testing.T) {
 			},
 			wantErr: true,
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := base
-			if tt.mutate != nil {
-				tt.mutate(&cfg)
-			}
-			err := cfg.Validate("production")
-			if tt.wantErr && err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
-	}
+	})
 }
 
 func TestNewRejectsInsecureEndpointWithoutOptIn(t *testing.T) {
@@ -344,5 +283,31 @@ func TestNewRejectsInvalidSSEConfig(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected invalid SSE error, got nil")
+	}
+}
+
+type configMutationCase struct {
+	name    string
+	mutate  func(*Config)
+	wantErr bool
+}
+
+func runConfigMutationCases(t *testing.T, base Config, tests []configMutationCase) {
+	t.Helper()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base
+			if tt.mutate != nil {
+				tt.mutate(&cfg)
+			}
+			err := cfg.Validate("production")
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }

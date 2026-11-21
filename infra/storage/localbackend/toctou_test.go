@@ -55,6 +55,11 @@ func TestTOCTOU_EscapingSymlinkComponentRefused(t *testing.T) {
 		// found rather than handing back data from outside the root.
 		assert.ErrorIs(t, err, storage.ErrObjectNotFound)
 	})
+}
+
+func TestTOCTOU_EscapingSymlinkComponentRefusedOnCopyDeleteExists(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("copy refuses write through escaping symlink dir component", func(t *testing.T) {
 		t.Parallel()
