@@ -92,36 +92,9 @@ func run(args []string, stdout, stderr io.Writer, reg *registry, now time.Time) 
 		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
-	var toMove []move
-	unknown, failed := 0, false
-	for _, p := range pins {
-		if p.Unchecked != "" {
-			_, _ = fmt.Fprintf(stdout, "%s  %s  not checked: set at run time or without a tag\n", p.Line, p.Unchecked)
-			continue
-		}
-		adv := advisoryFor(advisories, p)
-		if adv == nil {
-			adv = advisoryFor(fixes, p)
-		}
-		state, digest, v, err := judge(reg, p, adv, *wait, now)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "%s: %v\n", p.Line, err)
-			failed = true
-			continue
-		}
-		switch v {
-		case moves:
-			toMove = append(toMove, move{pin: p, to: digest, why: state})
-		case unknownAge:
-			unknown++
-		}
-		_, _ = fmt.Fprintf(stdout, "%s  %s@%s  %s\n", p.Line, p.name(), p.Digest[:19], state)
-	}
-	for _, a := range advisories {
-		if !a.used {
-			_, _ = fmt.Fprintf(stderr, "advisory %s for %s@%s: nothing pins that digest any more; remove the entry\n", a.Advisory, a.Image, a.Digest)
-			failed = true
-		}
+	toMove, unknown, failed := judgePins(stdout, stderr, reg, pins, advisories, fixes, *wait, now)
+	if reportUnusedAdvisories(stderr, advisories) {
+		failed = true
 	}
 	if failed {
 		return 2
@@ -146,6 +119,51 @@ func run(args []string, stdout, stderr io.Writer, reg *registry, now time.Time) 
 		return 1
 	}
 	return 0
+}
+
+// judgePins judges every pin against the registry and prints its state.
+// It returns the pins to move, the number behind a digest of unknown age,
+// and whether judging a pin failed.
+func judgePins(stdout, stderr io.Writer, reg *registry, pins []pin, advisories, fixes []*advisory, wait time.Duration, now time.Time) ([]move, int, bool) {
+	var toMove []move
+	unknown, failed := 0, false
+	for _, p := range pins {
+		if p.Unchecked != "" {
+			_, _ = fmt.Fprintf(stdout, "%s  %s  not checked: set at run time or without a tag\n", p.Line, p.Unchecked)
+			continue
+		}
+		adv := advisoryFor(advisories, p)
+		if adv == nil {
+			adv = advisoryFor(fixes, p)
+		}
+		state, digest, v, err := judge(reg, p, adv, wait, now)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "%s: %v\n", p.Line, err)
+			failed = true
+			continue
+		}
+		switch v {
+		case moves:
+			toMove = append(toMove, move{pin: p, to: digest, why: state})
+		case unknownAge:
+			unknown++
+		}
+		_, _ = fmt.Fprintf(stdout, "%s  %s@%s  %s\n", p.Line, p.name(), p.Digest[:19], state)
+	}
+	return toMove, unknown, failed
+}
+
+// reportUnusedAdvisories names every advisory no pin used and reports
+// whether there was one.
+func reportUnusedAdvisories(stderr io.Writer, advisories []*advisory) bool {
+	unused := false
+	for _, a := range advisories {
+		if !a.used {
+			_, _ = fmt.Fprintf(stderr, "advisory %s for %s@%s: nothing pins that digest any more; remove the entry\n", a.Advisory, a.Image, a.Digest)
+			unused = true
+		}
+	}
+	return unused
 }
 
 func load(in inputs) (pins []pin, advisories, fixes []*advisory, err error) {

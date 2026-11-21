@@ -3,6 +3,7 @@ package rules
 import (
 	"go/ast"
 	"go/token"
+	"slices"
 	"strings"
 )
 
@@ -68,73 +69,62 @@ func (r rateLimitOmissionRule) Run(fset *token.FileSet, file *ast.File) []Findin
 	if strings.HasSuffix(fset.Position(file.Pos()).Filename, "_test.go") {
 		return nil
 	}
-	appAliases := map[string]struct{}{}
-	for _, imp := range rateLimitOmissionImports {
-		for name := range importAliasesFor(file, imp) {
-			appAliases[name] = struct{}{}
-		}
-	}
+	appAliases := importAliasesForAny(file, rateLimitOmissionImports)
 	if len(appAliases) == 0 {
 		return nil
 	}
-	rlAliases := map[string]struct{}{}
-	for _, imp := range rateLimitBridgeImports {
+	rlAliases := importAliasesForAny(file, rateLimitBridgeImports)
+	return highFindings(fset, file, r.Name(), func(n ast.Node) (flaggedUse, bool) {
+		return unlimitedBuilderRun(n, appAliases, rlAliases)
+	})
+}
+
+// importAliasesForAny returns the identifiers that resolve to any of
+// importPaths inside file.
+func importAliasesForAny(file *ast.File, importPaths []string) map[string]struct{} {
+	aliases := map[string]struct{}{}
+	for _, imp := range importPaths {
 		for name := range importAliasesFor(file, imp) {
-			rlAliases[name] = struct{}{}
+			aliases[name] = struct{}{}
 		}
 	}
-	var findings []Finding
-	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		// Match the outer `.Run()` call so each chain is flagged once.
-		if !isMethodCall(call, "Run") {
-			return true
-		}
-		// Only the zero-arg form belongs to the Builder — keep this
-		// rule narrow so unrelated `.Run(ctx)` chains in other
-		// libraries do not match.
-		if len(call.Args) != 0 {
-			return true
-		}
-		if !chainOriginatesFromBuilderNew(call, appAliases) {
-			return true
-		}
-		if chainHas(call, "WithoutRateLimit") {
-			return true
-		}
-		if chainRegistersRateLimitModule(call, rlAliases) {
-			return true
-		}
-		// Report at the `.Run()` selector line rather than the
-		// outer-call position so suppression markers placed next to
-		// `.Run()` work as written. CallExpr.Pos returns the start of
-		// the receiver expression, which for a multi-line fluent chain
-		// is the `app.New(...)` line several lines above the offending
-		// `.Run()` call.
-		reportPos := call.Pos()
-		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-			reportPos = sel.Sel.Pos()
-		}
-		pos := fset.Position(reportPos)
-		if isExempt(fset, file, r.Name(), pos.Filename, pos.Line) {
-			return true
-		}
-		findings = append(findings, Finding{
-			Rule:     r.Name(),
-			Severity: High,
-			File:     pos.Filename,
-			Line:     pos.Line,
-			Message:  "app.Builder.Run() without an explicit rate-limit declaration",
-			Suggestion: "chain .With(ratelimit.IP(n, window)) or .With(ratelimit.Keyed(name, n, window)); " +
-				"use .WithoutRateLimit() only for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker). " +
-				"Suppress with `// kit-doctor:allow rate-limit-omission` only when the omission is reviewed.",
-		})
-		return true
-	})
-	return findings
+	return aliases
+}
+
+// unlimitedBuilderRun reports n when it is the zero-argument `.Run()` of a
+// Builder chain that neither registers a rate-limit module nor opts out
+// with WithoutRateLimit.
+func unlimitedBuilderRun(n ast.Node, appAliases, rlAliases map[string]struct{}) (flaggedUse, bool) {
+	call, ok := n.(*ast.CallExpr)
+	// Match the outer `.Run()` call so each chain is flagged once. Only
+	// the zero-arg form belongs to the Builder — keep this rule narrow so
+	// unrelated `.Run(ctx)` chains in other libraries do not match.
+	if !ok || !isMethodCall(call, "Run") || len(call.Args) != 0 {
+		return flaggedUse{}, false
+	}
+	if !chainOriginatesFromBuilderNew(call, appAliases) {
+		return flaggedUse{}, false
+	}
+	if chainHas(call, "WithoutRateLimit") || chainRegistersRateLimitModule(call, rlAliases) {
+		return flaggedUse{}, false
+	}
+	// Report at the `.Run()` selector line rather than the
+	// outer-call position so suppression markers placed next to
+	// `.Run()` work as written. CallExpr.Pos returns the start of
+	// the receiver expression, which for a multi-line fluent chain
+	// is the `app.New(...)` line several lines above the offending
+	// `.Run()` call.
+	reportPos := call.Pos()
+	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+		reportPos = sel.Sel.Pos()
+	}
+	return flaggedUse{
+		pos:     reportPos,
+		message: "app.Builder.Run() without an explicit rate-limit declaration",
+		suggestion: "chain .With(ratelimit.IP(n, window)) or .With(ratelimit.Keyed(name, n, window)); " +
+			"use .WithoutRateLimit() only for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker). " +
+			"Suppress with `// kit-doctor:allow rate-limit-omission` only when the omission is reviewed.",
+	}, true
 }
 
 // chainOriginatesFromBuilderNew reports whether the fluent chain
@@ -190,28 +180,29 @@ func chainRegistersRateLimitModule(call *ast.CallExpr, rlAliases map[string]stru
 		if !ok {
 			return false
 		}
-		if sel.Sel.Name == "With" {
-			for _, arg := range c.Args {
-				inner, ok := arg.(*ast.CallExpr)
-				if !ok {
-					continue
-				}
-				innerSel, ok := inner.Fun.(*ast.SelectorExpr)
-				if !ok {
-					continue
-				}
-				if _, named := rateLimitBridgeConstructors[innerSel.Sel.Name]; !named {
-					continue
-				}
-				ident, ok := innerSel.X.(*ast.Ident)
-				if !ok {
-					continue
-				}
-				if isPackageAlias(ident, rlAliases) {
-					return true
-				}
-			}
+		if sel.Sel.Name == "With" && slices.ContainsFunc(c.Args, func(arg ast.Expr) bool {
+			return isRateLimitBridgeCall(arg, rlAliases)
+		}) {
+			return true
 		}
 		cur = sel.X
 	}
+}
+
+// isRateLimitBridgeCall reports whether expr is a direct call to
+// `<ratelimit>.IP(...)` or `<ratelimit>.Keyed(...)`.
+func isRateLimitBridgeCall(expr ast.Expr, rlAliases map[string]struct{}) bool {
+	inner, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	innerSel, ok := inner.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	if _, named := rateLimitBridgeConstructors[innerSel.Sel.Name]; !named {
+		return false
+	}
+	ident, ok := innerSel.X.(*ast.Ident)
+	return ok && isPackageAlias(ident, rlAliases)
 }

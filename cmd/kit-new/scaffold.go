@@ -164,6 +164,76 @@ type plannedFile struct {
 // scaffold writes the generated tree into outDir. It refuses to overwrite
 // existing files and preflights every destination before creating anything.
 func scaffold(outDir string, p Params) error {
+	if err := normalizeParams(&p); err != nil {
+		return err
+	}
+
+	absOutDir, err := filepath.Abs(outDir)
+	if err != nil {
+		return fmt.Errorf("kit-new: resolve output directory failed")
+	}
+	absOutDir = filepath.Clean(absOutDir)
+
+	plan := make([]plannedFile, 0, len(templateFile))
+	seen := make(map[string]string, len(templateFile))
+	for _, row := range templateFile {
+		if row.gate != "" && !gateActive(p, row.gate) {
+			continue
+		}
+		file, err := planFile(absOutDir, row.tmpl, row.dest, p)
+		if err != nil {
+			return err
+		}
+		if _, ok := seen[file.fullPath]; ok {
+			return fmt.Errorf("kit-new: templates render to the same destination")
+		}
+		seen[file.fullPath] = row.tmpl
+		if err := requireAbsent(file.fullPath); err != nil {
+			return err
+		}
+		plan = append(plan, file)
+	}
+
+	if err := os.MkdirAll(absOutDir, 0o750); err != nil {
+		return fmt.Errorf("kit-new: create output directory failed")
+	}
+
+	var created []string
+	for _, file := range plan {
+		wrote, err := writePlannedFile(absOutDir, file, p)
+		if wrote {
+			created = append(created, file.fullPath)
+		}
+		if err != nil {
+			rollBack(created, absOutDir)
+			return err
+		}
+	}
+	return nil
+}
+
+// rollBack removes the created files, newest first, and absOutDir.
+func rollBack(created []string, absOutDir string) {
+	for i := len(created) - 1; i >= 0; i-- {
+		_ = os.Remove(created[i])
+	}
+	// Best-effort: remove the output dir if we created it empty of keepers.
+	_ = os.Remove(absOutDir)
+}
+
+// requireAbsent refuses a destination that already exists.
+func requireAbsent(path string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("kit-new: destination already exists; refusing to overwrite")
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("kit-new: inspect destination failed")
+	}
+	return nil
+}
+
+// normalizeParams validates p and fills its defaults: Production implies
+// Postgres, and an empty GoVersion is DefaultGoVersion.
+func normalizeParams(p *Params) error {
 	if p.Production {
 		p.Postgres = true
 	}
@@ -181,106 +251,68 @@ func scaffold(outDir string, p Params) error {
 	} else if !goVersionPattern.MatchString(p.GoVersion) {
 		return fmt.Errorf("kit-new: GoVersion must be major.minor like 1.26 (no patch, no prefix)")
 	}
-
-	absOutDir, err := filepath.Abs(outDir)
-	if err != nil {
-		return fmt.Errorf("kit-new: resolve output directory failed")
-	}
-	absOutDir = filepath.Clean(absOutDir)
-
-	plan := make([]plannedFile, 0, len(templateFile))
-	seen := make(map[string]string, len(templateFile))
-	for _, row := range templateFile {
-		if row.gate != "" && !gateActive(p, row.gate) {
-			continue
-		}
-		body, err := fs.ReadFile(templatesFS, "templates/"+row.tmpl)
-		if err != nil {
-			return fmt.Errorf("kit-new: read template %q: %w", row.tmpl, err)
-		}
-		t, err := template.New(row.tmpl).Parse(string(body))
-		if err != nil {
-			return fmt.Errorf("kit-new: parse template %q: %w", row.tmpl, err)
-		}
-
-		// Render destination path through the same template engine so
-		// {{.ServiceName}} placeholders work in dest paths too.
-		destT, err := template.New("dest:" + row.tmpl).Parse(row.dest)
-		if err != nil {
-			return fmt.Errorf("kit-new: parse destination path")
-		}
-		destPath, err := renderString(destT, p)
-		if err != nil {
-			return fmt.Errorf("kit-new: render destination path")
-		}
-
-		full := filepath.Clean(filepath.Join(absOutDir, destPath))
-		if err := ensureContainedPath(absOutDir, full); err != nil {
-			return fmt.Errorf("kit-new: rendered path escapes output directory")
-		}
-		if _, ok := seen[full]; ok {
-			return fmt.Errorf("kit-new: templates render to the same destination")
-		}
-		seen[full] = row.tmpl
-		if _, err := os.Lstat(full); err == nil {
-			return fmt.Errorf("kit-new: destination already exists; refusing to overwrite")
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("kit-new: inspect destination failed")
-		}
-
-		plan = append(plan, plannedFile{
-			tmplName: row.tmpl,
-			tmpl:     t,
-			fullPath: full,
-		})
-	}
-
-	if err := os.MkdirAll(absOutDir, 0o750); err != nil {
-		return fmt.Errorf("kit-new: create output directory failed")
-	}
-
-	var created []string
-	rollback := func() {
-		for i := len(created) - 1; i >= 0; i-- {
-			_ = os.Remove(created[i])
-		}
-		// Best-effort: remove the output dir if we created it empty of keepers.
-		_ = os.Remove(absOutDir)
-	}
-	for _, file := range plan {
-		parent := filepath.Dir(file.fullPath)
-		if err := rejectSymlinkAncestors(absOutDir, file.fullPath); err != nil {
-			rollback()
-			return fmt.Errorf("kit-new: unsafe destination: %w", err)
-		}
-		if err := os.MkdirAll(parent, 0o750); err != nil {
-			rollback()
-			return fmt.Errorf("kit-new: create destination directory failed")
-		}
-		if err := rejectSymlinkAncestors(absOutDir, file.fullPath); err != nil {
-			rollback()
-			return fmt.Errorf("kit-new: unsafe destination: %w", err)
-		}
-		f, err := os.OpenFile(file.fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-		if err != nil {
-			rollback()
-			if os.IsExist(err) {
-				return fmt.Errorf("kit-new: destination already exists; refusing to overwrite")
-			}
-			return fmt.Errorf("kit-new: create destination failed")
-		}
-		created = append(created, file.fullPath)
-		if err := file.tmpl.Execute(f, p); err != nil {
-			_ = f.Close()
-			rollback()
-			return fmt.Errorf("kit-new: render template failed")
-		}
-		if err := f.Close(); err != nil {
-			rollback()
-			return fmt.Errorf("kit-new: close destination failed")
-		}
-	}
 	return nil
+}
+
+// planFile parses template tmplName and resolves its destination dest
+// under absOutDir.
+func planFile(absOutDir, tmplName, dest string, p Params) (plannedFile, error) {
+	body, err := fs.ReadFile(templatesFS, "templates/"+tmplName)
+	if err != nil {
+		return plannedFile{}, fmt.Errorf("kit-new: read template %q: %w", tmplName, err)
+	}
+	t, err := template.New(tmplName).Parse(string(body))
+	if err != nil {
+		return plannedFile{}, fmt.Errorf("kit-new: parse template %q: %w", tmplName, err)
+	}
+
+	// Render destination path through the same template engine so
+	// {{.ServiceName}} placeholders work in dest paths too.
+	destT, err := template.New("dest:" + tmplName).Parse(dest)
+	if err != nil {
+		return plannedFile{}, fmt.Errorf("kit-new: parse destination path")
+	}
+	destPath, err := renderString(destT, p)
+	if err != nil {
+		return plannedFile{}, fmt.Errorf("kit-new: render destination path")
+	}
+
+	full := filepath.Clean(filepath.Join(absOutDir, destPath))
+	if err := ensureContainedPath(absOutDir, full); err != nil {
+		return plannedFile{}, fmt.Errorf("kit-new: rendered path escapes output directory")
+	}
+	return plannedFile{tmplName: tmplName, tmpl: t, fullPath: full}, nil
+}
+
+// writePlannedFile renders file into a new file under absOutDir. It
+// reports whether it created the file, so a failure after creation can
+// be rolled back.
+func writePlannedFile(absOutDir string, file plannedFile, p Params) (bool, error) {
+	parent := filepath.Dir(file.fullPath)
+	if err := rejectSymlinkAncestors(absOutDir, file.fullPath); err != nil {
+		return false, fmt.Errorf("kit-new: unsafe destination: %w", err)
+	}
+	if err := os.MkdirAll(parent, 0o750); err != nil {
+		return false, fmt.Errorf("kit-new: create destination directory failed")
+	}
+	if err := rejectSymlinkAncestors(absOutDir, file.fullPath); err != nil {
+		return false, fmt.Errorf("kit-new: unsafe destination: %w", err)
+	}
+	f, err := os.OpenFile(file.fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			return false, fmt.Errorf("kit-new: destination already exists; refusing to overwrite")
+		}
+		return false, fmt.Errorf("kit-new: create destination failed")
+	}
+	if err := file.tmpl.Execute(f, p); err != nil {
+		_ = f.Close()
+		return true, fmt.Errorf("kit-new: render template failed")
+	}
+	if err := f.Close(); err != nil {
+		return true, fmt.Errorf("kit-new: close destination failed")
+	}
+	return true, nil
 }
 
 func ensureContainedPath(root, target string) error {

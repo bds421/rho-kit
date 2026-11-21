@@ -36,78 +36,23 @@ func scan(root string, ruleSet []rules.Rule) ([]rules.Finding, error) {
 			if filepath.Clean(path) == filepath.Clean(root) {
 				return err
 			}
-			findings = append(findings, rules.Finding{
-				Rule:     "io-error",
-				Severity: rules.Warning,
-				File:     path,
-				Line:     0,
-				Message:  fmt.Sprintf("walk failed: %v", err),
-			})
+			findings = append(findings, fileWarning("io-error", path, fmt.Sprintf("walk failed: %v", err)))
 			if d != nil && d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		if d.IsDir() {
-			if filepath.Clean(path) == filepath.Clean(root) {
-				return nil
-			}
-			if d.Name() == "vendor" || d.Name() == "node_modules" || strings.HasPrefix(d.Name(), ".") {
-				return filepath.SkipDir
-			}
-			return nil
+			return enterDir(root, path, d)
 		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			findings = append(findings, rules.Finding{
-				Rule:     "symlinked-go-file",
-				Severity: rules.Warning,
-				File:     path,
-				Line:     0,
-				Message:  "symlinked Go file skipped to keep scan inside root",
-			})
-			return nil
-		}
-		gen, genErr := isGeneratedFile(path)
-		if genErr != nil {
-			findings = append(findings, rules.Finding{
-				Rule:     "io-error",
-				Severity: rules.Warning,
-				File:     path,
-				Line:     0,
-				Message:  fmt.Sprintf("read failed: %v", genErr),
-			})
-			return nil
-		}
-		if gen {
-			return nil
-		}
-
-		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if err != nil {
-			// Don't fail the whole scan on one unparseable file; surface
-			// it as a finding so the operator notices.
-			findings = append(findings, rules.Finding{
-				Rule:     "parse-error",
-				Severity: rules.Warning,
-				File:     path,
-				Line:     0,
-				Message:  fmt.Sprintf("parse failed: %v", err),
-			})
-			return nil
-		}
-		rules.SetCurrentFile(f)
-		for _, r := range ruleSet {
-			findings = append(findings, r.Run(fset, f)...)
+		if strings.HasSuffix(path, ".go") {
+			findings = append(findings, scanFile(fset, path, d, ruleSet)...)
 		}
 		return nil
 	})
 	if walkErr != nil {
 		return nil, walkErr
 	}
-
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].File != findings[j].File {
 			return findings[i].File < findings[j].File
@@ -115,6 +60,56 @@ func scan(root string, ruleSet []rules.Rule) ([]rules.Finding, error) {
 		return findings[i].Line < findings[j].Line
 	})
 	return findings, nil
+}
+
+// enterDir skips vendor, node_modules and hidden directories below root.
+func enterDir(root, path string, d fs.DirEntry) error {
+	if filepath.Clean(path) == filepath.Clean(root) {
+		return nil
+	}
+	if d.Name() == "vendor" || d.Name() == "node_modules" || strings.HasPrefix(d.Name(), ".") {
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+// scanFile runs ruleSet over the Go file at path. A symlinked, unreadable
+// or unparseable file yields a Warning instead; a generated file yields
+// nothing.
+func scanFile(fset *token.FileSet, path string, d fs.DirEntry, ruleSet []rules.Rule) []rules.Finding {
+	if d.Type()&os.ModeSymlink != 0 {
+		return []rules.Finding{fileWarning("symlinked-go-file", path, "symlinked Go file skipped to keep scan inside root")}
+	}
+	gen, genErr := isGeneratedFile(path)
+	if genErr != nil {
+		return []rules.Finding{fileWarning("io-error", path, fmt.Sprintf("read failed: %v", genErr))}
+	}
+	if gen {
+		return nil
+	}
+	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		// Don't fail the whole scan on one unparseable file; surface
+		// it as a finding so the operator notices.
+		return []rules.Finding{fileWarning("parse-error", path, fmt.Sprintf("parse failed: %v", err))}
+	}
+	rules.SetCurrentFile(f)
+	var findings []rules.Finding
+	for _, r := range ruleSet {
+		findings = append(findings, r.Run(fset, f)...)
+	}
+	return findings
+}
+
+// fileWarning is a file-level Warning of rule about path.
+func fileWarning(rule, path, message string) rules.Finding {
+	return rules.Finding{
+		Rule:     rule,
+		Severity: rules.Warning,
+		File:     path,
+		Line:     0,
+		Message:  message,
+	}
 }
 
 // isGeneratedFile reports whether path begins with the canonical

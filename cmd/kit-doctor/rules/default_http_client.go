@@ -15,6 +15,10 @@ type defaultHTTPClientRule struct{}
 
 func (defaultHTTPClientRule) Name() string { return "default-http-client" }
 
+// kitClientSuggestion is the fix the rule suggests for every finding but
+// the package helpers'.
+const kitClientSuggestion = "use httpx.NewHTTPClient(...) or a kit helper that supplies timeouts and transport policy"
+
 func (r defaultHTTPClientRule) Run(fset *token.FileSet, file *ast.File) []Finding {
 	if file == nil {
 		return nil
@@ -32,107 +36,61 @@ func (r defaultHTTPClientRule) Run(fset *token.FileSet, file *ast.File) []Findin
 	if len(httpAliases) == 0 {
 		return nil
 	}
-	var findings []Finding
-	ast.Inspect(file, func(n ast.Node) bool {
-		sel, ok := n.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		ident, ok := sel.X.(*ast.Ident)
-		if !ok {
-			return true
-		}
-		if _, ok := httpAliases[ident.Name]; !ok {
-			return true
-		}
-		switch sel.Sel.Name {
-		case "DefaultClient", "DefaultTransport":
-			if !isPackageAlias(ident, httpAliases) {
-				return true
-			}
-			pos := fset.Position(sel.Pos())
-			if isExempt(fset, file, r.Name(), pos.Filename, pos.Line) {
-				return true
-			}
-			findings = append(findings, Finding{
-				Rule:       r.Name(),
-				Severity:   High,
-				File:       pos.Filename,
-				Line:       pos.Line,
-				Message:    "direct use of http." + sel.Sel.Name + " (no timeout, no SSRF guard)",
-				Suggestion: "use httpx.NewHTTPClient(...) or a kit helper that supplies timeouts and transport policy",
-			})
-		}
-		return true
+	findings := highFindings(fset, file, r.Name(), func(n ast.Node) (flaggedUse, bool) {
+		return defaultClientUse(n, httpAliases)
 	})
-	ast.Inspect(file, func(n ast.Node) bool {
-		switch node := n.(type) {
-		case *ast.ValueSpec:
-			if !isHTTPClientSelector(node.Type, httpAliases) {
-				return true
-			}
-			pos := fset.Position(node.Type.Pos())
-			if isExempt(fset, file, r.Name(), pos.Filename, pos.Line) {
-				return true
-			}
-			findings = append(findings, Finding{
-				Rule:       r.Name(),
-				Severity:   High,
-				File:       pos.Filename,
-				Line:       pos.Line,
-				Message:    "zero-value http.Client bypasses kit timeout and transport defaults",
-				Suggestion: "use httpx.NewHTTPClient(...) or a kit helper that supplies timeouts and transport policy",
-			})
-		case *ast.CompositeLit:
-			if !isHTTPClientSelector(node.Type, httpAliases) {
-				return true
-			}
-			pos := fset.Position(node.Pos())
-			if isExempt(fset, file, r.Name(), pos.Filename, pos.Line) {
-				return true
-			}
-			findings = append(findings, Finding{
-				Rule:       r.Name(),
-				Severity:   High,
-				File:       pos.Filename,
-				Line:       pos.Line,
-				Message:    "direct construction of http.Client bypasses kit timeout and transport defaults",
-				Suggestion: "use httpx.NewHTTPClient(...) or a kit helper that supplies timeouts and transport policy",
-			})
-		case *ast.CallExpr:
-			if isNewHTTPClient(node, httpAliases) {
-				pos := fset.Position(node.Pos())
-				if isExempt(fset, file, r.Name(), pos.Filename, pos.Line) {
-					return true
-				}
-				findings = append(findings, Finding{
-					Rule:       r.Name(),
-					Severity:   High,
-					File:       pos.Filename,
-					Line:       pos.Line,
-					Message:    "new(http.Client) bypasses kit timeout and transport defaults",
-					Suggestion: "use httpx.NewHTTPClient(...) or a kit helper that supplies timeouts and transport policy",
-				})
-				return true
-			}
-			if helper, ok := httpClientHelper(node.Fun, httpAliases); ok {
-				pos := fset.Position(node.Pos())
-				if isExempt(fset, file, r.Name(), pos.Filename, pos.Line) {
-					return true
-				}
-				findings = append(findings, Finding{
-					Rule:       r.Name(),
-					Severity:   High,
-					File:       pos.Filename,
-					Line:       pos.Line,
-					Message:    helper + " uses http.DefaultClient and bypasses kit timeout and transport defaults",
-					Suggestion: "use a client from httpx.NewHTTPClient(...) and call its Do method",
-				})
-			}
+	return append(findings, highFindings(fset, file, r.Name(), func(n ast.Node) (flaggedUse, bool) {
+		return clientConstruction(n, httpAliases)
+	})...)
+}
+
+// defaultClientUse reports a use of http.DefaultClient or
+// http.DefaultTransport at n.
+func defaultClientUse(n ast.Node, httpAliases map[string]struct{}) (flaggedUse, bool) {
+	sel, ok := n.(*ast.SelectorExpr)
+	if !ok {
+		return flaggedUse{}, false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return flaggedUse{}, false
+	}
+	if _, ok := httpAliases[ident.Name]; !ok {
+		return flaggedUse{}, false
+	}
+	switch sel.Sel.Name {
+	case "DefaultClient", "DefaultTransport":
+		if !isPackageAlias(ident, httpAliases) {
+			return flaggedUse{}, false
 		}
-		return true
-	})
-	return findings
+		return flaggedUse{sel.Pos(), "direct use of http." + sel.Sel.Name + " (no timeout, no SSRF guard)", kitClientSuggestion}, true
+	}
+	return flaggedUse{}, false
+}
+
+// clientConstruction reports an http.Client built outside the kit at n:
+// a zero-value variable, a composite literal, new(http.Client), or a
+// package helper such as http.Get that uses http.DefaultClient.
+func clientConstruction(n ast.Node, httpAliases map[string]struct{}) (flaggedUse, bool) {
+	switch node := n.(type) {
+	case *ast.ValueSpec:
+		if isHTTPClientSelector(node.Type, httpAliases) {
+			return flaggedUse{node.Type.Pos(), "zero-value http.Client bypasses kit timeout and transport defaults", kitClientSuggestion}, true
+		}
+	case *ast.CompositeLit:
+		if isHTTPClientSelector(node.Type, httpAliases) {
+			return flaggedUse{node.Pos(), "direct construction of http.Client bypasses kit timeout and transport defaults", kitClientSuggestion}, true
+		}
+	case *ast.CallExpr:
+		if isNewHTTPClient(node, httpAliases) {
+			return flaggedUse{node.Pos(), "new(http.Client) bypasses kit timeout and transport defaults", kitClientSuggestion}, true
+		}
+		if helper, ok := httpClientHelper(node.Fun, httpAliases); ok {
+			return flaggedUse{node.Pos(), helper + " uses http.DefaultClient and bypasses kit timeout and transport defaults",
+				"use a client from httpx.NewHTTPClient(...) and call its Do method"}, true
+		}
+	}
+	return flaggedUse{}, false
 }
 
 func isHTTPClientSelector(expr ast.Expr, httpAliases map[string]struct{}) bool {

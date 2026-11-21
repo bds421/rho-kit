@@ -130,29 +130,7 @@ func main() {
 	flag.StringVar(&required, "required-version", "", "Required rho-kit release baseline for -report (for example v2.5.0).")
 	flag.Parse()
 
-	var services []service
-	if fleet != "" {
-		s, err := scanFleet(fleet)
-		if err != nil {
-			fail("scan fleet %q: %v", fleet, err)
-		}
-		services = s
-	} else {
-		cwd, err := os.Getwd()
-		if err != nil {
-			fail("getwd: %v", err)
-		}
-		s, err := scanService(cwd)
-		if err != nil {
-			fail("scan service %q: %v", cwd, err)
-		}
-		if s == nil {
-			fmt.Fprintln(os.Stderr, "kit-catalog: no go.mod found at .; pass -fleet <dir> to scan multiple services")
-			os.Exit(1)
-		}
-		services = []service{*s}
-	}
-
+	services := scanServices(fleet)
 	if usesFilter != "" {
 		services = filterByImport(services, usesFilter)
 	}
@@ -163,25 +141,59 @@ func main() {
 	}
 
 	if report {
-		if required == "" || !validVersion(required) {
-			fail("-report requires -required-version in vMAJOR.MINOR.PATCH form")
-		}
-		r := buildSupportReport(services, required)
-		var emitErr error
-		switch format {
-		case "json":
-			emitErr = emitJSON(os.Stdout, r)
-		case "table":
-			emitErr = emitSupportTable(os.Stdout, r)
-		default:
-			fail("-report supports -format json|table")
-		}
-		if emitErr != nil {
-			fail("write %s support report: %v", format, emitErr)
-		}
+		emitSupportReport(services, required, format)
 		return
 	}
+	emitManifest(services, format)
+}
 
+// scanServices scans every service under fleet, or the current directory
+// as a single service when fleet is empty.
+func scanServices(fleet string) []service {
+	if fleet != "" {
+		s, err := scanFleet(fleet)
+		if err != nil {
+			fail("scan fleet %q: %v", fleet, err)
+		}
+		return s
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fail("getwd: %v", err)
+	}
+	s, err := scanService(cwd)
+	if err != nil {
+		fail("scan service %q: %v", cwd, err)
+	}
+	if s == nil {
+		fmt.Fprintln(os.Stderr, "kit-catalog: no go.mod found at .; pass -fleet <dir> to scan multiple services")
+		os.Exit(1)
+	}
+	return []service{*s}
+}
+
+// emitSupportReport writes the -report output to stdout.
+func emitSupportReport(services []service, required, format string) {
+	if required == "" || !validVersion(required) {
+		fail("-report requires -required-version in vMAJOR.MINOR.PATCH form")
+	}
+	r := buildSupportReport(services, required)
+	var emitErr error
+	switch format {
+	case "json":
+		emitErr = emitJSON(os.Stdout, r)
+	case "table":
+		emitErr = emitSupportTable(os.Stdout, r)
+	default:
+		fail("-report supports -format json|table")
+	}
+	if emitErr != nil {
+		fail("write %s support report: %v", format, emitErr)
+	}
+}
+
+// emitManifest writes the manifest of services to stdout.
+func emitManifest(services []service, format string) {
 	m := manifest{
 		ScannedAt:    time.Now().UTC().Format(time.RFC3339),
 		ServiceCount: len(services),
@@ -417,31 +429,32 @@ func collectKitImports(root string) (map[string]struct{}, error) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
 		// Skip test files by default — they exercise the kit but
 		// don't reflect production composition.
-		if strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		f, parseErr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
-		if parseErr != nil {
-			// Unparseable file: skip rather than failing the fleet scan.
-			return nil
-		}
-		for _, imp := range f.Imports {
-			p, err := strconvUnquote(imp.Path.Value)
-			if err != nil {
-				continue
-			}
-			if strings.HasPrefix(p, "github.com/bds421/rho-kit/") {
-				out[p] = struct{}{}
-			}
+		if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+			addKitImports(fset, path, out)
 		}
 		return nil
 	})
 	return out, err
+}
+
+// addKitImports adds the kit import paths of the Go file at path to out.
+func addKitImports(fset *token.FileSet, path string, out map[string]struct{}) {
+	f, parseErr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+	if parseErr != nil {
+		// Unparseable file: skip rather than failing the fleet scan.
+		return
+	}
+	for _, imp := range f.Imports {
+		p, err := strconvUnquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		if strings.HasPrefix(p, "github.com/bds421/rho-kit/") {
+			out[p] = struct{}{}
+		}
+	}
 }
 
 // strconvUnquote is a tiny wrapper so we do not pull strconv into
@@ -500,34 +513,40 @@ func emitTable(out io.Writer, m manifest) error {
 		return err
 	}
 	for _, s := range m.Services {
-		if _, err := fmt.Fprintf(out, "== %s\n   path: %s\n   kit packages (%d):\n", s.Module, s.Path, len(s.KitPackages)); err != nil {
-			return err
-		}
-		for _, p := range s.KitPackages {
-			if _, err := fmt.Fprintf(out, "     - %s\n", p); err != nil {
-				return err
-			}
-		}
-		if len(s.KitVersions) > 0 {
-			if _, err := fmt.Fprintln(out, "   kit module pins:"); err != nil {
-				return err
-			}
-			keys := make([]string, 0, len(s.KitVersions))
-			for k := range s.KitVersions {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				if _, err := fmt.Fprintf(out, "     - %s @ %s\n", k, s.KitVersions[k]); err != nil {
-					return err
-				}
-			}
-		}
-		if _, err := fmt.Fprintln(out); err != nil {
+		if err := emitServiceTable(out, s); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// emitServiceTable writes one service's entry of the table format.
+func emitServiceTable(out io.Writer, s service) error {
+	if _, err := fmt.Fprintf(out, "== %s\n   path: %s\n   kit packages (%d):\n", s.Module, s.Path, len(s.KitPackages)); err != nil {
+		return err
+	}
+	for _, p := range s.KitPackages {
+		if _, err := fmt.Fprintf(out, "     - %s\n", p); err != nil {
+			return err
+		}
+	}
+	if len(s.KitVersions) > 0 {
+		if _, err := fmt.Fprintln(out, "   kit module pins:"); err != nil {
+			return err
+		}
+		keys := make([]string, 0, len(s.KitVersions))
+		for k := range s.KitVersions {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if _, err := fmt.Fprintf(out, "     - %s @ %s\n", k, s.KitVersions[k]); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := fmt.Fprintln(out)
+	return err
 }
 
 func emitSupportTable(out io.Writer, report supportReport) error {

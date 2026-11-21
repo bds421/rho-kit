@@ -85,30 +85,16 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
-	j, err := load(*policyFile, *acceptedFile, *baselineFile)
-	if err == nil {
-		j.upstream, err = loadUpstream(upstreams)
-	}
-	if err == nil {
-		err = j.checkBaseline(stdout, *previous, *release)
-	}
+	j, err := loadJudge(stdout, *policyFile, *acceptedFile, *baselineFile, upstreams, *previous, *release)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
 	j.now, j.deployed, j.initial = now, *reportMode, *initial
-	var all []finding
-	seen := map[string]bool{}
-	for _, arg := range flags.Args() {
-		found, err := readArg(arg, seen)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, err)
-			return 2
-		}
-		all = append(all, found...)
-	}
-	for i := range all {
-		all[i].Component = j.policy.componentOf(all[i])
+	all, err := readFindings(flags.Args(), j.policy)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 2
 	}
 	late := j.list(stdout, all)
 	if late > 0 {
@@ -124,6 +110,37 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		return 1
 	}
 	return 0
+}
+
+// loadJudge loads the judge's files and upstream scans and checks its
+// baseline against the previous release.
+func loadJudge(stdout io.Writer, policyFile, acceptedFile, baselineFile string, upstreams list, previous, release string) (judge, error) {
+	j, err := load(policyFile, acceptedFile, baselineFile)
+	if err == nil {
+		j.upstream, err = loadUpstream(upstreams)
+	}
+	if err == nil {
+		err = j.checkBaseline(stdout, previous, release)
+	}
+	return j, err
+}
+
+// readFindings reads the findings of every report argument, each with
+// the third-party component p puts it in.
+func readFindings(args []string, p policy) ([]finding, error) {
+	var all []finding
+	seen := map[string]bool{}
+	for _, arg := range args {
+		found, err := readArg(arg, seen)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, found...)
+	}
+	for i := range all {
+		all[i].Component = p.componentOf(all[i])
+	}
+	return all, nil
 }
 
 // recordable refuses -record without -baseline, unless -initial: a

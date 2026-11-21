@@ -35,67 +35,35 @@ func (r httpServerDirectConstructionRule) Run(fset *token.FileSet, file *ast.Fil
 	if len(httpAliases) == 0 {
 		return nil
 	}
-	var findings []Finding
-	ast.Inspect(file, func(n ast.Node) bool {
-		switch node := n.(type) {
-		case *ast.CompositeLit:
-			if !r.isHTTPServerSelector(node.Type, httpAliases) {
-				return true
-			}
-			p := fset.Position(node.Pos())
-			if isExempt(fset, file, r.Name(), p.Filename, p.Line) {
-				return true
-			}
-			findings = append(findings, Finding{
-				Rule:       r.Name(),
-				Severity:   High,
-				File:       p.Filename,
-				Line:       p.Line,
-				Message:    "direct construction of net/http.Server (no slowloris timeouts, default ErrorLog bypasses slog)",
-				Suggestion: "use httpx.NewServer(addr, handler, opts...) which sets ReadHeaderTimeout, ReadTimeout, WriteTimeout, IdleTimeout, MaxHeaderBytes, and a slog-backed ErrorLog",
-			})
-		case *ast.UnaryExpr:
-			// `&http.Server{...}` — the unary parent points at a CompositeLit
-			// reported above; nothing extra to do here.
-			_ = node
-		case *ast.CallExpr:
-			ident, ok := node.Fun.(*ast.Ident)
-			if !ok || ident.Name != "new" || len(node.Args) != 1 {
-				if helper, ok := r.httpServerHelper(node.Fun, httpAliases); ok {
-					p := fset.Position(node.Pos())
-					if isExempt(fset, file, r.Name(), p.Filename, p.Line) {
-						return true
-					}
-					findings = append(findings, Finding{
-						Rule:       r.Name(),
-						Severity:   High,
-						File:       p.Filename,
-						Line:       p.Line,
-						Message:    helper + " bypasses kit server defaults (no slowloris timeouts, default ErrorLog bypasses slog)",
-						Suggestion: "use httpx.NewServer(addr, handler, opts...) and call the returned server's ListenAndServe or Serve method",
-					})
-				}
-				return true
-			}
-			if !r.isHTTPServerSelector(node.Args[0], httpAliases) {
-				return true
-			}
-			p := fset.Position(node.Pos())
-			if isExempt(fset, file, r.Name(), p.Filename, p.Line) {
-				return true
-			}
-			findings = append(findings, Finding{
-				Rule:       r.Name(),
-				Severity:   High,
-				File:       p.Filename,
-				Line:       p.Line,
-				Message:    "new(http.Server) bypasses kit defaults (no slowloris timeouts, default ErrorLog bypasses slog)",
-				Suggestion: "use httpx.NewServer(addr, handler, opts...) which sets ReadHeaderTimeout, ReadTimeout, WriteTimeout, IdleTimeout, MaxHeaderBytes, and a slog-backed ErrorLog",
-			})
-		}
-		return true
+	return highFindings(fset, file, r.Name(), func(n ast.Node) (flaggedUse, bool) {
+		return r.serverConstruction(n, httpAliases)
 	})
-	return findings
+}
+
+// serverConstruction reports an http.Server built outside the kit at n: a
+// composite literal (`&http.Server{...}` is reported at its literal),
+// new(http.Server), or a package helper such as http.ListenAndServe.
+func (r httpServerDirectConstructionRule) serverConstruction(n ast.Node, httpAliases map[string]struct{}) (flaggedUse, bool) {
+	const kitServerSuggestion = "use httpx.NewServer(addr, handler, opts...) which sets ReadHeaderTimeout, ReadTimeout, WriteTimeout, IdleTimeout, MaxHeaderBytes, and a slog-backed ErrorLog"
+	switch node := n.(type) {
+	case *ast.CompositeLit:
+		if r.isHTTPServerSelector(node.Type, httpAliases) {
+			return flaggedUse{node.Pos(), "direct construction of net/http.Server (no slowloris timeouts, default ErrorLog bypasses slog)", kitServerSuggestion}, true
+		}
+	case *ast.CallExpr:
+		ident, ok := node.Fun.(*ast.Ident)
+		if !ok || ident.Name != "new" || len(node.Args) != 1 {
+			if helper, ok := r.httpServerHelper(node.Fun, httpAliases); ok {
+				return flaggedUse{node.Pos(), helper + " bypasses kit server defaults (no slowloris timeouts, default ErrorLog bypasses slog)",
+					"use httpx.NewServer(addr, handler, opts...) and call the returned server's ListenAndServe or Serve method"}, true
+			}
+			return flaggedUse{}, false
+		}
+		if r.isHTTPServerSelector(node.Args[0], httpAliases) {
+			return flaggedUse{node.Pos(), "new(http.Server) bypasses kit defaults (no slowloris timeouts, default ErrorLog bypasses slog)", kitServerSuggestion}, true
+		}
+	}
+	return flaggedUse{}, false
 }
 
 // isHTTPServerSelector reports whether expr is a SelectorExpr of the

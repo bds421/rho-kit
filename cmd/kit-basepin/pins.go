@@ -51,32 +51,43 @@ func readDockerfile(r io.Reader, file string) ([]pin, error) {
 				defaults[name] = strings.Trim(value, `"'`)
 			}
 		case "FROM":
-			args := fields[1:]
-			for len(args) > 0 && strings.HasPrefix(args[0], "--") {
-				args = args[1:]
-			}
-			if len(args) == 0 {
-				return nil
-			}
-			if len(args) >= 3 && strings.EqualFold(args[1], "AS") {
-				stages[strings.ToLower(args[2])] = true
-			}
-			ref := args[0]
-			if stages[strings.ToLower(ref)] || ref == "scratch" {
-				return nil
-			}
-			if m := argRef.FindStringSubmatch(ref); m != nil {
-				def, ok := defaults[m[1]]
-				if !ok {
-					return fmt.Errorf("%s: FROM %s: ARG %s has no default to check", at, ref, m[1])
-				}
-				ref = def
+			ref, ok, err := fromImage(at, fields[1:], stages, defaults)
+			if err != nil || !ok {
+				return err
 			}
 			return add(&pins, at, ref)
 		}
 		return nil
 	})
 	return pins, err
+}
+
+// fromImage returns the image reference of a FROM line's args, resolved
+// through the ARG defaults so far, and records the stage it names. It
+// reports false for a FROM of an earlier stage, of scratch, or without
+// an image.
+func fromImage(at string, args []string, stages map[string]bool, defaults map[string]string) (string, bool, error) {
+	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		return "", false, nil
+	}
+	if len(args) >= 3 && strings.EqualFold(args[1], "AS") {
+		stages[strings.ToLower(args[2])] = true
+	}
+	ref := args[0]
+	if stages[strings.ToLower(ref)] || ref == "scratch" {
+		return "", false, nil
+	}
+	if m := argRef.FindStringSubmatch(ref); m != nil {
+		def, ok := defaults[m[1]]
+		if !ok {
+			return "", false, fmt.Errorf("%s: FROM %s: ARG %s has no default to check", at, ref, m[1])
+		}
+		ref = def
+	}
+	return ref, true, nil
 }
 
 // readCompose returns the images of a compose file's services. A variable

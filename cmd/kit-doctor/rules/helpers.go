@@ -2,6 +2,7 @@ package rules
 
 import (
 	"go/ast"
+	"go/token"
 	"path"
 	"strconv"
 	"sync"
@@ -271,4 +272,37 @@ func callOptionsUnverifiable(call *ast.CallExpr) bool {
 		}
 	}
 	return false
+}
+
+// flaggedUse is one construct a rule flags, before exemptions apply.
+type flaggedUse struct {
+	pos        token.Pos
+	message    string
+	suggestion string
+}
+
+// highFindings walks file and returns a High finding of rule for every
+// node flag flags that no exemption covers, in walk order.
+func highFindings(fset *token.FileSet, file *ast.File, rule string, flag func(ast.Node) (flaggedUse, bool)) []Finding {
+	var findings []Finding
+	ast.Inspect(file, func(n ast.Node) bool {
+		use, ok := flag(n)
+		if !ok {
+			return true
+		}
+		pos := fset.Position(use.pos)
+		if isExempt(fset, file, rule, pos.Filename, pos.Line) {
+			return true
+		}
+		findings = append(findings, Finding{
+			Rule:       rule,
+			Severity:   High,
+			File:       pos.Filename,
+			Line:       pos.Line,
+			Message:    use.message,
+			Suggestion: use.suggestion,
+		})
+		return true
+	})
+	return findings
 }

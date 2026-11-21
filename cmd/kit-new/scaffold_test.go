@@ -417,67 +417,8 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		t.Skipf("httpx local checkout not found at %s: %v", httpxDir, statErr)
 	}
 
-	// Modules transitively required at v0.0.0 by httpx, app, and
-	// every consolidated v2 module they pull in. Until the kit
-	// publishes real v2 tags, the in-repo build test resolves them
-	// via local replaces — the same pattern the workspace uses. v2
-	// collapsed the per-package modules into a small set of parents,
-	// listed below.
-	internal := []string{
-		"app",
-		"app/actionlog",
-		"app/amqp",
-		"app/approval",
-		"app/auditlog",
-		"app/authz",
-		"app/budget",
-		"app/cron",
-		"app/eventbus",
-		"app/flags",
-		"app/grpc",
-		"app/http",
-		"app/jwt",
-		"app/leader",
-		"app/nats",
-		"app/paseto",
-		"app/postgres",
-		"app/ratelimit",
-		"app/redis",
-		"app/signedrequest",
-		"app/slo",
-		"app/storage",
-		"app/tenant",
-		"app/tracing",
-		"authz",
-		"authz/openfga",
-		"core",
-		"crypto",
-		"data",
-		"data/cache/rediscache",
-		"data/idempotency/redisstore",
-		"flags",
-		"grpcx",
-		"httpx",
-		"infra",
-		"io",
-		"observability",
-		"resilience",
-		"runtime",
-		"security",
-		// v2.0.0 lazy-adapter sub-modules: app/postgres, app/redis, app/amqp,
-		// app/nats, app/tracing, app/grpc each own their heavy dep (pgx,
-		// go-redis, amqp091, nats.go, otel, grpc-go) and re-export thin
-		// Module() constructors. They appear above so the resolver can
-		// satisfy build-time imports against the local checkout.
-		"infra/messaging/amqpbackend",
-		"infra/messaging/natsbackend",
-		"infra/outbox/postgres",
-		"infra/redis",
-		"infra/sqldb/pgx",
-		"observability/auditlog/postgres",
-	}
 	replaceArgs := []string{"mod", "edit"}
-	for _, sub := range internal {
+	for _, sub := range localKitModules {
 		dir := filepath.Join(repoRoot, sub)
 		if _, statErr := os.Stat(dir); statErr != nil {
 			t.Skipf("local checkout not found at %s: %v", dir, statErr)
@@ -486,16 +427,10 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 			"-replace=github.com/bds421/rho-kit/"+sub+"/v2="+dir,
 		)
 	}
-	replaceCmd := exec.Command("go", replaceArgs...)
-	replaceCmd.Dir = out
-	replaceCmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
-	if buf, err := replaceCmd.CombinedOutput(); err != nil {
+	if buf, err := runGoIn(out, replaceArgs...); err != nil {
 		t.Fatalf("go mod edit -replace failed:\n%s", buf)
 	}
-	tidyCmd := exec.Command("go", "mod", "tidy")
-	tidyCmd.Dir = out
-	tidyCmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
-	if buf, err := tidyCmd.CombinedOutput(); err != nil {
+	if buf, err := runGoIn(out, "mod", "tidy"); err != nil {
 		t.Fatalf("go mod tidy failed:\n%s", buf)
 	}
 
@@ -503,10 +438,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		{"build", "./..."},
 		{"vet", "./..."},
 	} {
-		cmd := exec.Command("go", args...)
-		cmd.Dir = out
-		cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
-		buf, err := cmd.CombinedOutput()
+		buf, err := runGoIn(out, args...)
 		require.NoErrorf(t, err, "go %s failed:\n%s", strings.Join(args, " "), buf)
 	}
 
@@ -516,6 +448,75 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 	if buf, err := doctorCmd.CombinedOutput(); err != nil {
 		t.Fatalf("generated service failed kit-doctor:\n%s", buf)
 	}
+}
+
+// runGoIn runs the go command with args in dir, outside the workspace and
+// free to update go.mod, and returns its combined output.
+func runGoIn(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("go", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	return cmd.CombinedOutput()
+}
+
+// localKitModules are the modules transitively required at v0.0.0 by httpx, app, and
+// every consolidated v2 module they pull in. Until the kit
+// publishes real v2 tags, the in-repo build test resolves them
+// via local replaces — the same pattern the workspace uses. v2
+// collapsed the per-package modules into a small set of parents,
+// listed below.
+var localKitModules = []string{
+	"app",
+	"app/actionlog",
+	"app/amqp",
+	"app/approval",
+	"app/auditlog",
+	"app/authz",
+	"app/budget",
+	"app/cron",
+	"app/eventbus",
+	"app/flags",
+	"app/grpc",
+	"app/http",
+	"app/jwt",
+	"app/leader",
+	"app/nats",
+	"app/paseto",
+	"app/postgres",
+	"app/ratelimit",
+	"app/redis",
+	"app/signedrequest",
+	"app/slo",
+	"app/storage",
+	"app/tenant",
+	"app/tracing",
+	"authz",
+	"authz/openfga",
+	"core",
+	"crypto",
+	"data",
+	"data/cache/rediscache",
+	"data/idempotency/redisstore",
+	"flags",
+	"grpcx",
+	"httpx",
+	"infra",
+	"io",
+	"observability",
+	"resilience",
+	"runtime",
+	"security",
+	// v2.0.0 lazy-adapter sub-modules: app/postgres, app/redis, app/amqp,
+	// app/nats, app/tracing, app/grpc each own their heavy dep (pgx,
+	// go-redis, amqp091, nats.go, otel, grpc-go) and re-export thin
+	// Module() constructors. They appear above so the resolver can
+	// satisfy build-time imports against the local checkout.
+	"infra/messaging/amqpbackend",
+	"infra/messaging/natsbackend",
+	"infra/outbox/postgres",
+	"infra/redis",
+	"infra/sqldb/pgx",
+	"observability/auditlog/postgres",
 }
 
 func TestScaffold_MCPFlag_ScaffoldsToolRegistration(t *testing.T) {
