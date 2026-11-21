@@ -149,7 +149,10 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 	// destination directory, then rename. dirRoot is an os.Root re-anchored on
 	// the destination directory, so the temp create and rename cannot traverse
 	// a symlink swapped into the path.
-	base := path.Base(rel)
+	return writeObjectAtomically(dirRoot, path.Base(rel), validated)
+}
+
+func writeObjectAtomically(dirRoot *os.Root, base string, validated io.Reader) error {
 	tmpName, tmp, err := createTempIn(dirRoot)
 	if err != nil {
 		return mapUnsafeOrFileError("create temp file", err)
@@ -186,7 +189,6 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 	if err := fsyncDir(dirRoot); err != nil {
 		return localFileError("fsync object dir", err)
 	}
-
 	return nil
 }
 

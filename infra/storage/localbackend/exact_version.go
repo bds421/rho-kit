@@ -315,21 +315,16 @@ func (backend *ImmutableBackend) VersionsPage(
 	if err := storage.ValidateExactVersionPageOptions(options); err != nil {
 		return storage.ExactVersionPage{}, err
 	}
-	position, err := exactversioncursor.Decode(
-		immutablePageCursorKind,
-		prefix,
-		options.Cursor,
-		false,
-	)
+	position, err := exactversioncursor.Decode(immutablePageCursorKind, prefix, options.Cursor, false)
 	if err != nil {
 		return storage.ExactVersionPage{}, err
 	}
-	startAfter, cursorVersion := position.Key, position.Version
+	startAfter := position.Key
 	backend.mu.RLock()
 	defer backend.mu.RUnlock()
 	if startAfter != "" {
 		current, versionErr := backend.markerVersion(ctx, startAfter)
-		if versionErr != nil || current != cursorVersion {
+		if versionErr != nil || current != position.Version {
 			return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
 		}
 	}
@@ -337,31 +332,18 @@ func (backend *ImmutableBackend) VersionsPage(
 	if !ok {
 		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
 	}
-	listed, err := storage.ListPage(
-		ctx,
-		lister,
-		prefix,
-		storage.ListOptions{
-			MaxKeys:    options.Limit,
-			StartAfter: startAfter,
-		},
-	)
+	listed, err := storage.ListPage(ctx, lister, prefix, storage.ListOptions{
+		MaxKeys:    options.Limit,
+		StartAfter: startAfter,
+	})
 	if err != nil {
 		return storage.ExactVersionPage{}, err
 	}
-	page := storage.ExactVersionPage{
-		Objects: make([]storage.ObjectVersion, 0, len(listed.Objects)),
+	objects, err := backend.markedVersions(ctx, listed.Objects)
+	if err != nil {
+		return storage.ExactVersionPage{}, err
 	}
-	for _, object := range listed.Objects {
-		version, versionErr := backend.markerVersion(ctx, object.Key)
-		if versionErr != nil {
-			return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
-		}
-		page.Objects = append(page.Objects, storage.ObjectVersion{
-			Key:     object.Key,
-			Version: version,
-		})
-	}
+	page := storage.ExactVersionPage{Objects: objects}
 	if !listed.Truncated {
 		return page, nil
 	}
@@ -369,20 +351,43 @@ func (backend *ImmutableBackend) VersionsPage(
 		listed.NextStartAfter != page.Objects[len(page.Objects)-1].Key {
 		return storage.ExactVersionPage{}, storage.ErrExactVersionUnavailable
 	}
-	last := page.Objects[len(page.Objects)-1]
-	page.NextCursor, err = exactversioncursor.Encode(
-		immutablePageCursorKind,
-		prefix,
-		exactversioncursor.Position{
-			Key: last.Key, Version: last.Version,
-		},
-		false,
-	)
+	page.NextCursor, err = immutablePageCursor(prefix, page.Objects[len(page.Objects)-1])
 	if err != nil {
 		return storage.ExactVersionPage{}, err
 	}
 	page.Truncated = true
 	return page, nil
+}
+
+// markedVersions pairs each listed object with the version its marker
+// records; an object without a readable marker makes the page unavailable.
+func (backend *ImmutableBackend) markedVersions(
+	ctx context.Context,
+	listed []storage.ObjectInfo,
+) ([]storage.ObjectVersion, error) {
+	objects := make([]storage.ObjectVersion, 0, len(listed))
+	for _, object := range listed {
+		version, err := backend.markerVersion(ctx, object.Key)
+		if err != nil {
+			return nil, storage.ErrExactVersionUnavailable
+		}
+		objects = append(objects, storage.ObjectVersion{
+			Key:     object.Key,
+			Version: version,
+		})
+	}
+	return objects, nil
+}
+
+// immutablePageCursor resumes a page after last; it records last's version so
+// the next page fails if that object changed in between.
+func immutablePageCursor(prefix string, last storage.ObjectVersion) (storage.ExactVersionCursor, error) {
+	return exactversioncursor.Encode(
+		immutablePageCursorKind,
+		prefix,
+		exactversioncursor.Position{Key: last.Key, Version: last.Version},
+		false,
+	)
 }
 
 const immutablePageCursorKind = "rho-kit-local-immutable-exact-page-v1"

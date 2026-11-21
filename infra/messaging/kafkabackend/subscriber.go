@@ -313,6 +313,66 @@ func (s *Subscriber) Consume(ctx context.Context, b messaging.Binding, handler m
 	if handler == nil {
 		return messaging.ErrInvalidConsumer
 	}
+	if err := s.checkBinding(b); err != nil {
+		return err
+	}
+	reader, err := s.newReader(b.Exchange)
+	if err != nil {
+		return err
+	}
+	defer func() { s.closeReader(reader, b.Exchange) }()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		km, err := reader.FetchMessage(ctx)
+		if err != nil {
+			if stop, stopErr := s.handleFetchError(ctx, b.Exchange, err); stop {
+				return stopErr
+			}
+			continue
+		}
+		if !s.dispatch(ctx, reader, km, handler) {
+			s.resetStreak = 0
+			continue
+		}
+		// A transient handler error left this record's offset
+		// uncommitted. Reset the reader so the next fetch rewinds to
+		// the last committed offset (before the failed record) — a
+		// later success on this partition must not commit past it
+		// and silently drop the failed message. See dispatch's doc
+		// for the Kafka-watermark rationale.
+		s.resetStreak++
+		newReader, resetErr := s.resetReader(ctx, reader, b.Exchange)
+		// The old reader is closed inside resetReader; clear it so
+		// the deferred cleanup does not double-close it.
+		reader = newReader
+		if resetErr != nil {
+			return resetErr
+		}
+		if newReader == nil {
+			// ctx cancelled during the back-off.
+			return nil
+		}
+	}
+}
+
+// closeReader closes the reader Consume holds when it returns, if any.
+func (s *Subscriber) closeReader(reader *kafka.Reader, topic string) {
+	if reader == nil {
+		return
+	}
+	if closeErr := reader.Close(); closeErr != nil {
+		s.logger.Warn("kafkabackend: reader close failed",
+			redact.String("topic", topic),
+			redact.Error(closeErr),
+		)
+	}
+}
+
+// checkBinding refuses a binding this subscriber cannot consume.
+func (s *Subscriber) checkBinding(b messaging.Binding) error {
 	if err := messaging.ValidateExchangeName(b.Exchange); err != nil {
 		return err
 	}
@@ -329,75 +389,35 @@ func (s *Subscriber) Consume(ctx context.Context, b messaging.Binding, handler m
 		// retry in the handler.
 		return messaging.ErrRetryUnsupported
 	}
-	reader, err := s.newReader(b.Exchange)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if reader == nil {
-			return
-		}
-		if closeErr := reader.Close(); closeErr != nil {
-			s.logger.Warn("kafkabackend: reader close failed",
-				redact.String("topic", b.Exchange),
-				redact.Error(closeErr),
-			)
-		}
-	}()
+	return nil
+}
 
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil
-		}
-		km, err := reader.FetchMessage(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return nil
-			}
-			if isFatalKafkaFetchError(err) {
-				s.logger.Error("kafkabackend: fatal fetch error — stopping consumer",
-					redact.String("topic", b.Exchange),
-					redact.Error(err),
-				)
-				s.metrics.observeConsumed(b.Exchange, s.groupID, kafkaConsumeOutcomeFetchError)
-				return redact.WrapError("kafkabackend: fatal fetch error", err)
-			}
-			s.logger.Warn("kafkabackend: fetch failed",
-				redact.String("topic", b.Exchange),
-				redact.Error(err),
-			)
-			s.metrics.observeConsumed(b.Exchange, s.groupID, kafkaConsumeOutcomeFetchError)
-			// Soft back-off so a persistently-failing broker does not
-			// burn CPU. Bounded by ctx.
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(500 * time.Millisecond):
-			}
-			continue
-		}
-		if s.dispatch(ctx, reader, km, handler) {
-			// A transient handler error left this record's offset
-			// uncommitted. Reset the reader so the next fetch rewinds to
-			// the last committed offset (before the failed record) — a
-			// later success on this partition must not commit past it
-			// and silently drop the failed message. See dispatch's doc
-			// for the Kafka-watermark rationale.
-			s.resetStreak++
-			newReader, resetErr := s.resetReader(ctx, reader, b.Exchange)
-			// The old reader is closed inside resetReader; clear it so
-			// the deferred cleanup does not double-close it.
-			reader = newReader
-			if resetErr != nil {
-				return resetErr
-			}
-			if newReader == nil {
-				// ctx cancelled during the back-off.
-				return nil
-			}
-		} else {
-			s.resetStreak = 0
-		}
+// handleFetchError reacts to a failed fetch on topic. It reports stop=true
+// with the error Consume returns when consuming must end; otherwise it has
+// backed off and the caller fetches again.
+func (s *Subscriber) handleFetchError(ctx context.Context, topic string, err error) (bool, error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true, nil
+	}
+	s.metrics.observeConsumed(topic, s.groupID, kafkaConsumeOutcomeFetchError)
+	if isFatalKafkaFetchError(err) {
+		s.logger.Error("kafkabackend: fatal fetch error — stopping consumer",
+			redact.String("topic", topic),
+			redact.Error(err),
+		)
+		return true, redact.WrapError("kafkabackend: fatal fetch error", err)
+	}
+	s.logger.Warn("kafkabackend: fetch failed",
+		redact.String("topic", topic),
+		redact.Error(err),
+	)
+	// Soft back-off so a persistently-failing broker does not
+	// burn CPU. Bounded by ctx.
+	select {
+	case <-ctx.Done():
+		return true, nil
+	case <-time.After(500 * time.Millisecond):
+		return false, nil
 	}
 }
 

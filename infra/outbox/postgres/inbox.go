@@ -227,10 +227,10 @@ func validate(consumer, messageID string, handler InboxHandler) error {
 		return errors.New("outbox/postgres: inbox handler must not be nil")
 	}
 	if err := validateToken(consumer, maxConsumerNameBytes); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidConsumer, err)
+		return fmt.Errorf("%w: %w", ErrInvalidConsumer, err)
 	}
 	if err := validateToken(messageID, maxMessageIDBytes); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidMessage, err)
+		return fmt.Errorf("%w: %w", ErrInvalidMessage, err)
 	}
 	return nil
 }

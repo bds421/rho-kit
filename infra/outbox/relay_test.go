@@ -505,54 +505,11 @@ func TestRelay_Cleanup(t *testing.T) {
 	oldTime := now.Add(-48 * time.Hour)
 	recentTime := now.Add(-1 * time.Hour)
 
-	oldPublishedID := uuid.UUID(id.NewBytes())
-	recentPublishedID := uuid.UUID(id.NewBytes())
-	oldFailedID := uuid.UUID(id.NewBytes())
-	recentFailedID := uuid.UUID(id.NewBytes())
-
 	for _, entry := range []outbox.Entry{
-		{
-			ID:          oldPublishedID,
-			Topic:       "test",
-			RoutingKey:  "test.key",
-			MessageID:   "msg-published-old",
-			MessageType: "test.event",
-			Payload:     []byte(`{}`),
-			Status:      outbox.StatusPublished,
-			PublishedAt: &oldTime,
-			CreatedAt:   oldTime,
-		},
-		{
-			ID:          recentPublishedID,
-			Topic:       "test",
-			RoutingKey:  "test.key",
-			MessageID:   "msg-published-recent",
-			MessageType: "test.event",
-			Payload:     []byte(`{}`),
-			Status:      outbox.StatusPublished,
-			PublishedAt: &recentTime,
-			CreatedAt:   recentTime,
-		},
-		{
-			ID:          oldFailedID,
-			Topic:       "test",
-			RoutingKey:  "test.key",
-			MessageID:   "msg-failed-old",
-			MessageType: "test.event",
-			Payload:     []byte(`{}`),
-			Status:      outbox.StatusFailed,
-			CreatedAt:   oldTime,
-		},
-		{
-			ID:          recentFailedID,
-			Topic:       "test",
-			RoutingKey:  "test.key",
-			MessageID:   "msg-failed-recent",
-			MessageType: "test.event",
-			Payload:     []byte(`{}`),
-			Status:      outbox.StatusFailed,
-			CreatedAt:   recentTime,
-		},
+		terminalEntry("msg-published-old", outbox.StatusPublished, oldTime),
+		terminalEntry("msg-published-recent", outbox.StatusPublished, recentTime),
+		terminalEntry("msg-failed-old", outbox.StatusFailed, oldTime),
+		terminalEntry("msg-failed-recent", outbox.StatusFailed, recentTime),
 	} {
 		require.NoError(t, store.Insert(ctx, entry))
 	}
@@ -587,6 +544,25 @@ func TestRelay_Cleanup(t *testing.T) {
 		"msg-published-recent": outbox.StatusPublished,
 		"msg-failed-recent":    outbox.StatusFailed,
 	}, remaining)
+}
+
+// terminalEntry is an entry that reached status at the given time; a
+// published one carries that time as PublishedAt.
+func terminalEntry(messageID string, status outbox.Status, at time.Time) outbox.Entry {
+	entry := outbox.Entry{
+		ID:          uuid.UUID(id.NewBytes()),
+		Topic:       "test",
+		RoutingKey:  "test.key",
+		MessageID:   messageID,
+		MessageType: "test.event",
+		Payload:     []byte(`{}`),
+		Status:      status,
+		CreatedAt:   at,
+	}
+	if status == outbox.StatusPublished {
+		entry.PublishedAt = &at
+	}
+	return entry
 }
 
 func TestRelay_PublishesWithCorrectEntryContent(t *testing.T) {

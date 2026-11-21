@@ -91,7 +91,7 @@ func (c *Consumer) Consume(ctx context.Context, b messaging.Binding, handler mes
 		d, err := toDelivery(sm, streamName)
 		if err != nil {
 			// Permanent: invalid transport values must not be retried forever.
-			return fmt.Errorf("%w: %v", messaging.ErrInvalidMessage, err)
+			return fmt.Errorf("%w: %w", messaging.ErrInvalidMessage, err)
 		}
 		return handler(ctx, d)
 	})

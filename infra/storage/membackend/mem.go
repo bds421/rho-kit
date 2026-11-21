@@ -217,50 +217,72 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 			return
 		}
 
-		b.mu.RLock()
-		// Collect matching keys in sorted order for deterministic output.
-		keys := make([]string, 0, len(b.objects))
-		for k := range b.objects {
-			if prefix == "" || strings.HasPrefix(k, prefix) {
-				keys = append(keys, k)
-			}
+		b.yieldKeys(ctx, b.sortedKeys(prefix), opts, yield)
+	}
+}
+
+// yieldKeys yields the objects of the snapshot keys after opts.StartAfter, up
+// to opts.MaxKeys, checking ctx before each one.
+func (b *Backend) yieldKeys(
+	ctx context.Context,
+	keys []string,
+	opts storage.ListOptions,
+	yield func(storage.ObjectInfo, error) bool,
+) {
+	count := 0
+	for _, key := range keys {
+		if err := ctxErr(ctx); err != nil {
+			yield(storage.ObjectInfo{}, err)
+			return
 		}
-		b.mu.RUnlock()
+		if opts.StartAfter != "" && key <= opts.StartAfter {
+			continue
+		}
 
-		sort.Strings(keys)
-		count := 0
+		info, ok := b.objectInfo(key)
+		if !ok {
+			continue // deleted between snapshot and iteration
+		}
 
-		for _, key := range keys {
-			if err := ctxErr(ctx); err != nil {
-				yield(storage.ObjectInfo{}, err)
-				return
-			}
-			if opts.StartAfter != "" && key <= opts.StartAfter {
-				continue
-			}
-
-			b.mu.RLock()
-			obj, ok := b.objects[key]
-			b.mu.RUnlock()
-			if !ok {
-				continue // deleted between snapshot and iteration
-			}
-
-			count++
-			info := storage.ObjectInfo{
-				Key:         key,
-				Size:        int64(len(obj.data)),
-				ContentType: obj.meta.ContentType,
-				ModTime:     obj.modTime,
-			}
-			if !yield(info, nil) {
-				return
-			}
-			if opts.MaxKeys > 0 && count >= opts.MaxKeys {
-				return
-			}
+		count++
+		if !yield(info, nil) {
+			return
+		}
+		if opts.MaxKeys > 0 && count >= opts.MaxKeys {
+			return
 		}
 	}
+}
+
+// sortedKeys snapshots the keys under prefix in sorted order, so List's output
+// is deterministic.
+func (b *Backend) sortedKeys(prefix string) []string {
+	b.mu.RLock()
+	keys := make([]string, 0, len(b.objects))
+	for k := range b.objects {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	b.mu.RUnlock()
+
+	sort.Strings(keys)
+	return keys
+}
+
+func (b *Backend) objectInfo(key string) (storage.ObjectInfo, bool) {
+	b.mu.RLock()
+	obj, ok := b.objects[key]
+	b.mu.RUnlock()
+	if !ok {
+		return storage.ObjectInfo{}, false
+	}
+	return storage.ObjectInfo{
+		Key:         key,
+		Size:        int64(len(obj.data)),
+		ContentType: obj.meta.ContentType,
+		ModTime:     obj.modTime,
+	}, true
 }
 
 // ctxErr returns ctx.Err() for non-nil ctx, or nil otherwise.

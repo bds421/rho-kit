@@ -90,44 +90,26 @@ func TestExactVersionsByPrefixPagesEveryKeyVersionAndCountsDeleteMarkers(
 	t *testing.T,
 ) {
 	t.Parallel()
-	calls := 0
-	backend := newTestBackend(&mockS3Client{
-		versionsFn: func(
-			_ context.Context,
-			input *s3.ListObjectVersionsInput,
-		) (*s3.ListObjectVersionsOutput, error) {
-			calls++
-			require.Equal(t, "operations/a/", aws.ToString(input.Prefix))
-			switch calls {
-			case 1:
-				require.Nil(t, input.KeyMarker)
-				require.Nil(t, input.VersionIdMarker)
-				return &s3.ListObjectVersionsOutput{
-					Versions: []types.ObjectVersion{
-						{Key: aws.String("operations/a/one"), VersionId: aws.String("v1")},
-						{Key: aws.String("operations/a/one"), VersionId: aws.String("v2")},
-					},
-					DeleteMarkers: []types.DeleteMarkerEntry{
-						{Key: aws.String("operations/a/deleted"), VersionId: aws.String("d1")},
-					},
-					IsTruncated:         aws.Bool(true),
-					NextKeyMarker:       aws.String("operations/a/one"),
-					NextVersionIdMarker: aws.String("v2"),
-				}, nil
-			case 2:
-				require.Equal(t, "operations/a/one", aws.ToString(input.KeyMarker))
-				require.Equal(t, "v2", aws.ToString(input.VersionIdMarker))
-				return &s3.ListObjectVersionsOutput{
-					Versions: []types.ObjectVersion{
-						{Key: aws.String("operations/a/two"), VersionId: aws.String("v1")},
-					},
-				}, nil
-			default:
-				t.Fatalf("unexpected page %d", calls)
-				return nil, nil
-			}
+	var requests []*s3.ListObjectVersionsInput
+	backend := pagedVersionsBackend(t, "operations/a/", &requests,
+		&s3.ListObjectVersionsOutput{
+			Versions: []types.ObjectVersion{
+				{Key: aws.String("operations/a/one"), VersionId: aws.String("v1")},
+				{Key: aws.String("operations/a/one"), VersionId: aws.String("v2")},
+			},
+			DeleteMarkers: []types.DeleteMarkerEntry{
+				{Key: aws.String("operations/a/deleted"), VersionId: aws.String("d1")},
+			},
+			IsTruncated:         aws.Bool(true),
+			NextKeyMarker:       aws.String("operations/a/one"),
+			NextVersionIdMarker: aws.String("v2"),
 		},
-	})
+		&s3.ListObjectVersionsOutput{
+			Versions: []types.ObjectVersion{
+				{Key: aws.String("operations/a/two"), VersionId: aws.String("v1")},
+			},
+		},
+	)
 	versions, err := backend.VersionsByPrefix(
 		context.Background(),
 		"operations/a/",
@@ -139,9 +121,9 @@ func TestExactVersionsByPrefixPagesEveryKeyVersionAndCountsDeleteMarkers(
 		{Key: "operations/a/one", Version: "v2"},
 		{Key: "operations/a/two", Version: "v1"},
 	}, versions)
-	require.Equal(t, 2, calls)
+	require.Len(t, requests, 2)
 
-	calls = 0
+	requests = nil
 	_, err = backend.VersionsByPrefix(
 		context.Background(),
 		"operations/a/",
@@ -181,46 +163,27 @@ func TestExactVersionPagesCarrySameKeyGenerationCursorAndCountTombstones(
 	t *testing.T,
 ) {
 	t.Parallel()
-	calls := 0
-	backend := newTestBackend(&mockS3Client{
-		versionsFn: func(
-			_ context.Context,
-			input *s3.ListObjectVersionsInput,
-		) (*s3.ListObjectVersionsOutput, error) {
-			calls++
-			require.Equal(t, "objects/", aws.ToString(input.Prefix))
-			require.Equal(t, int32(3), aws.ToInt32(input.MaxKeys))
-			switch calls {
-			case 1:
-				require.Nil(t, input.KeyMarker)
-				require.Nil(t, input.VersionIdMarker)
-				return &s3.ListObjectVersionsOutput{
-					DeleteMarkers: []types.DeleteMarkerEntry{
-						{Key: aws.String("objects/a"), VersionId: aws.String("deleted-v4")},
-					},
-					Versions: []types.ObjectVersion{
-						{Key: aws.String("objects/a"), VersionId: aws.String("v3")},
-						{Key: aws.String("objects/a"), VersionId: aws.String("v2")},
-					},
-					IsTruncated:         aws.Bool(true),
-					NextKeyMarker:       aws.String("objects/a"),
-					NextVersionIdMarker: aws.String("v2"),
-				}, nil
-			case 2:
-				require.Equal(t, "objects/a", aws.ToString(input.KeyMarker))
-				require.Equal(t, "v2", aws.ToString(input.VersionIdMarker))
-				return &s3.ListObjectVersionsOutput{
-					Versions: []types.ObjectVersion{
-						{Key: aws.String("objects/a"), VersionId: aws.String("v1")},
-						{Key: aws.String("objects/b"), VersionId: aws.String("v1")},
-					},
-				}, nil
-			default:
-				t.Fatalf("unexpected page %d", calls)
-				return nil, nil
-			}
+	var requests []*s3.ListObjectVersionsInput
+	backend := pagedVersionsBackend(t, "objects/", &requests,
+		&s3.ListObjectVersionsOutput{
+			DeleteMarkers: []types.DeleteMarkerEntry{
+				{Key: aws.String("objects/a"), VersionId: aws.String("deleted-v4")},
+			},
+			Versions: []types.ObjectVersion{
+				{Key: aws.String("objects/a"), VersionId: aws.String("v3")},
+				{Key: aws.String("objects/a"), VersionId: aws.String("v2")},
+			},
+			IsTruncated:         aws.Bool(true),
+			NextKeyMarker:       aws.String("objects/a"),
+			NextVersionIdMarker: aws.String("v2"),
 		},
-	})
+		&s3.ListObjectVersionsOutput{
+			Versions: []types.ObjectVersion{
+				{Key: aws.String("objects/a"), VersionId: aws.String("v1")},
+				{Key: aws.String("objects/b"), VersionId: aws.String("v1")},
+			},
+		},
+	)
 
 	first, err := backend.VersionsPage(
 		context.Background(),
@@ -251,7 +214,10 @@ func TestExactVersionPagesCarrySameKeyGenerationCursorAndCountTombstones(
 	}, second.Objects)
 	assert.False(t, second.Truncated)
 	assert.Empty(t, second.NextCursor)
-	require.Equal(t, 2, calls)
+	require.Len(t, requests, 2)
+	for _, request := range requests {
+		require.Equal(t, int32(3), aws.ToInt32(request.MaxKeys))
+	}
 }
 
 func TestExactVersionPageRejectsNonProgressingProviderCursor(t *testing.T) {
@@ -399,4 +365,39 @@ func TestVersionsRefusesTruncationAtBound(t *testing.T) {
 
 	_, err := backend.Versions(context.Background(), "objects/a", 1)
 	require.ErrorIs(t, err, storage.ErrBatchTooLarge)
+}
+
+// pagedVersionsBackend serves pages in order, records every request and
+// checks that each request after the first resumes from the previous page's
+// markers.
+func pagedVersionsBackend(
+	t *testing.T,
+	prefix string,
+	requests *[]*s3.ListObjectVersionsInput,
+	pages ...*s3.ListObjectVersionsOutput,
+) *Backend {
+	t.Helper()
+	return newTestBackend(&mockS3Client{
+		versionsFn: func(
+			_ context.Context,
+			input *s3.ListObjectVersionsInput,
+		) (*s3.ListObjectVersionsOutput, error) {
+			*requests = append(*requests, input)
+			call := len(*requests)
+			require.Equal(t, prefix, aws.ToString(input.Prefix))
+			if call > len(pages) {
+				t.Fatalf("unexpected page %d", call)
+				return nil, nil
+			}
+			if call == 1 {
+				require.Nil(t, input.KeyMarker)
+				require.Nil(t, input.VersionIdMarker)
+			} else {
+				previous := pages[call-2]
+				require.Equal(t, aws.ToString(previous.NextKeyMarker), aws.ToString(input.KeyMarker))
+				require.Equal(t, aws.ToString(previous.NextVersionIdMarker), aws.ToString(input.VersionIdMarker))
+			}
+			return pages[call-1], nil
+		},
+	})
 }

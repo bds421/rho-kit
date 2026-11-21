@@ -15,37 +15,7 @@ func TestRelocationPinsHistoricalAccessAndLeavesEnumerationPhysical(
 	t *testing.T,
 ) {
 	ctx := context.Background()
-	backend := membackend.NewImmutable()
-	if err := backend.Put(
-		ctx,
-		"objects/a",
-		bytes.NewBufferString("rehydrated"),
-		storage.ObjectMeta{Size: 10},
-	); err != nil {
-		t.Fatal(err)
-	}
-	target, _, err := backend.CurrentVersion(ctx, "objects/a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := storage.ObjectVersion{
-		Key: "objects/a", Version: "source-provider-generation",
-	}
-	wrapped, err := New(
-		backend,
-		ResolverFunc(func(
-			_ context.Context,
-			object storage.ObjectVersion,
-		) (storage.ObjectVersion, error) {
-			if object == old {
-				return target, nil
-			}
-			return object, nil
-		}),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	backend, wrapped, old, target := relocatedHistoricalVersion(t)
 	exact, ok := storage.AsExactVersionStore(wrapped)
 	if !ok {
 		t.Fatal("relocated exact-version capability is absent")
@@ -93,6 +63,51 @@ func TestRelocationPinsHistoricalAccessAndLeavesEnumerationPhysical(
 	); !errors.Is(err, storage.ErrObjectNotFound) {
 		t.Fatalf("target generation survived relocated deletion: %v", err)
 	}
+}
+
+// relocatedHistoricalVersion stores one object and wraps the backend so a
+// source provider's historical version of it resolves to the stored
+// generation (target).
+func relocatedHistoricalVersion(t *testing.T) (
+	backend *membackend.ImmutableBackend,
+	wrapped storage.Storage,
+	old storage.ObjectVersion,
+	target storage.ObjectVersion,
+) {
+	t.Helper()
+	ctx := context.Background()
+	backend = membackend.NewImmutable()
+	if err := backend.Put(
+		ctx,
+		"objects/a",
+		bytes.NewBufferString("rehydrated"),
+		storage.ObjectMeta{Size: 10},
+	); err != nil {
+		t.Fatal(err)
+	}
+	target, _, err := backend.CurrentVersion(ctx, "objects/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old = storage.ObjectVersion{
+		Key: "objects/a", Version: "source-provider-generation",
+	}
+	wrapped, err = New(
+		backend,
+		ResolverFunc(func(
+			_ context.Context,
+			object storage.ObjectVersion,
+		) (storage.ObjectVersion, error) {
+			if object == old {
+				return target, nil
+			}
+			return object, nil
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return backend, wrapped, old, target
 }
 
 func TestRelocationRejectsCrossKeyAndResolverFailure(t *testing.T) {

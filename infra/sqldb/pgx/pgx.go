@@ -680,40 +680,39 @@ func lastSSLMode(dsn string) string {
 			rest = rest[i+len(key):]
 			continue
 		}
-		v := rest[i+len(key):]
-		// Handle single-quoted values (libpq keyword form):
-		//   sslmode='require'
-		if len(v) > 0 && v[0] == '\'' {
-			end := -1
-			for j := 1; j < len(v); j++ {
-				if v[j] == '\'' && v[j-1] != '\\' {
-					end = j
-					break
-				}
-			}
-			if end < 0 {
-				// Unterminated quote; stop scanning to avoid an
-				// infinite loop or misleading value.
-				return last
-			}
-			last = v[1:end]
-			rest = v[end+1:]
-			continue
+		value, after, ok := sslModeValue(rest[i+len(key):])
+		if !ok {
+			return last
 		}
-		// Stop at the first delimiter pgx recognises:
-		// whitespace (keyword form) or `&` (URL form).
-		end := len(v)
-		for j := 0; j < len(v); j++ {
-			c := v[j]
-			if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '&' {
-				end = j
-				break
-			}
-		}
-		last = v[:end]
-		rest = v[end:]
+		last, rest = value, after
 	}
 	return last
+}
+
+// sslModeValue reads the value at the start of v and returns it with the
+// rest of v. It reports false for an unterminated quote, where scanning
+// stops to avoid an infinite loop or misleading value.
+func sslModeValue(v string) (value, rest string, ok bool) {
+	// Single-quoted values (libpq keyword form): sslmode='require'
+	if len(v) > 0 && v[0] == '\'' {
+		for j := 1; j < len(v); j++ {
+			if v[j] == '\'' && v[j-1] != '\\' {
+				return v[1:j], v[j+1:], true
+			}
+		}
+		return "", "", false
+	}
+	// Stop at the first delimiter pgx recognises:
+	// whitespace (keyword form) or `&` (URL form).
+	end := len(v)
+	for j := 0; j < len(v); j++ {
+		c := v[j]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '&' {
+			end = j
+			break
+		}
+	}
+	return v[:end], v[end:], true
 }
 
 // isSSLModeKeyBoundary reports whether the `sslmode=` token starting at

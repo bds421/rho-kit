@@ -46,36 +46,16 @@ func (m *routingMetrics) deleteSeries() {
 // this RoutingPool so its gauge series are isolated from other pools that
 // share the same registerer.
 func newRoutingMetrics(reg prometheus.Registerer, instanceID string) (*routingMetrics, error) {
-	primaryAcquires := prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: "sqldb",
-		Subsystem: "readreplica",
-		Name:      "primary_acquires_total",
-		Help:      "Connections acquired from the primary pool (writes + non-read-only reads + fallbacks).",
-	})
-	replicaAcquires := prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: "sqldb",
-		Subsystem: "readreplica",
-		Name:      "replica_acquires_total",
-		Help:      "Connections acquired from a healthy replica for a read-only request.",
-	})
-	replicaFallback := prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: "sqldb",
-		Subsystem: "readreplica",
-		Name:      "replica_fallback_total",
-		Help:      "Read-only acquires that fell back to primary because no replica was healthy.",
-	})
-	healthyReplicas := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "sqldb",
-		Subsystem: "readreplica",
-		Name:      "replicas_healthy",
-		Help:      "Number of replicas currently in rotation.",
-	}, []string{gaugePoolLabel})
-	replicaCount := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "sqldb",
-		Subsystem: "readreplica",
-		Name:      "replicas_total",
-		Help:      "Total replicas configured (healthy + unhealthy).",
-	}, []string{gaugePoolLabel})
+	primaryAcquires := routingCounter("primary_acquires_total",
+		"Connections acquired from the primary pool (writes + non-read-only reads + fallbacks).")
+	replicaAcquires := routingCounter("replica_acquires_total",
+		"Connections acquired from a healthy replica for a read-only request.")
+	replicaFallback := routingCounter("replica_fallback_total",
+		"Read-only acquires that fell back to primary because no replica was healthy.")
+	healthyReplicas := routingPoolGauge("replicas_healthy",
+		"Number of replicas currently in rotation.")
+	replicaCount := routingPoolGauge("replicas_total",
+		"Total replicas configured (healthy + unhealthy).")
 
 	if reg != nil {
 		var err error
@@ -115,6 +95,25 @@ func newRoutingMetrics(reg prometheus.Registerer, instanceID string) (*routingMe
 		countVec:        replicaCount,
 		instanceID:      instanceID,
 	}, nil
+}
+
+func routingCounter(name, help string) prometheus.Counter {
+	return prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "sqldb",
+		Subsystem: "readreplica",
+		Name:      name,
+		Help:      help,
+	})
+}
+
+// routingPoolGauge is a gauge with one series per RoutingPool.
+func routingPoolGauge(name, help string) *prometheus.GaugeVec {
+	return prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "sqldb",
+		Subsystem: "readreplica",
+		Name:      name,
+		Help:      help,
+	}, []string{gaugePoolLabel})
 }
 
 // registerCounter registers c, adopting the already-registered counter so

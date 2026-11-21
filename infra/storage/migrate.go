@@ -79,11 +79,9 @@ func Migrate(ctx context.Context, src, dst Storage, opts MigrateOptions) (Migrat
 		return MigrateResult{}, redact.WrapError("storage.Migrate", err)
 	}
 
-	// Use AsLister so decorated backends (encryption,
-	// metrics, retry) that wrap a Lister-implementing inner expose
-	// the capability via Unwrap. The pre-fix `src.(Lister)` cast
-	// failed for all decorators and caused Migrate to refuse
-	// otherwise-supported sources.
+	// AsLister so decorated backends (encryption, metrics, retry) that wrap a
+	// Lister expose the capability via Unwrap; a plain type assertion would
+	// refuse every decorated source.
 	lister, ok := AsLister(src)
 	if !ok {
 		return MigrateResult{}, fmt.Errorf("storage.Migrate: source backend does not implement Lister (even via Unwrap)")
@@ -103,83 +101,62 @@ func Migrate(ctx context.Context, src, dst Storage, opts MigrateOptions) (Migrat
 		default:
 		}
 
-		if err := ValidateKey(info.Key); err != nil {
-			keyErr := redact.WrapError("invalid source key", err)
-			result.recordError(info.Key, keyErr)
-			if opts.OnProgress != nil {
-				opts.OnProgress(info.Key, false, keyErr)
-			}
-			continue
-		}
-
-		dstKey := info.Key
-		if opts.KeyTransform != nil {
-			dstKey = opts.KeyTransform(info.Key)
-		}
-		// Validate the transformed key early to avoid wasting a Get on the
-		// source object when the destination would reject the key anyway.
-		if err := ValidateKey(dstKey); err != nil {
-			keyErr := redact.WrapError("invalid transformed key", err)
-			result.recordError(info.Key, keyErr)
-			if opts.OnProgress != nil {
-				opts.OnProgress(info.Key, false, keyErr)
-			}
-			continue
-		}
-
-		if !opts.Overwrite {
-			exists, existErr := dst.Exists(ctx, dstKey)
-			if existErr != nil {
-				result.recordError(info.Key, existErr)
-				if opts.OnProgress != nil {
-					opts.OnProgress(info.Key, false, existErr)
-				}
-				continue
-			}
-			if exists {
-				result.Skipped++
-				if opts.OnProgress != nil {
-					opts.OnProgress(info.Key, false, nil)
-				}
-				continue
-			}
-		}
-
-		if opts.DryRun {
-			// This object passed the existence check, so it WOULD be copied.
-			// Report it as a would-copy (copied=true) and count it toward
-			// Copied so a dry run previews the real copy set, distinct from
-			// objects skipped for already existing (handled above as Skipped
-			// with copied=false). The object is not actually transferred.
+		copied, objErr := migrateObject(ctx, src, dst, info.Key, opts)
+		switch {
+		case objErr != nil:
+			result.recordError(info.Key, objErr)
+		case copied:
 			result.Copied++
-			if opts.OnProgress != nil {
-				opts.OnProgress(info.Key, true, nil)
-			}
-			continue
+		default:
+			result.Skipped++
 		}
-
-		if copyErr := copyObject(ctx, src, info.Key, dst, dstKey); copyErr != nil {
-			result.recordError(info.Key, copyErr)
-			if opts.OnProgress != nil {
-				opts.OnProgress(info.Key, false, copyErr)
-			}
-			continue
-		}
-
-		result.Copied++
 		if opts.OnProgress != nil {
-			opts.OnProgress(info.Key, true, nil)
+			opts.OnProgress(info.Key, copied, objErr)
 		}
 	}
 
-	// Aggregate per-object failures into the returned error so callers
-	// that check `err != nil` cannot silently treat a partial-failure
-	// run as success. Wave 69 closed a hostile-review finding that
-	// Migrate returned nil when every object failed individually.
+	// Per-object failures make the run an error, so a caller that checks
+	// only err cannot treat a partial failure as success.
 	if result.Failed > 0 {
 		return result, fmt.Errorf("storage.Migrate: %d object(s) failed", result.Failed)
 	}
 	return result, nil
+}
+
+// migrateObject copies one source object to dst. It reports copied=false
+// with a nil error when the destination already holds the key and
+// Overwrite is off. A dry run reports copied=true for an object that would
+// be copied, without transferring it, so it previews the real copy set.
+func migrateObject(ctx context.Context, src, dst Storage, key string, opts MigrateOptions) (bool, error) {
+	if err := ValidateKey(key); err != nil {
+		return false, redact.WrapError("invalid source key", err)
+	}
+
+	dstKey := key
+	if opts.KeyTransform != nil {
+		dstKey = opts.KeyTransform(key)
+	}
+	// Validating the transformed key first saves a Get on the source
+	// object when the destination would reject the key anyway.
+	if err := ValidateKey(dstKey); err != nil {
+		return false, redact.WrapError("invalid transformed key", err)
+	}
+
+	if !opts.Overwrite {
+		exists, err := dst.Exists(ctx, dstKey)
+		if err != nil || exists {
+			return false, err
+		}
+	}
+
+	if opts.DryRun {
+		return true, nil
+	}
+
+	if err := copyObject(ctx, src, key, dst, dstKey); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *MigrateResult) recordError(key string, err error) {

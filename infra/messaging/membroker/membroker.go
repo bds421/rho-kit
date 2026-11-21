@@ -223,21 +223,8 @@ func (b *Broker) Drain(ctx context.Context) error {
 		copy(subs, b.subscriptions)
 		b.mu.Unlock()
 
-		for _, sub := range subs {
-			if matches(sub, pm.exchange, pm.routingKey) {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				d := messaging.Delivery{
-					Message:       pm.msg.Clone(),
-					Exchange:      pm.exchange,
-					RoutingKey:    pm.routingKey,
-					SchemaVersion: pm.msg.SchemaVersion,
-				}
-				if err := sub.handler(ctx, d); err != nil {
-					return err
-				}
-			}
+		if err := fanOut(ctx, pm, subs); err != nil {
+			return err
 		}
 
 		b.mu.Lock()
@@ -248,6 +235,29 @@ func (b *Broker) Drain(ctx context.Context) error {
 		}
 		b.mu.Unlock()
 	}
+}
+
+// fanOut delivers pm to every subscription in subs that matches it, stopping
+// at the first handler error or when ctx ends.
+func fanOut(ctx context.Context, pm publishedMessage, subs []subscription) error {
+	for _, sub := range subs {
+		if !matches(sub, pm.exchange, pm.routingKey) {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		d := messaging.Delivery{
+			Message:       pm.msg.Clone(),
+			Exchange:      pm.exchange,
+			RoutingKey:    pm.routingKey,
+			SchemaVersion: pm.msg.SchemaVersion,
+		}
+		if err := sub.handler(ctx, d); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // PublishAndDrain publishes a message and immediately dispatches it to matching
@@ -338,13 +348,7 @@ func matchParts(pattern, key []string) bool {
 			if pi == len(pattern)-1 {
 				return true
 			}
-			// Try matching "#" against 0..N key words.
-			for skip := ki; skip <= len(key); skip++ {
-				if matchParts(pattern[pi+1:], key[skip:]) {
-					return true
-				}
-			}
-			return false
+			return matchAfterHash(pattern[pi+1:], key[ki:])
 		case "*":
 			// "*" matches exactly one word.
 			pi++
@@ -358,11 +362,21 @@ func matchParts(pattern, key []string) bool {
 		}
 	}
 	// Remaining pattern parts must all be "#" to match empty remainder.
-	for pi < len(pattern) {
-		if pattern[pi] != "#" {
+	for _, part := range pattern[pi:] {
+		if part != "#" {
 			return false
 		}
-		pi++
 	}
 	return ki == len(key)
+}
+
+// matchAfterHash reports whether rest, the pattern after a "#", matches
+// what remains of key once "#" has taken 0..N of its words.
+func matchAfterHash(rest, key []string) bool {
+	for skip := 0; skip <= len(key); skip++ {
+		if matchParts(rest, key[skip:]) {
+			return true
+		}
+	}
+	return false
 }

@@ -248,45 +248,68 @@ func StorageValidator(scanner uploadsec.Scanner, opts ...StorageValidatorOption)
 		if meta == nil {
 			return nil, fmt.Errorf("%w: nil object metadata", storage.ErrValidation)
 		}
-		tmp, err := os.CreateTemp(cfg.tempDir, "rho-kit-clamav-*")
+		tmp, err := spoolForScan(cfg, r)
 		if err != nil {
-			return nil, fmt.Errorf("%w: create scan spool failed", uploadsec.ErrScannerUnavailable)
-		}
-		remove := true
-		defer func() {
-			if remove {
-				_ = tmp.Close()
-				_ = os.Remove(tmp.Name())
-			}
-		}()
-
-		if err := copyBounded(tmp, r, cfg.maxSpoolBytes); err != nil {
 			return nil, err
 		}
-		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-			return nil, fmt.Errorf("%w: rewind scan spool failed", uploadsec.ErrScannerUnavailable)
-		}
-		scanMeta := uploadsec.Meta{
-			ContentType: meta.ContentType,
-			Size:        meta.Size,
-		}
-		if err := scanner.Scan(ctx, tmp, scanMeta); err != nil {
-			if errors.Is(err, uploadsec.ErrMalwareDetected) {
-				return nil, fmt.Errorf("%w: %w", storage.ErrValidation, err) // kit:ok-fmt-errorf-wrap
+		keep := false
+		defer func() {
+			if !keep {
+				discardSpool(tmp)
 			}
-			// Preserve errors.Is(ErrScannerUnavailable) and the underlying
-			// cause for triage, but redact cause text so Error() never
-			// reflects scanner/backend details across the trust boundary.
-			return nil, redact.WrapSentinel(uploadsec.ErrScannerUnavailable, err)
+		}()
+		if err := scanSpool(ctx, scanner, tmp, meta); err != nil {
+			return nil, err
 		}
-		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-			return nil, fmt.Errorf("%w: rewind clean spool failed", uploadsec.ErrScannerUnavailable)
-		}
-		remove = false
+		keep = true
 		replay := &removeOnEOF{File: tmp, path: tmp.Name()}
 		runtime.SetFinalizer(replay, (*removeOnEOF).cleanup)
 		return replay, nil
 	}
+}
+
+// spoolForScan copies the bounded upload into a temporary file and rewinds
+// it; the file is removed again on any error.
+func spoolForScan(cfg storageValidatorConfig, r io.Reader) (*os.File, error) {
+	tmp, err := os.CreateTemp(cfg.tempDir, "rho-kit-clamav-*")
+	if err != nil {
+		return nil, fmt.Errorf("%w: create scan spool failed", uploadsec.ErrScannerUnavailable)
+	}
+	if err := copyBounded(tmp, r, cfg.maxSpoolBytes); err != nil {
+		discardSpool(tmp)
+		return nil, err
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		discardSpool(tmp)
+		return nil, fmt.Errorf("%w: rewind scan spool failed", uploadsec.ErrScannerUnavailable)
+	}
+	return tmp, nil
+}
+
+// scanSpool scans the spooled upload and rewinds it for the replay.
+func scanSpool(ctx context.Context, scanner uploadsec.Scanner, spool *os.File, meta *storage.ObjectMeta) error {
+	scanMeta := uploadsec.Meta{
+		ContentType: meta.ContentType,
+		Size:        meta.Size,
+	}
+	if err := scanner.Scan(ctx, spool, scanMeta); err != nil {
+		if errors.Is(err, uploadsec.ErrMalwareDetected) {
+			return fmt.Errorf("%w: %w", storage.ErrValidation, err) // kit:ok-fmt-errorf-wrap
+		}
+		// Preserve errors.Is(ErrScannerUnavailable) and the underlying
+		// cause for triage, but redact cause text so Error() never
+		// reflects scanner/backend details across the trust boundary.
+		return redact.WrapSentinel(uploadsec.ErrScannerUnavailable, err)
+	}
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("%w: rewind clean spool failed", uploadsec.ErrScannerUnavailable)
+	}
+	return nil
+}
+
+func discardSpool(spool *os.File) {
+	_ = spool.Close()
+	_ = os.Remove(spool.Name())
 }
 
 type storageValidatorConfig struct {
@@ -389,7 +412,7 @@ func streamBodyUncancellable(w io.Writer, body io.Reader, chunkSize int) error {
 	for {
 		n, readErr := body.Read(buf)
 		if n > 0 {
-			binary.BigEndian.PutUint32(lenbuf[:], uint32(n))
+			binary.BigEndian.PutUint32(lenbuf[:], uint32(min(n, maxChunkSize)))
 			if err := writeAll(w, lenbuf[:]); err != nil {
 				return fmt.Errorf("%w: send INSTREAM chunk length: %w", uploadsec.ErrScannerUnavailable, err) // kit:ok-fmt-errorf-wrap
 			}

@@ -224,14 +224,7 @@ func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler
 	if b.Retry != nil && c.publisher == nil {
 		return fmt.Errorf("consumeOnce with retry requires a publisher (pass non-nil publisher to NewConsumer)")
 	}
-	switch {
-	case b.Retry == nil && b.WithoutRetry:
-		c.logger.Info("consumer binding configured with WithoutRetry — handler errors will ack-and-discard the message",
-			redact.String("queue", b.ConsumerGroup), redact.String("exchange", b.Exchange))
-	case b.Retry == nil && !b.WithoutRetry:
-		c.logger.Error("consumer binding reached the consumer with no retry policy and WithoutRetry=false — defaults should have been applied via DeclareAll/ComputeBindings; treating as drop-on-error",
-			redact.String("queue", b.ConsumerGroup), redact.String("exchange", b.Exchange))
-	}
+	c.logRetryPosture(b)
 
 	ch, err := c.conn.Channel()
 	if err != nil {
@@ -258,51 +251,68 @@ func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler
 
 	c.logger.Info("consumer started", redact.String("queue", b.ConsumerGroup))
 
-	handleOne := func(delivery amqp.Delivery, isShutdown bool) {
-		// Always give the handler a bounded context. During normal
-		// operation the parent ctx is still live and provides natural
-		// cancellation. During shutdown the parent ctx is already
-		// cancelled, so we use a detached context with a grace period.
-		//
-		// Handlers that need to detect shutdown must call IsShutdown(ctx)
-		// — a true return means "the consumer is winding down; finish
-		// quickly".
-		base := ctx
-		if isShutdown {
-			base = context.WithoutCancel(ctx)
-			base = context.WithValue(base, shutdownSignalKey{}, struct{}{})
-		}
-		handlerCtx, handlerCancel := context.WithTimeout(base, handlerTimeout)
-		c.handleDelivery(handlerCtx, delivery, handler, b)
-		handlerCancel()
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
 			c.logger.Info("consumer stopping", redact.String("queue", b.ConsumerGroup))
-			// Explicit drain of prefetched deliveries so the documented
-			// shutdown-grace path runs deterministically rather than only
-			// when select races delivery over ctx.Done() (review-17).
-			for {
-				select {
-				case delivery, ok := <-deliveries:
-					if !ok {
-						return ctx.Err()
-					}
-					handleOne(delivery, true)
-				default:
-					return ctx.Err()
-				}
-			}
+			c.drainPrefetched(ctx, deliveries, handler, b)
+			return ctx.Err()
 
 		case delivery, ok := <-deliveries:
 			if !ok {
 				return fmt.Errorf("delivery channel closed")
 			}
-			handleOne(delivery, ctx.Err() != nil)
+			c.handleWithDeadline(ctx, delivery, handler, b, ctx.Err() != nil)
 		}
 	}
+}
+
+// logRetryPosture logs how handler errors on b are treated when b has no
+// retry policy.
+func (c *Consumer) logRetryPosture(b messaging.Binding) {
+	switch {
+	case b.Retry == nil && b.WithoutRetry:
+		c.logger.Info("consumer binding configured with WithoutRetry — handler errors will ack-and-discard the message",
+			redact.String("queue", b.ConsumerGroup), redact.String("exchange", b.Exchange))
+	case b.Retry == nil && !b.WithoutRetry:
+		c.logger.Error("consumer binding reached the consumer with no retry policy and WithoutRetry=false — defaults should have been applied via DeclareAll/ComputeBindings; treating as drop-on-error",
+			redact.String("queue", b.ConsumerGroup), redact.String("exchange", b.Exchange))
+	}
+}
+
+// drainPrefetched handles the deliveries already prefetched when ctx ends,
+// so the documented shutdown-grace path runs deterministically rather than
+// only when select races delivery over ctx.Done() (review-17).
+func (c *Consumer) drainPrefetched(ctx context.Context, deliveries <-chan amqp.Delivery, handler messaging.Handler, b messaging.Binding) {
+	for {
+		select {
+		case delivery, ok := <-deliveries:
+			if !ok {
+				return
+			}
+			c.handleWithDeadline(ctx, delivery, handler, b, true)
+		default:
+			return
+		}
+	}
+}
+
+// handleWithDeadline always gives the handler a bounded context. During
+// normal operation the parent ctx is still live and provides natural
+// cancellation. During shutdown the parent ctx is already cancelled, so a
+// detached context with a grace period is used.
+//
+// Handlers that need to detect shutdown must call IsShutdown(ctx) — a true
+// return means "the consumer is winding down; finish quickly".
+func (c *Consumer) handleWithDeadline(ctx context.Context, delivery amqp.Delivery, handler messaging.Handler, b messaging.Binding, isShutdown bool) {
+	base := ctx
+	if isShutdown {
+		base = context.WithoutCancel(ctx)
+		base = context.WithValue(base, shutdownSignalKey{}, struct{}{})
+	}
+	handlerCtx, handlerCancel := context.WithTimeout(base, handlerTimeout)
+	c.handleDelivery(handlerCtx, delivery, handler, b)
+	handlerCancel()
 }
 
 func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery, handler messaging.Handler, b messaging.Binding) {
@@ -404,33 +414,8 @@ func unmarshal(delivery amqp.Delivery) (messaging.Message, error) {
 }
 
 func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, msg messaging.Message, b messaging.Binding, handlerErr error) {
-	// Permanent errors (e.g. structurally invalid messages) will never
-	// succeed on retry. Audit FR-071 [HIGH]: route them to the dead
-	// exchange when configured so a poison message lands in a
-	// broker-visible DLQ instead of vanishing. When no dead exchange
-	// is configured, fall back to the original ack-discard behaviour
-	// so callers that opted out of DLQ infrastructure still get
-	// retry-budget protection from poison messages.
 	if apperror.IsPermanent(handlerErr) {
-		if b.DeadExchange != "" {
-			c.logger.Warn("permanent handler error, dead-lettering message",
-				redact.Error(handlerErr),
-				redact.String("id", msg.ID),
-				redact.String("type", msg.Type),
-			)
-			c.metrics.observeConsumed(b.ConsumerGroup, c.routeToDeadExchange(ctx, delivery, msg, b, handlerErr, 0))
-			return
-		}
-		c.logger.Warn("permanent handler error, discarding message (no dead exchange configured)",
-			redact.Error(handlerErr),
-			redact.String("id", msg.ID),
-			redact.String("type", msg.Type),
-		)
-		if ackErr := delivery.Ack(false); ackErr != nil {
-			c.logger.Error("ack failed", redact.Error(ackErr))
-		}
-		c.onDiscard(msg.ID, msg.Type, b.ConsumerGroup)
-		c.metrics.observeConsumed(b.ConsumerGroup, amqpConsumeOutcomeDiscarded)
+		c.handlePermanentFailure(ctx, delivery, msg, b, handlerErr)
 		return
 	}
 
@@ -447,11 +432,7 @@ func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, ms
 		)
 		// Ack (not nack) — when DLX is configured, nack routes the message
 		// back to the retry queue, creating an infinite bounce loop.
-		if ackErr := delivery.Ack(false); ackErr != nil {
-			c.logger.Error("ack failed", redact.Error(ackErr))
-		}
-		c.onDiscard(msg.ID, msg.Type, b.ConsumerGroup)
-		c.metrics.observeConsumed(b.ConsumerGroup, amqpConsumeOutcomeForceDiscarded)
+		c.ackAndDiscard(delivery, msg, b, amqpConsumeOutcomeForceDiscarded)
 
 	case actionDeadLetter:
 		c.logger.Error("max retries exceeded, moving to dead queue",
@@ -483,12 +464,41 @@ func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, ms
 		)
 		// Ack (not nack) — defensively prevent unexpected routing if an operator
 		// manually adds a DLX to the queue via RabbitMQ management UI.
-		if ackErr := delivery.Ack(false); ackErr != nil {
-			c.logger.Error("ack failed", redact.Error(ackErr))
-		}
-		c.onDiscard(msg.ID, msg.Type, b.ConsumerGroup)
-		c.metrics.observeConsumed(b.ConsumerGroup, amqpConsumeOutcomeDiscarded)
+		c.ackAndDiscard(delivery, msg, b, amqpConsumeOutcomeDiscarded)
 	}
+}
+
+// handlePermanentFailure settles a message whose error will never succeed on
+// retry (e.g. a structurally invalid message). Audit FR-071 [HIGH]: it goes
+// to the dead exchange when configured so a poison message lands in a
+// broker-visible DLQ instead of vanishing. Without a dead exchange it falls
+// back to ack-discard so callers that opted out of DLQ infrastructure still
+// get retry-budget protection from poison messages.
+func (c *Consumer) handlePermanentFailure(ctx context.Context, delivery amqp.Delivery, msg messaging.Message, b messaging.Binding, handlerErr error) {
+	if b.DeadExchange != "" {
+		c.logger.Warn("permanent handler error, dead-lettering message",
+			redact.Error(handlerErr),
+			redact.String("id", msg.ID),
+			redact.String("type", msg.Type),
+		)
+		c.metrics.observeConsumed(b.ConsumerGroup, c.routeToDeadExchange(ctx, delivery, msg, b, handlerErr, 0))
+		return
+	}
+	c.logger.Warn("permanent handler error, discarding message (no dead exchange configured)",
+		redact.Error(handlerErr),
+		redact.String("id", msg.ID),
+		redact.String("type", msg.Type),
+	)
+	c.ackAndDiscard(delivery, msg, b, amqpConsumeOutcomeDiscarded)
+}
+
+// ackAndDiscard acks the delivery, reports the discard and records outcome.
+func (c *Consumer) ackAndDiscard(delivery amqp.Delivery, msg messaging.Message, b messaging.Binding, outcome string) {
+	if ackErr := delivery.Ack(false); ackErr != nil {
+		c.logger.Error("ack failed", redact.Error(ackErr))
+	}
+	c.onDiscard(msg.ID, msg.Type, b.ConsumerGroup)
+	c.metrics.observeConsumed(b.ConsumerGroup, outcome)
 }
 
 // routeToDeadExchange publishes the original delivery bytes to the
@@ -523,7 +533,7 @@ func (c *Consumer) routeToDeadExchange(ctx context.Context, delivery amqp.Delive
 	deadCancel()
 	if pubErr != nil {
 		fails := c.dlqFailCounter(b.DeadExchange).Add(1)
-		capped := c.maxDLQConsecutiveFail > 0 && int(fails) > c.maxDLQConsecutiveFail
+		capped := c.maxDLQConsecutiveFail > 0 && fails > uint64(max(c.maxDLQConsecutiveFail, 0))
 		if capped {
 			c.logger.Error("dead-letter publish has failed repeatedly, force-discarding to break the loop — fix the dead exchange",
 				redact.Error(pubErr),

@@ -63,6 +63,11 @@ func TestParseAndStore(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "request is required")
 	})
+}
+
+func TestParseAndStore_RejectsInvalidOptions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("rejects nil KeyFunc", func(t *testing.T) {
 		t.Parallel()
@@ -105,6 +110,11 @@ func TestParseAndStore(t *testing.T) {
 		assert.Contains(t, err.Error(), "MaxFileSize must be positive")
 		assert.NotContains(t, err.Error(), "-42")
 	})
+}
+
+func TestParseAndStore_Uploads(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("uploads file successfully", func(t *testing.T) {
 		t.Parallel()
@@ -154,6 +164,11 @@ func TestParseAndStore(t *testing.T) {
 		assert.NotContains(t, err.Error(), "backend stopped")
 		assert.True(t, closed)
 	})
+}
+
+func TestParseAndStore_ValidatorsAndPartHeaders(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("detaches upload validators before execution", func(t *testing.T) {
 		t.Parallel()
@@ -206,6 +221,11 @@ func TestParseAndStore(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "multiple Content-Type")
 	})
+}
+
+func TestParseAndStore_RejectsInvalidContentType(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("rejects invalid file part Content-Type before key derivation", func(t *testing.T) {
 		t.Parallel()
@@ -236,6 +256,11 @@ func TestParseAndStore(t *testing.T) {
 		assert.True(t, errors.Is(err, storage.ErrValidation))
 		assert.False(t, keyFuncCalled, "invalid metadata must not reach KeyFunc")
 	})
+}
+
+func TestParseAndStore_SizeCapAndKeyFunc(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("default MaxFileSize cap rejects oversize", func(t *testing.T) {
 		t.Parallel()
@@ -288,6 +313,11 @@ func TestParseAndStore(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, ok)
 	})
+}
+
+func TestParseAndStore_FormFieldAndValidators(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("uses custom FormField", func(t *testing.T) {
 		t.Parallel()
@@ -339,6 +369,11 @@ func TestParseAndStore(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, storage.ErrValidation))
 	})
+}
+
+func TestParseAndStore_MalformedRequests(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("returns error on invalid multipart", func(t *testing.T) {
 		t.Parallel()
@@ -380,6 +415,11 @@ func TestParseAndStore(t *testing.T) {
 		assert.EqualError(t, err, "storagehttp: read multipart part failed")
 		assert.NotContains(t, err.Error(), "secret-token")
 	})
+}
+
+func TestParseAndStore_SkippedParts(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("returns stable error for skipped part byte budget", func(t *testing.T) {
 		t.Parallel()
@@ -429,6 +469,11 @@ func TestParseAndStore(t *testing.T) {
 		require.Error(t, err)
 		assert.EqualError(t, err, "storagehttp: too many non-file parts")
 	})
+}
+
+func TestParseAndStore_RejectsEmptyFilename(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("rejects empty filename", func(t *testing.T) {
 		t.Parallel()
@@ -454,6 +499,11 @@ func TestParseAndStore(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no filename")
 	})
+}
+
+func TestParseAndStore_KeyFuncFailures(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("returns error when KeyFunc fails", func(t *testing.T) {
 		t.Parallel()

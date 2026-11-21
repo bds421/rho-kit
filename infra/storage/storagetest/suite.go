@@ -41,6 +41,13 @@ func BackendSuite(t *testing.T, backend storage.Storage) {
 	ctx := context.Background()
 	pfx := testPrefix(t)
 
+	backendPutGetCases(t, ctx, backend, pfx)
+	backendExistsAndDeleteCases(t, ctx, backend, pfx)
+	backendKeyAndMetadataCases(t, ctx, backend, pfx)
+	backendContentCases(t, ctx, backend, pfx)
+}
+
+func backendPutGetCases(t *testing.T, ctx context.Context, backend storage.Storage, pfx string) {
 	t.Run("PutAndGet", func(t *testing.T) {
 		content := []byte("hello storage")
 		key := pfx + "put-get.txt"
@@ -81,7 +88,9 @@ func BackendSuite(t *testing.T, backend storage.Storage) {
 		_, _, err := backend.Get(ctx, pfx+"does-not-exist")
 		assert.ErrorIs(t, err, storage.ErrObjectNotFound)
 	})
+}
 
+func backendExistsAndDeleteCases(t *testing.T, ctx context.Context, backend storage.Storage, pfx string) {
 	t.Run("ExistsTrue", func(t *testing.T) {
 		key := pfx + "exists-true.txt"
 		err := backend.Put(ctx, key, bytes.NewReader([]byte("x")), storage.ObjectMeta{})
@@ -113,7 +122,9 @@ func BackendSuite(t *testing.T, backend storage.Storage) {
 	t.Run("DeleteIdempotent", func(t *testing.T) {
 		assert.NoError(t, backend.Delete(ctx, pfx+"never-existed"))
 	})
+}
 
+func backendKeyAndMetadataCases(t *testing.T, ctx context.Context, backend storage.Storage, pfx string) {
 	t.Run("EmptyKeyRejected", func(t *testing.T) {
 		err := backend.Put(ctx, "", bytes.NewReader([]byte("x")), storage.ObjectMeta{})
 		assert.Error(t, err)
@@ -150,7 +161,9 @@ func BackendSuite(t *testing.T, backend storage.Storage) {
 		require.NoError(t, err)
 		assert.Equal(t, content, got)
 	})
+}
 
+func backendContentCases(t *testing.T, ctx context.Context, backend storage.Storage, pfx string) {
 	t.Run("ContentTypeRoundTrip", func(t *testing.T) {
 		key := pfx + "content-type.json"
 		content := []byte(`{"ok":true}`)
@@ -216,21 +229,13 @@ func ListerSuite(t *testing.T, backend storage.Storage, lister storage.Lister) {
 	}
 
 	t.Run("ListAll", func(t *testing.T) {
-		var keys []string
-		for info, err := range lister.List(ctx, pfx, storage.ListOptions{}) {
-			require.NoError(t, err)
-			keys = append(keys, info.Key)
-		}
+		keys := listedKeys(t, ctx, lister, pfx, storage.ListOptions{})
 
 		assert.GreaterOrEqual(t, len(keys), 6)
 	})
 
 	t.Run("ListWithPrefix", func(t *testing.T) {
-		var keys []string
-		for info, err := range lister.List(ctx, pfx+"list/sub/", storage.ListOptions{}) {
-			require.NoError(t, err)
-			keys = append(keys, info.Key)
-		}
+		keys := listedKeys(t, ctx, lister, pfx+"list/sub/", storage.ListOptions{})
 
 		sort.Strings(keys)
 		assert.Contains(t, keys, pfx+"list/sub/c.txt")
@@ -241,21 +246,13 @@ func ListerSuite(t *testing.T, backend storage.Storage, lister storage.Lister) {
 	})
 
 	t.Run("ListMaxKeys", func(t *testing.T) {
-		var keys []string
-		for info, err := range lister.List(ctx, pfx+"list/", storage.ListOptions{MaxKeys: 2}) {
-			require.NoError(t, err)
-			keys = append(keys, info.Key)
-		}
+		keys := listedKeys(t, ctx, lister, pfx+"list/", storage.ListOptions{MaxKeys: 2})
 
 		assert.Len(t, keys, 2)
 	})
 
 	t.Run("ListEmptyPrefix", func(t *testing.T) {
-		var keys []string
-		for info, err := range lister.List(ctx, pfx+"nonexistent/", storage.ListOptions{}) {
-			require.NoError(t, err)
-			keys = append(keys, info.Key)
-		}
+		keys := listedKeys(t, ctx, lister, pfx+"nonexistent/", storage.ListOptions{})
 
 		assert.Empty(t, keys)
 	})
@@ -268,27 +265,33 @@ func ListerSuite(t *testing.T, backend storage.Storage, lister storage.Lister) {
 		}
 	})
 
+	listStartAfterCase(t, ctx, lister, pfx)
+}
+
+func listStartAfterCase(t *testing.T, ctx context.Context, lister storage.Lister, pfx string) {
 	t.Run("ListStartAfter", func(t *testing.T) {
 		// Collect all keys sorted to determine the cursor.
-		var allKeys []string
-		for info, err := range lister.List(ctx, pfx+"list/", storage.ListOptions{}) {
-			require.NoError(t, err)
-			allKeys = append(allKeys, info.Key)
-		}
+		allKeys := listedKeys(t, ctx, lister, pfx+"list/", storage.ListOptions{})
 		sort.Strings(allKeys)
 		require.GreaterOrEqual(t, len(allKeys), 3, "need at least 3 keys for StartAfter test")
 
 		// Use the second key as the cursor — expect everything after it.
 		cursor := allKeys[1]
-		var afterKeys []string
-		for info, err := range lister.List(ctx, pfx+"list/", storage.ListOptions{StartAfter: cursor}) {
-			require.NoError(t, err)
-			afterKeys = append(afterKeys, info.Key)
-		}
+		afterKeys := listedKeys(t, ctx, lister, pfx+"list/", storage.ListOptions{StartAfter: cursor})
 
 		sort.Strings(afterKeys)
 		assert.NotContains(t, afterKeys, allKeys[0], "first key should be excluded")
 		assert.NotContains(t, afterKeys, cursor, "cursor key itself should be excluded")
 		assert.Equal(t, allKeys[2:], afterKeys, "should return all keys after cursor")
 	})
+}
+
+func listedKeys(t *testing.T, ctx context.Context, lister storage.Lister, prefix string, opts storage.ListOptions) []string {
+	t.Helper()
+	var keys []string
+	for info, err := range lister.List(ctx, prefix, opts) {
+		require.NoError(t, err)
+		keys = append(keys, info.Key)
+	}
+	return keys
 }

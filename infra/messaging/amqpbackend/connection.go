@@ -692,32 +692,13 @@ func (c *Connection) reconnect() {
 	attempts := 0
 
 	for {
-		if c.isDead() {
+		if c.isDead() || c.reconnectBudgetSpent(attempts) {
 			return
 		}
-		if c.maxReconnectAttempts > 0 && attempts >= c.maxReconnectAttempts {
-			c.logger.Error("amqp max reconnect attempts reached", "attempts", attempts)
-			c.deadOnce.Do(func() { close(c.dead) })
+		if !c.waitReconnectDelay(bo.Next()) {
 			return
 		}
-
-		delay := bo.Next()
-		timer := time.NewTimer(delay)
-		select {
-		case <-c.closed:
-			timer.Stop()
-			return
-		case <-c.dead:
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
-
-		logAttrs := []any{"attempt", attempts + 1}
-		if c.maxReconnectAttempts > 0 {
-			logAttrs = append(logAttrs, "max", c.maxReconnectAttempts)
-		}
-		c.logger.Info("attempting amqp connect", logAttrs...)
+		c.logConnectAttempt(attempts)
 
 		conn, err := c.dial()
 		if err != nil {
@@ -728,40 +709,11 @@ func (c *Connection) reconnect() {
 			continue
 		}
 
-		c.mu.Lock()
-		// If Stop ran while this dial was in flight, abandon the freshly
-		// dialed connection instead of installing it. Stop closes c.closed
-		// before taking c.mu, so checking c.closed under the lock fully
-		// serialises with Stop: either we see closed here and abandon, or
-		// we install and Stop's own under-lock close handles the new conn.
-		// Without this, a conn installed after Stop spent closeOnce would
-		// never be closed — a live TCP zombie with Healthy()=true and
-		// connection_up=1 surviving shutdown, plus onReconnect running
-		// post-Stop.
-		if c.closing() || c.isDead() {
-			c.mu.Unlock()
-			if cerr := conn.Close(); cerr != nil {
-				c.logger.Debug("failed to close abandoned amqp connection after Stop", redact.Error(cerr))
-			}
+		gen, installed := c.installConnection(conn)
+		if !installed {
 			return
 		}
-		old := c.conn
-		c.conn = conn
-		c.generation++
-		gen := c.generation
-		// Close old connection inside the lock to prevent a race with
-		// Close() which also acquires mu and closes c.conn.
-		if old != nil {
-			if err := old.Close(); err != nil {
-				c.logger.Debug("failed to close old amqp connection", redact.Error(err))
-			}
-		}
-		c.mu.Unlock()
-
-		c.logger.Info("amqp connected successfully", "attempts", attempts+1, "url", sanitizeURL(c.url))
-		c.connectedOnce.Do(func() { close(c.connected) })
-		c.metrics.observeReconnectAttempt(c.brokerLabel, amqpReconnectOutcomeSuccess)
-		c.metrics.observeConnectionUp(c.brokerLabel, true)
+		c.reportConnected(attempts)
 
 		// Start watching BEFORE onReconnect so connection drops during
 		// topology re-declaration (which can be slow) are detected.
@@ -770,27 +722,7 @@ func (c *Connection) reconnect() {
 		if c.onReconnect != nil {
 			if err := c.callOnReconnect(); err != nil {
 				c.logger.Error("onReconnect callback failed, will retry connection", redact.Error(err))
-				// Topology declaration failed — the connection is alive but
-				// unusable (exchanges/queues may not exist). Close and retry
-				// to prevent silent message loss. Bump generation so the
-				// watcher for this dial self-terminates instead of queuing a
-				// stale reconnectSignal that would tear down the next healthy
-				// connection.
-				c.mu.Lock()
-				if c.conn == conn {
-					c.generation++
-					c.conn = nil
-				}
-				c.mu.Unlock()
-				if cerr := conn.Close(); cerr != nil {
-					c.logger.Debug("failed to close amqp connection after onReconnect failure", redact.Error(cerr))
-				}
-				// Drain a signal the watcher may have raced in before the
-				// generation bump took effect.
-				select {
-				case <-c.reconnectSignal:
-				default:
-				}
+				c.discardUnusableConnection(conn)
 				// Do not reset attempts/backoff: a successful dial that fails
 				// onReconnect must still consume the reconnect budget and
 				// escalate delay.
@@ -799,13 +731,9 @@ func (c *Connection) reconnect() {
 			}
 		}
 
-		// Check if the connection survived onReconnect — a topology
-		// declaration error can cause the broker to close the connection.
-		// If dead, loop back to retry instead of returning with a dead conn.
-		c.mu.RLock()
-		connAlive := c.conn != nil && !c.conn.IsClosed()
-		c.mu.RUnlock()
-		if !connAlive {
+		// A topology declaration error can cause the broker to close the
+		// connection; loop back to retry instead of returning with a dead conn.
+		if !c.connectionAlive() {
 			c.logger.Warn("amqp connection dropped during onReconnect, retrying")
 			// Keep the current backoff instead of resetting. This prevents
 			// a tight retry loop when onReconnect consistently fails.
@@ -818,18 +746,125 @@ func (c *Connection) reconnect() {
 		bo.Reset()
 		attempts = 0
 
-		// Drain any queued reconnect signal before returning. If
-		// watchConnection detected a drop while we were finishing, we
+		// If watchConnection detected a drop while we were finishing, we
 		// must loop back to handle it (prevents lost signals from R7-46).
-		select {
-		case <-c.reconnectSignal:
+		if c.drainReconnectSignal() {
 			c.logger.Info("reconnect signal received during finalization, retrying")
 			// Connection was healthy; a real drop during finalization gets a
 			// fresh budget for the subsequent reconnect cycle.
 			continue
-		default:
 		}
 		return
+	}
+}
+
+// reconnectBudgetSpent reports whether attempts reached the configured
+// maximum; the connection is then lost permanently.
+func (c *Connection) reconnectBudgetSpent(attempts int) bool {
+	if c.maxReconnectAttempts <= 0 || attempts < c.maxReconnectAttempts {
+		return false
+	}
+	c.logger.Error("amqp max reconnect attempts reached", "attempts", attempts)
+	c.deadOnce.Do(func() { close(c.dead) })
+	return true
+}
+
+// waitReconnectDelay waits out one backoff delay. It reports false when the
+// connection was closed or lost permanently while waiting.
+func (c *Connection) waitReconnectDelay(delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-c.closed:
+		return false
+	case <-c.dead:
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (c *Connection) logConnectAttempt(attempts int) {
+	logAttrs := []any{"attempt", attempts + 1}
+	if c.maxReconnectAttempts > 0 {
+		logAttrs = append(logAttrs, "max", c.maxReconnectAttempts)
+	}
+	c.logger.Info("attempting amqp connect", logAttrs...)
+}
+
+// installConnection makes conn the current connection and returns its
+// generation. It reports false, after closing conn, when Stop ran or the
+// connection was lost permanently while conn was being dialed.
+func (c *Connection) installConnection(conn *amqp.Connection) (uint64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Stop closes c.closed before taking c.mu, so checking c.closed under
+	// the lock fully serialises with Stop: either we see closed here and
+	// abandon, or we install and Stop's own under-lock close handles the
+	// new conn. Without this, a conn installed after Stop spent closeOnce
+	// would never be closed — a live TCP zombie with Healthy()=true and
+	// connection_up=1 surviving shutdown, plus onReconnect running
+	// post-Stop.
+	if c.closing() || c.isDead() {
+		if cerr := conn.Close(); cerr != nil {
+			c.logger.Debug("failed to close abandoned amqp connection after Stop", redact.Error(cerr))
+		}
+		return 0, false
+	}
+	old := c.conn
+	c.conn = conn
+	c.generation++
+	// Close old connection inside the lock to prevent a race with
+	// Close() which also acquires mu and closes c.conn.
+	if old != nil {
+		if err := old.Close(); err != nil {
+			c.logger.Debug("failed to close old amqp connection", redact.Error(err))
+		}
+	}
+	return c.generation, true
+}
+
+func (c *Connection) reportConnected(attempts int) {
+	c.logger.Info("amqp connected successfully", "attempts", attempts+1, "url", sanitizeURL(c.url))
+	c.connectedOnce.Do(func() { close(c.connected) })
+	c.metrics.observeReconnectAttempt(c.brokerLabel, amqpReconnectOutcomeSuccess)
+	c.metrics.observeConnectionUp(c.brokerLabel, true)
+}
+
+// discardUnusableConnection closes a connection whose topology declaration
+// failed: it is alive but unusable (exchanges/queues may not exist), and
+// keeping it would lose messages silently. Bumping the generation makes the
+// watcher for this dial self-terminate instead of queuing a stale
+// reconnectSignal that would tear down the next healthy connection.
+func (c *Connection) discardUnusableConnection(conn *amqp.Connection) {
+	c.mu.Lock()
+	if c.conn == conn {
+		c.generation++
+		c.conn = nil
+	}
+	c.mu.Unlock()
+	if cerr := conn.Close(); cerr != nil {
+		c.logger.Debug("failed to close amqp connection after onReconnect failure", redact.Error(cerr))
+	}
+	// Drain a signal the watcher may have raced in before the generation
+	// bump took effect.
+	c.drainReconnectSignal()
+}
+
+func (c *Connection) connectionAlive() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.conn != nil && !c.conn.IsClosed()
+}
+
+// drainReconnectSignal takes a queued reconnect signal, if any, and reports
+// whether there was one.
+func (c *Connection) drainReconnectSignal() bool {
+	select {
+	case <-c.reconnectSignal:
+		return true
+	default:
+		return false
 	}
 }
 

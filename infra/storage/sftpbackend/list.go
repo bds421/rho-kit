@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"iter"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -90,23 +91,33 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 			return
 		}
 
-		// Sort so StartAfter pagination is deterministic and never skips keys.
-		// (When MaxKeys > 0 collectObjects already filtered StartAfter.)
-		sort.Slice(objects, func(i, j int) bool { return objects[i].Key < objects[j].Key })
+		yieldSorted(ctx, objects, opts.StartAfter, yield)
+	}
+}
 
-		for _, info := range objects {
-			if err := ctx.Err(); err != nil {
-				// Cancellation mid-yield must surface as an error so callers
-				// cannot treat a truncated listing as complete (review-19).
-				yield(storage.ObjectInfo{}, err)
-				return
-			}
-			if opts.StartAfter != "" && info.Key <= opts.StartAfter {
-				continue
-			}
-			if !yield(info, nil) {
-				return
-			}
+// yieldSorted yields objects in key order so StartAfter pagination is
+// deterministic and never skips keys. (When MaxKeys > 0 collectObjects already
+// filtered StartAfter.)
+func yieldSorted(
+	ctx context.Context,
+	objects []storage.ObjectInfo,
+	startAfter string,
+	yield func(storage.ObjectInfo, error) bool,
+) {
+	sort.Slice(objects, func(i, j int) bool { return objects[i].Key < objects[j].Key })
+
+	for _, info := range objects {
+		if err := ctx.Err(); err != nil {
+			// Cancellation mid-yield must surface as an error so callers
+			// cannot treat a truncated listing as complete (review-19).
+			yield(storage.ObjectInfo{}, err)
+			return
+		}
+		if startAfter != "" && info.Key <= startAfter {
+			continue
+		}
+		if !yield(info, nil) {
+			return
 		}
 	}
 }
@@ -243,57 +254,10 @@ func (b *Backend) walkDir(
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 
 	for _, entry := range entries {
-		name := entry.Name()
-		// Never trust server-supplied "." / ".." (or path.Base-reduced
-		// equivalents): a hostile SFTP server can return ".." to walk above
-		// RootPath (review-19 path-ascent).
-		if name == "." || name == ".." || name == "" {
+		entryPath, ok := b.listedEntryPath(dir, entry, prefix)
+		if !ok {
 			continue
 		}
-		// Skip internal atomic-write temp files. Put stages to
-		// remotePath+".tmp-"+16hex then renames; local-style ".tmp-*"
-		// basenames are also reserved by storage.ValidateKey.
-		if isAtomicPutTempName(name) {
-			continue
-		}
-		if strings.ContainsAny(name, `/\`) {
-			// Refuse path separators in entry names — containment relies on
-			// single-component joins under RootPath.
-			continue
-		}
-		entryPath := path.Join(dir, name)
-		if err := b.ensureRemotePathUnderRoot(entryPath); err != nil {
-			// Escaped path: skip rather than emit absolute keys via toKey.
-			continue
-		}
-
-		// Prefix prune before symlink handling so an unrelated symlink
-		// elsewhere in the tree cannot abort listings for other prefixes.
-		if entry.IsDir() {
-			dirKey, ok := b.toKeyOK(entryPath)
-			if !ok {
-				continue
-			}
-			dirKey = dirKey + "/"
-			if prefix != "" && !strings.HasPrefix(dirKey, prefix) && !strings.HasPrefix(prefix, dirKey) {
-				continue
-			}
-		} else {
-			key, ok := b.toKeyOK(entryPath)
-			if !ok {
-				continue
-			}
-			if prefix != "" && !strings.HasPrefix(key, prefix) {
-				continue
-			}
-		}
-
-		if entry.Mode()&fs.ModeSymlink != 0 {
-			// Skip symlinks rather than aborting the whole List: a single
-			// legacy symlink must not deny listing of unrelated keys.
-			continue
-		}
-
 		if entry.IsDir() {
 			if err := b.walkDir(ctx, client, entryPath, prefix, yield, depth+1, acc); err != nil {
 				return err
@@ -313,6 +277,66 @@ func (b *Backend) walkDir(
 	}
 
 	return nil
+}
+
+// listedEntryPath returns the remote path of a directory entry the walk
+// visits, or false for one it skips.
+func (b *Backend) listedEntryPath(dir string, entry os.FileInfo, prefix string) (string, bool) {
+	name := entry.Name()
+	// Never trust server-supplied "." / ".." (or path.Base-reduced
+	// equivalents): a hostile SFTP server can return ".." to walk above
+	// RootPath (review-19 path-ascent).
+	if name == "." || name == ".." || name == "" {
+		return "", false
+	}
+	// Skip internal atomic-write temp files. Put stages to
+	// remotePath+".tmp-"+16hex then renames; local-style ".tmp-*"
+	// basenames are also reserved by storage.ValidateKey.
+	if isAtomicPutTempName(name) {
+		return "", false
+	}
+	if strings.ContainsAny(name, `/\`) {
+		// Refuse path separators in entry names — containment relies on
+		// single-component joins under RootPath.
+		return "", false
+	}
+	entryPath := path.Join(dir, name)
+	if err := b.ensureRemotePathUnderRoot(entryPath); err != nil {
+		// Escaped path: skip rather than emit absolute keys via toKey.
+		return "", false
+	}
+
+	// Prefix prune before symlink handling so an unrelated symlink
+	// elsewhere in the tree cannot abort listings for other prefixes.
+	if !b.mayHoldPrefix(entryPath, entry.IsDir(), prefix) {
+		return "", false
+	}
+
+	if entry.Mode()&fs.ModeSymlink != 0 {
+		// Skip symlinks rather than aborting the whole List: a single
+		// legacy symlink must not deny listing of unrelated keys.
+		return "", false
+	}
+
+	return entryPath, true
+}
+
+// mayHoldPrefix reports whether the entry at entryPath can hold keys under
+// prefix: a file whose key starts with it, or a directory on the way to it or
+// inside it.
+func (b *Backend) mayHoldPrefix(entryPath string, isDir bool, prefix string) bool {
+	key, ok := b.toKeyOK(entryPath)
+	if !ok {
+		return false
+	}
+	if prefix == "" {
+		return true
+	}
+	if !isDir {
+		return strings.HasPrefix(key, prefix)
+	}
+	dirKey := key + "/"
+	return strings.HasPrefix(dirKey, prefix) || strings.HasPrefix(prefix, dirKey)
 }
 
 // toKeyOK converts a remote absolute path to a root-relative storage key and

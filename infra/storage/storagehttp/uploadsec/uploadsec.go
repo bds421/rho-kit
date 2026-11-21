@@ -562,22 +562,30 @@ func AllowExtensions(allowed ...string) Validator {
 		// Cross-check: the configured extension should match the canonical
 		// extension for the (sniffed) content type, when both are known.
 		// This catches "foo.png with image/jpeg bytes" inconsistencies.
-		if meta.ContentType != "" {
-			if exts, _ := mime.ExtensionsByType(meta.ContentType); len(exts) > 0 {
-				ok := false
-				for _, e := range exts {
-					if strings.EqualFold(e, ext) {
-						ok = true
-						break
-					}
-				}
-				if !ok {
-					return meta, fmt.Errorf("%w: extension does not match content type", ErrExtensionNotAllowed)
-				}
-			}
+		if !extensionMatchesContentType(ext, meta.ContentType) {
+			return meta, fmt.Errorf("%w: extension does not match content type", ErrExtensionNotAllowed)
 		}
 		return meta, nil
 	})
+}
+
+// extensionMatchesContentType reports whether ext is one of the canonical
+// extensions of contentType; an empty or unknown content type matches
+// every extension.
+func extensionMatchesContentType(ext, contentType string) bool {
+	if contentType == "" {
+		return true
+	}
+	exts, _ := mime.ExtensionsByType(contentType)
+	if len(exts) == 0 {
+		return true
+	}
+	for _, e := range exts {
+		if strings.EqualFold(e, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // imageHeaderReadLimit caps the bytes read for image.DecodeConfig.
@@ -753,19 +761,11 @@ func validateJPEGEnd(body []byte) error {
 	// the start of the entropy-coded stream.
 	off := 2
 	for off < len(body) {
-		if body[off] != 0xFF {
-			return ErrInvalidImage
+		marker, next, err := nextJPEGMarker(body, off)
+		if err != nil {
+			return err
 		}
-		// Skip fill bytes 0xFF.
-		marker := byte(0)
-		for off < len(body) && body[off] == 0xFF {
-			off++
-		}
-		if off >= len(body) {
-			return ErrInvalidImage
-		}
-		marker = body[off]
-		off++
+		off = next
 		switch {
 		case marker == 0xD9: // EOI before any SOS — only valid at the very end
 			if off != len(body) {
@@ -788,6 +788,21 @@ func validateJPEGEnd(body []byte) error {
 		}
 	}
 	return ErrInvalidImage
+}
+
+// nextJPEGMarker reads the marker at off, skipping 0xFF fill bytes, and
+// returns it with the offset just past it.
+func nextJPEGMarker(body []byte, off int) (byte, int, error) {
+	if body[off] != 0xFF {
+		return 0, off, ErrInvalidImage
+	}
+	for off < len(body) && body[off] == 0xFF {
+		off++
+	}
+	if off >= len(body) {
+		return 0, off, ErrInvalidImage
+	}
+	return body[off], off + 1, nil
 }
 
 // validateJPEGEntropyEnd scans the entropy-coded stream starting at off
@@ -1048,44 +1063,69 @@ func AsStorageValidator(v Validator, maxSpoolBytes int64) storage.Validator {
 		if meta == nil {
 			return nil, fmt.Errorf("%w: nil object metadata", storage.ErrValidation)
 		}
-		tmp, err := os.CreateTemp("", "rho-kit-uploadsec-*")
-		if err != nil {
-			return nil, redact.WrapError("uploadsec: create spool", err)
-		}
-		remove := true
-		defer func() {
-			if remove {
-				_ = tmp.Close()
-				_ = os.Remove(tmp.Name())
-			}
-		}()
-		limited := io.LimitReader(r, maxSpoolBytes+1)
-		n, err := io.Copy(tmp, limited)
-		if err != nil {
-			return nil, redact.WrapError("uploadsec: spool body", err)
-		}
-		if n > maxSpoolBytes {
-			return nil, fmt.Errorf("%w: upload exceeds spool budget", storage.ErrValidation)
-		}
-		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-			return nil, redact.WrapError("uploadsec: rewind spool", err)
-		}
-		in := Meta{
-			Filename:    "",
-			ContentType: meta.ContentType,
-			Size:        meta.Size,
-		}
-		out, err := v.Validate(ctx, tmp, in)
+		tmp, err := spoolUpload(r, maxSpoolBytes)
 		if err != nil {
 			return nil, err
 		}
-		if out.ContentType != "" {
-			meta.ContentType = out.ContentType
+		keep := false
+		defer func() {
+			if !keep {
+				discardSpool(tmp)
+			}
+		}()
+		if err := validateSpool(ctx, v, tmp, meta); err != nil {
+			return nil, err
 		}
-		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-			return nil, redact.WrapError("uploadsec: rewind clean spool", err)
-		}
-		remove = false
+		keep = true
 		return tmp, nil
 	}
+}
+
+// spoolUpload copies at most maxSpoolBytes of r into a temporary file and
+// rewinds it; the file is removed again on any error.
+func spoolUpload(r io.Reader, maxSpoolBytes int64) (*os.File, error) {
+	tmp, err := os.CreateTemp("", "rho-kit-uploadsec-*")
+	if err != nil {
+		return nil, redact.WrapError("uploadsec: create spool", err)
+	}
+	n, err := io.Copy(tmp, io.LimitReader(r, maxSpoolBytes+1))
+	if err != nil {
+		discardSpool(tmp)
+		return nil, redact.WrapError("uploadsec: spool body", err)
+	}
+	if n > maxSpoolBytes {
+		discardSpool(tmp)
+		return nil, fmt.Errorf("%w: upload exceeds spool budget", storage.ErrValidation)
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		discardSpool(tmp)
+		return nil, redact.WrapError("uploadsec: rewind spool", err)
+	}
+	return tmp, nil
+}
+
+// validateSpool runs v over the spooled upload, takes over the content type
+// it settles on and rewinds the spool for the caller.
+func validateSpool(ctx context.Context, v Validator, spool *os.File, meta *storage.ObjectMeta) error {
+	in := Meta{
+		Filename:    "",
+		ContentType: meta.ContentType,
+		Size:        meta.Size,
+	}
+	out, err := v.Validate(ctx, spool, in)
+	if err != nil {
+		return err
+	}
+	if out.ContentType != "" {
+		meta.ContentType = out.ContentType
+	}
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		return redact.WrapError("uploadsec: rewind clean spool", err)
+	}
+	return nil
+}
+
+func discardSpool(spool *os.File) {
+	_ = spool.Close()
+	_ = os.Remove(spool.Name())
 }

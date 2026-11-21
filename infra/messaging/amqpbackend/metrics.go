@@ -154,13 +154,7 @@ func opaqueRouteLabel(exchange, routingKey string) (string, string) {
 		promutil.OpaqueLabelValue("routingkey", routingKey)
 }
 
-// NewMetrics creates and registers AMQP metrics. Pass [WithRegisterer]
-// to use a non-default registry. Route and consume labels default to the
-// bounded / opaque form (v2 cardinality-safe default); pass
-// [WithRawRouteLabels] / [WithRawConsumeLabels] only when the topology
-// is audited and known to be low cardinality. Repeated calls reuse
-// already-registered collectors on the same registry.
-func NewMetrics(opts ...MetricsOption) *Metrics {
+func newMetricsConfig(opts []MetricsOption) metricsConfig {
 	cfg := metricsConfig{
 		registerer:   prometheus.DefaultRegisterer,
 		labelRoute:   opaqueRouteLabel,
@@ -172,6 +166,17 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 		}
 		opt(&cfg)
 	}
+	return cfg
+}
+
+// NewMetrics creates and registers AMQP metrics. Pass [WithRegisterer]
+// to use a non-default registry. Route and consume labels default to the
+// bounded / opaque form (v2 cardinality-safe default); pass
+// [WithRawRouteLabels] / [WithRawConsumeLabels] only when the topology
+// is audited and known to be low cardinality. Repeated calls reuse
+// already-registered collectors on the same registry.
+func NewMetrics(opts ...MetricsOption) *Metrics {
+	cfg := newMetricsConfig(opts)
 	reg := cfg.registerer
 	m := &Metrics{
 		published: prometheus.NewCounterVec(prometheus.CounterOpts{

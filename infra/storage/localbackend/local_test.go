@@ -51,6 +51,10 @@ func TestNew(t *testing.T) {
 			_, _ = New(t.TempDir(), WithValidators(nil))
 		})
 	})
+}
+
+func TestNew_ValidatorOptionAndRootErrors(t *testing.T) {
+	t.Parallel()
 
 	t.Run("validator option detaches caller slice", func(t *testing.T) {
 		t.Parallel()
@@ -131,6 +135,11 @@ func TestLocalBackend_Put(t *testing.T) {
 		err := b.Put(ctx, "", bytes.NewReader([]byte("x")), storage.ObjectMeta{})
 		require.Error(t, err)
 	})
+}
+
+func TestLocalBackend_PutValidatorsAndReaders(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("applies validators", func(t *testing.T) {
 		t.Parallel()
@@ -176,6 +185,11 @@ func TestLocalBackend_Put(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, storage.ErrValidation))
 	})
+}
+
+func TestLocalBackend_PutRejectsSymlinkedParent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("rejects symlinked parent", func(t *testing.T) {
 		t.Parallel()
@@ -458,6 +472,11 @@ func TestLocalBackend_RejectsSymlinkedRoot(t *testing.T) {
 		assert.False(t, exists)
 		assert.Contains(t, err.Error(), "unsafe")
 	})
+}
+
+func TestLocalBackend_RejectsSymlinkedRootOnDeleteCopyList(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("delete", func(t *testing.T) {
 		t.Parallel()

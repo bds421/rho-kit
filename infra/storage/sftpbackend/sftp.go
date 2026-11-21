@@ -436,31 +436,37 @@ func (b *Backend) dialAndInstall(ctx context.Context) error {
 	b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(1)
 	b.logger.Info("SFTP connected", redact.String("host", b.cfg.Host), "port", b.cfg.Port)
 
-	// Retire the previous session: close FDs only after in-flight leases drain
-	// so Put/Get mid-transfer are not corrupted by SSH teardown (review-19).
-	if old != nil {
-		old.markRetired()
-		b.cleanupWg.Add(1)
-		go func(sess *clientSession) {
-			defer b.cleanupWg.Done()
-			timer := time.NewTimer(reconnectDrainGrace)
-			defer timer.Stop()
-			select {
-			case <-sess.drained:
-				return
-			case <-timer.C:
-				// Grace expired with leases still held. Do NOT force-close:
-				// that would corrupt in-flight Put/Get. Wait for natural drain.
-				if b.logger != nil {
-					b.logger.Warn("SFTP reconnect drain grace elapsed; waiting for in-flight leases",
-						redact.String("host", b.cfg.Host),
-						"inflight", sess.inflight())
-				}
-				<-sess.drained
-			}
-		}(old)
-	}
+	b.retireSession(old)
 	return nil
+}
+
+// retireSession retires the previous session: its FDs close only after
+// in-flight leases drain so Put/Get mid-transfer are not corrupted by SSH
+// teardown (review-19).
+func (b *Backend) retireSession(old *clientSession) {
+	if old == nil {
+		return
+	}
+	old.markRetired()
+	b.cleanupWg.Add(1)
+	go func(sess *clientSession) {
+		defer b.cleanupWg.Done()
+		timer := time.NewTimer(reconnectDrainGrace)
+		defer timer.Stop()
+		select {
+		case <-sess.drained:
+			return
+		case <-timer.C:
+			// Grace expired with leases still held. Do NOT force-close:
+			// that would corrupt in-flight Put/Get. Wait for natural drain.
+			if b.logger != nil {
+				b.logger.Warn("SFTP reconnect drain grace elapsed; waiting for in-flight leases",
+					redact.String("host", b.cfg.Host),
+					"inflight", sess.inflight())
+			}
+			<-sess.drained
+		}
+	}(old)
 }
 
 func (b *Backend) buildSSHConfig(ctx context.Context) (*ssh.ClientConfig, error) {
@@ -484,56 +490,71 @@ func (b *Backend) buildSSHConfig(ctx context.Context) (*ssh.ClientConfig, error)
 
 	password := b.cfg.Password
 	if b.cfg.PasswordProvider != nil {
-		providerCtx := ctx
-		if providerCtx == nil {
-			providerCtx = context.Background()
-		}
-		timeout := b.passwordProviderTimeout()
-		if timeout > 0 {
-			var cancel context.CancelFunc
-			providerCtx, cancel = context.WithTimeout(providerCtx, timeout)
-			defer cancel()
-		}
-		var err error
-		password, err = b.cfg.PasswordProvider(providerCtx)
-		if err != nil {
-			return nil, storage.WrapSafe("load SFTP password failed", err)
-		}
-		if err := providerCtx.Err(); err != nil {
-			return nil, storage.WrapSafe("load SFTP password failed", err)
-		}
-		if password == "" {
-			return nil, fmt.Errorf("SFTP password provider returned an empty password")
+		if password, err = b.providedPassword(ctx); err != nil {
+			return nil, err
 		}
 	}
 
 	if password != "" {
 		cfg.Auth = []ssh.AuthMethod{ssh.Password(password)}
-	} else {
-		key, err := os.ReadFile(b.cfg.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("read SSH key file failed")
-		}
-		// Zero the in-memory file bytes after ParsePrivateKey extracts
-		// what it needs; ssh.ParsePrivateKey copies the parsed material
-		// into its own structs (audited against golang.org/x/crypto/ssh
-		// in the workspace tree), so the original `key` slice is safe
-		// to wipe before the signer is used. This shortens the window
-		// during which the on-disk private-key plaintext sits on the
-		// process heap (L123).
-		defer func() {
-			for i := range key {
-				key[i] = 0
-			}
-		}()
-		signer, err := ssh.ParsePrivateKey(key)
-		if err != nil {
-			return nil, fmt.Errorf("parse SSH key failed")
-		}
-		cfg.Auth = []ssh.AuthMethod{ssh.PublicKeys(signer)}
+		return cfg, nil
 	}
-
+	auth, err := keyFileAuth(b.cfg.KeyFile)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Auth = []ssh.AuthMethod{auth}
 	return cfg, nil
+}
+
+// providedPassword asks the configured PasswordProvider, bounded by the
+// provider timeout; an empty password is an error.
+func (b *Backend) providedPassword(ctx context.Context) (string, error) {
+	providerCtx := ctx
+	if providerCtx == nil {
+		providerCtx = context.Background()
+	}
+	timeout := b.passwordProviderTimeout()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		providerCtx, cancel = context.WithTimeout(providerCtx, timeout)
+		defer cancel()
+	}
+	password, err := b.cfg.PasswordProvider(providerCtx)
+	if err != nil {
+		return "", storage.WrapSafe("load SFTP password failed", err)
+	}
+	if err := providerCtx.Err(); err != nil {
+		return "", storage.WrapSafe("load SFTP password failed", err)
+	}
+	if password == "" {
+		return "", fmt.Errorf("SFTP password provider returned an empty password")
+	}
+	return password, nil
+}
+
+func keyFileAuth(keyFile string) (ssh.AuthMethod, error) {
+	key, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("read SSH key file failed")
+	}
+	// Zero the in-memory file bytes after ParsePrivateKey extracts
+	// what it needs; ssh.ParsePrivateKey copies the parsed material
+	// into its own structs (audited against golang.org/x/crypto/ssh
+	// in the workspace tree), so the original `key` slice is safe
+	// to wipe before the signer is used. This shortens the window
+	// during which the on-disk private-key plaintext sits on the
+	// process heap (L123).
+	defer func() {
+		for i := range key {
+			key[i] = 0
+		}
+	}()
+	signer, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("parse SSH key failed")
+	}
+	return ssh.PublicKeys(signer), nil
 }
 
 func (b *Backend) passwordProviderTimeout() time.Duration {
@@ -745,102 +766,88 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
+	if err := b.put(ctx, key, r, meta); err != nil {
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
+		return err
+	}
+	return nil
+}
 
+func (b *Backend) put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	validated, err := storage.ApplyValidators(ctx, r, &meta, b.validators)
 	if err != nil {
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
 		return err
 	}
 	if len(b.validators) > 0 {
 		defer func() { _ = storage.CloseValidatedReader(validated) }()
 	}
 	if err := storage.ValidateObjectMeta(meta); err != nil {
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
 		return err
 	}
 
 	client, release, err := b.getClient(ctx)
 	if err != nil {
-		opErr := storage.WrapSafe("sftpbackend: put connection failed", err)
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
-		return opErr
+		return storage.WrapSafe("sftpbackend: put connection failed", err)
 	}
 	defer release()
 
 	remotePath := b.remotePath(key)
 	suffix, err := randomSuffix()
 	if err != nil {
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
 		return err
 	}
-	tmpPath := remotePath + ".tmp-" + suffix
+	if err := b.preparePutParent(client, remotePath); err != nil {
+		return err
+	}
+	return b.writeAndCommit(client, validated, remotePath+".tmp-"+suffix, remotePath)
+}
 
-	// Ensure parent directory exists.
-	dir := path.Dir(remotePath)
+// preparePutParent ensures the parent directory exists and that neither it
+// nor the target is reached through a symlink, checked before and after the
+// MkdirAll.
+func (b *Backend) preparePutParent(client Client, remotePath string) error {
 	if err := b.rejectSymlinkAncestors(client, remotePath); err != nil {
-		opErr := redact.WrapError("sftpbackend: unsafe parent", err)
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
-		return opErr
+		return redact.WrapError("sftpbackend: unsafe parent", err)
 	}
-	if err := client.MkdirAll(dir); err != nil {
-		opErr := sftpRemoteError("mkdir", err)
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
-		return opErr
+	if err := client.MkdirAll(path.Dir(remotePath)); err != nil {
+		return sftpRemoteError("mkdir", err)
 	}
 	if err := b.rejectSymlinkAncestors(client, remotePath); err != nil {
-		opErr := redact.WrapError("sftpbackend: unsafe parent", err)
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
-		return opErr
+		return redact.WrapError("sftpbackend: unsafe parent", err)
 	}
 	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
-		opErr := redact.WrapError("sftpbackend: unsafe target", err)
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
-		return opErr
+		return redact.WrapError("sftpbackend: unsafe target", err)
 	}
+	return nil
+}
 
+// writeAndCommit writes src to tmpPath and renames it over remotePath on
+// success, so readers never see partially-written content.
+func (b *Backend) writeAndCommit(client Client, src io.Reader, tmpPath, remotePath string) error {
 	start := now()
-
-	// Write to a temp file and rename on success for atomic Put.
-	// This prevents readers from seeing partially-written content.
 	f, err := client.Create(tmpPath)
 	if err != nil {
 		b.metrics.observeOp(b.instance, "put", start, err)
-		opErr := sftpRemoteError("create", err)
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
-		return opErr
+		return sftpRemoteError("create", err)
 	}
 
-	if _, err := io.Copy(f, validated); err != nil {
+	if _, err := io.Copy(f, src); err != nil {
 		_ = f.Close()
 		_ = client.Remove(tmpPath)
 		b.metrics.observeOp(b.instance, "put", start, err)
-		if capacity := translateSFTPCapacity(err); capacity != nil {
-			span.SetStatus(codes.Error, storage.SpanErrorDescription(capacity))
-			return capacity
-		}
-		opErr := sftpRemoteError("write", err)
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
-		return opErr
+		return putWriteFailure("write", err)
 	}
 
 	if err := f.Close(); err != nil {
 		_ = client.Remove(tmpPath)
 		b.metrics.observeOp(b.instance, "put", start, err)
-		if capacity := translateSFTPCapacity(err); capacity != nil {
-			span.SetStatus(codes.Error, storage.SpanErrorDescription(capacity))
-			return capacity
-		}
-		opErr := sftpRemoteError("close", err)
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
-		return opErr
+		return putWriteFailure("close", err)
 	}
 
 	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
 		_ = client.Remove(tmpPath)
 		b.metrics.observeOp(b.instance, "put", start, err)
-		opErr := redact.WrapError("sftpbackend: unsafe target", err)
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
-		return opErr
+		return redact.WrapError("sftpbackend: unsafe target", err)
 	}
 	// Spec-compliant SFTP servers refuse Rename when the target already
 	// exists (SSH_FX_FILE_ALREADY_EXISTS). Put documents overwrite
@@ -848,13 +855,20 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 	if err := commitPutRename(client, tmpPath, remotePath); err != nil {
 		_ = client.Remove(tmpPath)
 		b.metrics.observeOp(b.instance, "put", start, err)
-		opErr := sftpRemoteError("rename", err)
-		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
-		return opErr
+		return sftpRemoteError("rename", err)
 	}
 
 	b.metrics.observeOp(b.instance, "put", start, nil)
 	return nil
+}
+
+// putWriteFailure maps a write or close failure: a capacity error keeps its
+// retryable sentinel, anything else is a redacted remote error.
+func putWriteFailure(op string, err error) error {
+	if capacity := translateSFTPCapacity(err); capacity != nil {
+		return capacity
+	}
+	return sftpRemoteError(op, err)
 }
 
 // commitPutRename atomically replaces remotePath with tmpPath for Put
@@ -1075,6 +1089,21 @@ func (b *Backend) Healthy() bool {
 	if b.closed.Load() {
 		return false
 	}
+	client, ok := b.healthProbeClient()
+	if !ok {
+		return false
+	}
+	if err := b.probeRoot(client); err != nil {
+		b.markProbeFailed(client, err)
+		return false
+	}
+	return true
+}
+
+// healthProbeClient returns the live session's client. Without one, a lazy
+// backend makes a best-effort connect so CriticalHealthCheck + WithLazyConnect
+// can become ready without an intervening storage operation.
+func (b *Backend) healthProbeClient() (Client, bool) {
 	b.mu.RLock()
 	connected := b.connected && b.session != nil && b.session.client != nil
 	var client Client
@@ -1083,31 +1112,31 @@ func (b *Backend) Healthy() bool {
 	}
 	lazy := b.lazyConn
 	b.mu.RUnlock()
-	if !connected {
-		if !lazy {
-			return false
-		}
-		// Best-effort lazy connect so CriticalHealthCheck + WithLazyConnect
-		// can become ready without an intervening storage operation.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := b.connect(ctx)
-		cancel()
-		if err != nil || b.closed.Load() {
-			return false
-		}
-		b.mu.RLock()
-		if !b.connected || b.session == nil || b.session.client == nil {
-			b.mu.RUnlock()
-			return false
-		}
-		client = b.session.client
-		b.mu.RUnlock()
+	if connected {
+		return client, true
 	}
+	if !lazy {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := b.connect(ctx)
+	cancel()
+	if err != nil || b.closed.Load() {
+		return nil, false
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if !b.connected || b.session == nil || b.session.client == nil {
+		return nil, false
+	}
+	return b.session.client, true
+}
 
-	// Stat the root path as a lightweight health probe.
-	// Performed outside the lock to avoid blocking concurrent operations
-	// if the SFTP server is slow to respond. Bound the probe so a hung
-	// TCP session cannot stall readiness scrapes indefinitely (review-19).
+// probeRoot stats the root path as a lightweight health probe.
+// Performed outside the lock to avoid blocking concurrent operations
+// if the SFTP server is slow to respond. Bound the probe so a hung
+// TCP session cannot stall readiness scrapes indefinitely (review-19).
+func (b *Backend) probeRoot(client Client) error {
 	const healthStatTimeout = 5 * time.Second
 	type statResult struct{ err error }
 	ch := make(chan statResult, 1)
@@ -1115,39 +1144,36 @@ func (b *Backend) Healthy() bool {
 		_, err := client.Stat(b.cfg.RootPath)
 		ch <- statResult{err: err}
 	}()
-	var err error
 	select {
 	case res := <-ch:
-		err = res.err
+		return res.err
 	case <-time.After(healthStatTimeout):
-		err = fmt.Errorf("sftpbackend: health probe timed out after %s", healthStatTimeout)
+		return fmt.Errorf("sftpbackend: health probe timed out after %s", healthStatTimeout)
 	}
-	if err != nil {
-		// Mark as disconnected so the next getClient call reconnects.
-		// Re-check that the session still owns the client we probed — if
-		// connect() ran concurrently and replaced it, we must not overwrite
-		// the fresh connection state.
-		b.mu.Lock()
-		if b.session != nil && b.session.client == client {
-			b.connected = false
-			// Retire the unhealthy session so its FDs close after leases drain.
-			old := b.session
-			b.session = nil
-			if old != nil {
-				old.markRetired()
-			}
-			if b.metrics != nil {
-				b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(0)
-			}
-			if b.logger != nil {
-				b.logger.Warn("SFTP health probe failed, marking disconnected",
-					redact.String("host", b.cfg.Host), redact.Error(err))
-			}
-		}
-		b.mu.Unlock()
-		return false
+}
+
+// markProbeFailed marks the backend disconnected so the next getClient call
+// reconnects. It re-checks that the session still owns the client we probed —
+// if connect() ran concurrently and replaced it, we must not overwrite the
+// fresh connection state.
+func (b *Backend) markProbeFailed(client Client, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.session == nil || b.session.client != client {
+		return
 	}
-	return true
+	b.connected = false
+	// Retire the unhealthy session so its FDs close after leases drain.
+	old := b.session
+	b.session = nil
+	old.markRetired()
+	if b.metrics != nil {
+		b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(0)
+	}
+	if b.logger != nil {
+		b.logger.Warn("SFTP health probe failed, marking disconnected",
+			redact.String("host", b.cfg.Host), redact.Error(err))
+	}
 }
 
 // Close closes the SFTP and SSH connections and waits for any pending

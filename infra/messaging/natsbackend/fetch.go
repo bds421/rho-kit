@@ -127,9 +127,7 @@ func collect(ctx context.Context, delivered <-chan *nats.Msg, req PullRequest) (
 			if silence != nil {
 				silence.Reset(2 * req.Heartbeat)
 			}
-			// Server statuses carry no reply subject; a stream message always has
-			// its ack subject, even one a publisher dressed up as a status.
-			if status := m.Header.Get("Status"); m.Reply == "" && status != "" && len(m.Data) == 0 {
+			if status, ok := serverStatus(m); ok {
 				done, err := statusEnds(status, m.Header.Get("Description"), len(msgs))
 				if done || err != nil {
 					return msgs, err
@@ -138,11 +136,24 @@ func collect(ctx context.Context, delivered <-chan *nats.Msg, req PullRequest) (
 			}
 			msgs = append(msgs, m)
 			size += m.Size()
-			if len(msgs) == req.MaxMessages || req.MaxBytes > 0 && size >= req.MaxBytes {
+			if pullFilled(req, len(msgs), size) {
 				return msgs, nil
 			}
 		}
 	}
+}
+
+// serverStatus returns the status m carries when the server sent it. Server
+// statuses carry no reply subject; a stream message always has its ack
+// subject, even one a publisher dressed up as a status.
+func serverStatus(m *nats.Msg) (string, bool) {
+	status := m.Header.Get("Status")
+	return status, m.Reply == "" && status != "" && len(m.Data) == 0
+}
+
+// pullFilled reports whether count messages of size bytes reach a limit of req.
+func pullFilled(req PullRequest, count, size int) bool {
+	return count == req.MaxMessages || req.MaxBytes > 0 && size >= req.MaxBytes
 }
 
 // statusEnds reads a status the server sends instead of a message: whether

@@ -188,11 +188,7 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 		// ignore its error because the upload is intentionally aborted.
 		_ = w.Close()
 		b.metrics.observeOp(b.instance, "put", start, err)
-		if capacity := translateGCSCapacity(err); capacity != nil {
-			span.SetStatus(codes.Error, storage.SpanErrorDescription(capacity))
-			return capacity
-		}
-		opErr := storage.WrapSafe("gcsbackend: put write failed", err)
+		opErr := putFailure(err, "gcsbackend: put write failed")
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
 	}
@@ -200,11 +196,7 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 	if err := w.Close(); err != nil {
 		cancelWriter()
 		b.metrics.observeOp(b.instance, "put", start, err)
-		if capacity := translateGCSCapacity(err); capacity != nil {
-			span.SetStatus(codes.Error, storage.SpanErrorDescription(capacity))
-			return capacity
-		}
-		opErr := storage.WrapSafe("gcsbackend: put close failed", err)
+		opErr := putFailure(err, "gcsbackend: put close failed")
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
 	}
@@ -212,6 +204,15 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 	b.metrics.observeOp(b.instance, "put", start, nil)
 
 	return nil
+}
+
+// putFailure maps an upload failure: a capacity error keeps its retryable
+// sentinel, anything else is wrapped without the provider's text.
+func putFailure(err error, message string) error {
+	if capacity := translateGCSCapacity(err); capacity != nil {
+		return capacity
+	}
+	return storage.WrapSafe(message, err)
 }
 
 // Get downloads a GCS object. Caller must close the returned ReadCloser.

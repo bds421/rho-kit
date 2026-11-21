@@ -59,6 +59,10 @@ func TestManager(t *testing.T) {
 		mgr.Register("hit", b)
 		assert.Equal(t, b, mgr.MustBackend("hit"))
 	})
+}
+
+func TestManager_Default(t *testing.T) {
+	t.Parallel()
 
 	t.Run("default returns first registered", func(t *testing.T) {
 		t.Parallel()
@@ -103,6 +107,10 @@ func TestManager(t *testing.T) {
 		assert.True(t, mgr.Has("exists"))
 		assert.False(t, mgr.Has("nope"))
 	})
+}
+
+func TestManager_Close(t *testing.T) {
+	t.Parallel()
 
 	t.Run("nil Close is no-op", func(t *testing.T) {
 		t.Parallel()
@@ -120,6 +128,10 @@ func TestManager(t *testing.T) {
 		require.Error(t, err)
 		assert.NotContains(t, err.Error(), "secret-token")
 	})
+}
+
+func TestManager_PanicsAndChaining(t *testing.T) {
+	t.Parallel()
 
 	t.Run("panics on empty name", func(t *testing.T) {
 		t.Parallel()
