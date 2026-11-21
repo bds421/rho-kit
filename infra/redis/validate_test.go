@@ -14,69 +14,17 @@ func TestValidateName(t *testing.T) {
 		kind    string
 		wantErr string
 	}{
-		{
-			name:  "valid name",
-			input: "my-stream",
-			kind:  "stream",
-		},
-		{
-			name:  "valid name with colons",
-			input: "app:events:created",
-			kind:  "queue",
-		},
-		{
-			name:    "empty name",
-			input:   "",
-			kind:    "stream",
-			wantErr: "stream name must not be empty",
-		},
-		{
-			name:    "null byte",
-			input:   "bad\x00name",
-			kind:    "stream",
-			wantErr: "invalid characters",
-		},
-		{
-			name:    "newline",
-			input:   "bad\nname",
-			kind:    "queue",
-			wantErr: "invalid characters",
-		},
-		{
-			name:    "carriage return",
-			input:   "bad\rname",
-			kind:    "cache",
-			wantErr: "invalid characters",
-		},
-		{
-			name:    "space",
-			input:   "bad name",
-			kind:    "stream",
-			wantErr: "invalid characters",
-		},
-		{
-			name:    "tab",
-			input:   "bad\tname",
-			kind:    "stream",
-			wantErr: "invalid characters",
-		},
-		{
-			name:    "invalid utf8",
-			input:   string([]byte{0xff, 0xfe}),
-			kind:    "stream",
-			wantErr: "invalid characters",
-		},
-		{
-			name:    "too long",
-			input:   strings.Repeat("x", maxNameLen+1),
-			kind:    "stream",
-			wantErr: "exceeds maximum length",
-		},
-		{
-			name:  "exactly at max length",
-			input: strings.Repeat("x", maxNameLen),
-			kind:  "stream",
-		},
+		{name: "valid name", input: "my-stream", kind: "stream"},
+		{name: "valid name with colons", input: "app:events:created", kind: "queue"},
+		{name: "empty name", input: "", kind: "stream", wantErr: "stream name must not be empty"},
+		{name: "null byte", input: "bad\x00name", kind: "stream", wantErr: "invalid characters"},
+		{name: "newline", input: "bad\nname", kind: "queue", wantErr: "invalid characters"},
+		{name: "carriage return", input: "bad\rname", kind: "cache", wantErr: "invalid characters"},
+		{name: "space", input: "bad name", kind: "stream", wantErr: "invalid characters"},
+		{name: "tab", input: "bad\tname", kind: "stream", wantErr: "invalid characters"},
+		{name: "invalid utf8", input: string([]byte{0xff, 0xfe}), kind: "stream", wantErr: "invalid characters"},
+		{name: "too long", input: strings.Repeat("x", maxNameLen+1), kind: "stream", wantErr: "exceeds maximum length"},
+		{name: "exactly at max length", input: strings.Repeat("x", maxNameLen), kind: "stream"},
 	}
 
 	for _, tt := range tests {

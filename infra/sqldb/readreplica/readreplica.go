@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -249,55 +250,65 @@ func (p *RoutingPool) acquireReplica(ctx context.Context) (*pgxpool.Conn, bool) 
 	}
 	// Compute the index in unsigned space so a wrapped uint64 never
 	// becomes a negative int after conversion (panic on 32-bit after
-	// 2^31 acquires; theoretical on 64-bit).
-	start := int(p.rrIdx.Add(1) % uint64(n))
-	try := func(requireHealthy bool) (*pgxpool.Conn, bool) {
-		for i := 0; i < n; i++ {
-			idx := (start + i) % n
-			st := p.replicas[idx]
-			if requireHealthy && !st.healthy.Load() {
-				continue
-			}
-			if !requireHealthy && st.healthy.Load() {
-				// Already covered by the healthy pass.
-				continue
-			}
-			conn, err := st.pool.Acquire(ctx)
-			if err == nil {
-				st.consecutiveFails.Store(0)
-				if st.healthy.CompareAndSwap(false, true) {
-					p.cfg.logger.Info("readreplica: replica re-added to rotation",
-						slog.Int("replica_index", idx),
-						slog.String("reason", "on_demand_acquire"),
-					)
-					p.metrics.healthyReplicas.Inc()
-				}
-				return conn, true
-			}
-			// Caller-side cancellation/deadline is not a replica fault —
-			// counting it toward eviction would mark every healthy replica
-			// down after a few short-deadline requests.
-			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-				return nil, false
-			}
-			if requireHealthy {
-				p.recordReplicaFailure(idx, err)
-			}
-		}
-		return nil, false
-	}
-	if conn, ok := try(true); ok {
+	// 2^31 acquires; theoretical on 64-bit). The modulo keeps it below n.
+	start := int(min(p.rrIdx.Add(1)%uint64(n), uint64(n-1)))
+	if conn, ok := p.acquireFromReplicas(ctx, start, true); ok {
 		return conn, true
 	}
 	// Second pass: attempt previously-unhealthy replicas so
 	// WithoutHealthCheck deployments can recover without a probe loop.
-	return try(false)
+	return p.acquireFromReplicas(ctx, start, false)
+}
+
+// acquireFromReplicas walks the replicas round-robin from start, trying
+// the healthy ones (requireHealthy) or only the unhealthy ones, and
+// returns the first connection acquired.
+func (p *RoutingPool) acquireFromReplicas(ctx context.Context, start int, requireHealthy bool) (*pgxpool.Conn, bool) {
+	n := len(p.replicas)
+	for i := 0; i < n; i++ {
+		idx := (start + i) % n
+		st := p.replicas[idx]
+		if st.healthy.Load() != requireHealthy {
+			// An unhealthy replica waits for the second pass; a healthy
+			// one was already covered by the first.
+			continue
+		}
+		conn, err := st.pool.Acquire(ctx)
+		if err == nil {
+			p.markReplicaServing(idx)
+			return conn, true
+		}
+		// Caller-side cancellation/deadline is not a replica fault —
+		// counting it toward eviction would mark every healthy replica
+		// down after a few short-deadline requests.
+		if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			return nil, false
+		}
+		if requireHealthy {
+			p.recordReplicaFailure(idx, err)
+		}
+	}
+	return nil, false
+}
+
+// markReplicaServing resets the replica's failure count after a
+// successful acquire and puts it back into rotation if it was out.
+func (p *RoutingPool) markReplicaServing(idx int) {
+	st := p.replicas[idx]
+	st.consecutiveFails.Store(0)
+	if st.healthy.CompareAndSwap(false, true) {
+		p.cfg.logger.Info("readreplica: replica re-added to rotation",
+			slog.Int("replica_index", idx),
+			slog.String("reason", "on_demand_acquire"),
+		)
+		p.metrics.healthyReplicas.Inc()
+	}
 }
 
 func (p *RoutingPool) recordReplicaFailure(idx int, err error) {
 	st := p.replicas[idx]
 	fails := st.consecutiveFails.Add(1)
-	if fails >= int32(p.cfg.maxConsecutiveFails) && st.healthy.CompareAndSwap(true, false) {
+	if fails >= int32(min(p.cfg.maxConsecutiveFails, math.MaxInt32)) && st.healthy.CompareAndSwap(true, false) {
 		p.cfg.logger.Warn("readreplica: replica removed from rotation",
 			slog.Int("replica_index", idx),
 			slog.Int("consecutive_failures", int(fails)),

@@ -61,8 +61,8 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	}
 	reg := cfg.registerer
 
-	m := &Metrics{
-		commandDuration: prometheus.NewHistogramVec(
+	return &Metrics{
+		commandDuration: promutil.MustRegisterOrGet(reg, prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "redis",
 				Name:      "command_duration_seconds",
@@ -70,102 +70,41 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Buckets:   []float64{0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
 			},
 			[]string{"redis_instance", "command"},
-		),
-		commandErrors: prometheus.NewCounterVec(
+		)),
+		commandErrors: promutil.MustRegisterOrGet(reg, prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "redis",
 				Name:      "command_errors_total",
 				Help:      "Total number of Redis command errors.",
 			},
 			[]string{"redis_instance", "command"},
-		),
-		connectionPoolHits: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: "redis",
-				Name:      "pool_hits",
-				Help:      "Snapshot of connection pool hit count (reused connections).",
-			},
-			[]string{"redis_instance"},
-		),
-		connectionPoolMisses: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: "redis",
-				Name:      "pool_misses",
-				Help:      "Snapshot of connection pool miss count (new connections).",
-			},
-			[]string{"redis_instance"},
-		),
-		connectionPoolTimeouts: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: "redis",
-				Name:      "pool_timeouts",
-				Help:      "Snapshot of connection pool timeout count.",
-			},
-			[]string{"redis_instance"},
-		),
-		connectionPoolSize: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: "redis",
-				Name:      "pool_total_conns",
-				Help:      "Total number of connections in the pool.",
-			},
-			[]string{"redis_instance"},
-		),
-		connectionPoolIdle: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: "redis",
-				Name:      "pool_idle_conns",
-				Help:      "Number of idle connections in the pool.",
-			},
-			[]string{"redis_instance"},
-		),
-		connectionPoolStale: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: "redis",
-				Name:      "pool_stale_conns",
-				Help:      "Number of stale connections removed from the pool.",
-			},
-			[]string{"redis_instance"},
-		),
-		reconnectAttempts: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "redis",
-				Name:      "reconnect_attempts_total",
-				Help:      "Total number of reconnection attempts.",
-			},
-			[]string{"redis_instance"},
-		),
-		reconnectSuccesses: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "redis",
-				Name:      "reconnect_successes_total",
-				Help:      "Total number of successful reconnections.",
-			},
-			[]string{"redis_instance"},
-		),
-		connectionHealthy: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: "redis",
-				Name:      "connection_healthy",
-				Help:      "Whether the Redis connection is healthy (1) or not (0).",
-			},
-			[]string{"redis_instance"},
-		),
+		)),
+		connectionPoolHits:     instanceGauge(reg, "pool_hits", "Snapshot of connection pool hit count (reused connections)."),
+		connectionPoolMisses:   instanceGauge(reg, "pool_misses", "Snapshot of connection pool miss count (new connections)."),
+		connectionPoolTimeouts: instanceGauge(reg, "pool_timeouts", "Snapshot of connection pool timeout count."),
+		connectionPoolSize:     instanceGauge(reg, "pool_total_conns", "Total number of connections in the pool."),
+		connectionPoolIdle:     instanceGauge(reg, "pool_idle_conns", "Number of idle connections in the pool."),
+		connectionPoolStale:    instanceGauge(reg, "pool_stale_conns", "Number of stale connections removed from the pool."),
+		reconnectAttempts:      instanceCounter(reg, "reconnect_attempts_total", "Total number of reconnection attempts."),
+		reconnectSuccesses:     instanceCounter(reg, "reconnect_successes_total", "Total number of successful reconnections."),
+		connectionHealthy:      instanceGauge(reg, "connection_healthy", "Whether the Redis connection is healthy (1) or not (0)."),
 	}
+}
 
-	m.commandDuration = promutil.MustRegisterOrGet(reg, m.commandDuration)
-	m.commandErrors = promutil.MustRegisterOrGet(reg, m.commandErrors)
-	m.connectionPoolHits = promutil.MustRegisterOrGet(reg, m.connectionPoolHits)
-	m.connectionPoolMisses = promutil.MustRegisterOrGet(reg, m.connectionPoolMisses)
-	m.connectionPoolTimeouts = promutil.MustRegisterOrGet(reg, m.connectionPoolTimeouts)
-	m.connectionPoolSize = promutil.MustRegisterOrGet(reg, m.connectionPoolSize)
-	m.connectionPoolIdle = promutil.MustRegisterOrGet(reg, m.connectionPoolIdle)
-	m.connectionPoolStale = promutil.MustRegisterOrGet(reg, m.connectionPoolStale)
-	m.reconnectAttempts = promutil.MustRegisterOrGet(reg, m.reconnectAttempts)
-	m.reconnectSuccesses = promutil.MustRegisterOrGet(reg, m.reconnectSuccesses)
-	m.connectionHealthy = promutil.MustRegisterOrGet(reg, m.connectionHealthy)
+// instanceGauge registers a redis gauge labelled by redis_instance.
+func instanceGauge(reg prometheus.Registerer, name, help string) *prometheus.GaugeVec {
+	return promutil.MustRegisterOrGet(reg, prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Namespace: "redis", Name: name, Help: help},
+		[]string{"redis_instance"},
+	))
+}
 
-	return m
+// instanceCounter registers a redis counter labelled by redis_instance.
+func instanceCounter(reg prometheus.Registerer, name, help string) *prometheus.CounterVec {
+	return promutil.MustRegisterOrGet(reg, prometheus.NewCounterVec(
+		prometheus.CounterOpts{Namespace: "redis", Name: name, Help: help},
+		[]string{"redis_instance"},
+	))
 }
 
 // defaultMetrics() returns the package-level metrics instance, lazily

@@ -77,8 +77,25 @@ func NewPoolStatsCollector(p *pgxpool.Pool, instance string, opts ...MetricsOpti
 	}
 	reg := cfg.registerer
 
+	c := describePoolStats(p, instance)
+	if err := reg.Register(c); err != nil {
+		var are prometheus.AlreadyRegisteredError
+		if errors.As(err, &are) {
+			if existing, ok := are.ExistingCollector.(*PoolStatsCollector); ok {
+				return existing, nil
+			}
+			return nil, errors.New("pgx: pool stats collector already registered with a different type")
+		}
+		return nil, err
+	}
+	return c, nil
+}
+
+// describePoolStats builds the collector's descriptors, labelled with the
+// pool's instance.
+func describePoolStats(p *pgxpool.Pool, instance string) *PoolStatsCollector {
 	labels := prometheus.Labels{"pgx_instance": instance}
-	c := &PoolStatsCollector{
+	return &PoolStatsCollector{
 		pool:     p,
 		instance: instance,
 		acquiredConns: prometheus.NewDesc(
@@ -117,18 +134,6 @@ func NewPoolStatsCollector(p *pgxpool.Pool, instance string, opts ...MetricsOpti
 			nil, labels,
 		),
 	}
-
-	if err := reg.Register(c); err != nil {
-		var are prometheus.AlreadyRegisteredError
-		if errors.As(err, &are) {
-			if existing, ok := are.ExistingCollector.(*PoolStatsCollector); ok {
-				return existing, nil
-			}
-			return nil, errors.New("pgx: pool stats collector already registered with a different type")
-		}
-		return nil, err
-	}
-	return c, nil
 }
 
 // Describe implements [prometheus.Collector].

@@ -468,74 +468,90 @@ func (c *Connection) checkHealth() {
 	defer cancel()
 
 	err := c.client.Ping(ctx).Err()
+	switch {
+	case err == nil:
+		c.recordHealthyPing()
+	case IsReadOnlyError(err):
+		c.recordReadOnlyPing(err)
+	default:
+		c.recordFailedPing(err)
+	}
+}
 
-	// A READONLY reply on ping is unusual but possible when a node has
-	// just been demoted: treat it as the master being unavailable for
-	// writes. The dedicated readOnly bit lets callers branch on it.
-	if err != nil && IsReadOnlyError(err) {
-		c.MarkReadOnly()
-		// Reachable-but-read-only is a failover state, not a dead
-		// connection. Do not advance consecutiveFailures toward the
-		// permanent Dead() threshold — the node is still answering.
-		c.mu.Lock()
-		if !c.isClosed() {
-			wasHealthy := c.healthy
-			// MarkReadOnly already set healthy=false / readOnly=true.
-			c.consecutiveFailures = 0
-			c.mu.Unlock()
-			c.metrics.connectionHealthy.WithLabelValues(c.instance).Set(0)
-			if wasHealthy {
-				c.logger.Error("redis connection lost", redact.Error(err))
-			} else {
-				c.logger.Warn("redis still unhealthy",
-					redact.Error(err),
-					"consecutive_failures", 0,
-					"read_only", true,
-				)
-			}
-		} else {
-			c.mu.Unlock()
-		}
+// recordReadOnlyPing handles a READONLY reply on ping. It is unusual but
+// possible when a node has just been demoted: treat it as the master being
+// unavailable for writes. The dedicated readOnly bit lets callers branch
+// on it.
+func (c *Connection) recordReadOnlyPing(err error) {
+	c.MarkReadOnly()
+	// Reachable-but-read-only is a failover state, not a dead
+	// connection. Do not advance consecutiveFailures toward the
+	// permanent Dead() threshold — the node is still answering.
+	c.mu.Lock()
+	if c.isClosed() {
+		c.mu.Unlock()
 		return
 	}
+	wasHealthy := c.healthy
+	// MarkReadOnly already set healthy=false / readOnly=true.
+	c.consecutiveFailures = 0
+	c.mu.Unlock()
+	c.metrics.connectionHealthy.WithLabelValues(c.instance).Set(0)
+	if wasHealthy {
+		c.logger.Error("redis connection lost", redact.Error(err))
+		return
+	}
+	c.logger.Warn("redis still unhealthy",
+		redact.Error(err),
+		"consecutive_failures", 0,
+		"read_only", true,
+	)
+}
 
+// recordHealthyPing marks the connection healthy and fires onReconnect on
+// a false→true transition or when the primary became writable again.
+func (c *Connection) recordHealthyPing() {
 	c.mu.Lock()
 	// A ping that started before Close() can land here after Close() marked
 	// the connection unhealthy. Since healthLoop exits via the closed
 	// channel, committing healthy=true now would never be corrected, leaving
 	// a closed connection reporting Healthy()==true and the gauge stuck at 1.
 	// Leave the closed state untouched.
-	if err == nil && c.isClosed() {
+	if c.isClosed() {
 		c.mu.Unlock()
 		return
 	}
 	wasHealthy := c.healthy
-	c.healthy = err == nil
+	c.healthy = true
+	c.consecutiveFailures = 0
+	// A clean PING also clears any sticky READONLY flag — the
+	// node is responding normally to commands again. Sentinel
+	// will have routed us to a fresh primary at this point.
+	wasReadOnly := c.readOnly
+	c.readOnly = false
+	c.mu.Unlock()
 
-	if err == nil {
-		c.consecutiveFailures = 0
-		// A clean PING also clears any sticky READONLY flag — the
-		// node is responding normally to commands again. Sentinel
-		// will have routed us to a fresh primary at this point.
-		wasReadOnly := c.readOnly
-		c.readOnly = false
-		c.mu.Unlock()
+	c.metrics.connectionHealthy.WithLabelValues(c.instance).Set(1)
+	c.connectedOnce.Do(func() { close(c.connected) })
 
-		c.metrics.connectionHealthy.WithLabelValues(c.instance).Set(1)
-		c.connectedOnce.Do(func() { close(c.connected) })
-
-		if !wasHealthy || wasReadOnly {
-			if wasReadOnly {
-				c.logger.Info("redis primary writable again", "instance", c.instance)
-			} else {
-				c.logger.Info("redis connection established")
-			}
-			c.metrics.reconnectSuccesses.WithLabelValues(c.instance).Inc()
-			c.fireOnReconnect()
-		}
+	if wasHealthy && !wasReadOnly {
 		return
 	}
+	if wasReadOnly {
+		c.logger.Info("redis primary writable again", "instance", c.instance)
+	} else {
+		c.logger.Info("redis connection established")
+	}
+	c.metrics.reconnectSuccesses.WithLabelValues(c.instance).Inc()
+	c.fireOnReconnect()
+}
 
+// recordFailedPing marks the connection unhealthy and signals permanent
+// failure once consecutive failures reach maxReconnectAttempts.
+func (c *Connection) recordFailedPing(err error) {
+	c.mu.Lock()
+	wasHealthy := c.healthy
+	c.healthy = false
 	c.consecutiveFailures++
 	failures := c.consecutiveFailures
 	c.mu.Unlock()
@@ -574,55 +590,59 @@ func (c *Connection) fireOnReconnect() {
 	c.reconnecting = true
 	c.mu.Unlock()
 
+	go c.runOnReconnect()
+}
+
+// runOnReconnect calls the onReconnect callback under the reconnect
+// timeout, cancelling its ctx when the connection closes.
+func (c *Connection) runOnReconnect() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			c.logger.Error("redis onReconnect callback panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+		}
+		c.mu.Lock()
+		c.reconnecting = false
+		c.mu.Unlock()
+	}()
+	select {
+	case <-c.closed:
+		return
+	default:
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	defer close(done)
+
+	timer := time.NewTimer(c.onReconnectTimeout)
+	defer timer.Stop()
 	go func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				c.logger.Error("redis onReconnect callback panicked",
-					redact.Panic(rec),
-					"stack", string(debug.Stack()),
-				)
-			}
+		select {
+		case <-c.closed:
+			cancel()
+			// Clear reconnecting even if the user callback ignores ctx,
+			// so future reconnects are not permanently skipped.
 			c.mu.Lock()
 			c.reconnecting = false
 			c.mu.Unlock()
-		}()
-		select {
-		case <-c.closed:
-			return
-		default:
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		done := make(chan struct{})
-		defer close(done)
-
-		timer := time.NewTimer(c.onReconnectTimeout)
-		defer timer.Stop()
-		go func() {
-			select {
-			case <-c.closed:
-				cancel()
-				// Clear reconnecting even if the user callback ignores ctx,
-				// so future reconnects are not permanently skipped.
-				c.mu.Lock()
-				c.reconnecting = false
-				c.mu.Unlock()
-			case <-timer.C:
-				c.logger.Error("redis onReconnect callback timed out",
-					"timeout", c.onReconnectTimeout)
-				cancel()
-			case <-done:
-			}
-		}()
-
-		if err := c.onReconnect(ctx, c); err != nil {
-			select {
-			case <-c.closed:
-				c.logger.Warn("redis connection closed during onReconnect callback")
-			default:
-				c.logger.Error("redis onReconnect callback failed", redact.Error(err))
-			}
+		case <-timer.C:
+			c.logger.Error("redis onReconnect callback timed out",
+				"timeout", c.onReconnectTimeout)
+			cancel()
+		case <-done:
 		}
 	}()
+
+	if err := c.onReconnect(ctx, c); err != nil {
+		select {
+		case <-c.closed:
+			c.logger.Warn("redis connection closed during onReconnect callback")
+		default:
+			c.logger.Error("redis onReconnect callback failed", redact.Error(err))
+		}
+	}
 }
