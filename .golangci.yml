@@ -63,6 +63,47 @@ linters:
       - path: ^core/redact/redact\.go$
         linters: [errorlint]
         text: type switch on error
+      # A verifier error stays text behind ErrInvalidCredentials: wrapped, one
+      # that wraps ErrUnauthenticated would let Chain fall through to the next
+      # strategy instead of rejecting the credentials.
+      - path: ^httpx/middleware/auth/strategy\.go$
+        linters: [errorlint]
+        text: non-wrapping format verb
+      # net/http itself compares the recovered value with ErrAbortHandler by
+      # identity; the recorder passes the handler's own bytes through.
+      - path: ^httpx/middleware/recover/recover\.go$
+        linters: [errorlint]
+        text: comparing with ==
+      - path: ^httpx/middleware/recover/recover\.go$
+        linters: [gosec]
+        text: G705
+      # Session cookies are HttpOnly and Secure unless the caller opts out for
+      # local HTTP; the CSRF double-submit cookie is read by the frontend, so
+      # it is not HttpOnly on purpose.
+      - path: ^(auth/oauth2/(client|pending|recovery)|httpx/middleware/csrf/csrf)\.go$
+        linters: [gosec]
+        text: G124
+      # The redirect goes to the configured issuer's authorize endpoint.
+      - path: ^auth/oauth2/client\.go$
+        linters: [gosec]
+        text: G710
+      # Only base64 is marked safe: the logo's data: URI and a generated nonce.
+      - path: ^(auth/oauth2/errorpage|httpx/middleware/cspnonce/cspnonce)\.go$
+        linters: [gosec]
+        text: G203
+      # The test helpers send requests only to their own httptest server.
+      - path: ^httpx/httpxtest/
+        linters: [gosec]
+        text: G704
+      # Verification is replaced by VerifyConnection (tlsclone.PeerVerifier),
+      # which checks chain and hostname and fails closed without ServerName.
+      - path: ^security/netutil/tls_reload\.go$
+        linters: [gosec]
+        text: G402
+      # The session carries its tokens on purpose and is sealed before storage.
+      - path: ^auth/oauth2/redis/store\.go$
+        linters: [gosec]
+        text: G117
       # The developer tools read and write the repository they are pointed at;
       # the files they write are source files, readable by everyone.
       - path: ^cmd/
