@@ -55,3 +55,23 @@ jobs:
 
       - name: Run fast gate
         run: make ci-fast
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: "**/go.sum"
+
+      - name: Configure git for private modules
+        env:
+          TOKEN: ${{ github.token }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Run golangci-lint
+        run: make lint

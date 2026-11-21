@@ -28,9 +28,6 @@ POLICY_CHECKS := check-no-binaries check-dependency-allowlist check-dependency-b
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s ':'
 
-## lint: Run golangci-lint sequentially across workspace modules
-# Sequential because golangci-lint v2 uses a shared cache lock that collides
-# with parallel invocations across modules in the same workspace.
 # Every shell script whose trap covers EXIT marks where it finished
 # (finished=yes): bash 3.2 exits 0 through such a trap when set -u stops it.
 exit-traps:
@@ -42,11 +39,9 @@ exit-traps:
 lint-config:
 	@shasum -a 256 tools/golangci.yml | cut -d' ' -f1
 
+## lint: Run golangci-lint with .golangci.yml once over every workspace module
 lint: exit-traps check-fmt
-	@for dir in $(WORKSPACE_MODULES); do \
-		echo "==> Linting $$dir"; \
-		(cd $$dir && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout=5m --allow-serial-runners) || exit 1; \
-	done
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout=15m $(WORKSPACE_PACKAGE_PATTERNS)
 
 ## vulncheck: Run Go vulnerability analysis (all workspace modules)
 vulncheck:

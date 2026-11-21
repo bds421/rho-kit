@@ -1,0 +1,41 @@
+# rho-kit's own lint: the linter set of tools/golangci.yml (the block every
+# product starts from) without depguard, since the kit has no module layers.
+# `make lint` runs it once over every workspace module.
+version: "2"
+linters:
+  enable:
+    - funlen
+    - gocognit
+    - gosec
+    - errorlint
+  settings:
+    funlen:
+      lines: 60
+      statements: 40
+    gocognit:
+      min-complexity: 20
+  exclusions:
+    rules:
+      # A test reads its own files, starts its own binaries and makes its own
+      # data; what gosec guards against there is the test itself.
+      - path: _test\.go
+        linters: [gosec]
+      # A conversion cannot overflow when min just bounded the value from above,
+      # or max(v, 0) kept a signed value from going negative before it turns
+      # unsigned.
+      - linters: [gosec]
+        text: G115
+        source: '\bu?int(8|16|32|64)?\((min\(|max\(-?[0-9() <]*, min\(|max\(min\(|max\([^(),]+, 0\)\))'
+      # A library opens the path its caller configured; the caller owns it.
+      - linters: [gosec]
+        text: G304
+      # The developer tools read and write the repository they are pointed at;
+      # the files they write are source files, readable by everyone.
+      - path: ^cmd/
+        linters: [gosec]
+        text: G(301|302|306|703)
+      # The table name is checked against a safe identifier pattern when it is
+      # set; values are always bound parameters.
+      - path: ^data/(cron|idempotency|saga)/pgstore/store\.go$
+        linters: [gosec]
+        text: G201

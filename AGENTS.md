@@ -25,7 +25,7 @@ make test          # unit tests
 make test-race     # race detector
 make test-integration # Docker-backed integration tests
 make test-cover    # coverage report
-make lint          # golangci-lint v2
+make lint          # golangci-lint v2, .golangci.yml, over every workspace module
 make vulncheck     # govulncheck
 make check-dependency-allowlist # direct external Go dependency policy
 make check-dependency-boundaries # keep heavy SDKs behind adapters/test helpers
