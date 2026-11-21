@@ -83,33 +83,10 @@ func NewNode(opts ...Option) (*Node, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if c.verifier == nil && !c.anonymousUnsafe {
-		return nil, errors.New("realtime/centrifuge: NewNode requires WithJWTAuth or explicit WithAnonymousConnectionsUnsafe (bare nodes are not open pub/sub buses)")
+	if err := c.checkSafety(); err != nil {
+		return nil, err
 	}
-	if c.verifier == nil && (c.connectPolicy != nil || c.refreshPolicy != nil) {
-		return nil, errors.New("realtime/centrifuge: verified connection policies require WithJWTAuth")
-	}
-	if c.publicationWritePolicy != nil {
-		if c.maxMessagesInFrame > 1 {
-			return nil, errors.New("realtime/centrifuge: publication write policy requires MaxMessagesInFrame of one")
-		}
-		c.maxMessagesInFrame = 1
-	}
-
-	nativeConfig := cfg.Config{
-		LogLevel:           toCentrifugeLogLevel(c.logLevel),
-		LogHandler:         makeLogHandler(logger),
-		ClientQueueMaxSize: c.clientQueueMaxSize,
-		ClientChannelLimit: c.clientChannelLimit,
-	}
-	if c.publicationWritePolicy != nil {
-		// Upstream only retains queue-item channels when namespace metrics are
-		// enabled. Use a fixed label and disable its channel cache: the writer
-		// gets the real channel without retaining private names in metrics.
-		nativeConfig.Metrics.GetChannelNamespaceLabel = func(string) string { return "default" }
-		nativeConfig.Metrics.ChannelNamespaceCacheSize = -1
-	}
-	cnode, err := cfg.New(nativeConfig)
+	cnode, err := cfg.New(c.nativeConfig(logger))
 	if err != nil {
 		return nil, redact.WrapError("realtime/centrifuge: node construction", err)
 	}
@@ -340,127 +317,160 @@ func (n *Node) WebsocketHandler() http.Handler {
 // that enforce channel authorization (fail-closed by default) while
 // still emitting channel-class metrics.
 func (n *Node) installCallbacks() {
-	n.node.OnConnecting(func(ctx context.Context, e cfg.ConnectEvent) (cfg.ConnectReply, error) {
-		if n.verifier == nil {
-			// Only reachable with WithAnonymousConnectionsUnsafe (NewNode
-			// refuses bare nodes). Count as accepted: the operator opted in.
-			n.metrics.observeConnect(connectOutcomeAccepted)
-			var policyContext context.Context
-			if n.publicationWritePolicy != nil {
-				policyContext = n.writeContext(ctx)
-			}
-			return cfg.ConnectReply{
-				Context:            policyContext,
-				MaxMessagesInFrame: n.maxMessagesInFrame,
-				Credentials:        &cfg.Credentials{UserID: ""},
-			}, nil
-		}
-		token := extractBearer(e.Token)
-		if token == "" {
-			n.metrics.observeConnect(connectOutcomeRejected)
-			return cfg.ConnectReply{}, cfg.DisconnectInvalidToken
-		}
-		claims, err := n.verifier.VerifyContext(ctx, token, time.Now())
-		if err != nil {
-			disc, outcome := connectVerifyFailure(err)
-			n.metrics.observeConnect(outcome)
-			if outcome == connectOutcomeError {
-				n.logger.ErrorContext(ctx, "centrifuge: connect token verification failed (key set unavailable)",
-					redact.Error(err),
-				)
-			} else {
-				n.logger.WarnContext(ctx, "centrifuge: connect token verification failed",
-					redact.Error(err),
-				)
-			}
-			return cfg.ConnectReply{}, disc
-		}
-		if claims.Subject == "" {
-			n.metrics.observeConnect(connectOutcomeRejected)
-			n.logger.WarnContext(ctx, "centrifuge: connect token missing subject")
-			return cfg.ConnectReply{}, cfg.DisconnectInvalidToken
-		}
-		policy := ConnectionPolicyReply{}
-		// Without a connect policy the token expiry is used unchanged; the
-		// connect request's own deadline must not shorten the connection.
-		expiry := claims.ExpiresAt
-		if n.connectPolicy != nil {
-			claimsCopy := *claims
-			claimsCopy.Permissions = slices.Clone(claims.Permissions)
-			policy, err = n.connectPolicy(ctx, e, claimsCopy)
-			if err != nil {
-				n.metrics.observeConnect(connectOutcomeRejected)
-				return cfg.ConnectReply{}, cfg.DisconnectPermissionDenied
-			}
-			expiry, err = boundedPolicyExpiry(ctx, claims.ExpiresAt, policy, time.Now())
-			if err != nil {
-				n.metrics.observeConnect(connectOutcomeRejected)
-				return cfg.ConnectReply{}, cfg.DisconnectExpired
-			}
-		}
-		n.metrics.observeConnect(connectOutcomeAccepted)
-		policyContext := policy.Context
-		if n.publicationWritePolicy != nil && policyContext == nil {
-			policyContext = ctx
-		}
-		return cfg.ConnectReply{
-			Context:            n.writeContext(policyContext),
-			MaxMessagesInFrame: n.maxMessagesInFrame,
-			ClientSideRefresh:  n.refreshPolicy != nil,
-			Credentials: &cfg.Credentials{
-				UserID:   claims.Subject,
-				ExpireAt: expiry,
-				Info:     slices.Clone(policy.Info),
-			},
-		}, nil
-	})
+	n.node.OnConnecting(n.connecting)
 	if n.publicationWritePolicy != nil {
 		n.installPublicationWritePolicy()
 	}
+	n.node.OnConnect(n.connected)
+}
 
-	n.node.OnConnect(func(client *cfg.Client) {
-		client.OnSubscribe(func(e cfg.SubscribeEvent, cb cfg.SubscribeCallback) {
-			n.metrics.observeSubscribe(n.classifier(e.Channel))
-			if err := n.authorizeChannel(client, e.Channel, n.subscribeAuthorizer); err != nil {
-				cb(cfg.SubscribeReply{}, err)
-				return
-			}
-			reply := cfg.SubscribeReply{Options: n.subscribeOptions(e.Channel)}
-			if n.subscriptionReadyObserver == nil {
-				cb(reply, nil)
-				return
-			}
-			ready := make(chan struct{})
-			alreadySubscribed := slices.Contains(client.Channels(), e.Channel)
-			reply.SubscriptionReady = ready
-			cb(reply, nil)
-			if !alreadySubscribed {
-				n.observeSubscriptionReady(client, e.Channel, ready)
-			}
-		})
-		client.OnPublish(func(e cfg.PublishEvent, cb cfg.PublishCallback) {
-			n.metrics.observePublish(n.classifier(e.Channel))
-			if err := n.authorizeChannel(client, e.Channel, n.publishAuthorizer); err != nil {
-				cb(cfg.PublishReply{}, err)
-				return
-			}
-			cb(cfg.PublishReply{}, nil)
-		})
-		client.OnDisconnect(func(e cfg.DisconnectEvent) {
-			n.metrics.observeDisconnect(disconnectReason(e.Disconnect))
-			if n.disconnectObserver != nil {
-				n.disconnectObserver(Connection{client: client}, e)
-			}
-		})
-		if n.refreshPolicy != nil {
-			client.OnRefresh(func(e cfg.RefreshEvent, cb cfg.RefreshCallback) {
-				n.refresh(client, e, cb)
-			})
+// connecting authenticates a connection: anonymously when the operator
+// opted in, otherwise from a verified bearer token and the connect policy.
+func (n *Node) connecting(ctx context.Context, e cfg.ConnectEvent) (cfg.ConnectReply, error) {
+	if n.verifier == nil {
+		// Only reachable with WithAnonymousConnectionsUnsafe (NewNode
+		// refuses bare nodes). Count as accepted: the operator opted in.
+		n.metrics.observeConnect(connectOutcomeAccepted)
+		var policyContext context.Context
+		if n.publicationWritePolicy != nil {
+			policyContext = n.writeContext(ctx)
 		}
-		if n.connectObserver != nil {
-			n.connectObserver(Connection{client: client})
+		return cfg.ConnectReply{
+			Context:            policyContext,
+			MaxMessagesInFrame: n.maxMessagesInFrame,
+			Credentials:        &cfg.Credentials{UserID: ""},
+		}, nil
+	}
+	claims, err := n.verifyConnectToken(ctx, e.Token)
+	if err != nil {
+		return cfg.ConnectReply{}, err
+	}
+	policy := ConnectionPolicyReply{}
+	// Without a connect policy the token expiry is used unchanged; the
+	// connect request's own deadline must not shorten the connection.
+	expiry := claims.ExpiresAt
+	if n.connectPolicy != nil {
+		policy, expiry, err = n.applyConnectPolicy(ctx, e, claims)
+		if err != nil {
+			n.metrics.observeConnect(connectOutcomeRejected)
+			return cfg.ConnectReply{}, err
+		}
+	}
+	n.metrics.observeConnect(connectOutcomeAccepted)
+	policyContext := policy.Context
+	if n.publicationWritePolicy != nil && policyContext == nil {
+		policyContext = ctx
+	}
+	return cfg.ConnectReply{
+		Context:            n.writeContext(policyContext),
+		MaxMessagesInFrame: n.maxMessagesInFrame,
+		ClientSideRefresh:  n.refreshPolicy != nil,
+		Credentials: &cfg.Credentials{
+			UserID:   claims.Subject,
+			ExpireAt: expiry,
+			Info:     slices.Clone(policy.Info),
+		},
+	}, nil
+}
+
+// verifyConnectToken verifies the connect token. A failure is counted and
+// returned as the disconnect to send.
+func (n *Node) verifyConnectToken(ctx context.Context, rawToken string) (*jwtutil.Claims, error) {
+	token := extractBearer(rawToken)
+	if token == "" {
+		n.metrics.observeConnect(connectOutcomeRejected)
+		return nil, cfg.DisconnectInvalidToken
+	}
+	claims, err := n.verifier.VerifyContext(ctx, token, time.Now())
+	if err != nil {
+		disc, outcome := connectVerifyFailure(err)
+		n.metrics.observeConnect(outcome)
+		if outcome == connectOutcomeError {
+			n.logger.ErrorContext(ctx, "centrifuge: connect token verification failed (key set unavailable)",
+				redact.Error(err),
+			)
+		} else {
+			n.logger.WarnContext(ctx, "centrifuge: connect token verification failed",
+				redact.Error(err),
+			)
+		}
+		return nil, disc
+	}
+	if claims.Subject == "" {
+		n.metrics.observeConnect(connectOutcomeRejected)
+		n.logger.WarnContext(ctx, "centrifuge: connect token missing subject")
+		return nil, cfg.DisconnectInvalidToken
+	}
+	return claims, nil
+}
+
+// applyConnectPolicy asks the connect policy about verified claims and
+// bounds the connection's expiry by it. It returns the disconnect to send
+// when the policy refuses.
+func (n *Node) applyConnectPolicy(ctx context.Context, e cfg.ConnectEvent, claims *jwtutil.Claims) (ConnectionPolicyReply, int64, error) {
+	claimsCopy := *claims
+	claimsCopy.Permissions = slices.Clone(claims.Permissions)
+	policy, err := n.connectPolicy(ctx, e, claimsCopy)
+	if err != nil {
+		return ConnectionPolicyReply{}, 0, cfg.DisconnectPermissionDenied
+	}
+	expiry, err := boundedPolicyExpiry(ctx, claims.ExpiresAt, policy, time.Now())
+	if err != nil {
+		return ConnectionPolicyReply{}, 0, cfg.DisconnectExpired
+	}
+	return policy, expiry, nil
+}
+
+// connected wires a connected client's subscribe, publish, disconnect and
+// refresh handling.
+func (n *Node) connected(client *cfg.Client) {
+	client.OnSubscribe(func(e cfg.SubscribeEvent, cb cfg.SubscribeCallback) {
+		n.subscribe(client, e, cb)
+	})
+	client.OnPublish(func(e cfg.PublishEvent, cb cfg.PublishCallback) {
+		n.metrics.observePublish(n.classifier(e.Channel))
+		if err := n.authorizeChannel(client, e.Channel, n.publishAuthorizer); err != nil {
+			cb(cfg.PublishReply{}, err)
+			return
+		}
+		cb(cfg.PublishReply{}, nil)
+	})
+	client.OnDisconnect(func(e cfg.DisconnectEvent) {
+		n.metrics.observeDisconnect(disconnectReason(e.Disconnect))
+		if n.disconnectObserver != nil {
+			n.disconnectObserver(Connection{client: client}, e)
 		}
 	})
+	if n.refreshPolicy != nil {
+		client.OnRefresh(func(e cfg.RefreshEvent, cb cfg.RefreshCallback) {
+			n.refresh(client, e, cb)
+		})
+	}
+	if n.connectObserver != nil {
+		n.connectObserver(Connection{client: client})
+	}
+}
+
+// subscribe authorizes a subscription and, with a ready observer, reports
+// when a new subscription is ready.
+func (n *Node) subscribe(client *cfg.Client, e cfg.SubscribeEvent, cb cfg.SubscribeCallback) {
+	n.metrics.observeSubscribe(n.classifier(e.Channel))
+	if err := n.authorizeChannel(client, e.Channel, n.subscribeAuthorizer); err != nil {
+		cb(cfg.SubscribeReply{}, err)
+		return
+	}
+	reply := cfg.SubscribeReply{Options: n.subscribeOptions(e.Channel)}
+	if n.subscriptionReadyObserver == nil {
+		cb(reply, nil)
+		return
+	}
+	ready := make(chan struct{})
+	alreadySubscribed := slices.Contains(client.Channels(), e.Channel)
+	reply.SubscriptionReady = ready
+	cb(reply, nil)
+	if !alreadySubscribed {
+		n.observeSubscriptionReady(client, e.Channel, ready)
+	}
 }
 
 // subscribeOptions maps the [WithSubscriptionRecovery] decision for an
@@ -623,4 +633,42 @@ func valueToString(v any) string {
 	default:
 		return fmt.Sprint(t)
 	}
+}
+
+// checkSafety rejects configurations the kit refuses to run: an open
+// pub/sub bus without an explicit opt-in, verified-connection policies
+// without verification, and a publication write policy over frames of
+// more than one message (the default becomes one).
+func (c *config) checkSafety() error {
+	if c.verifier == nil && !c.anonymousUnsafe {
+		return errors.New("realtime/centrifuge: NewNode requires WithJWTAuth or explicit WithAnonymousConnectionsUnsafe (bare nodes are not open pub/sub buses)")
+	}
+	if c.verifier == nil && (c.connectPolicy != nil || c.refreshPolicy != nil) {
+		return errors.New("realtime/centrifuge: verified connection policies require WithJWTAuth")
+	}
+	if c.publicationWritePolicy != nil {
+		if c.maxMessagesInFrame > 1 {
+			return errors.New("realtime/centrifuge: publication write policy requires MaxMessagesInFrame of one")
+		}
+		c.maxMessagesInFrame = 1
+	}
+	return nil
+}
+
+// nativeConfig is the upstream node configuration.
+func (c *config) nativeConfig(logger *slog.Logger) cfg.Config {
+	nativeConfig := cfg.Config{
+		LogLevel:           toCentrifugeLogLevel(c.logLevel),
+		LogHandler:         makeLogHandler(logger),
+		ClientQueueMaxSize: c.clientQueueMaxSize,
+		ClientChannelLimit: c.clientChannelLimit,
+	}
+	if c.publicationWritePolicy != nil {
+		// Upstream only retains queue-item channels when namespace metrics are
+		// enabled. Use a fixed label and disable its channel cache: the writer
+		// gets the real channel without retaining private names in metrics.
+		nativeConfig.Metrics.GetChannelNamespaceLabel = func(string) string { return "default" }
+		nativeConfig.Metrics.ChannelNamespaceCacheSize = -1
+	}
+	return nativeConfig
 }

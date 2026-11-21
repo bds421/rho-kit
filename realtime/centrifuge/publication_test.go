@@ -333,21 +333,7 @@ func TestPublicationEventPreservesNativeBytesAndSingleWrites(t *testing.T) {
 			queuePrivatePublications(t, n, c, q)
 			q.release()
 			for _, want := range []string{`{"fixture":"private-publication"}`, `{"fixture":"caught-up-marker"}`} {
-				var event PublicationWriteEvent
-				select {
-				case event = <-events:
-				case <-time.After(5 * time.Second):
-					t.Fatal("native publication policy not called")
-				}
-				push := decodePublicationPush(t, wire, event.Data)
-				if push.Channel != event.Channel || !bytes.Equal(push.Pub.Data, []byte(want)) || len(push.Pub.Tags) != 0 {
-					t.Fatal("native envelope/payload changed or metadata injected")
-				}
-				waitPublicationCondition(t, func() bool {
-					q.mu.Lock()
-					defer q.mu.Unlock()
-					return slices.ContainsFunc(q.frames, func(b []byte) bool { return bytes.Equal(b, event.Data) })
-				}, "policy bytes differ from actual transport bytes")
+				checkPolicyBytesTransported(t, wire, q, events, want)
 			}
 			q.mu.Lock()
 			defer q.mu.Unlock()
@@ -429,24 +415,7 @@ func TestPublicationPostPolicyGuard(t *testing.T) {
 				queuePrivatePublications(t, n, c, q)
 				q.release()
 				awaitPublicationSignal(t, entered, "native policy did not start")
-				var done chan struct{}
-				switch mode {
-				case "close":
-					Connection{client: c}.Disconnect(cfg.DisconnectPermissionDenied)
-				case "unsubscribe":
-					c.Unsubscribe("fixture")
-				case "cancel":
-					cancel()
-				case "stop":
-					done = make(chan struct{})
-					go func() {
-						if err := n.Stop(t.Context()); err != nil {
-							t.Error(err)
-						}
-						close(done)
-					}()
-					waitPublicationCondition(t, func() bool { return !n.Ready() }, "native Stop did not seal readiness")
-				}
+				done := interruptPolicy(t, mode, n, c, cancel)
 				releaseOnce()
 				if done != nil {
 					awaitPublicationSignal(t, done, "close during policy deadlocked")
@@ -487,4 +456,52 @@ func TestPublicationPolicyRequiresSingleMessageWrites(t *testing.T) {
 			t.Fatal("no-policy aggregation behavior changed", err)
 		}
 	}
+}
+
+// checkPolicyBytesTransported takes the next policy event and checks that it
+// carries the native publication of want and that the transport wrote
+// exactly its bytes.
+func checkPolicyBytesTransported(t *testing.T, wire publicationWire, q *queuedTransport, events <-chan PublicationWriteEvent, want string) {
+	t.Helper()
+	var event PublicationWriteEvent
+	select {
+	case event = <-events:
+	case <-time.After(5 * time.Second):
+		t.Fatal("native publication policy not called")
+	}
+	push := decodePublicationPush(t, wire, event.Data)
+	if push.Channel != event.Channel || !bytes.Equal(push.Pub.Data, []byte(want)) || len(push.Pub.Tags) != 0 {
+		t.Fatal("native envelope/payload changed or metadata injected")
+	}
+	waitPublicationCondition(t, func() bool {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		return slices.ContainsFunc(q.frames, func(b []byte) bool { return bytes.Equal(b, event.Data) })
+	}, "policy bytes differ from actual transport bytes")
+}
+
+// interruptPolicy ends the subscription's authority while the policy runs,
+// the way mode names. For "stop" it returns a channel closed once Stop
+// returned; otherwise nil.
+func interruptPolicy(t *testing.T, mode string, n *Node, c *cfg.Client, cancel context.CancelFunc) chan struct{} {
+	t.Helper()
+	switch mode {
+	case "close":
+		Connection{client: c}.Disconnect(cfg.DisconnectPermissionDenied)
+	case "unsubscribe":
+		c.Unsubscribe("fixture")
+	case "cancel":
+		cancel()
+	case "stop":
+		done := make(chan struct{})
+		go func() {
+			if err := n.Stop(t.Context()); err != nil {
+				t.Error(err)
+			}
+			close(done)
+		}()
+		waitPublicationCondition(t, func() bool { return !n.Ready() }, "native Stop did not seal readiness")
+		return done
+	}
+	return nil
 }
