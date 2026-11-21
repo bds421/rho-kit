@@ -382,7 +382,25 @@ func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer,
 	if len(tokenString) > maxJWTLen {
 		return nil, errors.New("jwtutil: token exceeds maximum length")
 	}
-	now = verificationTime(now)
+	tok, err := parseVerifiedToken(set, tokenString, verificationTime(now), expectedIssuer, expectedAudience)
+	if err != nil {
+		return nil, err
+	}
+	claims, err := registeredClaims(tok)
+	if err != nil {
+		return nil, err
+	}
+	if err := readEntitlementClaims(tok, claims); err != nil {
+		return nil, err
+	}
+	populateStringClaims(tok, claims, stringClaimNames)
+	return claims, nil
+}
+
+// parseVerifiedToken parses tokenString and validates its signature
+// against set, its time claims at now, and the expected issuer, audience
+// and type.
+func parseVerifiedToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer, expectedAudience string) (jwt.Token, error) {
 	parseOpts := []jwt.ParseOption{
 		jwt.WithKeySet(set, jws.WithInferAlgorithmFromKey(true)),
 		jwt.WithValidate(true),
@@ -410,7 +428,11 @@ func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer,
 	if err := requireExpectedJWTType(tokenString); err != nil {
 		return nil, err
 	}
+	return tok, nil
+}
 
+// registeredClaims reads the registered claims; exp and sub are required.
+func registeredClaims(tok jwt.Token) (*Claims, error) {
 	exp, hasExp := tok.Expiration()
 	if !hasExp || exp.IsZero() {
 		// Belt-and-braces: WithRequiredClaim already enforces this, but
@@ -439,13 +461,18 @@ func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer,
 	if nbf, ok := tok.NotBefore(); ok {
 		claims.NotBefore = nbf.Unix()
 	}
+	return claims, nil
+}
 
+// readEntitlementClaims reads the optional permissions and scopes claims.
+// A present claim of the wrong shape rejects the token.
+func readEntitlementClaims(tok jwt.Token, claims *Claims) error {
 	var perms []any
 	switch err := tok.Get("permissions", &perms); {
 	case err == nil:
 		converted, convErr := toStringSlice(perms)
 		if convErr != nil {
-			return nil, errMalformedPermissionsClaim
+			return errMalformedPermissionsClaim
 		}
 		claims.Permissions = converted
 	case errors.Is(err, jwt.ClaimNotFoundError()):
@@ -460,7 +487,7 @@ func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer,
 			"claim", "permissions",
 			redact.ErrorKey("err", errMalformedPermissionsClaim),
 		)
-		return nil, errMalformedPermissionsClaim
+		return errMalformedPermissionsClaim
 	}
 	var scopes string
 	switch err := tok.Get("scopes", &scopes); {
@@ -473,11 +500,9 @@ func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer,
 			"claim", "scopes",
 			redact.ErrorKey("err", errMalformedScopesClaim),
 		)
-		return nil, errMalformedScopesClaim
+		return errMalformedScopesClaim
 	}
-
-	populateStringClaims(tok, claims, stringClaimNames)
-	return claims, nil
+	return nil
 }
 
 // mergeStringClaimNames returns the deduplicated claim-name list used by

@@ -64,14 +64,7 @@ func TestSigningStringClaimsRoundTripAndDefaultIsolation(t *testing.T) {
 	if len(recorder.snapshot()) != 2 {
 		t.Fatal("maintained issued-JTI recorder skipped")
 	}
-	for _, bad := range []map[string]string{
-		{"iss": "override"}, {"unknown": "value"}, {"sid": ""}, {"sid": "control\n"},
-		{"sid": string([]byte{0xff})}, {"sid": strings.Repeat("x", 2049)},
-	} {
-		if _, err := p.SignWithStringClaims(t.Context(), Claims{Subject: "invented-grant"}, bad); !errors.Is(err, ErrSigningStringClaims) {
-			t.Fatal("invalid claims allowed", err)
-		}
-	}
+	checkInvalidStringClaimsRejected(t, p)
 	if len(recorder.snapshot()) != 2 {
 		t.Fatal("invalid fields reached issuance ledger")
 	}
@@ -194,5 +187,19 @@ func TestSigningStringClaimsRetainsKeyRotationStaleAndMissingGuards(t *testing.T
 	p.current.Store(nil)
 	if _, err := p.SignWithStringClaims(t.Context(), Claims{Subject: "invented"}, fields); !errors.Is(err, ErrSigningKeyUnavailable) {
 		t.Fatal("missing key bypass", err)
+	}
+}
+
+// checkInvalidStringClaimsRejected checks that p refuses reserved, unknown,
+// empty, control, invalid UTF-8 and oversized string claims.
+func checkInvalidStringClaimsRejected(t *testing.T, p *SigningProvider) {
+	t.Helper()
+	for _, bad := range []map[string]string{
+		{"iss": "override"}, {"unknown": "value"}, {"sid": ""}, {"sid": "control\n"},
+		{"sid": string([]byte{0xff})}, {"sid": strings.Repeat("x", 2049)},
+	} {
+		if _, err := p.SignWithStringClaims(t.Context(), Claims{Subject: "invented-grant"}, bad); !errors.Is(err, ErrSigningStringClaims) {
+			t.Fatal("invalid claims allowed", err)
+		}
 	}
 }

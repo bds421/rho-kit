@@ -66,50 +66,80 @@ func (m MappingProfile) Project(subject string, providerClaims map[string]any) (
 	if !validKind(p.Kind) || !validID(subject) {
 		return Principal{}, ErrInvalidPrincipal
 	}
-	var err error
-	if m.TenantClaim != "" && !m.skip(providerClaims, m.TenantClaim) {
-		if p.Tenant, err = requiredString(providerClaims, m.TenantClaim); err != nil || !validID(p.Tenant) {
-			return Principal{}, invalidMapping("tenant", err)
-		}
+	if err := m.mapID(providerClaims, m.TenantClaim, "tenant", &p.Tenant); err != nil {
+		return Principal{}, err
 	}
-	if m.ActorClaim != "" && !m.skip(providerClaims, m.ActorClaim) {
-		if p.Actor, err = requiredString(providerClaims, m.ActorClaim); err != nil || !validID(p.Actor) {
-			return Principal{}, invalidMapping("actor", err)
-		}
+	if err := m.mapID(providerClaims, m.ActorClaim, "actor", &p.Actor); err != nil {
+		return Principal{}, err
 	}
-	if m.ScopesClaim != "" && !m.skip(providerClaims, m.ScopesClaim) {
-		if p.Scopes, err = entitlementList(providerClaims[m.ScopesClaim]); err != nil {
-			return Principal{}, invalidMapping("scopes", err)
-		}
+	if err := m.mapEntitlements(providerClaims, m.ScopesClaim, "scopes", &p.Scopes); err != nil {
+		return Principal{}, err
 	}
-	if m.PermissionsClaim != "" && !m.skip(providerClaims, m.PermissionsClaim) {
-		if p.Permissions, err = entitlementList(providerClaims[m.PermissionsClaim]); err != nil {
-			return Principal{}, invalidMapping("permissions", err)
-		}
+	if err := m.mapEntitlements(providerClaims, m.PermissionsClaim, "permissions", &p.Permissions); err != nil {
+		return Principal{}, err
 	}
-	if len(m.Claims) > maxClaims {
-		return Principal{}, fmt.Errorf("%w: too many mapped claims", ErrInvalidPrincipal)
+	claims, err := m.mapClaims(providerClaims)
+	if err != nil {
+		return Principal{}, err
 	}
-	if len(m.Claims) > 0 {
-		p.Claims = make(map[string]string, len(m.Claims))
-		for target, source := range m.Claims {
-			if !validClaimName(target) || source == "" {
-				return Principal{}, fmt.Errorf("%w: invalid claim mapping", ErrInvalidPrincipal)
-			}
-			if m.skip(providerClaims, source) {
-				continue
-			}
-			value, err := requiredString(providerClaims, source)
-			if err != nil || !validID(value) {
-				return Principal{}, invalidMapping("claim "+target, err)
-			}
-			p.Claims[target] = value
-		}
-		if len(p.Claims) == 0 {
-			p.Claims = nil
-		}
-	}
+	p.Claims = claims
 	return p.normalized(), nil
+}
+
+// mapID sets *into from the selected claim, which must be a valid ID. An
+// unselected or skipped claim leaves *into unchanged.
+func (m MappingProfile) mapID(providerClaims map[string]any, claim, field string, into *string) error {
+	if claim == "" || m.skip(providerClaims, claim) {
+		return nil
+	}
+	value, err := requiredString(providerClaims, claim)
+	if err != nil || !validID(value) {
+		return invalidMapping(field, err)
+	}
+	*into = value
+	return nil
+}
+
+// mapEntitlements sets *into from the selected claim's entitlement list. An
+// unselected or skipped claim leaves *into unchanged.
+func (m MappingProfile) mapEntitlements(providerClaims map[string]any, claim, field string, into *[]string) error {
+	if claim == "" || m.skip(providerClaims, claim) {
+		return nil
+	}
+	list, err := entitlementList(providerClaims[claim])
+	if err != nil {
+		return invalidMapping(field, err)
+	}
+	*into = list
+	return nil
+}
+
+// mapClaims maps the extra claims; it returns nil when none is set.
+func (m MappingProfile) mapClaims(providerClaims map[string]any) (map[string]string, error) {
+	if len(m.Claims) > maxClaims {
+		return nil, fmt.Errorf("%w: too many mapped claims", ErrInvalidPrincipal)
+	}
+	if len(m.Claims) == 0 {
+		return nil, nil
+	}
+	claims := make(map[string]string, len(m.Claims))
+	for target, source := range m.Claims {
+		if !validClaimName(target) || source == "" {
+			return nil, fmt.Errorf("%w: invalid claim mapping", ErrInvalidPrincipal)
+		}
+		if m.skip(providerClaims, source) {
+			continue
+		}
+		value, err := requiredString(providerClaims, source)
+		if err != nil || !validID(value) {
+			return nil, invalidMapping("claim "+target, err)
+		}
+		claims[target] = value
+	}
+	if len(claims) == 0 {
+		return nil, nil
+	}
+	return claims, nil
 }
 
 // skip reports whether an absent (or null) selected claim may be left empty.
@@ -244,5 +274,5 @@ func invalidMapping(field string, err error) error {
 	if err == nil {
 		err = errors.New("invalid value")
 	}
-	return fmt.Errorf("%w: %s: %v", ErrInvalidPrincipal, field, err)
+	return fmt.Errorf("%w: %s: %w", ErrInvalidPrincipal, field, err)
 }
