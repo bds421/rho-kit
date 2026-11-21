@@ -168,51 +168,12 @@ func StreamIdleTimeout(d time.Duration, metrics *StreamLimitMetrics) grpc.Stream
 		}
 		wrapped.lastActive.Store(monoNow())
 
-		// Watchdog: poll at 1/4 the idle timeout so the worst-case
-		// detection latency is +25%. Exits as soon as the handler
-		// returns (done) or the context is cancelled (ctx.Done) — the
-		// latter also covers a handler panic unwinding past the close
-		// below, where only the deferred cancel runs.
 		done := make(chan struct{})
 		// Deferred so a handler panic still tears the watchdog down
 		// promptly instead of leaving the goroutine and ticker lingering
 		// until the idle window elapses.
 		defer close(done)
-		go func() {
-			tick := d / 4
-			if tick < 10*time.Millisecond {
-				tick = 10 * time.Millisecond
-			}
-			t := time.NewTicker(tick)
-			defer t.Stop()
-			for {
-				select {
-				case <-done:
-					return
-				case <-ctx.Done():
-					return
-				case <-t.C:
-					// Re-check done first so a handler that just returned does
-					// not spuriously increment streams_idle_closed_total.
-					select {
-					case <-done:
-						return
-					default:
-					}
-					last := wrapped.lastActive.Load()
-					// lastActive stores mono-ish nanos from a process-start
-					// origin (see idleStream.touch) so NTP wall steps cannot
-					// mass-cancel streams.
-					if monoNow()-last >= d.Nanoseconds() {
-						if metrics != nil {
-							metrics.idleClose.Inc()
-						}
-						cancel()
-						return
-					}
-				}
-			}
-		}()
+		go wrapped.watch(d, done, cancel, metrics)
 
 		err := handler(srv, wrapped)
 		// If our watchdog cancelled the ctx (vs the caller cancelling
@@ -222,18 +183,51 @@ func StreamIdleTimeout(d time.Duration, metrics *StreamLimitMetrics) grpc.Stream
 		// client-streaming RPC already replied via SendAndClose) or with
 		// a business error must keep its own result; overwriting it would
 		// report a delivered response as failed and invite duplicate
-		// client retries.
+		// client retries. The wrapper's ctx is derived from ss.Context();
+		// if the underlying stream is also cancelled, the caller did it,
+		// not us.
 		if err != nil && idleTimeoutRemap(err) &&
-			ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
-			// Distinguish "we cancelled" from "caller cancelled". The
-			// wrapper's ctx is derived from ss.Context(); if the
-			// underlying stream is also cancelled, the caller did
-			// it, not us.
-			if ss.Context().Err() == nil {
-				return status.Error(codes.DeadlineExceeded, "grpc: stream idle timeout")
-			}
+			errors.Is(ctx.Err(), context.Canceled) && ss.Context().Err() == nil {
+			return status.Error(codes.DeadlineExceeded, "grpc: stream idle timeout")
 		}
 		return err
+	}
+}
+
+// watch is the watchdog: it polls at 1/4 the idle timeout so the
+// worst-case detection latency is +25%, and cancels the stream once it was
+// idle for d. It exits as soon as the handler returns (done) or the context
+// is cancelled (ctx.Done) — the latter also covers a handler panic
+// unwinding past the close, where only the deferred cancel runs.
+func (s *idleStream) watch(d time.Duration, done <-chan struct{}, cancel context.CancelFunc, metrics *StreamLimitMetrics) {
+	tick := max(d/4, 10*time.Millisecond)
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-s.ctx.Done():
+			return
+		case <-t.C:
+			// Re-check done first so a handler that just returned does
+			// not spuriously increment streams_idle_closed_total.
+			select {
+			case <-done:
+				return
+			default:
+			}
+			// lastActive stores mono-ish nanos from a process-start
+			// origin (see monoNow) so NTP wall steps cannot mass-cancel
+			// streams.
+			if monoNow()-s.lastActive.Load() >= d.Nanoseconds() {
+				if metrics != nil {
+					metrics.idleClose.Inc()
+				}
+				cancel()
+				return
+			}
+		}
 	}
 }
 

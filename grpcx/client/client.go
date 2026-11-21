@@ -319,75 +319,10 @@ func NewClient(target string, opts ...Option) (*grpc.ClientConn, error) {
 		kp = *cfg.keepaliveParams
 	}
 
-	unary := append([]grpc.UnaryClientInterceptor(nil), cfg.unaryInterceptors...)
-	stream := append([]grpc.StreamClientInterceptor(nil), cfg.streamInts...)
-
-	// Inner-to-outer prepends so the chain ends up with recovery as
-	// the outermost guard.
-	if !cfg.disableDefaultDL && cfg.defaultDeadline > 0 {
-		unary = append([]grpc.UnaryClientInterceptor{cliint.DeadlineUnary(cfg.defaultDeadline)}, unary...)
-	}
-	if !cfg.disableDefaultDL {
-		streamDL := cfg.defaultDeadline
-		if cfg.streamDeadline != nil {
-			streamDL = *cfg.streamDeadline
-		}
-		if streamDL > 0 {
-			stream = append([]grpc.StreamClientInterceptor{cliint.DeadlineStream(streamDL)}, stream...)
-		}
-	}
-	if cfg.enableRetry {
-		retryOpts := []cliint.RetryOption{cliint.WithRetryPolicy(cfg.retryPolicy)}
-		if len(cfg.retryCodes) > 0 {
-			retryOpts = append(retryOpts, cliint.WithRetryableCodes(cfg.retryCodes...))
-		}
-		unary = append([]grpc.UnaryClientInterceptor{cliint.RetryUnary(retryOpts...)}, unary...)
-	}
-	if !cfg.disableMetrics {
-		var mopts []cliint.MetricsOption
-		if cfg.metricsRegisterer != nil {
-			mopts = append(mopts, cliint.WithRegisterer(cfg.metricsRegisterer))
-		}
-		metrics := cliint.NewMetrics(mopts...)
-		unary = append([]grpc.UnaryClientInterceptor{metrics.UnaryInterceptor()}, unary...)
-		stream = append([]grpc.StreamClientInterceptor{metrics.StreamInterceptor()}, stream...)
-	}
-	if !cfg.disableLogging {
-		l := cfg.loggingLogger
-		if l == nil {
-			l = slog.Default()
-		}
-		unary = append([]grpc.UnaryClientInterceptor{cliint.LoggingUnary(l)}, unary...)
-		stream = append([]grpc.StreamClientInterceptor{cliint.LoggingStream(l)}, stream...)
-	}
-	// Correlation/request-ID propagation is always on and runs ahead of
-	// logging so disabling logging never severs end-to-end trace joins.
-	// Identity metadata is on by default; opt out with WithoutIdentityPropagation.
-	var propOpts []cliint.PropagationOption
-	if cfg.disableIdentity {
-		propOpts = append(propOpts, cliint.WithoutIdentity())
-	}
-	unary = append([]grpc.UnaryClientInterceptor{cliint.PropagationUnaryClientInterceptor(propOpts...)}, unary...)
-	stream = append([]grpc.StreamClientInterceptor{cliint.PropagationStreamClientInterceptor(propOpts...)}, stream...)
-	if !cfg.disableRecovery {
-		l := cfg.recoveryLogger
-		if l == nil {
-			l = slog.Default()
-		}
-		unary = append([]grpc.UnaryClientInterceptor{cliint.RecoveryUnary(l)}, unary...)
-		stream = append([]grpc.StreamClientInterceptor{cliint.RecoveryStream(l)}, stream...)
-	}
-
 	// Interceptors and caller DialOptions first; kit transport credentials
 	// and keepalive are appended last so raw dial opts cannot silently undo
 	// hardening (later options win for non-additive setters).
-	var dialOpts []grpc.DialOption
-	if len(unary) > 0 {
-		dialOpts = append(dialOpts, grpc.WithChainUnaryInterceptor(unary...))
-	}
-	if len(stream) > 0 {
-		dialOpts = append(dialOpts, grpc.WithChainStreamInterceptor(stream...))
-	}
+	dialOpts := cfg.interceptors().dialOptions()
 	dialOpts = append(dialOpts, cfg.dialOpts...)
 	dialOpts = append(dialOpts,
 		grpc.WithTransportCredentials(creds),
@@ -399,6 +334,105 @@ func NewClient(target string, opts ...Option) (*grpc.ClientConn, error) {
 		return nil, fmt.Errorf("grpcx/client: NewClient dial: %w", err)
 	}
 	return conn, nil
+}
+
+// interceptorChain is a client's unary and stream interceptors, outermost
+// first.
+type interceptorChain struct {
+	unary  []grpc.UnaryClientInterceptor
+	stream []grpc.StreamClientInterceptor
+}
+
+// wrapUnary puts i outside the unary interceptors so far.
+func (c *interceptorChain) wrapUnary(i grpc.UnaryClientInterceptor) {
+	c.unary = append([]grpc.UnaryClientInterceptor{i}, c.unary...)
+}
+
+// wrapStream puts i outside the stream interceptors so far.
+func (c *interceptorChain) wrapStream(i grpc.StreamClientInterceptor) {
+	c.stream = append([]grpc.StreamClientInterceptor{i}, c.stream...)
+}
+
+func (c *interceptorChain) dialOptions() []grpc.DialOption {
+	var dialOpts []grpc.DialOption
+	if len(c.unary) > 0 {
+		dialOpts = append(dialOpts, grpc.WithChainUnaryInterceptor(c.unary...))
+	}
+	if len(c.stream) > 0 {
+		dialOpts = append(dialOpts, grpc.WithChainStreamInterceptor(c.stream...))
+	}
+	return dialOpts
+}
+
+// interceptors builds the kit chain around the caller's interceptors,
+// wrapping inner to outer so recovery ends up as the outermost guard.
+func (cfg *clientConfig) interceptors() *interceptorChain {
+	c := &interceptorChain{
+		unary:  append([]grpc.UnaryClientInterceptor(nil), cfg.unaryInterceptors...),
+		stream: append([]grpc.StreamClientInterceptor(nil), cfg.streamInts...),
+	}
+	cfg.wrapDeadlines(c)
+	if cfg.enableRetry {
+		retryOpts := []cliint.RetryOption{cliint.WithRetryPolicy(cfg.retryPolicy)}
+		if len(cfg.retryCodes) > 0 {
+			retryOpts = append(retryOpts, cliint.WithRetryableCodes(cfg.retryCodes...))
+		}
+		c.wrapUnary(cliint.RetryUnary(retryOpts...))
+	}
+	if !cfg.disableMetrics {
+		var mopts []cliint.MetricsOption
+		if cfg.metricsRegisterer != nil {
+			mopts = append(mopts, cliint.WithRegisterer(cfg.metricsRegisterer))
+		}
+		metrics := cliint.NewMetrics(mopts...)
+		c.wrapUnary(metrics.UnaryInterceptor())
+		c.wrapStream(metrics.StreamInterceptor())
+	}
+	if !cfg.disableLogging {
+		l := loggerOrDefault(cfg.loggingLogger)
+		c.wrapUnary(cliint.LoggingUnary(l))
+		c.wrapStream(cliint.LoggingStream(l))
+	}
+	// Correlation/request-ID propagation is always on and runs ahead of
+	// logging so disabling logging never severs end-to-end trace joins.
+	// Identity metadata is on by default; opt out with WithoutIdentityPropagation.
+	var propOpts []cliint.PropagationOption
+	if cfg.disableIdentity {
+		propOpts = append(propOpts, cliint.WithoutIdentity())
+	}
+	c.wrapUnary(cliint.PropagationUnaryClientInterceptor(propOpts...))
+	c.wrapStream(cliint.PropagationStreamClientInterceptor(propOpts...))
+	if !cfg.disableRecovery {
+		l := loggerOrDefault(cfg.recoveryLogger)
+		c.wrapUnary(cliint.RecoveryUnary(l))
+		c.wrapStream(cliint.RecoveryStream(l))
+	}
+	return c
+}
+
+// wrapDeadlines adds the default deadlines; a stream deadline of its own
+// replaces the default for streams.
+func (cfg *clientConfig) wrapDeadlines(c *interceptorChain) {
+	if cfg.disableDefaultDL {
+		return
+	}
+	if cfg.defaultDeadline > 0 {
+		c.wrapUnary(cliint.DeadlineUnary(cfg.defaultDeadline))
+	}
+	streamDL := cfg.defaultDeadline
+	if cfg.streamDeadline != nil {
+		streamDL = *cfg.streamDeadline
+	}
+	if streamDL > 0 {
+		c.wrapStream(cliint.DeadlineStream(streamDL))
+	}
+}
+
+func loggerOrDefault(l *slog.Logger) *slog.Logger {
+	if l == nil {
+		return slog.Default()
+	}
+	return l
 }
 
 // resolveCredentials panics on missing TLS / non-loopback insecure

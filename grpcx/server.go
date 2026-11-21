@@ -395,103 +395,18 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 		ep = *cfg.keepalivePolicy
 	}
 
-	// Hardened transport options are applied once AFTER cfg.grpcOpts below
-	// so raw ServerOptions cannot silently undo kit limits (later options
-	// win for non-additive setters). Interceptors are collected first.
-	var grpcOpts []grpc.ServerOption
-
-	unary := cfg.unaryInterceptors
-	stream := cfg.streamInterceptors
-
-	// Inner-to-outer prepends so the final order matches the chain
-	// documented above: caller-supplied interceptors stay closest to
-	// the handler; deadline wraps them; metrics wraps deadline;
-	// logging wraps metrics; recovery is the outermost guard.
-	if !cfg.disableDefaultDL && cfg.defaultDeadline > 0 {
-		unary = append([]grpc.UnaryServerInterceptor{interceptor.DeadlineUnary(cfg.defaultDeadline)}, unary...)
-	}
-	if !cfg.disableDefaultDL {
-		streamDL := cfg.defaultDeadline
-		if cfg.streamDeadline != nil {
-			streamDL = *cfg.streamDeadline
-		}
-		if streamDL > 0 {
-			stream = append([]grpc.StreamServerInterceptor{interceptor.DeadlineStream(streamDL)}, stream...)
-		}
-	}
-	if !cfg.disableMetrics {
-		var metricsOpts []interceptor.MetricsOption
-		if cfg.metricsRegisterer != nil {
-			metricsOpts = append(metricsOpts, interceptor.WithRegisterer(cfg.metricsRegisterer))
-		}
-		metrics := interceptor.NewMetrics(metricsOpts...)
-		unary = append([]grpc.UnaryServerInterceptor{metrics.UnaryInterceptor()}, unary...)
-		stream = append([]grpc.StreamServerInterceptor{metrics.StreamInterceptor()}, stream...)
-	}
-	if !cfg.disableLogging {
-		logLogger := cfg.loggingLogger
-		if logLogger == nil {
-			logLogger = slog.Default()
-		}
-		unary = append([]grpc.UnaryServerInterceptor{interceptor.LoggingUnary(logLogger)}, unary...)
-		stream = append([]grpc.StreamServerInterceptor{interceptor.LoggingStream(logLogger)}, stream...)
-	}
-	if !cfg.disableRecovery {
-		recLogger := cfg.recoveryLogger
-		if recLogger == nil {
-			recLogger = slog.Default()
-		}
-		unary = append([]grpc.UnaryServerInterceptor{interceptor.RecoveryUnary(recLogger)}, unary...)
-		stream = append([]grpc.StreamServerInterceptor{interceptor.RecoveryStream(recLogger)}, stream...)
-	}
-
-	if cfg.maxServerStreams > 0 || cfg.streamIdleTimeout > 0 {
-		var limMetrics *interceptor.StreamLimitMetrics
-		if !cfg.disableMetrics {
-			var mopts []interceptor.MetricsOption
-			if cfg.metricsRegisterer != nil {
-				mopts = append(mopts, interceptor.WithRegisterer(cfg.metricsRegisterer))
-			}
-			limMetrics = interceptor.NewStreamLimitMetrics(mopts...)
-		}
-		if cfg.maxServerStreams > 0 {
-			stream = append([]grpc.StreamServerInterceptor{
-				interceptor.MaxConcurrentStreamsServer(cfg.maxServerStreams, limMetrics),
-			}, stream...)
-		}
-		if cfg.streamIdleTimeout > 0 {
-			stream = append([]grpc.StreamServerInterceptor{
-				interceptor.StreamIdleTimeout(cfg.streamIdleTimeout, limMetrics),
-			}, stream...)
-		}
-	}
-
-	if len(unary) > 0 {
-		grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(unary...))
-	}
-	if len(stream) > 0 {
-		grpcOpts = append(grpcOpts, grpc.ChainStreamInterceptor(stream...))
-	}
-
-	// Raw caller-supplied options must NOT silently undo kit-hardened
-	// defaults (max recv/send message size, keepalive params, header
-	// list size). grpc.NewServer applies options in slice order and
-	// later options win for non-additive setters, so we re-append the
-	// hardened set AFTER cfg.grpcOpts. Callers who genuinely need to
-	// override message size limits or keepalive policy should use the
-	// typed options (WithMaxRecvMsgSize, WithKeepaliveParams, …) which
-	// are baked into the same hardened set below and therefore win
-	// over any raw override (L083).
+	// Interceptors first. Raw caller-supplied options must NOT silently
+	// undo kit-hardened defaults (max recv/send message size, keepalive
+	// params, header list size). grpc.NewServer applies options in slice
+	// order and later options win for non-additive setters, so we
+	// re-append the hardened set AFTER cfg.grpcOpts. Callers who genuinely
+	// need to override message size limits or keepalive policy should use
+	// the typed options (WithMaxRecvMsgSize, WithKeepaliveParams, …) which
+	// are baked into the same hardened set below and therefore win over
+	// any raw override (L083).
+	grpcOpts := cfg.interceptors().serverOptions()
 	grpcOpts = append(grpcOpts, cfg.grpcOpts...)
-	if cfg.tlsConfig != nil {
-		floored, err := tlsclone.ConfigWithFloor(cfg.tlsConfig, tls.VersionTLS12)
-		if err != nil {
-			panic("grpcx: WithTLSConfig: " + err.Error())
-		}
-		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(floored)))
-	} else if !cfg.hasTransportCreds {
-		slog.Default().Warn("grpcx: NewServer built without transport credentials; serving plaintext unless a mesh terminates TLS. Use WithTLSConfig for encrypted transport")
-	}
+	grpcOpts = append(grpcOpts, cfg.transportCredentials()...)
 	grpcOpts = append(grpcOpts,
 		grpc.MaxRecvMsgSize(cfg.maxRecvMsgSize),
 		grpc.MaxSendMsgSize(cfg.maxSendMsgSize),
@@ -506,4 +421,121 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 		reflection.Register(srv)
 	}
 	return srv
+}
+
+// serverChain is a server's unary and stream interceptors, outermost first.
+type serverChain struct {
+	unary  []grpc.UnaryServerInterceptor
+	stream []grpc.StreamServerInterceptor
+}
+
+// wrapUnary puts i outside the unary interceptors so far.
+func (c *serverChain) wrapUnary(i grpc.UnaryServerInterceptor) {
+	c.unary = append([]grpc.UnaryServerInterceptor{i}, c.unary...)
+}
+
+// wrapStream puts i outside the stream interceptors so far.
+func (c *serverChain) wrapStream(i grpc.StreamServerInterceptor) {
+	c.stream = append([]grpc.StreamServerInterceptor{i}, c.stream...)
+}
+
+func (c *serverChain) serverOptions() []grpc.ServerOption {
+	var grpcOpts []grpc.ServerOption
+	if len(c.unary) > 0 {
+		grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(c.unary...))
+	}
+	if len(c.stream) > 0 {
+		grpcOpts = append(grpcOpts, grpc.ChainStreamInterceptor(c.stream...))
+	}
+	return grpcOpts
+}
+
+// interceptors builds the chain documented above, wrapping inner to
+// outer: caller-supplied interceptors stay closest to the handler;
+// deadline wraps them; metrics wraps deadline; logging wraps metrics;
+// recovery is the outermost guard, and the stream limits sit outside it.
+func (cfg *serverConfig) interceptors() *serverChain {
+	c := &serverChain{unary: cfg.unaryInterceptors, stream: cfg.streamInterceptors}
+	cfg.wrapDeadlines(c)
+	if !cfg.disableMetrics {
+		metrics := interceptor.NewMetrics(cfg.metricsOptions()...)
+		c.wrapUnary(metrics.UnaryInterceptor())
+		c.wrapStream(metrics.StreamInterceptor())
+	}
+	if !cfg.disableLogging {
+		logLogger := cfg.loggingLogger
+		if logLogger == nil {
+			logLogger = slog.Default()
+		}
+		c.wrapUnary(interceptor.LoggingUnary(logLogger))
+		c.wrapStream(interceptor.LoggingStream(logLogger))
+	}
+	if !cfg.disableRecovery {
+		recLogger := cfg.recoveryLogger
+		if recLogger == nil {
+			recLogger = slog.Default()
+		}
+		c.wrapUnary(interceptor.RecoveryUnary(recLogger))
+		c.wrapStream(interceptor.RecoveryStream(recLogger))
+	}
+	cfg.wrapStreamLimits(c)
+	return c
+}
+
+// wrapDeadlines adds the default deadlines; a stream deadline of its own
+// replaces the default for streams.
+func (cfg *serverConfig) wrapDeadlines(c *serverChain) {
+	if cfg.disableDefaultDL {
+		return
+	}
+	if cfg.defaultDeadline > 0 {
+		c.wrapUnary(interceptor.DeadlineUnary(cfg.defaultDeadline))
+	}
+	streamDL := cfg.defaultDeadline
+	if cfg.streamDeadline != nil {
+		streamDL = *cfg.streamDeadline
+	}
+	if streamDL > 0 {
+		c.wrapStream(interceptor.DeadlineStream(streamDL))
+	}
+}
+
+// wrapStreamLimits adds the concurrent-stream cap and the idle timeout.
+func (cfg *serverConfig) wrapStreamLimits(c *serverChain) {
+	if cfg.maxServerStreams <= 0 && cfg.streamIdleTimeout <= 0 {
+		return
+	}
+	var limMetrics *interceptor.StreamLimitMetrics
+	if !cfg.disableMetrics {
+		limMetrics = interceptor.NewStreamLimitMetrics(cfg.metricsOptions()...)
+	}
+	if cfg.maxServerStreams > 0 {
+		c.wrapStream(interceptor.MaxConcurrentStreamsServer(cfg.maxServerStreams, limMetrics))
+	}
+	if cfg.streamIdleTimeout > 0 {
+		c.wrapStream(interceptor.StreamIdleTimeout(cfg.streamIdleTimeout, limMetrics))
+	}
+}
+
+func (cfg *serverConfig) metricsOptions() []interceptor.MetricsOption {
+	if cfg.metricsRegisterer == nil {
+		return nil
+	}
+	return []interceptor.MetricsOption{interceptor.WithRegisterer(cfg.metricsRegisterer)}
+}
+
+// transportCredentials floors the configured TLS. Without TLS or other
+// transport credentials it warns that the server serves plaintext.
+func (cfg *serverConfig) transportCredentials() []grpc.ServerOption {
+	if cfg.tlsConfig != nil {
+		floored, err := tlsclone.ConfigWithFloor(cfg.tlsConfig, tls.VersionTLS12)
+		if err != nil {
+			panic("grpcx: WithTLSConfig: " + err.Error())
+		}
+		return []grpc.ServerOption{grpc.Creds(credentials.NewTLS(floored))}
+	}
+	if !cfg.hasTransportCreds {
+		slog.Default().Warn("grpcx: NewServer built without transport credentials; serving plaintext unless a mesh terminates TLS. Use WithTLSConfig for encrypted transport")
+	}
+	return nil
 }

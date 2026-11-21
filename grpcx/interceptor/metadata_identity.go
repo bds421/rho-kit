@@ -58,27 +58,30 @@ func AppendOutgoingIdentity(ctx context.Context) context.Context {
 			md.Set(MetadataLegacyUserKey, subj)
 		}
 	}
-	if actor := Actor(ctx); actor != "" && len(md.Get(MetadataActorKey)) == 0 {
-		if isSafeOutgoingIdentity(actor) {
-			md.Set(MetadataActorKey, actor)
-		}
-	}
-	if kind := ActorKindFromContext(ctx); kind != "" && len(md.Get(MetadataActorKindKey)) == 0 {
-		if isSafeOutgoingIdentity(string(kind)) {
-			md.Set(MetadataActorKindKey, string(kind))
-		}
-	}
-	if perms := UserPermissions(ctx); len(perms) > 0 && len(md.Get(MetadataPermissionsKey)) == 0 {
-		if safe := filterSafeEntitlements(perms); len(safe) > 0 {
-			md.Set(MetadataPermissionsKey, safe...)
-		}
-	}
-	if scopes := UserScopes(ctx); scopes != "" && len(md.Get(MetadataScopesKey)) == 0 {
-		if safe := filterSafeEntitlements(strings.Fields(scopes)); len(safe) > 0 {
-			md.Set(MetadataScopesKey, safe...)
-		}
-	}
+	setSafeIdentityIfAbsent(md, MetadataActorKey, Actor(ctx))
+	setSafeIdentityIfAbsent(md, MetadataActorKindKey, string(ActorKindFromContext(ctx)))
+	setSafeEntitlementsIfAbsent(md, MetadataPermissionsKey, UserPermissions(ctx))
+	setSafeEntitlementsIfAbsent(md, MetadataScopesKey, strings.Fields(UserScopes(ctx)))
 	return metadata.NewOutgoingContext(ctx, md)
+}
+
+// setSafeIdentityIfAbsent sets key to a safe, non-empty value unless md
+// already carries it.
+func setSafeIdentityIfAbsent(md metadata.MD, key, value string) {
+	if value != "" && len(md.Get(key)) == 0 && isSafeOutgoingIdentity(value) {
+		md.Set(key, value)
+	}
+}
+
+// setSafeEntitlementsIfAbsent sets key to the safe ones of vals unless md
+// already carries it.
+func setSafeEntitlementsIfAbsent(md metadata.MD, key string, vals []string) {
+	if len(vals) == 0 || len(md.Get(key)) > 0 {
+		return
+	}
+	if safe := filterSafeEntitlements(vals); len(safe) > 0 {
+		md.Set(key, safe...)
+	}
 }
 
 // maxOutgoingIdentityBytes bounds actor/kind metadata values so a hostile
@@ -144,35 +147,41 @@ func AdoptIncomingIdentity(ctx context.Context) context.Context {
 		return ctx
 	}
 	if Subject(ctx) == "" {
-		if vals := md.Get(MetadataSubjectKey); len(vals) == 1 && isSafeOutgoingIdentity(vals[0]) {
-			ctx = subjectKey.Set(ctx, grpcSubject(vals[0]))
-		} else if vals := md.Get(MetadataLegacyUserKey); len(vals) == 1 && isSafeOutgoingIdentity(vals[0]) {
-			ctx = subjectKey.Set(ctx, grpcSubject(vals[0]))
+		if subj, ok := safeSingletonMetadata(md, MetadataSubjectKey); ok {
+			ctx = subjectKey.Set(ctx, grpcSubject(subj))
+		} else if subj, ok := safeSingletonMetadata(md, MetadataLegacyUserKey); ok {
+			ctx = subjectKey.Set(ctx, grpcSubject(subj))
 		}
 	}
 	if Actor(ctx) == "" {
-		if vals := md.Get(MetadataActorKey); len(vals) == 1 && isSafeOutgoingIdentity(vals[0]) {
-			ctx = actorKey.Set(ctx, grpcActor(vals[0]))
+		if actor, ok := safeSingletonMetadata(md, MetadataActorKey); ok {
+			ctx = actorKey.Set(ctx, grpcActor(actor))
 		}
 	}
 	if ActorKindFromContext(ctx) == "" {
-		if vals := md.Get(MetadataActorKindKey); len(vals) == 1 && isSafeOutgoingIdentity(vals[0]) {
-			ctx = actorKindKey.Set(ctx, ActorKind(vals[0]))
+		if kind, ok := safeSingletonMetadata(md, MetadataActorKindKey); ok {
+			ctx = actorKindKey.Set(ctx, ActorKind(kind))
 		}
 	}
 	if existing, ok := permissionsKey.Get(ctx); !ok || len(existing) == 0 {
-		if vals := md.Get(MetadataPermissionsKey); len(vals) > 0 {
-			if safe := filterSafeEntitlements(vals); len(safe) > 0 {
-				ctx = permissionsKey.Set(ctx, grpcPermissions(safe))
-			}
+		if safe := filterSafeEntitlements(md.Get(MetadataPermissionsKey)); len(safe) > 0 {
+			ctx = permissionsKey.Set(ctx, grpcPermissions(safe))
 		}
 	}
 	if existing, ok := scopesKey.Get(ctx); !ok || existing == "" {
-		if vals := md.Get(MetadataScopesKey); len(vals) > 0 {
-			if safe := filterSafeEntitlements(vals); len(safe) > 0 {
-				ctx = scopesKey.Set(ctx, grpcScopes(strings.Join(safe, " ")))
-			}
+		if safe := filterSafeEntitlements(md.Get(MetadataScopesKey)); len(safe) > 0 {
+			ctx = scopesKey.Set(ctx, grpcScopes(strings.Join(safe, " ")))
 		}
 	}
 	return ctx
+}
+
+// safeSingletonMetadata returns key's value when md carries exactly one
+// and it is safe.
+func safeSingletonMetadata(md metadata.MD, key string) (string, bool) {
+	vals := md.Get(key)
+	if len(vals) == 1 && isSafeOutgoingIdentity(vals[0]) {
+		return vals[0], true
+	}
+	return "", false
 }
