@@ -34,8 +34,20 @@ linters:
       - linters: [gosec]
         text: G115
         source: 'binary\.BigEndian\.(Append|Put)Uint64\([^,]+, uint64\('
+      # A SHA-256 prefix becomes an advisory-lock id as its bits.
+      - linters: [gosec]
+        text: G115
+        source: 'int64\(binary\.BigEndian\.Uint64\('
+      # The background context's cancel is kept in cancelBg and called by Close.
+      - path: ^data/cache/compute\.go$
+        linters: [gosec]
+        text: G118
+      # The kit primitive "secret" maps to its import path, not a credential.
+      - path: ^cmd/kit-doctor/rules/kit_primitive_collision\.go$
+        linters: [gosec]
+        text: G101
       # Jitter spreads retries and ticks over time; it guards nothing.
-      - path: ^runtime/batchworker/batchworker\.go$
+      - path: ^(runtime/batchworker/batchworker|data/lock/redislock/internal/redsyncutil/util)\.go$
         linters: [gosec]
         text: G404
       # Cloud KMS returns a CRC32C, a uint32, in an int64 wrapper.
@@ -55,7 +67,7 @@ linters:
       # the files they write are source files, readable by everyone.
       - path: ^cmd/
         linters: [gosec]
-        text: G(301|302|306)
+        text: G(122|301|302|306)
       # The table name is checked against a safe identifier pattern when it is
       # set; values are always bound parameters.
       - path: ^data/(cron|idempotency|saga)/pgstore/store\.go$
