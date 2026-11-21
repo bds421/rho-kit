@@ -14,7 +14,7 @@ go 1.26.8
 require (
 	github.com/bds421/rho-kit/authz/v2 v2.49.0
 	github.com/bds421/rho-kit/core/v2 v2.49.0
-	github.com/openfga/go-sdk v0.8.3
+	github.com/openfga/go-sdk v0.8.4
 )
 
 require (
@@ -28,4 +28,5 @@ require (
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 )
