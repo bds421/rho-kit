@@ -113,28 +113,37 @@ func ValidateManifest(m Manifest) error {
 			return fmt.Errorf("contracts: duplicate artifact id %q", a.ID)
 		}
 		seen[a.ID] = struct{}{}
-		if a.Kind != KindOpenAPI && a.Kind != KindEventJSONSchema {
-			return fmt.Errorf("contracts: artifact %s has unsupported kind %q", a.ID, a.Kind)
+		if err := validateArtifact(a); err != nil {
+			return err
 		}
-		if a.Kind == KindEventJSONSchema && a.SchemaVersion == 0 {
-			return fmt.Errorf("contracts: event artifact %s requires a non-zero schema_version", a.ID)
+	}
+	return nil
+}
+
+// validateArtifact checks the kind, version, compatibility mode, path and
+// waivers of an artifact that has an id, owner and path.
+func validateArtifact(a Artifact) error {
+	if a.Kind != KindOpenAPI && a.Kind != KindEventJSONSchema {
+		return fmt.Errorf("contracts: artifact %s has unsupported kind %q", a.ID, a.Kind)
+	}
+	if a.Kind == KindEventJSONSchema && a.SchemaVersion == 0 {
+		return fmt.Errorf("contracts: event artifact %s requires a non-zero schema_version", a.ID)
+	}
+	if !semver.MatchString(a.Version) {
+		return fmt.Errorf("contracts: artifact %s has invalid semantic version %q", a.ID, a.Version)
+	}
+	if a.Compatibility.Mode != "backward" {
+		return fmt.Errorf("contracts: artifact %s compatibility mode must be backward", a.ID)
+	}
+	if filepath.IsAbs(a.Path) || strings.Contains(filepath.ToSlash(a.Path), "../") {
+		return fmt.Errorf("contracts: artifact %s path must be relative and contained", a.ID)
+	}
+	for _, w := range a.Waivers {
+		if w.Code == "" || w.Reason == "" || w.ExpiresAt == "" {
+			return fmt.Errorf("contracts: artifact %s waiver requires code, reason, and expires_at", a.ID)
 		}
-		if !semver.MatchString(a.Version) {
-			return fmt.Errorf("contracts: artifact %s has invalid semantic version %q", a.ID, a.Version)
-		}
-		if a.Compatibility.Mode != "backward" {
-			return fmt.Errorf("contracts: artifact %s compatibility mode must be backward", a.ID)
-		}
-		if filepath.IsAbs(a.Path) || strings.Contains(filepath.ToSlash(a.Path), "../") {
-			return fmt.Errorf("contracts: artifact %s path must be relative and contained", a.ID)
-		}
-		for _, w := range a.Waivers {
-			if w.Code == "" || w.Reason == "" || w.ExpiresAt == "" {
-				return fmt.Errorf("contracts: artifact %s waiver requires code, reason, and expires_at", a.ID)
-			}
-			if _, err := time.Parse(time.DateOnly, w.ExpiresAt); err != nil {
-				return fmt.Errorf("contracts: artifact %s waiver expiry: %w", a.ID, err)
-			}
+		if _, err := time.Parse(time.DateOnly, w.ExpiresAt); err != nil {
+			return fmt.Errorf("contracts: artifact %s waiver expiry: %w", a.ID, err)
 		}
 	}
 	return nil
@@ -262,22 +271,12 @@ func validateSupportedSchema(schema map[string]any, path string) error {
 		if !supportedSchemaKeys[k] {
 			return fmt.Errorf("unsupported JSON Schema keyword %q at %s", k, path)
 		}
-		if k == "properties" {
-			properties, ok := v.(map[string]any)
-			if !ok {
-				return fmt.Errorf("properties at %s must be an object", path)
+		switch k {
+		case "properties":
+			if err := validateSupportedProperties(v, path); err != nil {
+				return err
 			}
-			for name, raw := range properties {
-				child, ok := raw.(map[string]any)
-				if !ok {
-					return fmt.Errorf("property %q at %s must be an object schema", name, path)
-				}
-				if err := validateSupportedSchema(child, path+"/properties/"+name); err != nil {
-					return err
-				}
-			}
-		}
-		if k == "items" {
+		case "items":
 			child, ok := v.(map[string]any)
 			if !ok {
 				return fmt.Errorf("items at %s must be an object schema", path)
@@ -285,6 +284,25 @@ func validateSupportedSchema(schema map[string]any, path string) error {
 			if err := validateSupportedSchema(child, path+"/items"); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// validateSupportedProperties checks the "properties" value at path: an
+// object of supported object schemas.
+func validateSupportedProperties(v any, path string) error {
+	properties, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("properties at %s must be an object", path)
+	}
+	for name, raw := range properties {
+		child, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("property %q at %s must be an object schema", name, path)
+		}
+		if err := validateSupportedSchema(child, path+"/properties/"+name); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -156,6 +156,37 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 		limit = defaultLimit
 	}
 
+	sql, args := listQuery(q, limit, cursorTime, cursorID)
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, "", redact.WrapError("approval/postgres: list", err)
+	}
+	defer rows.Close()
+
+	out := make([]approval.Request, 0, limit)
+	for rows.Next() {
+		req, scanErr := scanRequest(rows)
+		if scanErr != nil {
+			return nil, "", redact.WrapError("approval/postgres: list scan", scanErr)
+		}
+		out = append(out, req)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", redact.WrapError("approval/postgres: list iterate", err)
+	}
+	var next string
+	if len(out) > limit {
+		last := out[limit-1]
+		next = s.cursorSigner.Encode(last.CreatedAt, last.ID)
+		out = out[:limit]
+	}
+	return out, next, nil
+}
+
+// listQuery builds List's SELECT over q's filters, after the cursor
+// position when q has one. It fetches limit+1 rows so List can tell
+// whether another page exists without issuing a second COUNT(*) query.
+func listQuery(q approval.Query, limit int, cursorTime time.Time, cursorID string) (string, []any) {
 	args := make([]any, 0, 7)
 	clauses := make([]string, 0, 7)
 	add := func(expr string, val any) {
@@ -196,35 +227,9 @@ FROM approval_requests`
 	if len(clauses) > 0 {
 		sql += " WHERE " + joinAnd(clauses)
 	}
-	// Fetch limit+1 rows so we can tell whether another page exists
-	// without issuing a second COUNT(*) query.
 	args = append(args, limit+1)
 	sql += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args))
-
-	rows, err := s.pool.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, "", redact.WrapError("approval/postgres: list", err)
-	}
-	defer rows.Close()
-
-	out := make([]approval.Request, 0, limit)
-	for rows.Next() {
-		req, scanErr := scanRequest(rows)
-		if scanErr != nil {
-			return nil, "", redact.WrapError("approval/postgres: list scan", scanErr)
-		}
-		out = append(out, req)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, "", redact.WrapError("approval/postgres: list iterate", err)
-	}
-	var next string
-	if len(out) > limit {
-		last := out[limit-1]
-		next = s.cursorSigner.Encode(last.CreatedAt, last.ID)
-		out = out[:limit]
-	}
-	return out, next, nil
+	return sql, args
 }
 
 // Decide records an approver's decision atomically.
@@ -296,25 +301,9 @@ func (s *Store) decide(ctx context.Context, id, tenantID, decidedBy, reason stri
 	// Commit or the preceding statement.
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	selectForUpdate := `
-SELECT id, tenant_id, actor, action, resource, payload, state, decided_by,
-       decided_at, reason, created_at, expires_at
-FROM approval_requests
-WHERE id = $1`
-	args := []any{id}
-	if tenantID != "" {
-		selectForUpdate += ` AND tenant_id = $2`
-		args = append(args, tenantID)
-	}
-	selectForUpdate += `
-FOR UPDATE`
-	row := tx.QueryRow(ctx, selectForUpdate, args...)
-	r, err := scanRequest(row)
+	r, err := lockRequest(ctx, tx, id, tenantID, "approval/postgres: decide select")
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return approval.Request{}, approval.ErrNotFound
-		}
-		return approval.Request{}, redact.WrapError("approval/postgres: decide select", err)
+		return approval.Request{}, err
 	}
 
 	// The value returned from this call must be byte-for-byte reproducible
@@ -326,19 +315,7 @@ FOR UPDATE`
 	// ErrInvalidTransition to the caller. We commit the state change and
 	// stash the error so the next Decide cannot re-flip the row.
 	if r.State == approval.StatePending && !r.ExpiresAt.IsZero() && !now.Before(r.ExpiresAt) {
-		expireSQL := `UPDATE approval_requests SET state = $1, decided_at = $2 WHERE id = $3`
-		expireArgs := []any{string(approval.StateExpired), now, r.ID}
-		if tenantID != "" {
-			expireSQL += ` AND tenant_id = $4`
-			expireArgs = append(expireArgs, tenantID)
-		}
-		if _, err := tx.Exec(ctx, expireSQL, expireArgs...); err != nil {
-			return approval.Request{}, redact.WrapError("approval/postgres: expire", err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return approval.Request{}, redact.WrapError("approval/postgres: commit", err)
-		}
-		return approval.Request{}, fmt.Errorf("%w: request expired", approval.ErrInvalidTransition)
+		return approval.Request{}, expireRequest(ctx, tx, r.ID, tenantID, now)
 	}
 
 	if r.State == target {
@@ -356,23 +333,32 @@ FOR UPDATE`
 		return approval.Request{}, fmt.Errorf("%w: cannot flip decision once recorded", approval.ErrInvalidTransition)
 	}
 
-	decideSQL := `UPDATE approval_requests SET state = $1, decided_by = $2, reason = $3, decided_at = $4 WHERE id = $5`
-	decideArgs := []any{string(target), decidedBy, reason, now, r.ID}
-	if tenantID != "" {
-		decideSQL += ` AND tenant_id = $6`
-		decideArgs = append(decideArgs, tenantID)
-	}
-	if _, err := tx.Exec(ctx, decideSQL, decideArgs...); err != nil {
-		return approval.Request{}, redact.WrapError("approval/postgres: decide update", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return approval.Request{}, redact.WrapError("approval/postgres: commit", err)
+	if err := recordDecision(ctx, tx, r.ID, tenantID, target, decidedBy, reason, now); err != nil {
+		return approval.Request{}, err
 	}
 	r.State = target
 	r.DecidedBy = decidedBy
 	r.Reason = reason
 	r.DecidedAt = now
 	return r, nil
+}
+
+// recordDecision commits request id's move to target, decided by
+// decidedBy at now.
+func recordDecision(ctx context.Context, tx pgx.Tx, id, tenantID string, target approval.State, decidedBy, reason string, now time.Time) error {
+	decideSQL := `UPDATE approval_requests SET state = $1, decided_by = $2, reason = $3, decided_at = $4 WHERE id = $5`
+	decideArgs := []any{string(target), decidedBy, reason, now, id}
+	if tenantID != "" {
+		decideSQL += ` AND tenant_id = $6`
+		decideArgs = append(decideArgs, tenantID)
+	}
+	if _, err := tx.Exec(ctx, decideSQL, decideArgs...); err != nil {
+		return redact.WrapError("approval/postgres: decide update", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return redact.WrapError("approval/postgres: commit", err)
+	}
+	return nil
 }
 
 // MarkExecuted moves an approved request to executed.
@@ -396,27 +382,10 @@ func (s *Store) markExecuted(ctx context.Context, id, tenantID string) (approval
 	// Commit or the preceding statement.
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	selectForUpdate := `
-SELECT id, tenant_id, actor, action, resource, payload, state, decided_by,
-       decided_at, reason, created_at, expires_at
-FROM approval_requests
-WHERE id = $1`
-	args := []any{id}
-	if tenantID != "" {
-		selectForUpdate += ` AND tenant_id = $2`
-		args = append(args, tenantID)
-	}
-	selectForUpdate += `
-FOR UPDATE`
-	row := tx.QueryRow(ctx, selectForUpdate, args...)
-	r, err := scanRequest(row)
+	r, err := lockRequest(ctx, tx, id, tenantID, "approval/postgres: mark executed select")
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return approval.Request{}, approval.ErrNotFound
-		}
-		return approval.Request{}, redact.WrapError("approval/postgres: mark executed select", err)
+		return approval.Request{}, err
 	}
-
 	if r.State == approval.StateExecuted {
 		if err := tx.Commit(ctx); err != nil {
 			return approval.Request{}, redact.WrapError("approval/postgres: commit", err)
@@ -441,6 +410,50 @@ FOR UPDATE`
 	}
 	r.State = approval.StateExecuted
 	return r, nil
+}
+
+// lockRequest reads request id with SELECT FOR UPDATE inside tx, scoped to
+// tenantID when it is set. op names the step in a read error.
+func lockRequest(ctx context.Context, tx pgx.Tx, id, tenantID, op string) (approval.Request, error) {
+	selectForUpdate := `
+SELECT id, tenant_id, actor, action, resource, payload, state, decided_by,
+       decided_at, reason, created_at, expires_at
+FROM approval_requests
+WHERE id = $1`
+	args := []any{id}
+	if tenantID != "" {
+		selectForUpdate += ` AND tenant_id = $2`
+		args = append(args, tenantID)
+	}
+	selectForUpdate += `
+FOR UPDATE`
+	row := tx.QueryRow(ctx, selectForUpdate, args...)
+	r, err := scanRequest(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return approval.Request{}, approval.ErrNotFound
+		}
+		return approval.Request{}, redact.WrapError(op, err)
+	}
+	return r, nil
+}
+
+// expireRequest commits the flip of a past-deadline pending request to
+// expired and returns the ErrInvalidTransition its decision gets.
+func expireRequest(ctx context.Context, tx pgx.Tx, id, tenantID string, now time.Time) error {
+	expireSQL := `UPDATE approval_requests SET state = $1, decided_at = $2 WHERE id = $3`
+	expireArgs := []any{string(approval.StateExpired), now, id}
+	if tenantID != "" {
+		expireSQL += ` AND tenant_id = $4`
+		expireArgs = append(expireArgs, tenantID)
+	}
+	if _, err := tx.Exec(ctx, expireSQL, expireArgs...); err != nil {
+		return redact.WrapError("approval/postgres: expire", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return redact.WrapError("approval/postgres: commit", err)
+	}
+	return fmt.Errorf("%w: request expired", approval.ErrInvalidTransition)
 }
 
 type scannable interface {

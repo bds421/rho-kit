@@ -362,6 +362,24 @@ func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Messa
 	// after the first failure may still have succeeded on the server; count
 	// each cmd.Err()==nil so the metric observes the true number of writes
 	// in exactly the partial-failure scenario it exists to monitor.
+	ids, succeeded, resultErr := batchResults(cmds)
+	if succeeded > 0 {
+		p.metrics.messagesProduced.WithLabelValues(streamMetricLabel(stream)).Add(float64(succeeded))
+	}
+
+	if resultErr != nil {
+		return nil, resultErr
+	}
+	if execErr != nil {
+		return nil, execErr
+	}
+
+	return ids, nil
+}
+
+// batchResults collects the IDs of a pipeline's XADDs, the number that
+// succeeded and the first command's error.
+func batchResults(cmds []*goredis.StringCmd) ([]string, int, error) {
 	ids := make([]string, len(cmds))
 	var succeeded int
 	var firstErr error
@@ -378,19 +396,10 @@ func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Messa
 		ids[i] = id
 		succeeded++
 	}
-
-	if succeeded > 0 {
-		p.metrics.messagesProduced.WithLabelValues(streamMetricLabel(stream)).Add(float64(succeeded))
-	}
-
 	if firstErr != nil {
-		return nil, redact.WrapError(fmt.Sprintf("xadd result [%d]", firstErrIdx), firstErr)
+		return ids, succeeded, redact.WrapError(fmt.Sprintf("xadd result [%d]", firstErrIdx), firstErr)
 	}
-	if execErr != nil {
-		return nil, execErr
-	}
-
-	return ids, nil
+	return ids, succeeded, nil
 }
 
 // buildXAddArgs prepares a message for XADD, filling in defaults for

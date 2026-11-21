@@ -79,28 +79,40 @@ func readReport(r io.Reader, target string, im image) ([]finding, error) {
 		for _, l := range m.Artifact.Locations {
 			f.Paths = append(f.Paths, l.Path)
 		}
-		for _, related := range m.RelatedVulnerabilities {
-			f.Aliases = append(f.Aliases, related.ID)
-			if rank(related.Severity) > rank(f.Severity) {
-				f.Severity = related.Severity
-			}
-			f.Exploited = f.Exploited || len(related.KnownExploited) > 0
-		}
+		f.addRelated(m.RelatedVulnerabilities)
 		if rank(f.Severity) == 0 {
 			f.Severity = "unknown"
 		}
-		f.Fixed = v.Fix.State == "fixed"
-		if len(v.Fix.Versions) > 0 {
-			f.FixedIn = v.Fix.Versions[0]
-		}
-		for _, a := range v.Fix.Available {
-			if at, err := time.Parse(time.DateOnly, a.Date); err == nil && (f.FixedSince.IsZero() || at.Before(f.FixedSince)) {
-				f.FixedSince = at
-			}
-		}
+		f.setFix(v)
 		out = append(out, f)
 	}
 	return out, nil
+}
+
+// addRelated adds the related vulnerabilities as aliases; the finding
+// takes the highest severity and is exploited when any of them is.
+func (f *finding) addRelated(related []vulnerability) {
+	for _, r := range related {
+		f.Aliases = append(f.Aliases, r.ID)
+		if rank(r.Severity) > rank(f.Severity) {
+			f.Severity = r.Severity
+		}
+		f.Exploited = f.Exploited || len(r.KnownExploited) > 0
+	}
+}
+
+// setFix records v's fix: whether there is one, the first fixed version
+// and when the earliest fix was published.
+func (f *finding) setFix(v vulnerability) {
+	f.Fixed = v.Fix.State == "fixed"
+	if len(v.Fix.Versions) > 0 {
+		f.FixedIn = v.Fix.Versions[0]
+	}
+	for _, a := range v.Fix.Available {
+		if at, err := time.Parse(time.DateOnly, a.Date); err == nil && (f.FixedSince.IsZero() || at.Before(f.FixedSince)) {
+			f.FixedSince = at
+		}
+	}
 }
 
 // scannedImage is the image a registry scan names by digest

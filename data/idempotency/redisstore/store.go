@@ -322,10 +322,7 @@ func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*ide
 		if errors.Is(err, goredis.Nil) {
 			return nil, false, nil
 		}
-		if translated := translateUnavailable(err); translated != err {
-			return nil, false, translated
-		}
-		return nil, false, redact.WrapError("idempotencystore: get", err)
+		return nil, false, storeError("idempotencystore: get", err)
 	}
 	if raw == nil {
 		return nil, false, nil
@@ -408,10 +405,7 @@ func (s *Store) doTryLock(ctx context.Context, key string, fingerprint []byte, t
 
 	ok, err := s.client.SetNX(ctx, s.k(key), value, ttlRoundUp(ttl)).Result()
 	if err != nil {
-		if translated := translateUnavailable(err); translated != err {
-			return "", false, false, translated
-		}
-		return "", false, false, redact.WrapError("idempotencystore: lock", err)
+		return "", false, false, storeError("idempotencystore: lock", err)
 	}
 	if ok {
 		return token, false, true, nil
@@ -423,10 +417,7 @@ func (s *Store) doTryLock(ctx context.Context, key string, fingerprint []byte, t
 	// cannot OOM the lock-inspection path.
 	redisKey := s.k(key)
 	if sz, slErr := s.client.StrLen(ctx, redisKey).Result(); slErr != nil {
-		if translated := translateUnavailable(slErr); translated != slErr {
-			return "", false, false, translated
-		}
-		return "", false, false, redact.WrapError("idempotencystore: inspect strlen", slErr)
+		return "", false, false, storeError("idempotencystore: inspect strlen", slErr)
 	} else if sz > maxStoredEntryBytes {
 		return "", false, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
 	}
@@ -436,37 +427,32 @@ func (s *Store) doTryLock(ctx context.Context, key string, fingerprint []byte, t
 			// Race: TTL expired between SETNX and GET. Caller will retry.
 			return "", false, false, nil
 		}
-		if translated := translateUnavailable(err); translated != err {
-			return "", false, false, translated
-		}
-		return "", false, false, redact.WrapError("idempotencystore: inspect", err)
+		return "", false, false, storeError("idempotencystore: inspect", err)
 	}
 	if len(existing) > maxStoredEntryBytes {
 		return "", false, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
 	}
 
+	return "", fingerprintConflicts(existing, fingerprint), false, nil
+}
+
+// fingerprintConflicts reports whether the existing slot value, a lock or
+// a cached response, carries a fingerprint other than fingerprint. An
+// unreadable value or a missing fingerprint is no conflict.
+func fingerprintConflicts(existing, fingerprint []byte) bool {
 	// Existing slot is a lock — compare fingerprints from the lock value.
 	if strings.HasPrefix(string(existing), lockMarker) {
 		_, fp, ok := decodeLockValue(string(existing))
-		if !ok {
-			return "", false, false, nil
-		}
-		if fingerprint != nil && fp != nil && !bytes.Equal(fp, fingerprint) {
-			return "", true, false, nil
-		}
-		return "", false, false, nil
+		return ok && fingerprint != nil && fp != nil && !bytes.Equal(fp, fingerprint)
 	}
 
 	// Existing slot is a cached response — compare fingerprints from the
 	// envelope.
 	var env envelope
 	if err := json.Unmarshal(existing, &env); err != nil {
-		return "", false, false, nil
+		return false
 	}
-	if fingerprint != nil && env.Fingerprint != nil && !bytes.Equal(env.Fingerprint, fingerprint) {
-		return "", true, false, nil
-	}
-	return "", false, false, nil
+	return fingerprint != nil && env.Fingerprint != nil && !bytes.Equal(env.Fingerprint, fingerprint)
 }
 
 // Set replaces the lock value with the response envelope, atomically
@@ -507,10 +493,7 @@ func (s *Store) doSet(ctx context.Context, key, token string, resp idempotency.C
 		maxStoredEntryBytes,
 	).Text()
 	if err != nil {
-		if translated := translateUnavailable(err); translated != err {
-			return translated
-		}
-		return redact.WrapError("idempotencystore: set", err)
+		return storeError("idempotencystore: set", err)
 	}
 	switch result {
 	case "OK":
@@ -542,10 +525,7 @@ func (s *Store) doUnlock(ctx context.Context, key, token string) error {
 	// One RTT: Lua size-checks, parses lock:token:fp, and DELs on token match.
 	// Token mismatch / missing key / already-a-response are all no-ops.
 	if _, err := unlockIfTokenScript.Run(ctx, s.client, []string{s.k(key)}, token, maxStoredEntryBytes).Result(); err != nil && !errors.Is(err, goredis.Nil) {
-		if translated := translateUnavailable(err); translated != err {
-			return translated
-		}
-		return redact.WrapError("idempotencystore: unlock", err)
+		return storeError("idempotencystore: unlock", err)
 	}
 	return nil
 }

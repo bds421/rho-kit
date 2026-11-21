@@ -139,21 +139,8 @@ func cmdPublish(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "Error preparing migrations: %v\n", err)
 		return 1
 	}
-
-	for _, drifted := range plan.drifted {
-		writef(
-			stderr,
-			"  drift: %s (from %s) - on-disk file differs from kit version; not overwritten\n",
-			drifted.filename,
-			drifted.component,
-		)
-	}
 	if len(plan.drifted) > 0 {
-		writef(
-			stderr,
-			"%d migration(s) have drifted from the kit version; refusing to publish new migrations\n",
-			len(plan.drifted),
-		)
+		reportDrift(stderr, plan.drifted)
 		return 2
 	}
 
@@ -178,6 +165,24 @@ func cmdPublish(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// reportDrift tells why publish refuses: every drifted migration, then
+// their count.
+func reportDrift(stderr io.Writer, drifted []migrationFile) {
+	for _, m := range drifted {
+		writef(
+			stderr,
+			"  drift: %s (from %s) - on-disk file differs from kit version; not overwritten\n",
+			m.filename,
+			m.component,
+		)
+	}
+	writef(
+		stderr,
+		"%d migration(s) have drifted from the kit version; refusing to publish new migrations\n",
+		len(drifted),
+	)
+}
+
 // cmdCheck reports any kit migration whose on-disk copy has diverged
 // from the embedded version, without writing anything. Exits 0 when
 // every kit migration is in sync (or absent), 2 when drift is detected.
@@ -194,63 +199,29 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "Error preparing directory: %v\n", err)
 		return 1
 	}
-	// A drift gate aimed at a directory that does not exist (e.g. a
-	// typo'd path in CI) would otherwise read every migration as absent,
-	// count zero, and print "OK: 0 migration(s) in sync" — a silent pass.
-	// Treat a missing target directory as an error so the gate fails loud.
-	if info, err := os.Stat(targetDir); err != nil {
-		if os.IsNotExist(err) {
-			writef(stderr, "Error: target directory does not exist\n")
-			return 1
-		}
-		writef(stderr, "Error reading target directory: %v\n", err)
-		return 1
-	} else if !info.IsDir() {
-		writef(stderr, "Error: target is not a directory\n")
+	if !requireTargetDir(stderr, targetDir) {
 		return 1
 	}
 
 	drifted := 0
 	checked := 0
-
 	for _, entry := range registryEntries(filterName) {
 		files, err := listMigrations(entry.fsys)
 		if err != nil {
 			writef(stderr, "Error reading %s migrations: %v\n", entry.name, err)
 			return 1
 		}
-
 		for _, filename := range files {
-			targetPath, err := migrationTargetPath(targetDir, filename)
+			state, err := migrationState(targetDir, entry, filename)
 			if err != nil {
-				writef(stderr, "Error resolving %s: %v\n", filename, err)
+				writef(stderr, "Error %v\n", err)
 				return 1
 			}
-			if err := rejectSymlinkPathComponents(targetDir, filepath.Dir(targetPath)); err != nil {
-				writef(stderr, "Error reading %s: %v\n", filename, err)
-				return 1
+			if state == migrationAbsent {
+				continue
 			}
-			if err := rejectSymlinkTarget(targetPath); err != nil {
-				writef(stderr, "Error reading %s: %v\n", filename, err)
-				return 1
-			}
-			existing, err := os.ReadFile(targetPath)
-			if err != nil {
-				if os.IsNotExist(err) {
-					continue
-				}
-				writef(stderr, "Error reading %s\n", filename)
-				return 1
-			}
-
-			data, err := fs.ReadFile(entry.fsys, "migrations/"+filename)
-			if err != nil {
-				writef(stderr, "Error reading embedded %s: %v\n", filename, err)
-				return 1
-			}
-
 			checked++
-			if !bytes.Equal(existing, data) {
+			if state == migrationDrifted {
 				writef(stdout, "  drift: %s (from %s)\n", filename, entry.name)
 				drifted++
 			}
@@ -263,6 +234,67 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 	}
 	writef(stdout, "OK: %d migration(s) in sync with kit\n", checked)
 	return 0
+}
+
+// requireTargetDir checks that targetDir is an existing directory. A
+// drift gate aimed at a directory that does not exist (e.g. a typo'd path
+// in CI) would otherwise read every migration as absent, count zero, and
+// print "OK: 0 migration(s) in sync" — a silent pass. It reports why to
+// stderr and returns false.
+func requireTargetDir(stderr io.Writer, targetDir string) bool {
+	info, err := os.Stat(targetDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writef(stderr, "Error: target directory does not exist\n")
+			return false
+		}
+		writef(stderr, "Error reading target directory: %v\n", err)
+		return false
+	}
+	if !info.IsDir() {
+		writef(stderr, "Error: target is not a directory\n")
+		return false
+	}
+	return true
+}
+
+// migrationStatus is how an on-disk migration compares to the kit's.
+type migrationStatus int
+
+const (
+	migrationAbsent migrationStatus = iota
+	migrationInSync
+	migrationDrifted
+)
+
+// migrationState compares the on-disk copy of the kit migration filename
+// in targetDir with the embedded one.
+func migrationState(targetDir string, entry registryEntry, filename string) (migrationStatus, error) {
+	targetPath, err := migrationTargetPath(targetDir, filename)
+	if err != nil {
+		return 0, fmt.Errorf("resolving %s: %w", filename, err)
+	}
+	if err := rejectSymlinkPathComponents(targetDir, filepath.Dir(targetPath)); err != nil {
+		return 0, fmt.Errorf("reading %s: %w", filename, err)
+	}
+	if err := rejectSymlinkTarget(targetPath); err != nil {
+		return 0, fmt.Errorf("reading %s: %w", filename, err)
+	}
+	existing, err := os.ReadFile(targetPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return migrationAbsent, nil
+		}
+		return 0, fmt.Errorf("reading %s", filename)
+	}
+	data, err := fs.ReadFile(entry.fsys, "migrations/"+filename)
+	if err != nil {
+		return 0, fmt.Errorf("reading embedded %s: %w", filename, err)
+	}
+	if !bytes.Equal(existing, data) {
+		return migrationDrifted, nil
+	}
+	return migrationInSync, nil
 }
 
 func writef(w io.Writer, format string, args ...any) {
@@ -326,46 +358,55 @@ func buildPublishPlan(targetDir, filterName string) (publishPlan, error) {
 		if err != nil {
 			return publishPlan{}, fmt.Errorf("reading migrations failed")
 		}
-
 		for _, filename := range files {
-			data, err := fs.ReadFile(entry.fsys, "migrations/"+filename)
-			if err != nil {
-				return publishPlan{}, fmt.Errorf("reading embedded migration failed")
+			if err := plan.add(targetDir, entry, filename); err != nil {
+				return publishPlan{}, err
 			}
-
-			migration := migrationFile{
-				component: entry.name,
-				filename:  filename,
-				data:      data,
-			}
-			migration.target, err = migrationTargetPath(targetDir, filename)
-			if err != nil {
-				return publishPlan{}, fmt.Errorf("resolving migration target failed")
-			}
-			if err := rejectSymlinkPathComponents(targetDir, filepath.Dir(migration.target)); err != nil {
-				return publishPlan{}, fmt.Errorf("reading migration target failed: %w", err)
-			}
-			if err := rejectSymlinkTarget(migration.target); err != nil {
-				return publishPlan{}, fmt.Errorf("reading migration target failed: %w", err)
-			}
-
-			existing, err := os.ReadFile(migration.target)
-			if err == nil {
-				if bytes.Equal(existing, data) {
-					plan.skipped++
-				} else {
-					plan.drifted = append(plan.drifted, migration)
-				}
-				continue
-			}
-			if !os.IsNotExist(err) {
-				return publishPlan{}, fmt.Errorf("reading migration target failed")
-			}
-			plan.publish = append(plan.publish, migration)
 		}
 	}
 
 	return plan, nil
+}
+
+// add plans the kit migration filename of entry: skipped when targetDir
+// holds it unchanged, drifted when it holds a different copy, published
+// otherwise.
+func (plan *publishPlan) add(targetDir string, entry registryEntry, filename string) error {
+	data, err := fs.ReadFile(entry.fsys, "migrations/"+filename)
+	if err != nil {
+		return fmt.Errorf("reading embedded migration failed")
+	}
+
+	migration := migrationFile{
+		component: entry.name,
+		filename:  filename,
+		data:      data,
+	}
+	migration.target, err = migrationTargetPath(targetDir, filename)
+	if err != nil {
+		return fmt.Errorf("resolving migration target failed")
+	}
+	if err := rejectSymlinkPathComponents(targetDir, filepath.Dir(migration.target)); err != nil {
+		return fmt.Errorf("reading migration target failed: %w", err)
+	}
+	if err := rejectSymlinkTarget(migration.target); err != nil {
+		return fmt.Errorf("reading migration target failed: %w", err)
+	}
+
+	existing, err := os.ReadFile(migration.target)
+	if err == nil {
+		if bytes.Equal(existing, data) {
+			plan.skipped++
+		} else {
+			plan.drifted = append(plan.drifted, migration)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("reading migration target failed")
+	}
+	plan.publish = append(plan.publish, migration)
+	return nil
 }
 
 // gooseVersion returns the numeric goose version prefix of a migration

@@ -69,41 +69,52 @@ func main() {
 	// report a clean scan while missing a high-severity repository finding.
 	findings = append(findings, runRepoCheckers(path, repoCheckers())...)
 
-	switch *format {
-	case "json":
-		suppressions, err := suppressionInventory(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "kit-doctor: suppression inventory: %v\n", err)
-			os.Exit(2)
-		}
-		_ = json.NewEncoder(os.Stdout).Encode(newReport(path, *strict, findings, suppressions))
-	default:
-		fmt.Print(formatFindings(findings))
-	}
+	writeReport(path, *strict, *format, findings)
 
 	// Interactive mode prompts for every finding that carries a Fix —
 	// AST-rule findings from scan() (e.g. auth-identity drift) plus
 	// Repository findings are already included in the normal report, so use
 	// the same unified list here instead of rerunning them.
 	if *interactive {
-		var fixable []rules.Finding
-		for _, f := range findings {
-			if f.Fix != nil {
-				fixable = append(fixable, f)
-			}
-		}
-		res := runInteractiveSession(os.Stdin, os.Stdout, fixable)
-		// Unresolved fixable findings + remaining non-fixable scan
-		// findings drive the exit code.
-		remaining := append([]rules.Finding{}, res.unresolved...)
-		for _, f := range findings {
-			if f.Fix == nil {
-				remaining = append(remaining, f)
-			}
-		}
-		os.Exit(exitCode(remaining, floor))
+		os.Exit(exitCode(fixInteractively(findings), floor))
 	}
 	os.Exit(exitCode(findings, floor))
+}
+
+// writeReport writes findings to stdout in format; the JSON report also
+// lists the suppressions under path.
+func writeReport(path, strict, format string, findings []rules.Finding) {
+	switch format {
+	case "json":
+		suppressions, err := suppressionInventory(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kit-doctor: suppression inventory: %v\n", err)
+			os.Exit(2)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(newReport(path, strict, findings, suppressions))
+	default:
+		fmt.Print(formatFindings(findings))
+	}
+}
+
+// fixInteractively offers each fixable finding's fix on stdin/stdout and
+// returns the findings that remain: the unresolved fixable ones and every
+// non-fixable one.
+func fixInteractively(findings []rules.Finding) []rules.Finding {
+	var fixable []rules.Finding
+	for _, f := range findings {
+		if f.Fix != nil {
+			fixable = append(fixable, f)
+		}
+	}
+	res := runInteractiveSession(os.Stdin, os.Stdout, fixable)
+	remaining := append([]rules.Finding{}, res.unresolved...)
+	for _, f := range findings {
+		if f.Fix == nil {
+			remaining = append(remaining, f)
+		}
+	}
+	return remaining
 }
 
 func parseSeverity(s string) (rules.Severity, error) {

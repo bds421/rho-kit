@@ -174,42 +174,11 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	reg := cfg.registerer
 
 	m := &Metrics{
-		messagesEnqueued: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "redis",
-				Subsystem: "queue",
-				Name:      "messages_enqueued_total",
-				Help:      "Total messages enqueued.",
-			},
-			[]string{"queue"},
-		),
-		messagesProcessed: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "redis",
-				Subsystem: "queue",
-				Name:      "messages_processed_total",
-				Help:      "Total messages successfully processed.",
-			},
-			[]string{"queue"},
-		),
-		messagesFailed: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "redis",
-				Subsystem: "queue",
-				Name:      "messages_failed_total",
-				Help:      "Total messages that failed processing.",
-			},
-			[]string{"queue"},
-		),
-		messagesDeadLettered: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "redis",
-				Subsystem: "queue",
-				Name:      "messages_dead_lettered_total",
-				Help:      "Total messages moved to the asynq archive (dead-letter set).",
-			},
-			[]string{"queue"},
-		),
+		messagesEnqueued:  queueCounter("messages_enqueued_total", "Total messages enqueued."),
+		messagesProcessed: queueCounter("messages_processed_total", "Total messages successfully processed."),
+		messagesFailed:    queueCounter("messages_failed_total", "Total messages that failed processing."),
+		messagesDeadLettered: queueCounter("messages_dead_lettered_total",
+			"Total messages moved to the asynq archive (dead-letter set)."),
 		processingDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "redis",
@@ -220,42 +189,12 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 			},
 			[]string{"queue"},
 		),
-		messagesRetried: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "redis",
-				Subsystem: "queue",
-				Name:      "messages_retried_total",
-				Help:      "Total messages re-enqueued for retry.",
-			},
-			[]string{"queue"},
-		),
-		processingDepth: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: "redis",
-				Subsystem: "queue",
-				Name:      "processing_depth",
-				Help:      "Number of messages currently active (claimed by a worker) in the asynq queue.",
-			},
-			[]string{"queue"},
-		),
-		queueDepth: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: "redis",
-				Subsystem: "queue",
-				Name:      "queue_depth",
-				Help:      "Number of messages waiting in the asynq pending state.",
-			},
-			[]string{"queue"},
-		),
-		dlqDepth: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: "redis",
-				Subsystem: "queue",
-				Name:      "dlq_depth",
-				Help:      "Number of messages currently in the asynq archive (dead-letter). Polled alongside queue_depth so operators can alert on a growing DLQ without standing up a separate poller.",
-			},
-			[]string{"queue"},
-		),
+		messagesRetried: queueCounter("messages_retried_total", "Total messages re-enqueued for retry."),
+		processingDepth: queueGauge("processing_depth",
+			"Number of messages currently active (claimed by a worker) in the asynq queue."),
+		queueDepth: queueGauge("queue_depth", "Number of messages waiting in the asynq pending state."),
+		dlqDepth: queueGauge("dlq_depth",
+			"Number of messages currently in the asynq archive (dead-letter). Polled alongside queue_depth so operators can alert on a growing DLQ without standing up a separate poller."),
 	}
 
 	m.messagesEnqueued = promutil.MustRegisterOrGet(reg, m.messagesEnqueued)
@@ -269,6 +208,22 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	m.dlqDepth = promutil.MustRegisterOrGet(reg, m.dlqDepth)
 
 	return m
+}
+
+// queueCounter is a redis queue counter labelled by queue.
+func queueCounter(name, help string) *prometheus.CounterVec {
+	return prometheus.NewCounterVec(
+		prometheus.CounterOpts{Namespace: "redis", Subsystem: "queue", Name: name, Help: help},
+		[]string{"queue"},
+	)
+}
+
+// queueGauge is a redis queue gauge labelled by queue.
+func queueGauge(name, help string) *prometheus.GaugeVec {
+	return prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Namespace: "redis", Subsystem: "queue", Name: name, Help: help},
+		[]string{"queue"},
+	)
 }
 
 var defaultMetrics = sync.OnceValue(func() *Metrics { return NewMetrics() })

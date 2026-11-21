@@ -662,40 +662,8 @@ func TestRace_SweepConsumePeekRefund(t *testing.T) {
 					return
 				default:
 				}
-				switch j % 7 {
-				case 0, 1, 2, 3: // 4/7 ≈ 57% Consume
-					ok, rem, _, err := b.Consume(ctx, key, int64(1+(i%5)))
-					if err != nil {
-						t.Errorf("Consume returned error: %v", err)
-						return
-					}
-					if rem < 0 || rem > cap {
-						t.Errorf("Consume remaining out of range: %d (cap=%d, ok=%v)", rem, cap, ok)
-						return
-					}
-				case 4, 5: // 2/7 ≈ 29% Peek
-					rem, err := b.Peek(ctx, key)
-					if err != nil {
-						t.Errorf("Peek returned error: %v", err)
-						return
-					}
-					if rem < 0 || rem > cap {
-						t.Errorf("Peek remaining out of range: %d (cap=%d)", rem, cap)
-						return
-					}
-				case 6: // 1/7 ≈ 14% Refund
-					rem, err := b.Refund(ctx, key, int64(1+(i%3)), testChargedAt())
-					// Refund of an unknown key (after sweep eviction) is
-					// not an error — see memory.Refund semantics. We only
-					// assert the returned remaining stays in range.
-					if err != nil {
-						t.Errorf("Refund returned error: %v", err)
-						return
-					}
-					if rem < 0 || rem > cap {
-						t.Errorf("Refund remaining out of range: %d (cap=%d)", rem, cap)
-						return
-					}
+				if !raceStep(ctx, t, b, key, cap, i, j) {
+					return
 				}
 			}
 		}()
@@ -707,6 +675,48 @@ func TestRace_SweepConsumePeekRefund(t *testing.T) {
 	// Final invariant: Len is bounded — the shared key is at most one
 	// bucket even after thousands of operations.
 	require.LessOrEqual(t, b.Len(), 1, "single-key workload must not leak buckets")
+}
+
+// raceStep is caller i's operation j of TestRace_SweepConsumePeekRefund:
+// Consume, Peek or Refund on key, checking that the remaining budget stays
+// within [0, cap]. It reports false after a failed check.
+func raceStep(ctx context.Context, t *testing.T, b *memory.Budget, key string, cap int64, i, j int) bool {
+	switch j % 7 {
+	case 0, 1, 2, 3: // 4/7 ≈ 57% Consume
+		ok, rem, _, err := b.Consume(ctx, key, int64(1+(i%5)))
+		if err != nil {
+			t.Errorf("Consume returned error: %v", err)
+			return false
+		}
+		if rem < 0 || rem > cap {
+			t.Errorf("Consume remaining out of range: %d (cap=%d, ok=%v)", rem, cap, ok)
+			return false
+		}
+	case 4, 5: // 2/7 ≈ 29% Peek
+		rem, err := b.Peek(ctx, key)
+		if err != nil {
+			t.Errorf("Peek returned error: %v", err)
+			return false
+		}
+		if rem < 0 || rem > cap {
+			t.Errorf("Peek remaining out of range: %d (cap=%d)", rem, cap)
+			return false
+		}
+	case 6: // 1/7 ≈ 14% Refund
+		rem, err := b.Refund(ctx, key, int64(1+(i%3)), testChargedAt())
+		// Refund of an unknown key (after sweep eviction) is
+		// not an error — see memory.Refund semantics. We only
+		// assert the returned remaining stays in range.
+		if err != nil {
+			t.Errorf("Refund returned error: %v", err)
+			return false
+		}
+		if rem < 0 || rem > cap {
+			t.Errorf("Refund remaining out of range: %d (cap=%d)", rem, cap)
+			return false
+		}
+	}
+	return true
 }
 
 // TestRace_SweepEvictsBetweenLoadAndLock guards the specific race wave
@@ -729,18 +739,7 @@ func TestRace_SweepEvictsBetweenLoadAndLock(t *testing.T) {
 
 	// Mutable clock — advanced explicitly to force every bucket to
 	// be eligible for sweep on the next tick.
-	var clockMu sync.Mutex
-	cur := time.Unix(1_700_000_000, 0)
-	now := func() time.Time {
-		clockMu.Lock()
-		defer clockMu.Unlock()
-		return cur
-	}
-	advance := func(d time.Duration) {
-		clockMu.Lock()
-		defer clockMu.Unlock()
-		cur = cur.Add(d)
-	}
+	now, advance := steppedClock(time.Unix(1_700_000_000, 0))
 
 	b := memory.New(cap, period,
 		memory.WithClock(now),
@@ -756,19 +755,7 @@ func TestRace_SweepEvictsBetweenLoadAndLock(t *testing.T) {
 	// the advance goroutine — joining both into one WaitGroup would
 	// deadlock because the advance loop only exits when stop fires
 	// and stop is only closed after wg.Wait returns.
-	advanceDone := make(chan struct{})
-	go func() {
-		defer close(advanceDone)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			advance(period * 2)
-			time.Sleep(time.Millisecond)
-		}
-	}()
+	advanceDone := keepAdvancing(stop, advance, period*2)
 
 	// Many goroutines pounding the same key. The cap invariant must
 	// hold: within ANY single period, total admitted bytes cannot
@@ -804,6 +791,43 @@ func TestRace_SweepEvictsBetweenLoadAndLock(t *testing.T) {
 	got := admitted.Load()
 	require.GreaterOrEqual(t, got, int64(0))
 	require.LessOrEqual(t, got, int64(callers*iters*5))
+}
+
+// steppedClock is a clock starting at start that advance moves forward;
+// both are safe for concurrent use.
+func steppedClock(start time.Time) (now func() time.Time, advance func(time.Duration)) {
+	var mu sync.Mutex
+	cur := start
+	now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return cur
+	}
+	advance = func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		cur = cur.Add(d)
+	}
+	return now, advance
+}
+
+// keepAdvancing advances the clock by step every millisecond until stop
+// closes; the returned channel closes when it has stopped.
+func keepAdvancing(stop <-chan struct{}, advance func(time.Duration), step time.Duration) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			advance(step)
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	return done
 }
 
 func TestRefund_CreditsChargePeriodAcrossRollover(t *testing.T) {

@@ -17,7 +17,6 @@ func TestParseTargetAndComponent(t *testing.T) {
 		args    []string
 		wantDir string
 		wantCmp string
-		wantErr string
 	}{
 		{
 			name:    "all components",
@@ -30,58 +29,11 @@ func TestParseTargetAndComponent(t *testing.T) {
 			wantDir: "/tmp/migrations",
 			wantCmp: "idempotency",
 		},
-		{
-			name:    "unknown component",
-			args:    []string{"--to=/tmp/migrations", "missing"},
-			wantErr: "unknown component",
-		},
-		{
-			name:    "unknown flag",
-			args:    []string{"--to=/tmp/migrations", "--force"},
-			wantErr: "unknown flag",
-		},
-		{
-			name:    "multiple components",
-			args:    []string{"--to=/tmp/migrations", "idempotency", "approval"},
-			wantErr: "only one component may be specified",
-		},
-		{
-			name:    "missing to",
-			args:    []string{"idempotency"},
-			wantErr: "--to=DIR is required",
-		},
-		{
-			name:    "to without value",
-			args:    []string{"--to"},
-			wantErr: "--to requires a value",
-		},
-		{
-			name:    "empty to value",
-			args:    []string{"--to="},
-			wantErr: "--to requires a non-empty value",
-		},
-		{
-			name:    "duplicate to",
-			args:    []string{"--to=/tmp/a", "--to=/tmp/b"},
-			wantErr: "--to may only be specified once",
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gotDir, gotCmp, err := parseTargetAndComponent(tt.args)
-			if tt.wantErr != "" {
-				if err == nil {
-					t.Fatalf("expected error containing %q", tt.wantErr)
-				}
-				if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
-				}
-				if strings.Contains(err.Error(), "missing") || strings.Contains(err.Error(), "--force") {
-					t.Fatalf("error reflected rejected argument: %q", err)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -90,6 +42,37 @@ func TestParseTargetAndComponent(t *testing.T) {
 			}
 			if gotCmp != tt.wantCmp {
 				t.Fatalf("component = %q, want %q", gotCmp, tt.wantCmp)
+			}
+		})
+	}
+}
+
+func TestParseTargetAndComponent_Rejects(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"unknown component", []string{"--to=/tmp/migrations", "missing"}, "unknown component"},
+		{"unknown flag", []string{"--to=/tmp/migrations", "--force"}, "unknown flag"},
+		{"multiple components", []string{"--to=/tmp/migrations", "idempotency", "approval"}, "only one component may be specified"},
+		{"missing to", []string{"idempotency"}, "--to=DIR is required"},
+		{"to without value", []string{"--to"}, "--to requires a value"},
+		{"empty to value", []string{"--to="}, "--to requires a non-empty value"},
+		{"duplicate to", []string{"--to=/tmp/a", "--to=/tmp/b"}, "--to may only be specified once"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := parseTargetAndComponent(tt.args)
+			if err == nil {
+				t.Fatalf("expected error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+			if strings.Contains(err.Error(), "missing") || strings.Contains(err.Error(), "--force") {
+				t.Fatalf("error reflected rejected argument: %q", err)
 			}
 		})
 	}
@@ -483,36 +466,7 @@ func TestPublish_AuditlogAndOutboxRoundTrip(t *testing.T) {
 				t.Fatalf("publish %s code=%d, stderr=%q", component, code, stderr)
 			}
 
-			// Compare every published file byte-for-byte against the
-			// embedded migrations FS.
-			fsys := registry[component]
-			err := fs.WalkDir(fsys, "migrations", func(path string, d fs.DirEntry, walkErr error) error {
-				if walkErr != nil {
-					return walkErr
-				}
-				if d.IsDir() {
-					return nil
-				}
-				want, readErr := fs.ReadFile(fsys, path)
-				if readErr != nil {
-					return readErr
-				}
-				// Embedded path is "migrations/<file>"; published path
-				// is "<dir>/<file>" (no migrations/ prefix — kit-migrate
-				// flattens).
-				rel := filepath.Base(path)
-				got, readErr := os.ReadFile(filepath.Join(dir, rel))
-				if readErr != nil {
-					t.Fatalf("read published %s: %v", rel, readErr)
-				}
-				if !bytes.Equal(got, want) {
-					t.Fatalf("published %s differs from embedded migrations/%s; kit-migrate publish must be a byte-for-byte copy", rel, rel)
-				}
-				return nil
-			})
-			if err != nil {
-				t.Fatalf("walk embedded FS: %v", err)
-			}
+			assertPublishedCopiesEmbedded(t, registry[component], dir)
 
 			// Also verify the published directory contains at least one
 			// migration file (catches an empty-publish regression).
@@ -524,5 +478,38 @@ func TestPublish_AuditlogAndOutboxRoundTrip(t *testing.T) {
 				t.Fatalf("publish %s produced an empty target directory", component)
 			}
 		})
+	}
+}
+
+// assertPublishedCopiesEmbedded compares every file published to dir
+// byte-for-byte against the embedded migrations of fsys.
+func assertPublishedCopiesEmbedded(t *testing.T, fsys fs.FS, dir string) {
+	t.Helper()
+	err := fs.WalkDir(fsys, "migrations", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		want, readErr := fs.ReadFile(fsys, path)
+		if readErr != nil {
+			return readErr
+		}
+		// Embedded path is "migrations/<file>"; published path
+		// is "<dir>/<file>" (no migrations/ prefix — kit-migrate
+		// flattens).
+		rel := filepath.Base(path)
+		got, readErr := os.ReadFile(filepath.Join(dir, rel))
+		if readErr != nil {
+			t.Fatalf("read published %s: %v", rel, readErr)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("published %s differs from embedded migrations/%s; kit-migrate publish must be a byte-for-byte copy", rel, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk embedded FS: %v", err)
 	}
 }

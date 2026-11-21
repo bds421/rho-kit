@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 )
@@ -212,19 +213,43 @@ func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry,
 		limit = defaultLimit
 	}
 
-	// Collect matches without cloning. Sorting and cursor/limit pruning
-	// only read the OccurredAt/ID value fields, so the reflection-based
-	// metadata deep copy is deferred until after truncation and paid for
-	// at most limit entries instead of every match. The store is
-	// read-locked for the whole call, so referencing the underlying
-	// entries (which share their metadata maps) is safe; the survivors
-	// are cloned before return to preserve the metadata-isolation
-	// contract verified by TestStore_CopiesMetadataOnPublicBoundaries.
+	matched, err := s.matchingNewestFirst(ctx, q)
+	if err != nil {
+		return nil, "", err
+	}
+	if q.Cursor != "" {
+		matched = entriesAfterCursor(matched, cursorTime, cursorID)
+	}
+
+	var next string
+	if len(matched) > limit {
+		last := matched[limit-1]
+		next = s.cursorSigner.Encode(last.OccurredAt, last.ID)
+		matched = matched[:limit]
+	}
+
+	out := make([]actionlog.Entry, len(matched))
+	for i := range matched {
+		out[i] = matched[i].Clone()
+	}
+	return out, next, nil
+}
+
+// matchingNewestFirst returns the entries matching q, newest first, without
+// cloning. Sorting and cursor/limit pruning only read the OccurredAt/ID
+// value fields, so the reflection-based metadata deep copy is deferred
+// until after truncation and paid for at most limit entries instead of
+// every match. The caller holds the read lock for the whole List, so
+// referencing the underlying entries (which share their metadata maps) is
+// safe; List clones the survivors before return to preserve the
+// metadata-isolation contract verified by
+// TestStore_CopiesMetadataOnPublicBoundaries.
+func (s *Store) matchingNewestFirst(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
 	matched := make([]actionlog.Entry, 0)
 	for i, e := range s.entries {
 		if i%ctxCheckBatch == 0 {
 			if err := ctx.Err(); err != nil {
-				return nil, "", err
+				return nil, err
 			}
 		}
 		if !match(e, q) {
@@ -240,32 +265,22 @@ func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry,
 		}
 		return matched[i].ID > matched[j].ID
 	})
+	return matched, nil
+}
 
-	if q.Cursor != "" {
-		idx := 0
-		for idx < len(matched) {
-			e := matched[idx]
-			if e.OccurredAt.Before(cursorTime) ||
-				(e.OccurredAt.Equal(cursorTime) && e.ID < cursorID) {
-				break
-			}
-			idx++
+// entriesAfterCursor drops the newest-first entries at or before the
+// cursor position (cursorTime, cursorID).
+func entriesAfterCursor(matched []actionlog.Entry, cursorTime time.Time, cursorID string) []actionlog.Entry {
+	idx := 0
+	for idx < len(matched) {
+		e := matched[idx]
+		if e.OccurredAt.Before(cursorTime) ||
+			(e.OccurredAt.Equal(cursorTime) && e.ID < cursorID) {
+			break
 		}
-		matched = matched[idx:]
+		idx++
 	}
-
-	var next string
-	if len(matched) > limit {
-		last := matched[limit-1]
-		next = s.cursorSigner.Encode(last.OccurredAt, last.ID)
-		matched = matched[:limit]
-	}
-
-	out := make([]actionlog.Entry, len(matched))
-	for i := range matched {
-		out[i] = matched[i].Clone()
-	}
-	return out, next, nil
+	return matched[idx:]
 }
 
 // RangeByTenantSeq calls fn for every entry for tenantID in Seq ASC

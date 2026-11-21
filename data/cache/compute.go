@@ -411,22 +411,7 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 	// FR-048 [MED]: use DoChan + select on ctx so a short-deadline
 	// follower can exit promptly instead of waiting for the leader's
 	// long compute to finish.
-	//
-	// computeCtx is created inside the closure so only the singleflight
-	// runner's deadline applies and only that runner's defer cancels it.
-	// A concurrent caller that lost LoadOrStore but won DoChan (or vice
-	// versa) can no longer cancel the shared compute via its own cleanup.
-	resCh := cc.group.DoChan(flight, func() (any, error) {
-		computeCtx, cancelCompute := computeContext(withTenant(cc.bgCtx, id), ctx, cc.cfg.computeTimeout)
-		defer cancelCompute()
-		cc.recordSingleflightInflightInc()
-		defer cc.recordSingleflightInflightDec()
-		val, execErr := cc.executeCompute(computeCtx, full, fn)
-		if execErr != nil {
-			cc.recordError()
-		}
-		return val, execErr
-	})
+	resCh := cc.startSharedCompute(ctx, id, flight, full, fn)
 	var (
 		result any
 		err    error
@@ -457,7 +442,32 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 	if err != nil {
 		return zero, err
 	}
+	return cc.detachedResult(result)
+}
 
+// startSharedCompute joins or starts the singleflight compute of flight.
+//
+// computeCtx is created inside the closure so only the singleflight
+// runner's deadline applies and only that runner's defer cancels it.
+// A concurrent caller that lost LoadOrStore but won DoChan (or vice
+// versa) can no longer cancel the shared compute via its own cleanup.
+func (cc *ComputeCache[T]) startSharedCompute(ctx context.Context, id coretenant.ID, flight, full string, fn ComputeFunc[T]) <-chan singleflight.Result {
+	return cc.group.DoChan(flight, func() (any, error) {
+		computeCtx, cancelCompute := computeContext(withTenant(cc.bgCtx, id), ctx, cc.cfg.computeTimeout)
+		defer cancelCompute()
+		cc.recordSingleflightInflightInc()
+		defer cc.recordSingleflightInflightDec()
+		val, execErr := cc.executeCompute(computeCtx, full, fn)
+		if execErr != nil {
+			cc.recordError()
+		}
+		return val, execErr
+	})
+}
+
+// detachedResult converts the shared singleflight result to T.
+func (cc *ComputeCache[T]) detachedResult(result any) (T, error) {
+	var zero T
 	// Guard against nil result (e.g., when T is an interface type).
 	if result == nil {
 		return zero, nil

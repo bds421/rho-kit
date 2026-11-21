@@ -148,17 +148,40 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 		limit = defaultLimit
 	}
 
-	// Collect shallow struct copies during the scan — the Payload slice
-	// header is shared, so no payload bytes are copied yet. cloneRequest
-	// (a per-request, up-to-MaxPayloadSize byte copy) is deferred until
-	// after cursor/limit trimming so only the rows actually returned to
-	// the caller pay the deep-copy cost, not every match.
+	matched, err := s.matchingNewestFirst(ctx, q, limit)
+	if err != nil {
+		return nil, "", err
+	}
+	if q.Cursor != "" {
+		matched = requestsAfterCursor(matched, cursorTime, cursorID)
+	}
+	var next string
+	if len(matched) > limit {
+		last := matched[limit-1]
+		next = s.cursorSigner.Encode(last.CreatedAt, last.ID)
+		matched = matched[:limit]
+	}
+	// Deep-copy only the page we hand back so callers cannot mutate the
+	// stored Payload bytes through the returned slice.
+	for idx := range matched {
+		matched[idx] = cloneRequest(matched[idx])
+	}
+	return matched, next, nil
+}
+
+// matchingNewestFirst returns shallow struct copies of the requests
+// matching q, newest first. The Payload slice header is shared, so no
+// payload bytes are copied yet: cloneRequest (a per-request,
+// up-to-MaxPayloadSize byte copy) is deferred until after cursor/limit
+// trimming so only the rows actually returned to the caller pay the
+// deep-copy cost, not every match. The caller holds the lock.
+func (s *Store) matchingNewestFirst(ctx context.Context, q approval.Query, limit int) ([]approval.Request, error) {
 	matched := make([]approval.Request, 0, limit+1)
 	i := 0
 	for _, r := range s.requests {
 		if i%ctxCheckBatch == 0 {
 			if err := ctx.Err(); err != nil {
-				return nil, "", err
+				return nil, err
 			}
 		}
 		i++
@@ -174,30 +197,22 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 		}
 		return matched[i].ID > matched[j].ID
 	})
-	if q.Cursor != "" {
-		idx := 0
-		for idx < len(matched) {
-			r := matched[idx]
-			if r.CreatedAt.Before(cursorTime) ||
-				(r.CreatedAt.Equal(cursorTime) && r.ID < cursorID) {
-				break
-			}
-			idx++
+	return matched, nil
+}
+
+// requestsAfterCursor drops the newest-first requests at or before the
+// cursor position (cursorTime, cursorID).
+func requestsAfterCursor(matched []approval.Request, cursorTime time.Time, cursorID string) []approval.Request {
+	idx := 0
+	for idx < len(matched) {
+		r := matched[idx]
+		if r.CreatedAt.Before(cursorTime) ||
+			(r.CreatedAt.Equal(cursorTime) && r.ID < cursorID) {
+			break
 		}
-		matched = matched[idx:]
+		idx++
 	}
-	var next string
-	if len(matched) > limit {
-		last := matched[limit-1]
-		next = s.cursorSigner.Encode(last.CreatedAt, last.ID)
-		matched = matched[:limit]
-	}
-	// Deep-copy only the page we hand back so callers cannot mutate the
-	// stored Payload bytes through the returned slice.
-	for idx := range matched {
-		matched[idx] = cloneRequest(matched[idx])
-	}
-	return matched, next, nil
+	return matched[idx:]
 }
 
 // Decide records an approver's decision. See [approval.Store] for the

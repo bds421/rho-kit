@@ -242,9 +242,32 @@ func (s *Store) ListResumable(ctx context.Context, olderThan time.Duration) ([]s
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
-	// Atomic claim: lock eligible rows, set claim_until, return them.
-	// OlderThan filters on updated_at for crash-staleness; claim_until
-	// filters out rows already leased by another replica.
+	query, args := s.claimResumableQuery(olderThan)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, redact.WrapError("pgstore: ListResumable", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []saga.Instance
+	for rows.Next() {
+		inst, err := s.scanRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, inst)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, redact.WrapError("pgstore: ListResumable rows", err)
+	}
+	return out, nil
+}
+
+// claimResumableQuery is the statement that claims the resumable rows
+// older than olderThan (any age when olderThan <= 0) under a claim lease.
+// Eligible rows are locked, given claim_until and returned; claim_until
+// filters out rows already leased by another replica, and updated_at
+// filters for crash-staleness.
+func (s *Store) claimResumableQuery(olderThan time.Duration) (string, []any) {
 	var (
 		query string
 		args  []any
@@ -300,23 +323,7 @@ RETURNING s.id, s.definition, s.state, s.current_step,
 			s.claimToken,
 		}
 	}
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, redact.WrapError("pgstore: ListResumable", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []saga.Instance
-	for rows.Next() {
-		inst, err := s.scanRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, inst)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, redact.WrapError("pgstore: ListResumable rows", err)
-	}
-	return out, nil
+	return query, args
 }
 
 // Delete implements [saga.StateStore]. Idempotent.
