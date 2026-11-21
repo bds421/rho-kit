@@ -423,29 +423,21 @@ func (e *EncryptedStorage) getWith(
 	// concurrent decrypt work is bounded. The slot is released when decrypt
 	// finishes (success or error), not when the caller Closes the reader —
 	// a leaked ReadCloser must not permanently starve the download path.
-	var releaseDecrypt func()
-	if e.getSem != nil {
-		select {
-		case e.getSem <- struct{}{}:
-			releaseDecrypt = func() { <-e.getSem }
-		case <-ctx.Done():
-			return nil, storage.ObjectMeta{}, redact.WrapError("encryption", ctx.Err())
-		}
+	releaseDecryptOnError, err := e.acquireDecryptSlot(ctx)
+	if err != nil {
+		return nil, storage.ObjectMeta{}, err
 	}
 	// releaseDecryptOnError frees the decrypt slot on any early return; on
 	// success we release immediately after materialising plaintext (below).
-	releaseDecryptOnError := releaseDecrypt
 	defer func() {
 		if releaseDecryptOnError != nil {
 			releaseDecryptOnError()
 		}
 	}()
 
-	// Resolve the decryption key BEFORE pulling ciphertext into memory.
-	// Wave 71 closed a hostile-review finding that the prior order
-	// (Get → read N MiB → DecryptionKey lookup) let a misconfigured
-	// or unreachable key provider waste megabytes of read bandwidth
-	// per request before surfacing the wiring failure.
+	// Resolve the decryption key BEFORE pulling ciphertext into memory, so a
+	// misconfigured or unreachable key provider fails before megabytes of
+	// read bandwidth are spent on the request.
 	keyBytes, err := e.keys.EncryptionKey(ctx)
 	if err != nil {
 		return nil, storage.ObjectMeta{}, storage.WrapSafe("encryption: get key failed", err)
@@ -457,37 +449,21 @@ func (e *EncryptedStorage) getWith(
 		return nil, storage.ObjectMeta{}, storage.WrapSafe("encryption: get failed", err)
 	}
 
-	// Limit ciphertext read to MaxEncryptableSize + GCM overhead (nonce + tag)
-	// to prevent OOM from corrupted or malicious backends returning unbounded data.
-	// GCM overhead = 12 (nonce) + 16 (tag) = 28 bytes.
-	const gcmOverhead = 12 + 16
-	maxCiphertextSize := MaxEncryptableSize + gcmOverhead
-	ciphertext, err := io.ReadAll(io.LimitReader(rc, int64(maxCiphertextSize)+1))
-	// Close the backend reader immediately — we've consumed all bytes and
-	// the returned cleaningReader wraps a bytes.Reader, not rc.
-	_ = rc.Close()
-	// Defer zero immediately so all error paths below scrub ciphertext too.
+	ciphertext, err := readBoundedCiphertext(rc)
+	if err != nil {
+		return nil, storage.ObjectMeta{}, err
+	}
+	// Deferred right away so all error paths below scrub ciphertext too.
 	defer zeroBytes(ciphertext)
-	if err != nil {
-		return nil, storage.ObjectMeta{}, storage.WrapSafe("encryption: read ciphertext failed", err)
-	}
-	if int64(len(ciphertext)) > int64(maxCiphertextSize) {
-		return nil, storage.ObjectMeta{}, fmt.Errorf("encryption: ciphertext exceeds maximum size (%d bytes)", maxCiphertextSize)
-	}
 
-	gcm, err := encrypt.NewGCM(keyBytes)
+	plaintext, err := decryptObject(keyBytes, ciphertext, key)
 	if err != nil {
-		return nil, storage.ObjectMeta{}, redact.WrapError("encryption", err)
-	}
-
-	plaintext, err := encrypt.DecryptBytesAAD(gcm, ciphertext, aadForKey(key))
-	if err != nil {
-		return nil, storage.ObjectMeta{}, redact.WrapError("encryption", err)
+		return nil, storage.ObjectMeta{}, err
 	}
 
 	meta.Size = int64(len(plaintext))
 	// Decrypt complete: free the decrypt-work slot now so leaked readers
-	// cannot starve concurrent AES-GCM work (review-18).
+	// cannot starve concurrent AES-GCM work.
 	if releaseDecryptOnError != nil {
 		releaseDecryptOnError()
 		releaseDecryptOnError = nil
@@ -495,33 +471,91 @@ func (e *EncryptedStorage) getWith(
 
 	// Acquire the retained-plaintext budget before handing the buffer out.
 	// Released on Close; error paths free it immediately.
-	var releaseOpen func()
-	if e.openSem != nil {
-		acquireStart := time.Now()
-		select {
-		case e.openSem <- struct{}{}:
-			if e.metrics != nil {
-				e.metrics.observeOpenReaderAcquire("ok", time.Since(acquireStart))
-			}
-			releaseOpen = func() { <-e.openSem }
-		case <-ctx.Done():
-			err := ctx.Err()
-			if e.metrics != nil {
-				result := "canceled"
-				if errors.Is(err, context.DeadlineExceeded) {
-					result = "timeout"
-				}
-				e.metrics.observeOpenReaderAcquire(result, time.Since(acquireStart))
-			}
-			zeroBytes(plaintext)
-			return nil, storage.ObjectMeta{}, redact.WrapError("encryption", err)
-		}
+	releaseOpen, err := e.acquireOpenReaderSlot(ctx)
+	if err != nil {
+		zeroBytes(plaintext)
+		return nil, storage.ObjectMeta{}, err
 	}
 	return &cleaningReader{
 		Reader:  bytes.NewReader(plaintext),
 		buf:     plaintext,
 		release: releaseOpen,
 	}, meta, nil
+}
+
+// readBoundedCiphertext reads the whole ciphertext and closes rc right
+// away, since the returned cleaningReader wraps a bytes.Reader, not rc. The
+// read is limited to MaxEncryptableSize + GCM overhead (nonce + tag) so a
+// corrupted or malicious backend cannot cause OOM with unbounded data. The
+// buffer is zeroed before an error returns.
+func readBoundedCiphertext(rc io.ReadCloser) ([]byte, error) {
+	// GCM overhead = 12 (nonce) + 16 (tag) = 28 bytes.
+	const gcmOverhead = 12 + 16
+	maxCiphertextSize := MaxEncryptableSize + gcmOverhead
+	ciphertext, err := io.ReadAll(io.LimitReader(rc, int64(maxCiphertextSize)+1))
+	_ = rc.Close()
+	if err != nil {
+		zeroBytes(ciphertext)
+		return nil, storage.WrapSafe("encryption: read ciphertext failed", err)
+	}
+	if int64(len(ciphertext)) > int64(maxCiphertextSize) {
+		zeroBytes(ciphertext)
+		return nil, fmt.Errorf("encryption: ciphertext exceeds maximum size (%d bytes)", maxCiphertextSize)
+	}
+	return ciphertext, nil
+}
+
+// decryptObject opens the ciphertext stored under key with AES-GCM.
+func decryptObject(keyBytes, ciphertext []byte, key string) ([]byte, error) {
+	gcm, err := encrypt.NewGCM(keyBytes)
+	if err != nil {
+		return nil, redact.WrapError("encryption", err)
+	}
+	plaintext, err := encrypt.DecryptBytesAAD(gcm, ciphertext, aadForKey(key))
+	if err != nil {
+		return nil, redact.WrapError("encryption", err)
+	}
+	return plaintext, nil
+}
+
+// acquireDecryptSlot waits for a decryption slot; the returned release is
+// nil when decryption is unbounded.
+func (e *EncryptedStorage) acquireDecryptSlot(ctx context.Context) (func(), error) {
+	if e.getSem == nil {
+		return nil, nil
+	}
+	select {
+	case e.getSem <- struct{}{}:
+		return func() { <-e.getSem }, nil
+	case <-ctx.Done():
+		return nil, redact.WrapError("encryption", ctx.Err())
+	}
+}
+
+// acquireOpenReaderSlot waits for a retained-plaintext slot and records how
+// the wait ended; the returned release is nil when the budget is unbounded.
+func (e *EncryptedStorage) acquireOpenReaderSlot(ctx context.Context) (func(), error) {
+	if e.openSem == nil {
+		return nil, nil
+	}
+	acquireStart := time.Now()
+	select {
+	case e.openSem <- struct{}{}:
+		if e.metrics != nil {
+			e.metrics.observeOpenReaderAcquire("ok", time.Since(acquireStart))
+		}
+		return func() { <-e.openSem }, nil
+	case <-ctx.Done():
+		err := ctx.Err()
+		if e.metrics != nil {
+			result := "canceled"
+			if errors.Is(err, context.DeadlineExceeded) {
+				result = "timeout"
+			}
+			e.metrics.observeOpenReaderAcquire(result, time.Since(acquireStart))
+		}
+		return nil, redact.WrapError("encryption", err)
+	}
 }
 
 // cleaningReader wraps a bytes.Reader and zeros the underlying plaintext

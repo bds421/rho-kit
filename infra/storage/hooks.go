@@ -384,13 +384,20 @@ func (w hookURLFwd) URL(ctx context.Context, key string) (string, error) {
 }
 
 func composeHookCaps(h *hookedStorage, isLister, isCopier, isPresigned, isURLer bool) Storage {
+	if isLister {
+		return composeListingHookCaps(h, isCopier, isPresigned, isURLer)
+	}
+	return composeNonListingHookCaps(h, isCopier, isPresigned, isURLer)
+}
+
+func composeListingHookCaps(h *hookedStorage, isCopier, isPresigned, isURLer bool) Storage {
 	list := hookListFwd{h}
 	copy := hookCopyFwd{h}
 	presign := hookPresignFwd{h}
 	url := hookURLFwd{h}
 
 	switch {
-	case isLister && isCopier && isPresigned && isURLer:
+	case isCopier && isPresigned && isURLer:
 		return &struct {
 			*hookedStorage
 			hookListFwd
@@ -398,27 +405,59 @@ func composeHookCaps(h *hookedStorage, isLister, isCopier, isPresigned, isURLer 
 			hookPresignFwd
 			hookURLFwd
 		}{h, list, copy, presign, url}
-	case isLister && isCopier && isPresigned:
+	case isCopier && isPresigned:
 		return &struct {
 			*hookedStorage
 			hookListFwd
 			hookCopyFwd
 			hookPresignFwd
 		}{h, list, copy, presign}
-	case isLister && isCopier && isURLer:
+	case isCopier && isURLer:
 		return &struct {
 			*hookedStorage
 			hookListFwd
 			hookCopyFwd
 			hookURLFwd
 		}{h, list, copy, url}
-	case isLister && isPresigned && isURLer:
+	case isPresigned && isURLer:
 		return &struct {
 			*hookedStorage
 			hookListFwd
 			hookPresignFwd
 			hookURLFwd
 		}{h, list, presign, url}
+	case isCopier:
+		return &struct {
+			*hookedStorage
+			hookListFwd
+			hookCopyFwd
+		}{h, list, copy}
+	case isPresigned:
+		return &struct {
+			*hookedStorage
+			hookListFwd
+			hookPresignFwd
+		}{h, list, presign}
+	case isURLer:
+		return &struct {
+			*hookedStorage
+			hookListFwd
+			hookURLFwd
+		}{h, list, url}
+	default:
+		return &struct {
+			*hookedStorage
+			hookListFwd
+		}{h, list}
+	}
+}
+
+func composeNonListingHookCaps(h *hookedStorage, isCopier, isPresigned, isURLer bool) Storage {
+	copy := hookCopyFwd{h}
+	presign := hookPresignFwd{h}
+	url := hookURLFwd{h}
+
+	switch {
 	case isCopier && isPresigned && isURLer:
 		return &struct {
 			*hookedStorage
@@ -426,24 +465,6 @@ func composeHookCaps(h *hookedStorage, isLister, isCopier, isPresigned, isURLer 
 			hookPresignFwd
 			hookURLFwd
 		}{h, copy, presign, url}
-	case isLister && isCopier:
-		return &struct {
-			*hookedStorage
-			hookListFwd
-			hookCopyFwd
-		}{h, list, copy}
-	case isLister && isPresigned:
-		return &struct {
-			*hookedStorage
-			hookListFwd
-			hookPresignFwd
-		}{h, list, presign}
-	case isLister && isURLer:
-		return &struct {
-			*hookedStorage
-			hookListFwd
-			hookURLFwd
-		}{h, list, url}
 	case isCopier && isPresigned:
 		return &struct {
 			*hookedStorage
@@ -462,11 +483,6 @@ func composeHookCaps(h *hookedStorage, isLister, isCopier, isPresigned, isURLer 
 			hookPresignFwd
 			hookURLFwd
 		}{h, presign, url}
-	case isLister:
-		return &struct {
-			*hookedStorage
-			hookListFwd
-		}{h, list}
 	case isCopier:
 		return &struct {
 			*hookedStorage

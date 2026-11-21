@@ -54,6 +54,10 @@ func TestUUIDKeyFunc(t *testing.T) {
 		assert.True(t, strings.HasSuffix(key, ".pdf"))
 		assert.False(t, strings.Contains(key, "/"))
 	})
+}
+
+func TestUUIDKeyFunc_ExtensionChoice(t *testing.T) {
+	t.Parallel()
 
 	t.Run("omits extension for empty content type", func(t *testing.T) {
 		t.Parallel()
@@ -103,6 +107,10 @@ func TestUUIDKeyFunc(t *testing.T) {
 		// alphanumeric allowlist so it's preserved.
 		assert.True(t, strings.HasSuffix(key, ".bin"))
 	})
+}
+
+func TestUUIDKeyFunc_UnusableExtensions(t *testing.T) {
+	t.Parallel()
 
 	t.Run("omits extension when neither content type nor filename helps", func(t *testing.T) {
 		t.Parallel()
@@ -128,6 +136,10 @@ func TestUUIDKeyFunc(t *testing.T) {
 		assert.False(t, strings.Contains(key, ".."))
 		assert.False(t, strings.Contains(key, "passwd"))
 	})
+}
+
+func TestUUIDKeyFunc_InvalidPrefixes(t *testing.T) {
+	t.Parallel()
 
 	t.Run("panics on invalid prefixes", func(t *testing.T) {
 		t.Parallel()

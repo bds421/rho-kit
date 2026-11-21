@@ -155,32 +155,11 @@ func processMultipartParts(ctx context.Context, mr *multipart.Reader, r *http.Re
 			if skipped > maxSkippedParts {
 				return UploadResult{}, fmt.Errorf("storagehttp: too many non-file parts")
 			}
-			// Discard up to 10 MiB per part. If a single part exceeds the
-			// per-part limit OR the cumulative budget across all skipped
-			// parts exceeds opts.MaxTotalSkippedBytes, reject the request.
-			// The cumulative cap defends against an attacker fanning ~10 MiB
-			// across the maxSkippedParts × per-part budget (~100 MiB) of
-			// pure waste per request.
-			const maxPartDiscard = 10 << 20
-			remainingBudget := opts.MaxTotalSkippedBytes - totalSkippedBytes
-			if remainingBudget <= 0 {
-				return UploadResult{}, fmt.Errorf("storagehttp: cumulative non-file part bytes exceed limit")
-			}
-			limit := int64(maxPartDiscard)
-			if limit > remainingBudget {
-				limit = remainingBudget
-			}
-			n, copyErr := io.Copy(io.Discard, io.LimitReader(part, limit+1))
-			if copyErr != nil {
-				return UploadResult{}, storage.WrapSafe("storagehttp: read non-file part", copyErr)
+			n, err := discardNonFilePart(part, opts.MaxTotalSkippedBytes-totalSkippedBytes)
+			if err != nil {
+				return UploadResult{}, err
 			}
 			totalSkippedBytes += n
-			if n > limit {
-				if limit < maxPartDiscard {
-					return UploadResult{}, fmt.Errorf("storagehttp: cumulative non-file part bytes exceed limit")
-				}
-				return UploadResult{}, fmt.Errorf("storagehttp: non-file part too large")
-			}
 			continue
 		}
 
@@ -188,6 +167,30 @@ func processMultipartParts(ctx context.Context, mr *multipart.Reader, r *http.Re
 	}
 
 	return UploadResult{}, fmt.Errorf("storagehttp: no file part found in request")
+}
+
+// discardNonFilePart reads a part that is not the file and drops it. Up to
+// 10 MiB of a part are discarded; a larger part, or one past the cumulative
+// budget left for all skipped parts, rejects the request. The cumulative cap
+// defends against an attacker fanning ~10 MiB across the maxSkippedParts ×
+// per-part budget (~100 MiB) of pure waste per request.
+func discardNonFilePart(part io.Reader, remainingBudget int64) (int64, error) {
+	const maxPartDiscard = 10 << 20
+	if remainingBudget <= 0 {
+		return 0, fmt.Errorf("storagehttp: cumulative non-file part bytes exceed limit")
+	}
+	limit := min(int64(maxPartDiscard), remainingBudget)
+	n, err := io.Copy(io.Discard, io.LimitReader(part, limit+1))
+	if err != nil {
+		return n, storage.WrapSafe("storagehttp: read non-file part", err)
+	}
+	if n > limit {
+		if limit < maxPartDiscard {
+			return n, fmt.Errorf("storagehttp: cumulative non-file part bytes exceed limit")
+		}
+		return n, fmt.Errorf("storagehttp: non-file part too large")
+	}
+	return n, nil
 }
 
 func storePart(ctx context.Context, part *multipart.Part, r *http.Request, backend storage.Storage, opts UploadOptions) (UploadResult, error) {

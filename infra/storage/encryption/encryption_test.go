@@ -272,14 +272,9 @@ func TestEncryptedStorage_BackendErrorsDoNotReflectCause(t *testing.T) {
 	t.Run("put", func(t *testing.T) {
 		t.Parallel()
 		backendErr := errors.New("backend put failed for secret-token")
-		enc := New(&noListerBackend{
-			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return backendErr },
-			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
-				return nil, storage.ObjectMeta{}, storage.ErrObjectNotFound
-			},
-			del: func(context.Context, string) error { return nil },
-			ex:  func(context.Context, string) (bool, error) { return false, nil },
-		}, StaticKey(testKey(t)))
+		backend := emptyStubBackend()
+		backend.put = func(context.Context, string, io.Reader, storage.ObjectMeta) error { return backendErr }
+		enc := New(backend, StaticKey(testKey(t)))
 
 		err := enc.Put(ctx, "file.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{})
 		require.Error(t, err)
@@ -288,55 +283,12 @@ func TestEncryptedStorage_BackendErrorsDoNotReflectCause(t *testing.T) {
 		assert.NotContains(t, err.Error(), "backend put failed")
 	})
 
-	t.Run("get", func(t *testing.T) {
-		t.Parallel()
-		backendErr := errors.New("backend get failed for secret-token")
-		enc := New(&noListerBackend{
-			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
-			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
-				return nil, storage.ObjectMeta{}, backendErr
-			},
-			del: func(context.Context, string) error { return nil },
-			ex:  func(context.Context, string) (bool, error) { return false, nil },
-		}, StaticKey(testKey(t)))
-
-		_, _, err := enc.Get(ctx, "file.txt")
-		require.Error(t, err)
-		assert.ErrorIs(t, err, backendErr)
-		assert.NotContains(t, err.Error(), "secret-token")
-		assert.NotContains(t, err.Error(), "backend get failed")
-	})
-
-	t.Run("get reader", func(t *testing.T) {
-		t.Parallel()
-		readErr := errors.New("ciphertext read failed for secret-token")
-		enc := New(&noListerBackend{
-			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
-			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
-				return io.NopCloser(errReader{err: readErr}), storage.ObjectMeta{}, nil
-			},
-			del: func(context.Context, string) error { return nil },
-			ex:  func(context.Context, string) (bool, error) { return false, nil },
-		}, StaticKey(testKey(t)))
-
-		_, _, err := enc.Get(ctx, "file.txt")
-		require.Error(t, err)
-		assert.ErrorIs(t, err, readErr)
-		assert.NotContains(t, err.Error(), "secret-token")
-		assert.NotContains(t, err.Error(), "ciphertext read failed")
-	})
-
 	t.Run("delete", func(t *testing.T) {
 		t.Parallel()
 		backendErr := errors.New("backend delete failed for secret-token")
-		enc := New(&noListerBackend{
-			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
-			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
-				return nil, storage.ObjectMeta{}, storage.ErrObjectNotFound
-			},
-			del: func(context.Context, string) error { return backendErr },
-			ex:  func(context.Context, string) (bool, error) { return false, nil },
-		}, StaticKey(testKey(t)))
+		backend := emptyStubBackend()
+		backend.del = func(context.Context, string) error { return backendErr }
+		enc := New(backend, StaticKey(testKey(t)))
 
 		err := enc.Delete(ctx, "file.txt")
 		require.Error(t, err)
@@ -348,14 +300,9 @@ func TestEncryptedStorage_BackendErrorsDoNotReflectCause(t *testing.T) {
 	t.Run("exists", func(t *testing.T) {
 		t.Parallel()
 		backendErr := errors.New("backend exists failed for secret-token")
-		enc := New(&noListerBackend{
-			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
-			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
-				return nil, storage.ObjectMeta{}, storage.ErrObjectNotFound
-			},
-			del: func(context.Context, string) error { return nil },
-			ex:  func(context.Context, string) (bool, error) { return false, backendErr },
-		}, StaticKey(testKey(t)))
+		backend := emptyStubBackend()
+		backend.ex = func(context.Context, string) (bool, error) { return false, backendErr }
+		enc := New(backend, StaticKey(testKey(t)))
 
 		_, err := enc.Exists(ctx, "file.txt")
 		require.Error(t, err)
@@ -363,25 +310,58 @@ func TestEncryptedStorage_BackendErrorsDoNotReflectCause(t *testing.T) {
 		assert.NotContains(t, err.Error(), "secret-token")
 		assert.NotContains(t, err.Error(), "backend exists failed")
 	})
+}
 
-	t.Run("list", func(t *testing.T) {
+func TestEncryptedStorage_GetErrorsDoNotReflectCause(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("get", func(t *testing.T) {
 		t.Parallel()
-		backendErr := errors.New("backend list failed for secret-token")
-		enc := New(&failingListBackend{Backend: membackend.New(), err: backendErr}, StaticKey(testKey(t)))
-		lister, ok := storage.AsLister(enc)
-		require.True(t, ok)
+		backendErr := errors.New("backend get failed for secret-token")
+		enc := New(stubBackendGetting(func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+			return nil, storage.ObjectMeta{}, backendErr
+		}), StaticKey(testKey(t)))
 
-		var seenErr error
-		for _, err := range lister.List(ctx, "", storage.ListOptions{}) {
-			seenErr = err
-			break
-		}
-
-		require.Error(t, seenErr)
-		assert.ErrorIs(t, seenErr, backendErr)
-		assert.NotContains(t, seenErr.Error(), "secret-token")
-		assert.NotContains(t, seenErr.Error(), "backend list failed")
+		_, _, err := enc.Get(ctx, "file.txt")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, backendErr)
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "backend get failed")
 	})
+
+	t.Run("get reader", func(t *testing.T) {
+		t.Parallel()
+		readErr := errors.New("ciphertext read failed for secret-token")
+		enc := New(stubBackendGetting(func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+			return io.NopCloser(errReader{err: readErr}), storage.ObjectMeta{}, nil
+		}), StaticKey(testKey(t)))
+
+		_, _, err := enc.Get(ctx, "file.txt")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, readErr)
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "ciphertext read failed")
+	})
+}
+
+func TestEncryptedStorage_ListErrorDoesNotReflectCause(t *testing.T) {
+	t.Parallel()
+	backendErr := errors.New("backend list failed for secret-token")
+	enc := New(&failingListBackend{Backend: membackend.New(), err: backendErr}, StaticKey(testKey(t)))
+	lister, ok := storage.AsLister(enc)
+	require.True(t, ok)
+
+	var seenErr error
+	for _, err := range lister.List(context.Background(), "", storage.ListOptions{}) {
+		seenErr = err
+		break
+	}
+
+	require.Error(t, seenErr)
+	assert.ErrorIs(t, seenErr, backendErr)
+	assert.NotContains(t, seenErr.Error(), "secret-token")
+	assert.NotContains(t, seenErr.Error(), "backend list failed")
 }
 
 func TestEncryptedStorage_WrongKey(t *testing.T) {
@@ -417,27 +397,12 @@ func TestEncryptedStorage_GetReturnsEmptyMetaOnError(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	// nonEmptyMeta is what a real backend would hand back alongside an
-	// error/object; the encryption layer must NOT propagate it on errors.
-	nonEmptyMeta := func() storage.ObjectMeta {
-		return storage.ObjectMeta{
-			Size:        4096,
-			ContentType: "application/octet-stream",
-			ETag:        "leaked-etag",
-		}
-	}
-
 	t.Run("backend get error", func(t *testing.T) {
 		t.Parallel()
 		backendErr := errors.New("backend get failed")
-		enc := New(&noListerBackend{
-			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
-			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
-				return nil, nonEmptyMeta(), backendErr
-			},
-			del: func(context.Context, string) error { return nil },
-			ex:  func(context.Context, string) (bool, error) { return false, nil },
-		}, StaticKey(testKey(t)))
+		enc := New(stubBackendGetting(func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+			return nil, backendMetaToWithhold(), backendErr
+		}), StaticKey(testKey(t)))
 
 		_, meta, err := enc.Get(ctx, "file.txt")
 		require.Error(t, err)
@@ -447,14 +412,9 @@ func TestEncryptedStorage_GetReturnsEmptyMetaOnError(t *testing.T) {
 	t.Run("backend read error", func(t *testing.T) {
 		t.Parallel()
 		readErr := errors.New("ciphertext read failed")
-		enc := New(&noListerBackend{
-			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
-			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
-				return io.NopCloser(errReader{err: readErr}), nonEmptyMeta(), nil
-			},
-			del: func(context.Context, string) error { return nil },
-			ex:  func(context.Context, string) (bool, error) { return false, nil },
-		}, StaticKey(testKey(t)))
+		enc := New(stubBackendGetting(func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+			return io.NopCloser(errReader{err: readErr}), backendMetaToWithhold(), nil
+		}), StaticKey(testKey(t)))
 
 		_, meta, err := enc.Get(ctx, "file.txt")
 		require.Error(t, err)
@@ -465,14 +425,9 @@ func TestEncryptedStorage_GetReturnsEmptyMetaOnError(t *testing.T) {
 		t.Parallel()
 		const gcmOverhead = 12 + 16
 		oversized := bytes.Repeat([]byte{0xAB}, MaxEncryptableSize+gcmOverhead+1)
-		enc := New(&noListerBackend{
-			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
-			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
-				return io.NopCloser(bytes.NewReader(oversized)), nonEmptyMeta(), nil
-			},
-			del: func(context.Context, string) error { return nil },
-			ex:  func(context.Context, string) (bool, error) { return false, nil },
-		}, StaticKey(testKey(t)))
+		enc := New(stubBackendGetting(func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+			return io.NopCloser(bytes.NewReader(oversized)), backendMetaToWithhold(), nil
+		}), StaticKey(testKey(t)))
 
 		_, meta, err := enc.Get(ctx, "file.txt")
 		require.Error(t, err)
@@ -734,6 +689,25 @@ func (b *noListerBackend) Exists(ctx context.Context, key string) (bool, error) 
 	return b.ex(ctx, key)
 }
 
+// emptyStubBackend is a backend that holds no objects and accepts every
+// write; a test replaces the one operation it makes fail.
+func emptyStubBackend() *noListerBackend {
+	return &noListerBackend{
+		put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
+		get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+			return nil, storage.ObjectMeta{}, storage.ErrObjectNotFound
+		},
+		del: func(context.Context, string) error { return nil },
+		ex:  func(context.Context, string) (bool, error) { return false, nil },
+	}
+}
+
+func stubBackendGetting(get func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error)) *noListerBackend {
+	backend := emptyStubBackend()
+	backend.get = get
+	return backend
+}
+
 type errKeyProvider struct {
 	err error
 }
@@ -819,4 +793,14 @@ func TestAsExactVersionStore_EncryptionDecryptsPinnedGeneration(t *testing.T) {
 
 	_, ok = storage.AsExactVersionStore(New(membackend.New(), StaticKey(testKey(t))))
 	assert.False(t, ok)
+}
+
+// backendMetaToWithhold is what a real backend would hand back alongside an
+// error or object; the encryption layer must NOT propagate it on errors.
+func backendMetaToWithhold() storage.ObjectMeta {
+	return storage.ObjectMeta{
+		Size:        4096,
+		ContentType: "application/octet-stream",
+		ETag:        "leaked-etag",
+	}
 }

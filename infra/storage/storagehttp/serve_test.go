@@ -17,7 +17,6 @@ import (
 
 func TestServeFile(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 
 	t.Run("rejects nil backend", func(t *testing.T) {
 		t.Parallel()
@@ -50,6 +49,11 @@ func TestServeFile(t *testing.T) {
 		assert.Contains(t, err.Error(), "request is required")
 		assert.Equal(t, 0, backend.gets)
 	})
+}
+
+func TestServeFile_Headers(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("serves file with correct headers", func(t *testing.T) {
 		t.Parallel()
@@ -89,6 +93,11 @@ func TestServeFile(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, w.Header().Get("Content-Disposition"), "inline")
 	})
+}
+
+func TestServeFile_DispositionAndCaching(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("attachment disposition forces download", func(t *testing.T) {
 		t.Parallel()
@@ -123,6 +132,10 @@ func TestServeFile(t *testing.T) {
 
 		assert.Equal(t, "public, max-age=3600", w.Header().Get("Cache-Control"))
 	})
+}
+
+func TestServeFile_RejectsInvalidCacheControl(t *testing.T) {
+	t.Parallel()
 
 	t.Run("rejects invalid Cache-Control before opening object", func(t *testing.T) {
 		t.Parallel()
@@ -160,6 +173,11 @@ func TestServeFile(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestServeFile_MissingKeyAndRanges(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("returns ErrObjectNotFound for missing key", func(t *testing.T) {
 		t.Parallel()
@@ -192,6 +210,11 @@ func TestServeFile(t *testing.T) {
 		assert.Equal(t, http.StatusPartialContent, resp.StatusCode)
 		assert.Equal(t, "bytes 2-5/10", resp.Header.Get("Content-Range"))
 	})
+}
+
+func TestServeFile_Filenames(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("derives filename from nested key", func(t *testing.T) {
 		t.Parallel()
@@ -226,6 +249,10 @@ func TestServeFile(t *testing.T) {
 		assert.NotContains(t, cd, "\n")
 		assert.Empty(t, w.Header().Values("X-Evil"))
 	})
+}
+
+func TestServeFile_NonSeekableStream(t *testing.T) {
+	t.Parallel()
 
 	t.Run("streams non-seekable reader without Range support", func(t *testing.T) {
 		t.Parallel()
@@ -250,6 +277,10 @@ func TestServeFile(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		assert.Equal(t, content, body)
 	})
+}
+
+func TestServeFile_InvalidStoredContentType(t *testing.T) {
+	t.Parallel()
 
 	t.Run("falls back when stored content type is invalid", func(t *testing.T) {
 		t.Parallel()
@@ -376,6 +407,10 @@ func TestServeFile_ETag(t *testing.T) {
 		assert.Equal(t, http.StatusNotModified, w.Code)
 		assert.Empty(t, w.Body.Bytes())
 	})
+}
+
+func TestServeFile_ETagMatching(t *testing.T) {
+	t.Parallel()
 
 	t.Run("returns 304 on matching second If-None-Match line", func(t *testing.T) {
 		t.Parallel()

@@ -1,6 +1,7 @@
 package storagehttp
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -74,26 +75,15 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 	}
 
 	// Prefer Stat/Head for conditional-GET so a 304 does not open the body.
-	var (
-		rc   io.ReadCloser
-		meta storage.ObjectMeta
-	)
-	if st, ok := storage.AsStatter(backend); ok {
-		meta, err = st.Stat(r.Context(), key)
-		if err != nil {
-			return err
-		}
-	} else {
-		rc, meta, err = backend.Get(r.Context(), key)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if rc != nil {
-				_ = rc.Close()
-			}
-		}()
+	rc, meta, err := statOrOpen(r.Context(), backend, key)
+	if err != nil {
+		return err
 	}
+	defer func() {
+		if rc != nil {
+			_ = rc.Close()
+		}
+	}()
 
 	contentType := responseContentType(meta.ContentType, serveCfg.filename, key)
 
@@ -106,42 +96,9 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 		w.Header().Set("Cache-Control", serveCfg.cacheControl)
 	}
 
-	// Set ETag for conditional-GET support.
-	if meta.ETag != "" {
-		etag := meta.ETag
-		// Reject ETags containing control characters (CR, LF, NUL) or internal
-		// double quotes. Weak ETags (W/"...") are accepted per RFC 7232.
-		stripped := etag
-		if len(stripped) >= 2 && (stripped[0] == 'W' || stripped[0] == 'w') && stripped[1] == '/' {
-			stripped = stripped[2:]
-		}
-		if len(stripped) >= 2 && stripped[0] == '"' && stripped[len(stripped)-1] == '"' {
-			stripped = stripped[1 : len(stripped)-1]
-		}
-		if strings.ContainsAny(stripped, "\r\n\x00\"") {
-			slog.Warn("storagehttp: ETag contains invalid characters, skipping",
-				redact.String("key", key))
-		} else {
-			emit := etag
-			weak := false
-			if len(emit) >= 2 && (emit[0] == 'W' || emit[0] == 'w') && emit[1] == '/' {
-				weak = true
-				emit = emit[2:]
-			}
-			if len(emit) < 2 || emit[0] != '"' || emit[len(emit)-1] != '"' {
-				emit = `"` + emit + `"`
-			}
-			if weak {
-				emit = "W/" + emit
-			}
-			etag = emit
-			w.Header().Set("ETag", etag)
-
-			if inm := strings.Join(r.Header.Values("If-None-Match"), ","); inm != "" && etagMatch(inm, etag) {
-				w.WriteHeader(http.StatusNotModified)
-				return nil
-			}
-		}
+	if notModified := setETag(w, r, key, meta.ETag); notModified {
+		w.WriteHeader(http.StatusNotModified)
+		return nil
 	}
 
 	// Body needed: open via Get when we only Stat'ed above.
@@ -150,7 +107,6 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 		if err != nil {
 			return err
 		}
-		defer func() { _ = rc.Close() }()
 	}
 
 	// User-uploaded content is served back with the metadata-recorded
@@ -249,6 +205,61 @@ func safeHeaderValue(value string) bool {
 	return true
 }
 
+// statOrOpen reads the object's metadata through Stat when the backend has
+// it, leaving the body unopened (nil reader); otherwise it opens the object.
+func statOrOpen(ctx context.Context, backend storage.Storage, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	if st, ok := storage.AsStatter(backend); ok {
+		meta, err := st.Stat(ctx, key)
+		return nil, meta, err
+	}
+	return backend.Get(ctx, key)
+}
+
+// setETag sends the backend's ETag for conditional-GET support and reports
+// whether the request's If-None-Match matches it. An ETag the header cannot
+// carry safely is skipped.
+func setETag(w http.ResponseWriter, r *http.Request, key, backendETag string) bool {
+	if backendETag == "" {
+		return false
+	}
+	etag, ok := quotedETag(backendETag)
+	if !ok {
+		slog.Warn("storagehttp: ETag contains invalid characters, skipping",
+			redact.String("key", key))
+		return false
+	}
+	w.Header().Set("ETag", etag)
+	inm := strings.Join(r.Header.Values("If-None-Match"), ",")
+	return inm != "" && etagMatch(inm, etag)
+}
+
+// quotedETag returns etag in its quoted form, keeping a weak W/ prefix
+// (RFC 7232). It reports false for control characters (CR, LF, NUL) or
+// internal double quotes.
+func quotedETag(etag string) (string, bool) {
+	weak := false
+	opaque := etag
+	if len(opaque) >= 2 && (opaque[0] == 'W' || opaque[0] == 'w') && opaque[1] == '/' {
+		weak = true
+		opaque = opaque[2:]
+	}
+	quoted := len(opaque) >= 2 && opaque[0] == '"' && opaque[len(opaque)-1] == '"'
+	inner := opaque
+	if quoted {
+		inner = opaque[1 : len(opaque)-1]
+	}
+	if strings.ContainsAny(inner, "\r\n\x00\"") {
+		return "", false
+	}
+	if !quoted {
+		opaque = `"` + opaque + `"`
+	}
+	if weak {
+		opaque = "W/" + opaque
+	}
+	return opaque, true
+}
+
 // etagMatch checks if serverETag matches any ETag in the If-None-Match header value.
 // Handles the W/ (weak) prefix per RFC 7232 §2.3: weak comparison ignores the prefix.
 // The inm value may contain multiple comma-separated ETags (e.g., `"a", W/"b"`).
@@ -259,47 +270,47 @@ func etagMatch(inm, serverETag string) bool {
 	// Strip W/ prefix for weak comparison (RFC 7232 §2.3.2).
 	serverStrong := stripWeakPrefix(serverETag)
 
-	for inm != "" {
-		// Skip leading whitespace and commas.
-		for len(inm) > 0 && (inm[0] == ' ' || inm[0] == ',') {
-			inm = inm[1:]
-		}
+	for {
+		inm = strings.TrimLeft(inm, " ,")
 		if inm == "" {
-			break
+			return false
 		}
 		candidate := stripWeakPrefix(inm)
-		// Find the closing quote. Malformed tokens are skipped so a later
-		// well-formed match still yields 304 (RFC 7232 §3.2 allows lists).
-		if len(candidate) < 2 || candidate[0] != '"' {
-			// Advance past this token to the next comma/end.
-			i := 0
-			for i < len(inm) && inm[i] != ',' {
-				i++
-			}
-			inm = inm[i:]
+		end := closingQuote(candidate)
+		if end < 0 {
+			// Malformed tokens are skipped so a later well-formed match
+			// still yields 304 (RFC 7232 §3.2 allows lists).
+			inm = nextListElement(inm)
 			continue
 		}
-		end := 1
-		for end < len(candidate) && candidate[end] != '"' {
-			end++
-		}
-		if end >= len(candidate) {
-			i := 0
-			for i < len(inm) && inm[i] != ',' {
-				i++
-			}
-			inm = inm[i:]
-			continue
-		}
-		tag := candidate[:end+1]
-		if tag == serverStrong {
+		if candidate[:end+1] == serverStrong {
 			return true
 		}
-		// Advance past this tag in the original inm.
-		consumed := len(inm) - len(candidate) + end + 1
-		inm = inm[consumed:]
+		inm = inm[len(inm)-len(candidate)+end+1:]
 	}
-	return false
+}
+
+// closingQuote returns the index of the quote that closes the entity tag
+// opening candidate, or -1 when candidate does not start with a complete
+// quoted tag.
+func closingQuote(candidate string) int {
+	if len(candidate) < 2 || candidate[0] != '"' {
+		return -1
+	}
+	end := strings.IndexByte(candidate[1:], '"')
+	if end < 0 {
+		return -1
+	}
+	return end + 1
+}
+
+// nextListElement drops the list element inm starts with, up to the next
+// comma.
+func nextListElement(inm string) string {
+	if i := strings.IndexByte(inm, ','); i >= 0 {
+		return inm[i:]
+	}
+	return ""
 }
 
 func stripWeakPrefix(s string) string {

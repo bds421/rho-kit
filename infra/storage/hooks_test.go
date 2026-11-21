@@ -56,6 +56,11 @@ func TestWithHooks(t *testing.T) {
 		ok, _ := backend.Exists(ctx, "blocked.txt")
 		assert.False(t, ok)
 	})
+}
+
+func TestWithHooks_InputSafety(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("invalid key is rejected before hooks", func(t *testing.T) {
 		t.Parallel()
@@ -96,6 +101,11 @@ func TestWithHooks(t *testing.T) {
 		require.NoError(t, hooked.Put(ctx, "meta.txt", bytes.NewReader([]byte("x")), meta))
 		assert.Equal(t, map[string]string{"tenant": "acme"}, meta.Custom)
 	})
+}
+
+func TestWithHooks_GetAndDelete(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("AfterGet is called after successful get", func(t *testing.T) {
 		t.Parallel()
@@ -151,6 +161,11 @@ func TestWithHooks(t *testing.T) {
 		ok, _ := backend.Exists(ctx, "keep.txt")
 		assert.True(t, ok)
 	})
+}
+
+func TestWithHooks_PassThrough(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("Exists passes through without hooks", func(t *testing.T) {
 		t.Parallel()
@@ -178,6 +193,11 @@ func TestWithHooks(t *testing.T) {
 		require.Error(t, err)
 		assert.False(t, afterCalled)
 	})
+}
+
+func TestWithHooks_ForwardsCapabilities(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("forwards Lister interface", func(t *testing.T) {
 		t.Parallel()
@@ -213,6 +233,11 @@ func TestWithHooks(t *testing.T) {
 		_, ok := hooked.(storage.Copier)
 		assert.True(t, ok, "wrapped backend should implement Copier")
 	})
+}
+
+func TestWithHooks_UnwrapAndConstruction(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("forwards capabilities discovered through unwrap chain", func(t *testing.T) {
 		t.Parallel()

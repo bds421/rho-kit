@@ -162,6 +162,10 @@ func TestAllowedMIMETypes(t *testing.T) {
 			AllowedMIMETypes("image/ secret-token/*")
 		})
 	})
+}
+
+func TestAllowedMIMETypes_ExactTypes(t *testing.T) {
+	t.Parallel()
 
 	t.Run("accepts allowed type", func(t *testing.T) {
 		t.Parallel()
@@ -202,6 +206,10 @@ func TestAllowedMIMETypes(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "image/png", meta.ContentType)
 	})
+}
+
+func TestAllowedMIMETypes_WildcardsAndShortContent(t *testing.T) {
+	t.Parallel()
 
 	t.Run("accepts wildcard MIME pattern", func(t *testing.T) {
 		t.Parallel()
@@ -257,6 +265,10 @@ func TestAllowedMIMETypes(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, []byte{0x01}, got)
 	})
+}
+
+func TestAllowedMIMETypes_DetectedTypeEdgeCases(t *testing.T) {
+	t.Parallel()
 
 	t.Run("handles empty content through MIME matching", func(t *testing.T) {
 		t.Parallel()
@@ -295,6 +307,10 @@ func TestAllowedMIMETypes(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "hello world", string(got))
 	})
+}
+
+func TestAllowedMIMETypes_SniffErrors(t *testing.T) {
+	t.Parallel()
 
 	t.Run("preserves unwrap chain on sniff read error", func(t *testing.T) {
 		t.Parallel()
@@ -375,6 +391,10 @@ func TestMaxFileSize(t *testing.T) {
 		assert.NotContains(t, err.Error(), "5")
 		assert.NotContains(t, err.Error(), "6")
 	})
+}
+
+func TestMaxFileSize_DeclaredSize(t *testing.T) {
+	t.Parallel()
 
 	t.Run("rejects immediately when declared size exceeds limit", func(t *testing.T) {
 		t.Parallel()
@@ -444,6 +464,10 @@ func TestImageDimensions(t *testing.T) {
 		assert.NotContains(t, err.Error(), "10")
 		assert.NotContains(t, err.Error(), "50")
 	})
+}
+
+func TestImageDimensions_Maximum(t *testing.T) {
+	t.Parallel()
 
 	t.Run("rejects image above maximum width", func(t *testing.T) {
 		t.Parallel()
@@ -553,6 +577,11 @@ func TestApplyValidators(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "x", string(got))
 	})
+}
+
+func TestApplyValidators_Chaining(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("chains validators in order", func(t *testing.T) {
 		t.Parallel()
@@ -590,6 +619,11 @@ func TestApplyValidators(t *testing.T) {
 		require.Error(t, err)
 		assert.False(t, called, "second validator should not have been called")
 	})
+}
+
+func TestApplyValidators_NilInputs(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("nil validators is a no-op", func(t *testing.T) {
 		t.Parallel()
@@ -629,6 +663,11 @@ func TestApplyValidators(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, ErrValidation))
 	})
+}
+
+func TestApplyValidators_InvalidValidators(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("rejects nil validator element", func(t *testing.T) {
 		t.Parallel()
@@ -652,6 +691,11 @@ func TestApplyValidators(t *testing.T) {
 		assert.True(t, errors.Is(err, ErrValidation))
 		assert.NotContains(t, err.Error(), "0")
 	})
+}
+
+func TestApplyValidators_ClosesOnRejection(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 
 	t.Run("closes returned read closer when later validator rejects", func(t *testing.T) {
 		t.Parallel()
