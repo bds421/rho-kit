@@ -8,7 +8,26 @@ import (
 )
 
 func TestConfigWithFloor_ClonesMutableFieldsAndEnforcesFloor(t *testing.T) {
-	cfg := &tls.Config{
+	cfg := aliasProbeConfig()
+	cloned, err := ConfigWithFloor(cfg, tls.VersionTLS12)
+	if err != nil {
+		t.Fatalf("ConfigWithFloor: %v", err)
+	}
+	if cloned == cfg {
+		t.Fatal("expected detached config")
+	}
+	overwriteMutableFields(cfg)
+
+	if cloned.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("MinVersion = %x, want TLS 1.2", cloned.MinVersion)
+	}
+	assertConfigNotAliased(t, cloned)
+}
+
+// aliasProbeConfig sets one value in every mutable field ConfigWithFloor
+// must copy.
+func aliasProbeConfig() *tls.Config {
+	return &tls.Config{
 		MinVersion:                     tls.VersionTLS10,
 		NextProtos:                     []string{"h2"},
 		CipherSuites:                   []uint16{tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
@@ -25,15 +44,10 @@ func TestConfigWithFloor_ClonesMutableFieldsAndEnforcesFloor(t *testing.T) {
 			SignedCertificateTimestamps:  [][]byte{{7, 8, 9}},
 		}},
 	}
+}
 
-	cloned, err := ConfigWithFloor(cfg, tls.VersionTLS12)
-	if err != nil {
-		t.Fatalf("ConfigWithFloor: %v", err)
-	}
-	if cloned == cfg {
-		t.Fatal("expected detached config")
-	}
-
+// overwriteMutableFields changes every value aliasProbeConfig set.
+func overwriteMutableFields(cfg *tls.Config) {
 	cfg.NextProtos[0] = "http/1.1"
 	cfg.CipherSuites[0] = tls.TLS_RSA_WITH_AES_128_CBC_SHA
 	cfg.CurvePreferences[0] = tls.CurveP384
@@ -44,10 +58,11 @@ func TestConfigWithFloor_ClonesMutableFieldsAndEnforcesFloor(t *testing.T) {
 	cfg.Certificates[0].SupportedSignatureAlgorithms[0] = tls.PSSWithSHA256
 	cfg.Certificates[0].OCSPStaple[0] = 9
 	cfg.Certificates[0].SignedCertificateTimestamps[0][0] = 9
+}
 
-	if cloned.MinVersion != tls.VersionTLS12 {
-		t.Fatalf("MinVersion = %x, want TLS 1.2", cloned.MinVersion)
-	}
+// assertConfigNotAliased checks that cloned kept aliasProbeConfig's values.
+func assertConfigNotAliased(t *testing.T, cloned *tls.Config) {
+	t.Helper()
 	if cloned.NextProtos[0] != "h2" {
 		t.Fatalf("NextProtos aliased caller config: %v", cloned.NextProtos)
 	}

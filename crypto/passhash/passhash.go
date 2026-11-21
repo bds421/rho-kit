@@ -27,6 +27,8 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/argon2"
+
+	"github.com/bds421/rho-kit/core/v2/safecast"
 )
 
 // Sentinel errors. Verify wraps the underlying error so callers can
@@ -394,7 +396,7 @@ func Verify(password, encoded string, target Params, opts ...VerifyOption) (Veri
 		return VerifyResult{}, ErrParamsOutOfBounds
 	}
 
-	candidate := argon2.IDKey([]byte(password), salt, stored.Iterations, stored.Memory, stored.Parallelism, uint32(len(hash)))
+	candidate := argon2.IDKey([]byte(password), salt, stored.Iterations, stored.Memory, stored.Parallelism, stored.KeyLen)
 	matched := subtle.ConstantTimeCompare(candidate, hash) == 1
 
 	return VerifyResult{
@@ -463,7 +465,12 @@ func parsePHC(s string) (Params, []byte, []byte, error) {
 	if err != nil {
 		return Params{}, nil, nil, ErrMalformed
 	}
-	p.SaltLen = uint32(len(salt))
-	p.KeyLen = uint32(len(hash))
+	saltLen, saltFits := safecast.TryIntToUint32(len(salt))
+	keyLen, keyFits := safecast.TryIntToUint32(len(hash))
+	if !saltFits || !keyFits {
+		return Params{}, nil, nil, ErrMalformed
+	}
+	p.SaltLen = saltLen
+	p.KeyLen = keyLen
 	return p, salt, hash, nil
 }

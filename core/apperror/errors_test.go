@@ -349,49 +349,7 @@ func TestShouldRetry(t *testing.T) {
 // errors.go file in the same package, which keeps the AST scan
 // trivially scoped.
 func TestAllCodes_Complete(t *testing.T) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "errors.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse errors.go: %v", err)
-	}
-
-	var declared []Code
-	for _, decl := range f.Decls {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok || gen.Tok != token.CONST {
-			continue
-		}
-		for _, spec := range gen.Specs {
-			vs, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-			// Each constant in this file follows `CodeX Code = "..."`;
-			// the const block declares the same Code type explicitly so
-			// we look for one Name per ValueSpec.
-			for _, name := range vs.Names {
-				if !strings.HasPrefix(name.Name, "Code") {
-					continue
-				}
-				// The constant's runtime value is reachable by looking
-				// the name up via the declared package — but a test in
-				// the same package can just type-switch on the literal.
-				if len(vs.Values) != 1 {
-					continue
-				}
-				lit, ok := vs.Values[0].(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					continue
-				}
-				// Strip the surrounding quotes from the string literal.
-				raw, err := strconv.Unquote(lit.Value)
-				if err != nil {
-					t.Fatalf("unquote %s: %v", lit.Value, err)
-				}
-				declared = append(declared, Code(raw))
-			}
-		}
-	}
+	declared := declaredCodes(t)
 	if len(declared) == 0 {
 		t.Fatal("AST scan found zero Code constants — parser broken or file moved")
 	}
@@ -414,4 +372,50 @@ func TestAllCodes_Complete(t *testing.T) {
 		t.Fatalf("AllCodes() has %d entries but %d Code constants are declared (extras or duplicates)",
 			len(got), len(declared))
 	}
+}
+
+// declaredCodes parses errors.go and returns the values of its `CodeX`
+// string constants.
+func declaredCodes(t *testing.T) []Code {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "errors.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse errors.go: %v", err)
+	}
+	var declared []Code
+	for _, decl := range f.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			if vs, ok := spec.(*ast.ValueSpec); ok {
+				declared = append(declared, specCodes(t, vs)...)
+			}
+		}
+	}
+	return declared
+}
+
+// specCodes returns the Code constants of one ValueSpec. Each constant in
+// errors.go follows `CodeX Code = "..."`, one Name per ValueSpec.
+func specCodes(t *testing.T, vs *ast.ValueSpec) []Code {
+	t.Helper()
+	var codes []Code
+	for _, name := range vs.Names {
+		if !strings.HasPrefix(name.Name, "Code") || len(vs.Values) != 1 {
+			continue
+		}
+		lit, ok := vs.Values[0].(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			continue
+		}
+		raw, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			t.Fatalf("unquote %s: %v", lit.Value, err)
+		}
+		codes = append(codes, Code(raw))
+	}
+	return codes
 }

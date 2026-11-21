@@ -112,11 +112,7 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path 
 		t = t.Elem()
 	}
 	if t == timeType {
-		s := &jsonschemago.Schema{Type: "string", Format: "date-time"}
-		if err := applyStringConstraints(ctx, s, constraintTag); err != nil {
-			return nil, err
-		}
-		return s, nil
+		return constrainedString(ctx, "date-time", constraintTag)
 	}
 	if t == rawMessageType {
 		return &jsonschemago.Schema{}, nil
@@ -124,90 +120,18 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path 
 
 	switch t.Kind() {
 	case reflect.String:
-		s := &jsonschemago.Schema{Type: "string"}
-		if err := applyStringConstraints(ctx, s, constraintTag); err != nil {
-			return nil, err
-		}
-		return s, nil
+		return constrainedString(ctx, "", constraintTag)
 	case reflect.Bool:
 		return &jsonschemago.Schema{Type: "boolean"}, nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		s := &jsonschemago.Schema{Type: "integer"}
-		if err := applyNumericConstraints(ctx, s, constraintTag); err != nil {
-			return nil, err
-		}
-		return s, nil
+		return constrainedNumber(ctx, "integer", constraintTag)
 	case reflect.Float32, reflect.Float64:
-		s := &jsonschemago.Schema{Type: "number"}
-		if err := applyNumericConstraints(ctx, s, constraintTag); err != nil {
-			return nil, err
-		}
-		return s, nil
+		return constrainedNumber(ctx, "number", constraintTag)
 	case reflect.Slice, reflect.Array:
-		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
-			// []byte marshals as a base64 string. encoding/json only
-			// base64-encodes byte *slices*; a byte *array* ([16]byte
-			// UUID, [32]byte hash) marshals as a JSON array of numbers,
-			// so it falls through to the array-of-integer schema below.
-			//
-			// String constraints (min/max/len/pattern/format) apply to
-			// the base64-encoded text the field marshals to, NOT the raw
-			// byte count: a 3-byte slice encodes to a 4-character base64
-			// string, so `min=`/`max=` count base64 characters. Run them
-			// here so a constraint on a []byte field is honoured instead
-			// of silently dropped.
-			s := &jsonschemago.Schema{Type: "string"}
-			if err := applyStringConstraints(ctx, s, constraintTag); err != nil {
-				return nil, err
-			}
-			return s, nil
-		}
-		if ctx.visiting[t] {
-			return nil, fmt.Errorf("%w: recursive array or slice type", ErrCyclicSchema)
-		}
-		ctx.visiting[t] = true
-		defer delete(ctx.visiting, t)
-		// Record this path as a collection so the error renderer can
-		// strip the per-element index segment santhosh-tekuri injects
-		// ("items.0.name" -> "items.name") before a requiredNonEmpty /
-		// fieldOrder lookup. A slice-of-slice keyed at the same path
-		// nests two element levels, so the count is incremented.
-		if path != "" {
-			ctx.collections[path]++
-		}
-		items, err := schemaForReflect(ctx, t.Elem(), "", path)
-		if err != nil {
-			return nil, err
-		}
-		s := &jsonschemago.Schema{Type: "array", Items: items}
-		if err := applyArrayConstraints(s, constraintTag); err != nil {
-			return nil, err
-		}
-		return s, nil
+		return arraySchema(ctx, t, constraintTag, path)
 	case reflect.Map:
-		if t.Key().Kind() != reflect.String {
-			return nil, fmt.Errorf("%w: map key must be string", ErrUnsupportedType)
-		}
-		if ctx.visiting[t] {
-			return nil, fmt.Errorf("%w: recursive map type", ErrCyclicSchema)
-		}
-		ctx.visiting[t] = true
-		defer delete(ctx.visiting, t)
-		// Record this path as a collection so the error renderer can
-		// strip the per-entry key segment santhosh-tekuri injects
-		// ("m.somekey.label" -> "m.label") before a requiredNonEmpty /
-		// fieldOrder lookup. A map-of-slice (or slice-of-map) keyed at
-		// the same path nests more than one element level, so the count
-		// is incremented rather than set.
-		if path != "" {
-			ctx.collections[path]++
-		}
-		val, err := schemaForReflect(ctx, t.Elem(), "", path)
-		if err != nil {
-			return nil, err
-		}
-		return &jsonschemago.Schema{Type: "object", AdditionalProperties: val}, nil
+		return mapSchema(ctx, t, path)
 	case reflect.Interface:
 		return &jsonschemago.Schema{}, nil
 	case reflect.Struct:
@@ -215,6 +139,86 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path 
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedType, t.Kind())
 	}
+}
+
+func constrainedString(ctx *buildCtx, format, constraintTag string) (*jsonschemago.Schema, error) {
+	s := &jsonschemago.Schema{Type: "string", Format: format}
+	if err := applyStringConstraints(ctx, s, constraintTag); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func constrainedNumber(ctx *buildCtx, typ, constraintTag string) (*jsonschemago.Schema, error) {
+	s := &jsonschemago.Schema{Type: typ}
+	if err := applyNumericConstraints(ctx, s, constraintTag); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func arraySchema(ctx *buildCtx, t reflect.Type, constraintTag string, path string) (*jsonschemago.Schema, error) {
+	if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+		// []byte marshals as a base64 string. encoding/json only
+		// base64-encodes byte *slices*; a byte *array* ([16]byte
+		// UUID, [32]byte hash) marshals as a JSON array of numbers,
+		// so it falls through to the array-of-integer schema below.
+		//
+		// String constraints (min/max/len/pattern/format) apply to
+		// the base64-encoded text the field marshals to, NOT the raw
+		// byte count: a 3-byte slice encodes to a 4-character base64
+		// string, so `min=`/`max=` count base64 characters. Run them
+		// here so a constraint on a []byte field is honoured instead
+		// of silently dropped.
+		return constrainedString(ctx, "", constraintTag)
+	}
+	if ctx.visiting[t] {
+		return nil, fmt.Errorf("%w: recursive array or slice type", ErrCyclicSchema)
+	}
+	ctx.visiting[t] = true
+	defer delete(ctx.visiting, t)
+	// Record this path as a collection so the error renderer can
+	// strip the per-element index segment santhosh-tekuri injects
+	// ("items.0.name" -> "items.name") before a requiredNonEmpty /
+	// fieldOrder lookup. A slice-of-slice keyed at the same path
+	// nests two element levels, so the count is incremented.
+	if path != "" {
+		ctx.collections[path]++
+	}
+	items, err := schemaForReflect(ctx, t.Elem(), "", path)
+	if err != nil {
+		return nil, err
+	}
+	s := &jsonschemago.Schema{Type: "array", Items: items}
+	if err := applyArrayConstraints(s, constraintTag); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func mapSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Schema, error) {
+	if t.Key().Kind() != reflect.String {
+		return nil, fmt.Errorf("%w: map key must be string", ErrUnsupportedType)
+	}
+	if ctx.visiting[t] {
+		return nil, fmt.Errorf("%w: recursive map type", ErrCyclicSchema)
+	}
+	ctx.visiting[t] = true
+	defer delete(ctx.visiting, t)
+	// Record this path as a collection so the error renderer can
+	// strip the per-entry key segment santhosh-tekuri injects
+	// ("m.somekey.label" -> "m.label") before a requiredNonEmpty /
+	// fieldOrder lookup. A map-of-slice (or slice-of-map) keyed at
+	// the same path nests more than one element level, so the count
+	// is incremented rather than set.
+	if path != "" {
+		ctx.collections[path]++
+	}
+	val, err := schemaForReflect(ctx, t.Elem(), "", path)
+	if err != nil {
+		return nil, err
+	}
+	return &jsonschemago.Schema{Type: "object", AdditionalProperties: val}, nil
 }
 
 // structSchema walks a struct type and returns the corresponding
@@ -228,160 +232,183 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 	ctx.visiting[t] = true
 	defer delete(ctx.visiting, t)
 
-	out := &jsonschemago.Schema{
-		Type:                 "object",
-		Properties:           map[string]*jsonschemago.Schema{},
-		AdditionalProperties: falseSchema(),
+	w := &structWalk{
+		ctx:  ctx,
+		path: path,
+		out: &jsonschemago.Schema{
+			Type:                 "object",
+			Properties:           map[string]*jsonschemago.Schema{},
+			AdditionalProperties: falseSchema(),
+		},
+		seenRequired: map[string]struct{}{},
+		directNames:  directFieldNames(t),
 	}
+	for i := 0; i < t.NumField(); i++ {
+		if err := w.addField(t.Field(i)); err != nil {
+			return nil, err
+		}
+	}
+	if len(w.required) > 0 {
+		w.out.Required = w.required
+	}
+	if len(w.order) > 0 {
+		w.out.PropertyOrder = w.order
+	}
+	return w.out, nil
+}
 
-	var required []string
-	var order []string
+// structWalk is the state of one structSchema call.
+type structWalk struct {
+	ctx      *buildCtx
+	path     string
+	out      *jsonschemago.Schema
+	order    []string
+	required []string
 	// seenRequired dedupes the required list so a name promoted from two
 	// embedded structs (or an embedded plus a direct field) is listed
 	// once.
-	seenRequired := map[string]struct{}{}
-	addRequired := func(name string) {
-		if _, ok := seenRequired[name]; ok {
-			return
-		}
-		seenRequired[name] = struct{}{}
-		required = append(required, name)
-	}
+	seenRequired map[string]struct{}
+	directNames  map[string]struct{}
+}
 
-	// directNames is the set of JSON names declared directly on this
-	// struct (depth 0). encoding/json's shadowing rule gives a shallower
-	// field precedence over an embedded (deeper) field with the same
-	// name regardless of declaration order, so a direct field always
-	// wins. Precomputing the set lets the embedded merge below skip a
-	// shadowed sibling — including the case where the embedded struct is
-	// declared *before* the parent field, which would otherwise leave a
-	// duplicate PropertyOrder entry plus a stale required marker from
-	// the losing embedded field.
-	directNames := map[string]struct{}{}
+// directFieldNames is the set of JSON names declared directly on t
+// (depth 0). encoding/json's shadowing rule gives a shallower field
+// precedence over an embedded (deeper) field with the same name
+// regardless of declaration order, so a direct field always wins.
+// Precomputing the set lets the embedded merge skip a shadowed sibling —
+// including the case where the embedded struct is declared *before* the
+// parent field, which would otherwise leave a duplicate PropertyOrder
+// entry plus a stale required marker from the losing embedded field.
+func directFieldNames(t reflect.Type) map[string]struct{} {
+	names := map[string]struct{}{}
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
-		if f.Anonymous && f.Tag.Get("json") == "" {
-			continue
-		}
-		if !f.IsExported() {
+		if isFlattenedEmbed(f) || !f.IsExported() {
 			continue
 		}
 		if name, _, skip := jsonFieldName(f); !skip {
-			directNames[name] = struct{}{}
+			names[name] = struct{}{}
 		}
 	}
+	return names
+}
 
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		// Embedded (anonymous, no json tag) flattens into parent.
-		// encoding/json promotes exported fields of an embedded
-		// unexported-named struct as well (the struct field itself can
-		// have an unexported name like `base`, but its `ID` member is
-		// still emitted under the parent), so we check Anonymous BEFORE
-		// the IsExported gate. Skipping unexported anonymous struct
-		// fields here would diverge from json's marshalling shape.
-		if f.Anonymous && f.Tag.Get("json") == "" {
-			ft := f.Type
-			for ft.Kind() == reflect.Pointer {
-				ft = ft.Elem()
-			}
-			if ft.Kind() != reflect.Struct {
-				continue
-			}
-			emb, err := structSchema(ctx, ft, path)
-			if err != nil {
-				return nil, err
-			}
-			for _, name := range emb.PropertyOrder {
-				// A direct field of this struct shadows the embedded
-				// sibling: drop the embedded property, its order slot,
-				// and any required/required-non-empty marker it left so
-				// the shallower (winning) field's optionality stands.
-				if _, shadowed := directNames[name]; shadowed {
-					childPath := name
-					if path != "" {
-						childPath = path + "." + name
-					}
-					delete(ctx.requiredNonEmpty, childPath)
-					continue
-				}
-				if _, ok := out.Properties[name]; ok {
-					continue
-				}
-				out.Properties[name] = emb.Properties[name]
-				order = append(order, name)
-			}
-			for _, name := range emb.Required {
-				if _, shadowed := directNames[name]; shadowed {
-					continue
-				}
-				addRequired(name)
-			}
+// isFlattenedEmbed reports an embedded field without a json tag, which
+// flattens into the parent.
+func isFlattenedEmbed(f reflect.StructField) bool {
+	return f.Anonymous && f.Tag.Get("json") == ""
+}
+
+func (w *structWalk) childPath(name string) string {
+	if w.path == "" {
+		return name
+	}
+	return w.path + "." + name
+}
+
+func (w *structWalk) addRequired(name string) {
+	if _, ok := w.seenRequired[name]; ok {
+		return
+	}
+	w.seenRequired[name] = struct{}{}
+	w.required = append(w.required, name)
+}
+
+// addField adds one field of the struct. encoding/json promotes exported
+// fields of an embedded unexported-named struct as well (the struct field
+// itself can have an unexported name like `base`, but its `ID` member is
+// still emitted under the parent), so embedding is checked BEFORE the
+// IsExported gate.
+func (w *structWalk) addField(f reflect.StructField) error {
+	if isFlattenedEmbed(f) {
+		return w.mergeEmbedded(f)
+	}
+	if !f.IsExported() {
+		return nil
+	}
+	name, omitEmpty, skip := jsonFieldName(f)
+	if skip {
+		return nil
+	}
+	jsTag := f.Tag.Get("jsonschema")
+	childPath := w.childPath(name)
+	field, err := schemaForReflect(w.ctx, f.Type, jsTag, childPath)
+	if err != nil {
+		return err
+	}
+	// Description sources in order: `desc:` tag (kit
+	// convention), `jsonschema:` tag's free-form residue (any
+	// token that is not a recognised constraint keyword). The
+	// latter wins when both are present so callers can migrate
+	// from `desc:` to `jsonschema:` field by field.
+	if d := f.Tag.Get("desc"); d != "" {
+		field.Description = d
+	}
+	if d := descriptionFromJSONSchemaTag(jsTag); d != "" {
+		field.Description = d
+	}
+	isRequired := jsonschemaTagHasRequired(jsTag)
+	if isRequired {
+		w.addRequired(name)
+		// For string/array required fields, also enforce non-
+		// empty. The error renderer maps a minLength / minItems
+		// violation on a path in requiredNonEmpty back to
+		// "is required" so the same wording survives even when
+		// the empty value was rejected by a stricter min rule
+		// (e.g. `required,min=2`).
+		markRequiredNonEmpty(w.ctx, field, childPath)
+	}
+	// A nil pointer/slice/map field marshals as JSON `null` when the
+	// json tag has no omitempty, so the inferred schema must admit
+	// null for those fields — otherwise an absent optional value is
+	// rejected with "must be array/object/string". Required fields
+	// keep the strict single type so null (the zero value) still
+	// fails; omitempty fields never emit null, so they need no
+	// widening either. A field that declares a positive lower bound
+	// (min/len → minItems/minLength) is treated as wanting a present,
+	// non-empty value, so null stays rejected there too.
+	if !isRequired && !omitEmpty && marshalsAsJSONNull(f.Type) && !hasPositiveLowerBound(field) {
+		admitNull(field)
+	}
+	w.out.Properties[name] = field
+	w.order = append(w.order, name)
+	w.ctx.fieldOrder[childPath] = len(w.ctx.fieldOrder)
+	return nil
+}
+
+// mergeEmbedded flattens an embedded struct's properties into the parent.
+// A direct field of the parent shadows the embedded sibling: the embedded
+// property, its order slot and any required/required-non-empty marker it
+// left are dropped so the shallower (winning) field's optionality stands.
+func (w *structWalk) mergeEmbedded(f reflect.StructField) error {
+	ft := f.Type
+	for ft.Kind() == reflect.Pointer {
+		ft = ft.Elem()
+	}
+	if ft.Kind() != reflect.Struct {
+		return nil
+	}
+	emb, err := structSchema(w.ctx, ft, w.path)
+	if err != nil {
+		return err
+	}
+	for _, name := range emb.PropertyOrder {
+		if _, shadowed := w.directNames[name]; shadowed {
+			delete(w.ctx.requiredNonEmpty, w.childPath(name))
 			continue
 		}
-		if !f.IsExported() {
+		if _, ok := w.out.Properties[name]; ok {
 			continue
 		}
-
-		name, omitEmpty, skip := jsonFieldName(f)
-		if skip {
-			continue
-		}
-		jsTag := f.Tag.Get("jsonschema")
-		childPath := name
-		if path != "" {
-			childPath = path + "." + name
-		}
-		field, err := schemaForReflect(ctx, f.Type, jsTag, childPath)
-		if err != nil {
-			return nil, err
-		}
-		// Description sources in order: `desc:` tag (kit
-		// convention), `jsonschema:` tag's free-form residue (any
-		// token that is not a recognised constraint keyword). The
-		// latter wins when both are present so callers can migrate
-		// from `desc:` to `jsonschema:` field by field.
-		if d := f.Tag.Get("desc"); d != "" {
-			field.Description = d
-		}
-		if d := descriptionFromJSONSchemaTag(jsTag); d != "" {
-			field.Description = d
-		}
-		isRequired := jsonschemaTagHasRequired(jsTag)
-		if isRequired {
-			addRequired(name)
-			// For string/array required fields, also enforce non-
-			// empty. The error renderer maps a minLength / minItems
-			// violation on a path in requiredNonEmpty back to
-			// "is required" so the same wording survives even when
-			// the empty value was rejected by a stricter min rule
-			// (e.g. `required,min=2`).
-			markRequiredNonEmpty(ctx, field, childPath)
-		}
-		// A nil pointer/slice/map field marshals as JSON `null` when the
-		// json tag has no omitempty, so the inferred schema must admit
-		// null for those fields — otherwise an absent optional value is
-		// rejected with "must be array/object/string". Required fields
-		// keep the strict single type so null (the zero value) still
-		// fails; omitempty fields never emit null, so they need no
-		// widening either. A field that declares a positive lower bound
-		// (min/len → minItems/minLength) is treated as wanting a present,
-		// non-empty value, so null stays rejected there too.
-		if !isRequired && !omitEmpty && marshalsAsJSONNull(f.Type) && !hasPositiveLowerBound(field) {
-			admitNull(field)
-		}
-		out.Properties[name] = field
-		order = append(order, name)
-		ctx.fieldOrder[childPath] = len(ctx.fieldOrder)
+		w.out.Properties[name] = emb.Properties[name]
+		w.order = append(w.order, name)
 	}
-
-	if len(required) > 0 {
-		out.Required = required
+	for _, name := range emb.Required {
+		if _, shadowed := w.directNames[name]; !shadowed {
+			w.addRequired(name)
+		}
 	}
-	if len(order) > 0 {
-		out.PropertyOrder = order
-	}
-	return out, nil
+	return nil
 }
 
 // marshalsAsJSONNull reports whether a nil value of type t encodes to
@@ -581,6 +608,32 @@ var knownBuiltinFormats = map[string]struct{}{
 	"cidr": {}, "datetime": {}, "date-time": {},
 }
 
+// eachConstraint calls apply with the key and value of every constraint
+// keyword in a `jsonschema:"..."` tag. "required" is handled by the
+// walker and free-form text by descriptionFromJSONSchemaTag; custom
+// RegisterFormat formats are wired via explicit `format=<name>` rather
+// than the bare keyword form to keep that description fallback
+// unambiguous.
+func eachConstraint(tag string, apply func(key, value string) error) error {
+	if tag == "" {
+		return nil
+	}
+	for _, raw := range splitTagFields(tag) {
+		rule := strings.TrimSpace(raw)
+		if rule == "" || rule == "required" {
+			continue
+		}
+		key, value := splitRule(rule)
+		if _, ok := constraintKeywords[key]; !ok {
+			continue
+		}
+		if err := apply(key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // applyStringConstraints maps `jsonschema:"..."` rules that apply to
 // a string-typed schema (length, format, pattern). Numeric or
 // array-only rules are silently ignored — applyNumericConstraints /
@@ -590,65 +643,17 @@ var knownBuiltinFormats = map[string]struct{}{
 // an error (programming error at schema build) rather than silently
 // dropping the constraint (fail-open).
 func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) error {
-	if tag == "" {
-		return nil
-	}
-	for _, raw := range splitTagFields(tag) {
-		rule := strings.TrimSpace(raw)
-		if rule == "" || rule == "required" {
-			continue
-		}
-		key, value := splitRule(rule)
-		if _, ok := constraintKeywords[key]; !ok {
-			// Free-form text — handled by descriptionFromJSONSchemaTag.
-			continue
-		}
+	return eachConstraint(tag, func(key, value string) error {
 		switch key {
-		case "min":
-			n, ok := atoi(value)
-			if !ok {
-				return fmt.Errorf("validate: invalid min constraint %q", value)
-			}
-			s.MinLength = ptrInt(n)
-		case "max":
-			n, ok := atoi(value)
-			if !ok {
-				return fmt.Errorf("validate: invalid max constraint %q", value)
-			}
-			s.MaxLength = ptrInt(n)
-		case "len":
-			n, ok := atoi(value)
-			if !ok {
-				return fmt.Errorf("validate: invalid len constraint %q", value)
-			}
-			s.MinLength = ptrInt(n)
-			s.MaxLength = ptrInt(n)
+		case "min", "max", "len":
+			return applyLengthRule(&s.MinLength, &s.MaxLength, key, value)
 		case "oneof":
 			s.Enum = parseEnum(s.Type, value)
 		case "pattern":
 			s.Pattern = value
 		case "format":
-			if value == "" {
-				return fmt.Errorf("validate: empty format constraint")
-			}
-			if isParametricFormatName(value) {
-				s.Format = value
-				ctx.parametric[value] = struct{}{}
-				break
-			}
-			// Typo'd parametric prefixes (e.g. starts-wtih:/api) contain
-			// ':' but are not known parametric forms — fail closed.
-			if strings.Contains(value, ":") {
-				return fmt.Errorf("validate: unknown format %q (expected starts-with:/ends-with:/contains:/excludes-all: or a bare registered name)", value)
-			}
-			// Bare name: builtins accepted immediately; custom names are
-			// recorded so schemaForType can fail closed when the name
-			// was never RegisterFormat'd (santhosh-tekuri would otherwise
-			// treat unknown formats as always-valid).
-			if _, ok := knownBuiltinFormats[value]; !ok {
-				ctx.customFormats[value] = struct{}{}
-			}
-			s.Format = value
+			return applyFormatRule(ctx, s, value,
+				" (expected starts-with:/ends-with:/contains:/excludes-all: or a bare registered name)")
 		case "email", "url", "uri", "uuid", "uuid4", "ip", "ipv4", "ipv6",
 			"hostname", "alpha", "alphanum", "numeric", "cidr", "datetime":
 			s.Format = canonicalFormatName(key)
@@ -657,7 +662,48 @@ func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) e
 			s.Format = name
 			ctx.parametric[name] = struct{}{}
 		}
+		return nil
+	})
+}
+
+// applyLengthRule sets the lower bound (min), the upper bound (max) or
+// both (len) of a length or item count.
+func applyLengthRule(minimum, maximum **int, key, value string) error {
+	n, ok := atoi(value)
+	if !ok {
+		return fmt.Errorf("validate: invalid %s constraint %q", key, value)
 	}
+	if key != "max" {
+		*minimum = ptrInt(n)
+	}
+	if key != "min" {
+		*maximum = ptrInt(n)
+	}
+	return nil
+}
+
+// applyFormatRule sets an explicit `format=<name>`. Typo'd parametric
+// prefixes (e.g. starts-wtih:/api) contain ':' but are not known
+// parametric forms, so they fail closed. Builtin bare names are accepted
+// at once; custom names are recorded so schemaForType can fail closed
+// when the name was never RegisterFormat'd (santhosh-tekuri would
+// otherwise treat unknown formats as always-valid).
+func applyFormatRule(ctx *buildCtx, s *jsonschemago.Schema, value, unknownHint string) error {
+	if value == "" {
+		return errors.New("validate: empty format constraint")
+	}
+	if isParametricFormatName(value) {
+		s.Format = value
+		ctx.parametric[value] = struct{}{}
+		return nil
+	}
+	if strings.Contains(value, ":") {
+		return fmt.Errorf("validate: unknown format %q%s", value, unknownHint)
+	}
+	if _, ok := knownBuiltinFormats[value]; !ok {
+		ctx.customFormats[value] = struct{}{}
+	}
+	s.Format = value
 	return nil
 }
 
@@ -665,66 +711,33 @@ func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) e
 // integer/number-typed schemas (min/max value, gte/lte, gt/lt,
 // oneof, format).
 func applyNumericConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) error {
-	if tag == "" {
-		return nil
-	}
-	for _, raw := range splitTagFields(tag) {
-		rule := strings.TrimSpace(raw)
-		if rule == "" || rule == "required" {
-			continue
-		}
-		key, value := splitRule(rule)
-		if _, ok := constraintKeywords[key]; !ok {
-			// Free-form text — handled by descriptionFromJSONSchemaTag.
-			// Custom RegisterFormat formats are wired via explicit
-			// `format=<name>` rather than the bare keyword form to keep
-			// the description fallback unambiguous.
-			continue
-		}
+	return eachConstraint(tag, func(key, value string) error {
 		switch key {
-		case "min", "gte":
-			f, ok := atof(value)
-			if !ok {
-				return fmt.Errorf("validate: invalid %s constraint %q", key, value)
-			}
-			s.Minimum = ptrFloat(f)
-		case "max", "lte":
-			f, ok := atof(value)
-			if !ok {
-				return fmt.Errorf("validate: invalid %s constraint %q", key, value)
-			}
-			s.Maximum = ptrFloat(f)
-		case "gt":
-			f, ok := atof(value)
-			if !ok {
-				return fmt.Errorf("validate: invalid gt constraint %q", value)
-			}
-			s.ExclusiveMinimum = ptrFloat(f)
-		case "lt":
-			f, ok := atof(value)
-			if !ok {
-				return fmt.Errorf("validate: invalid lt constraint %q", value)
-			}
-			s.ExclusiveMaximum = ptrFloat(f)
+		case "min", "gte", "max", "lte", "gt", "lt":
+			return applyBoundRule(s, key, value)
 		case "oneof":
 			s.Enum = parseEnum(s.Type, value)
 		case "format":
-			if value == "" {
-				return fmt.Errorf("validate: empty format constraint")
-			}
-			if isParametricFormatName(value) {
-				s.Format = value
-				ctx.parametric[value] = struct{}{}
-				break
-			}
-			if strings.Contains(value, ":") {
-				return fmt.Errorf("validate: unknown format %q", value)
-			}
-			if _, ok := knownBuiltinFormats[value]; !ok {
-				ctx.customFormats[value] = struct{}{}
-			}
-			s.Format = value
+			return applyFormatRule(ctx, s, value, "")
 		}
+		return nil
+	})
+}
+
+func applyBoundRule(s *jsonschemago.Schema, key, value string) error {
+	f, ok := atof(value)
+	if !ok {
+		return fmt.Errorf("validate: invalid %s constraint %q", key, value)
+	}
+	switch key {
+	case "min", "gte":
+		s.Minimum = ptrFloat(f)
+	case "max", "lte":
+		s.Maximum = ptrFloat(f)
+	case "gt":
+		s.ExclusiveMinimum = ptrFloat(f)
+	default:
+		s.ExclusiveMaximum = ptrFloat(f)
 	}
 	return nil
 }
@@ -743,43 +756,15 @@ func isParametricFormatName(name string) bool {
 // applyArrayConstraints maps slice/array constraints (length and
 // uniqueness rules) onto the schema.
 func applyArrayConstraints(s *jsonschemago.Schema, tag string) error {
-	if tag == "" {
-		return nil
-	}
-	for _, raw := range splitTagFields(tag) {
-		rule := strings.TrimSpace(raw)
-		if rule == "" || rule == "required" {
-			continue
-		}
-		key, value := splitRule(rule)
-		if _, ok := constraintKeywords[key]; !ok {
-			continue
-		}
+	return eachConstraint(tag, func(key, value string) error {
 		switch key {
-		case "min":
-			n, ok := atoi(value)
-			if !ok {
-				return fmt.Errorf("validate: invalid min constraint %q", value)
-			}
-			s.MinItems = ptrInt(n)
-		case "max":
-			n, ok := atoi(value)
-			if !ok {
-				return fmt.Errorf("validate: invalid max constraint %q", value)
-			}
-			s.MaxItems = ptrInt(n)
-		case "len":
-			n, ok := atoi(value)
-			if !ok {
-				return fmt.Errorf("validate: invalid len constraint %q", value)
-			}
-			s.MinItems = ptrInt(n)
-			s.MaxItems = ptrInt(n)
+		case "min", "max", "len":
+			return applyLengthRule(&s.MinItems, &s.MaxItems, key, value)
 		case "unique":
 			s.UniqueItems = true
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // canonicalFormatName maps the v1 validator tag spellings onto the

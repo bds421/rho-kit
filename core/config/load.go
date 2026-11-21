@@ -148,96 +148,82 @@ func loadWithEnvTracking(v reflect.Value, visited map[reflect.Type]struct{}) (en
 		if !field.IsExported() {
 			continue
 		}
-
-		fv := v.Field(i)
-
-		// Recurse into nested structs without an env tag.
-		if field.Type.Kind() == reflect.Struct && field.Tag.Get("env") == "" {
-			childRead, err := loadWithEnvTracking(fv, visited)
-			if err != nil {
-				return false, err
-			}
-			if childRead {
-				envRead = true
-			}
-			continue
-		}
-
-		// Recurse into pointer-to-struct fields without an env tag.
-		// Only allocate the pointer if at least one nested field received a
-		// value from the environment, preserving nil-means-disabled convention.
-		if field.Type.Kind() == reflect.Pointer && field.Type.Elem().Kind() == reflect.Struct && field.Tag.Get("env") == "" {
-			tmp := reflect.New(field.Type.Elem())
-			childRead, err := loadWithEnvTracking(tmp.Elem(), visited)
-			if err != nil {
-				return false, err
-			}
-			if childRead {
-				fv.Set(tmp)
-				envRead = true
-			} else if field.Tag.Get("required") == "true" {
-				return false, redact.Safef("config: required struct %s has no environment variables set", field.Name)
-			}
-			continue
-		}
-
-		envTag := field.Tag.Get("env")
-		if envTag == "" {
-			continue
-		}
-
-		envName, required, tagErr := parseEnvTag(envTag)
-		if tagErr != nil {
-			return false, tagErr
-		}
-		defaultVal := field.Tag.Get("default")
-		isSecret := field.Tag.Get("secret") == "true"
-
-		val, valBytes, fromEnv, resolveErr := resolveWithSource(envName, isSecret)
-		if resolveErr != nil {
-			return false, resolveErr
-		}
-		if fromEnv {
-			envRead = true
-		}
-		// "required" means non-empty: if the env var was explicitly set to ""
-		// (empty file, blank export), reject even though a default exists. The
-		// default is for the unset case, not for "operator overrode it with
-		// nothing" — that's the misconfig the required flag is meant to catch.
-		if required && fromEnv && val == "" {
-			if valBytes != nil {
-				zeroBytes(valBytes)
-			}
-			return false, redact.Safef("config: required environment variable %s is set but empty", envName)
-		}
-		if val == "" {
-			val = defaultVal
-		}
-		if val == "" && required {
-			if valBytes != nil {
-				zeroBytes(valBytes)
-			}
-			return false, redact.Safef("config: required environment variable %s is not set", envName)
-		}
-		if val == "" {
-			if valBytes != nil {
-				zeroBytes(valBytes)
-			}
-			continue
-		}
-
-		err := setField(fv, val, envName, isSecret)
-		if valBytes != nil {
-			// Zero the originating bytes regardless of setField outcome;
-			// the value has either been copied (string fields) or
-			// parsed into a typed field by this point.
-			zeroBytes(valBytes)
-		}
+		read, err := loadField(field, v.Field(i), visited)
 		if err != nil {
 			return false, err
 		}
+		envRead = envRead || read
 	}
 	return envRead, nil
+}
+
+// loadField loads one exported field: a nested struct or pointer to
+// struct without an env tag recurses, a field with an env tag reads it.
+func loadField(field reflect.StructField, fv reflect.Value, visited map[reflect.Type]struct{}) (envRead bool, _ error) {
+	envTag := field.Tag.Get("env")
+	switch {
+	case envTag == "" && field.Type.Kind() == reflect.Struct:
+		return loadWithEnvTracking(fv, visited)
+	case envTag == "" && field.Type.Kind() == reflect.Pointer && field.Type.Elem().Kind() == reflect.Struct:
+		return loadStructPointer(field, fv, visited)
+	case envTag == "":
+		return false, nil
+	}
+	envName, required, err := parseEnvTag(envTag)
+	if err != nil {
+		return false, err
+	}
+	return loadEnvField(fv, envName, required, field.Tag.Get("default"), field.Tag.Get("secret") == "true")
+}
+
+// loadStructPointer allocates the pointer only if at least one nested
+// field received a value from the environment, preserving the
+// nil-means-disabled convention.
+func loadStructPointer(field reflect.StructField, fv reflect.Value, visited map[reflect.Type]struct{}) (bool, error) {
+	tmp := reflect.New(field.Type.Elem())
+	childRead, err := loadWithEnvTracking(tmp.Elem(), visited)
+	if err != nil {
+		return false, err
+	}
+	if childRead {
+		fv.Set(tmp)
+		return true, nil
+	}
+	if field.Tag.Get("required") == "true" {
+		return false, redact.Safef("config: required struct %s has no environment variables set", field.Name)
+	}
+	return false, nil
+}
+
+// loadEnvField resolves one variable into fv. The originating bytes of a
+// _FILE secret are zeroed whatever the outcome; by then the value has
+// either been copied (string fields) or parsed into a typed field.
+func loadEnvField(fv reflect.Value, envName string, required bool, defaultVal string, isSecret bool) (fromEnv bool, _ error) {
+	val, valBytes, fromEnv, err := resolveWithSource(envName, isSecret)
+	if err != nil {
+		return false, err
+	}
+	defer zeroBytes(valBytes)
+	// "required" means non-empty: if the env var was explicitly set to ""
+	// (empty file, blank export), reject even though a default exists. The
+	// default is for the unset case, not for "operator overrode it with
+	// nothing" — that's the misconfig the required flag is meant to catch.
+	if required && fromEnv && val == "" {
+		return false, redact.Safef("config: required environment variable %s is set but empty", envName)
+	}
+	if val == "" {
+		val = defaultVal
+	}
+	if val == "" && required {
+		return false, redact.Safef("config: required environment variable %s is not set", envName)
+	}
+	if val == "" {
+		return fromEnv, nil
+	}
+	if err := setField(fv, val, envName, isSecret); err != nil {
+		return false, err
+	}
+	return fromEnv, nil
 }
 
 // parseEnvTag splits an env struct-tag value into the environment-variable
@@ -422,88 +408,96 @@ func classifyReadError(err error) error {
 }
 
 func setField(fv reflect.Value, val, envName string, isSecret bool) error {
-	// Handle *url.URL pointer type.
-	// Note: scheme validation is intentionally limited to requiring a non-empty
-	// scheme and host. Callers that need specific schemes (e.g., http/https only)
-	// should validate after Load. This avoids restricting use cases like
-	// amqp://, redis://, or custom internal schemes.
 	if fv.Type() == reflect.TypeOf((*url.URL)(nil)) {
-		u, err := url.Parse(val)
-		if err != nil {
-			return redact.Safef("config: %s: invalid URL syntax", envName)
-		}
-		if u.Scheme == "" || u.Host == "" {
-			return redact.Safef("config: %s: invalid URL: must include scheme and host", envName)
-		}
-		fv.Set(reflect.ValueOf(u))
-		return nil
+		return setURL(fv, val, envName)
 	}
 
 	switch fv.Kind() {
 	case reflect.String:
 		fv.SetString(val)
-
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		if fv.Type() == reflect.TypeOf(time.Duration(0)) {
-			d, err := time.ParseDuration(val)
-			if err != nil {
-				return invalidParseError(envName, "duration", val, isSecret, err)
-			}
-			fv.Set(reflect.ValueOf(d))
-		} else {
-			n, err := strconv.ParseInt(val, 10, fv.Type().Bits())
-			if err != nil {
-				return invalidParseError(envName, "integer", val, isSecret, err)
-			}
-			fv.SetInt(n)
-		}
-
+		return setSigned(fv, val, envName, isSecret)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		n, err := strconv.ParseUint(val, 10, fv.Type().Bits())
 		if err != nil {
 			return invalidParseError(envName, "unsigned integer", val, isSecret, err)
 		}
 		fv.SetUint(n)
-
 	case reflect.Bool:
 		b, err := strconv.ParseBool(val)
 		if err != nil {
 			return invalidParseError(envName, "boolean", val, isSecret, err)
 		}
 		fv.SetBool(b)
-
 	case reflect.Float32, reflect.Float64:
 		f, err := strconv.ParseFloat(val, fv.Type().Bits())
 		if err != nil {
 			return invalidParseError(envName, "float", val, isSecret, err)
 		}
 		fv.SetFloat(f)
-
 	case reflect.Slice:
-		if fv.Type().Elem().Kind() == reflect.String {
-			parts := strings.Split(val, ",")
-			items := make([]string, 0, len(parts))
-			for i, p := range parts {
-				s := strings.TrimSpace(p)
-				if s == "" {
-					return redact.Safef("config: %s: empty list item at position %d", envName, i+1)
-				}
-				items = append(items, s)
-			}
-			fv.Set(reflect.ValueOf(items))
-		} else {
+		if fv.Type().Elem().Kind() != reflect.String {
 			return redact.Safef("config: %s: unsupported slice type %s", envName, fv.Type())
 		}
-
+		return setStringList(fv, val, envName)
 	case reflect.Map:
 		return redact.Safef("config: %s: map fields are not supported (use a struct or []string instead)", envName)
-
 	case reflect.Interface:
 		return redact.Safef("config: %s: interface fields are not supported", envName)
-
 	default:
 		return redact.Safef("config: %s: unsupported type %s", envName, fv.Type())
 	}
+	return nil
+}
+
+// setURL sets a *url.URL field. Scheme validation is intentionally limited
+// to requiring a non-empty scheme and host. Callers that need specific
+// schemes (e.g., http/https only) should validate after Load. This avoids
+// restricting use cases like amqp://, redis://, or custom internal schemes.
+func setURL(fv reflect.Value, val, envName string) error {
+	u, err := url.Parse(val)
+	if err != nil {
+		return redact.Safef("config: %s: invalid URL syntax", envName)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return redact.Safef("config: %s: invalid URL: must include scheme and host", envName)
+	}
+	fv.Set(reflect.ValueOf(u))
+	return nil
+}
+
+// setSigned sets a signed integer field; a time.Duration parses as a
+// duration.
+func setSigned(fv reflect.Value, val, envName string, isSecret bool) error {
+	if fv.Type() == reflect.TypeOf(time.Duration(0)) {
+		d, err := time.ParseDuration(val)
+		if err != nil {
+			return invalidParseError(envName, "duration", val, isSecret, err)
+		}
+		fv.Set(reflect.ValueOf(d))
+		return nil
+	}
+	n, err := strconv.ParseInt(val, 10, fv.Type().Bits())
+	if err != nil {
+		return invalidParseError(envName, "integer", val, isSecret, err)
+	}
+	fv.SetInt(n)
+	return nil
+}
+
+// setStringList sets a []string from a comma-separated list; an empty
+// item is an error.
+func setStringList(fv reflect.Value, val, envName string) error {
+	parts := strings.Split(val, ",")
+	items := make([]string, 0, len(parts))
+	for i, p := range parts {
+		s := strings.TrimSpace(p)
+		if s == "" {
+			return redact.Safef("config: %s: empty list item at position %d", envName, i+1)
+		}
+		items = append(items, s)
+	}
+	fv.Set(reflect.ValueOf(items))
 	return nil
 }
 

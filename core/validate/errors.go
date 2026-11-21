@@ -180,67 +180,89 @@ func normalizeInstancePath(field string, collections map[string]int) string {
 // go-playground messages so callers that grep for "must be a valid
 // email address" continue to work.
 func messageFor(field string, k jsonschema.ErrorKind, requiredNonEmpty map[string]struct{}) string {
-	switch e := k.(type) {
-	case *kind.MinLength:
-		// A required-non-empty field whose actual length was zero
-		// renders as "is required" to preserve the v1 message;
-		// otherwise fall back to the length-based message.
-		if e.Got == 0 {
-			if _, ok := requiredNonEmpty[field]; ok {
-				return "is required"
-			}
-		}
-		return "must be at least " + pluralize(e.Want, "character")
-	case *kind.MaxLength:
-		return "must be at most " + pluralize(e.Want, "character")
-	case *kind.Minimum:
-		return "must be greater than or equal to " + ratString(e.Want)
-	case *kind.Maximum:
-		return "must be less than or equal to " + ratString(e.Want)
-	case *kind.ExclusiveMinimum:
-		return "must be greater than " + ratString(e.Want)
-	case *kind.ExclusiveMaximum:
-		return "must be less than " + ratString(e.Want)
-	case *kind.MinItems:
-		if e.Got == 0 {
-			if _, ok := requiredNonEmpty[field]; ok {
-				return "is required"
-			}
-		}
-		return "must have at least " + pluralize(e.Want, "item")
-	case *kind.MaxItems:
-		return "must have at most " + pluralize(e.Want, "item")
-	case *kind.Pattern:
-		return "must match pattern " + e.Want
-	case *kind.Enum:
-		return "must be one of: " + enumValues(e.Want)
-	case *kind.Const:
-		return "must equal " + fmt.Sprint(e.Want)
-	case *kind.Format:
-		return formatMessage(e.Want)
-	case *kind.Type:
-		return "must be " + strings.Join(e.Want, " or ")
-	case *kind.MinProperties:
-		return "must have at least " + pluralize(e.Want, "property")
-	case *kind.MaxProperties:
-		return "must have at most " + pluralize(e.Want, "property")
-	case *kind.UniqueItems:
-		return "must contain unique items"
-	case *kind.MultipleOf:
-		return "must be a multiple of " + ratString(e.Want)
-	case *kind.AdditionalProperties:
-		if len(e.Properties) == 0 {
-			return "must not contain additional properties"
-		}
-		return "must not contain additional properties: " + strings.Join(e.Properties, ", ")
-	case *kind.FalseSchema:
-		return "must not be present"
-	case *kind.Contains:
-		return "must contain a matching item"
-	case *kind.Required:
-		return "is required"
+	if msg, ok := sizeMessage(field, k, requiredNonEmpty); ok {
+		return msg
+	}
+	if msg, ok := numberMessage(k); ok {
+		return msg
+	}
+	if msg, ok := valueMessage(k); ok {
+		return msg
 	}
 	return "failed validation"
+}
+
+// sizeMessage covers the length, item and property counts. A
+// required-non-empty field whose length or item count was zero renders
+// as "is required" to preserve the v1 message.
+func sizeMessage(field string, k jsonschema.ErrorKind, requiredNonEmpty map[string]struct{}) (string, bool) {
+	_, required := requiredNonEmpty[field]
+	switch e := k.(type) {
+	case *kind.MinLength:
+		if e.Got == 0 && required {
+			return "is required", true
+		}
+		return "must be at least " + pluralize(e.Want, "character"), true
+	case *kind.MaxLength:
+		return "must be at most " + pluralize(e.Want, "character"), true
+	case *kind.MinItems:
+		if e.Got == 0 && required {
+			return "is required", true
+		}
+		return "must have at least " + pluralize(e.Want, "item"), true
+	case *kind.MaxItems:
+		return "must have at most " + pluralize(e.Want, "item"), true
+	case *kind.MinProperties:
+		return "must have at least " + pluralize(e.Want, "property"), true
+	case *kind.MaxProperties:
+		return "must have at most " + pluralize(e.Want, "property"), true
+	}
+	return "", false
+}
+
+func numberMessage(k jsonschema.ErrorKind) (string, bool) {
+	switch e := k.(type) {
+	case *kind.Minimum:
+		return "must be greater than or equal to " + ratString(e.Want), true
+	case *kind.Maximum:
+		return "must be less than or equal to " + ratString(e.Want), true
+	case *kind.ExclusiveMinimum:
+		return "must be greater than " + ratString(e.Want), true
+	case *kind.ExclusiveMaximum:
+		return "must be less than " + ratString(e.Want), true
+	case *kind.MultipleOf:
+		return "must be a multiple of " + ratString(e.Want), true
+	}
+	return "", false
+}
+
+func valueMessage(k jsonschema.ErrorKind) (string, bool) {
+	switch e := k.(type) {
+	case *kind.Pattern:
+		return "must match pattern " + e.Want, true
+	case *kind.Enum:
+		return "must be one of: " + enumValues(e.Want), true
+	case *kind.Const:
+		return "must equal " + fmt.Sprint(e.Want), true
+	case *kind.Format:
+		return formatMessage(e.Want), true
+	case *kind.Type:
+		return "must be " + strings.Join(e.Want, " or "), true
+	case *kind.UniqueItems:
+		return "must contain unique items", true
+	case *kind.AdditionalProperties:
+		if len(e.Properties) == 0 {
+			return "must not contain additional properties", true
+		}
+		return "must not contain additional properties: " + strings.Join(e.Properties, ", "), true
+	case *kind.FalseSchema:
+		return "must not be present", true
+	case *kind.Contains:
+		return "must contain a matching item", true
+	case *kind.Required:
+		return "is required", true
+	}
+	return "", false
 }
 
 // pluralize renders "<n> <unit>" with the unit pluralised for any

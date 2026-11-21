@@ -28,12 +28,34 @@ linters:
         source: '\bu?int(8|16|32|64)?\((min\(|max\(-?[0-9() <]*, min\(|max\(min\(|max\([^(),]+, 0\)\))'
       # A library opens the path its caller configured; the caller owns it.
       - linters: [gosec]
-        text: G304
+        text: G(304|703)
+      # An int64 goes into a signed or hashed encoding as its two's-complement
+      # bits; the reader converts it back.
+      - linters: [gosec]
+        text: G115
+        source: 'binary\.BigEndian\.(Append|Put)Uint64\([^,]+, uint64\('
+      # Jitter spreads retries and ticks over time; it guards nothing.
+      - path: ^runtime/batchworker/batchworker\.go$
+        linters: [gosec]
+        text: G404
+      # Cloud KMS returns a CRC32C, a uint32, in an int64 wrapper.
+      - linters: [gosec]
+        text: G115
+        source: 'uint32\(resp\.Get\w+Crc32C\(\)\.GetValue\(\)\)'
+      # These tests check that an unclassified error comes back unchanged, the
+      # same value, which errors.Is would not tell from a wrapped one.
+      - path: ^crypto/envelope/\w+/errors_test\.go$
+        linters: [errorlint]
+        text: comparing with !=
+      # The redaction walk follows the wrap chain itself, one Unwrap at a time.
+      - path: ^core/redact/redact\.go$
+        linters: [errorlint]
+        text: type switch on error
       # The developer tools read and write the repository they are pointed at;
       # the files they write are source files, readable by everyone.
       - path: ^cmd/
         linters: [gosec]
-        text: G(301|302|306|703)
+        text: G(301|302|306)
       # The table name is checked against a safe identifier pattern when it is
       # set; values are always bound parameters.
       - path: ^data/(cron|idempotency|saga)/pgstore/store\.go$

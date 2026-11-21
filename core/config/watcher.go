@@ -198,15 +198,9 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 	if ctx == nil {
 		return redact.Safe("config: FileWatcher.Start requires a non-nil context")
 	}
-	fw.startMu.Lock()
-	if fw.started {
-		fw.startMu.Unlock()
+	if fw.isStarted() {
 		return redact.Safe("config: FileWatcher already started")
 	}
-	// Mark started only after fallible init succeeds so a transient
-	// NewWatcher/Add failure leaves the watcher retryable (lifecycle
-	// runners re-invoke Start on error).
-	fw.startMu.Unlock()
 
 	watcher, err := fsnotifyNewWatcher()
 	if err != nil {
@@ -223,61 +217,16 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 	// ConfigMap/Secret updates that swap the mount's `..data` symlink (those
 	// events name `..data` / `..data_tmp` / a timestamped dir, never the
 	// config file itself).
-	dir := filepath.Dir(fw.path)
-	if err := watcher.Add(dir); err != nil {
+	if err := watcher.Add(filepath.Dir(fw.path)); err != nil {
 		return err
 	}
-
-	fw.startMu.Lock()
-	if fw.started {
+	if !fw.markStarted() {
 		// Lost a race with another Start after init — close and reject.
-		fw.startMu.Unlock()
 		return redact.Safe("config: FileWatcher already started")
 	}
-	fw.started = true
-	fw.startMu.Unlock()
 
-	var debounceTimer *time.Timer
-	var debounceCh <-chan time.Time
-
-	reload := func() {
-		val, loadErr := fw.loadFn(fw.path)
-		if loadErr != nil {
-			fw.cfg.logger.Warn("config reload failed, keeping previous value",
-				redact.String("path", fw.path), redact.Error(loadErr))
-			return
-		}
-		fw.watchable.Set(val)
-		fw.cfg.logger.Info("config reloaded", redact.String("path", fw.path))
-	}
-
-	base := filepath.Base(fw.path)
-
-	// Track the resolved real path so we can detect Kubernetes ConfigMap /
-	// Secret updates. k8s swaps the mount's `..data` symlink atomically, so
-	// events never fire for the logical config file (config.yaml ->
-	// ..data/config.yaml); only the resolved target changes. EvalSymlinks may
-	// fail if the file is briefly absent mid-swap — treat that as "unchanged"
-	// and rely on a later event once the swap settles.
-	resolvedPath := func() string {
-		real, err := filepath.EvalSymlinks(fw.path)
-		if err != nil {
-			return ""
-		}
-		return real
-	}
-	lastResolved := resolvedPath()
-
-	// Arm the debounce timer; shared by both the fsnotify and poll paths so
-	// rapid changes from either source coalesce into a single reload.
-	armDebounce := func() {
-		if debounceTimer == nil {
-			debounceTimer = time.NewTimer(fw.cfg.debounce)
-			debounceCh = debounceTimer.C
-		} else {
-			debounceTimer.Reset(fw.cfg.debounce)
-		}
-	}
+	w := &fileWatch[T]{fw: fw, base: filepath.Base(fw.path)}
+	w.lastResolved = w.resolvedPath()
 
 	// Poll fallback: re-resolve the real path on a ticker so Kubernetes
 	// `..data` symlink swaps are detected even when fsnotify drops the event.
@@ -287,62 +236,133 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 		defer ticker.Stop()
 		pollCh = ticker.C
 	}
+	return w.run(ctx, watcher, pollCh)
+}
 
+func (fw *FileWatcher[T]) isStarted() bool {
+	fw.startMu.Lock()
+	defer fw.startMu.Unlock()
+	return fw.started
+}
+
+// markStarted marks the watcher started once fallible init succeeded, so
+// a transient NewWatcher/Add failure leaves it retryable (lifecycle
+// runners re-invoke Start on error). It reports false when another Start
+// got there first.
+func (fw *FileWatcher[T]) markStarted() bool {
+	fw.startMu.Lock()
+	defer fw.startMu.Unlock()
+	if fw.started {
+		return false
+	}
+	fw.started = true
+	return true
+}
+
+func (fw *FileWatcher[T]) reload() {
+	val, loadErr := fw.loadFn(fw.path)
+	if loadErr != nil {
+		fw.cfg.logger.Warn("config reload failed, keeping previous value",
+			redact.String("path", fw.path), redact.Error(loadErr))
+		return
+	}
+	fw.watchable.Set(val)
+	fw.cfg.logger.Info("config reloaded", redact.String("path", fw.path))
+}
+
+// fileWatch is the state of one running Start: the debounce timer that
+// coalesces rapid changes from fsnotify and the poll into one reload, and
+// the last resolved real path of the file.
+type fileWatch[T any] struct {
+	fw            *FileWatcher[T]
+	base          string
+	lastResolved  string
+	debounceTimer *time.Timer
+	debounceCh    <-chan time.Time
+}
+
+func (w *fileWatch[T]) run(ctx context.Context, watcher *fsnotify.Watcher, pollCh <-chan time.Time) error {
 	for {
 		select {
 		case <-ctx.Done():
-			if debounceTimer != nil {
-				debounceTimer.Stop()
+			if w.debounceTimer != nil {
+				w.debounceTimer.Stop()
 			}
 			return nil
 
 		case <-pollCh:
 			// Resolved real path changed without (or before) a matching event:
 			// the hallmark of a k8s ConfigMap/Secret symlink swap.
-			if real := resolvedPath(); real != "" && real != lastResolved {
-				lastResolved = real
-				armDebounce()
+			if real := w.resolvedPath(); real != "" && real != w.lastResolved {
+				w.lastResolved = real
+				w.armDebounce()
 			}
 
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return redact.Safe("config: fsnotify Events channel closed unexpectedly")
 			}
-			if !isRelevantEvent(event) {
-				continue
-			}
-			// React when either the watched file's base name matches (ordinary
-			// edits / atomic-rename saves) or the resolved real path changed
-			// (Kubernetes ..data symlink swap, which never names the config
-			// file in its events).
-			matchesBase := filepath.Base(event.Name) == base
-			if !matchesBase {
-				if real := resolvedPath(); real == "" || real == lastResolved {
-					continue
-				} else {
-					lastResolved = real
-				}
-			} else if real := resolvedPath(); real != "" {
-				lastResolved = real
-			}
-			armDebounce()
+			w.onEvent(event)
 
 		case watchErr, ok := <-watcher.Errors:
 			if !ok {
 				return redact.Safe("config: fsnotify Errors channel closed unexpectedly")
 			}
-			fw.cfg.logger.Warn("file watcher error", redact.Error(watchErr))
+			w.fw.cfg.logger.Warn("file watcher error", redact.Error(watchErr))
 
-		case <-debounceCh:
+		case <-w.debounceCh:
 			// Disarm and clear the timer so the next change event re-creates
 			// it and re-arms debounceCh. Without resetting debounceTimer to
 			// nil, every subsequent event would take the Reset branch while
 			// debounceCh stayed nil — meaning only the first change ever
 			// triggered a reload.
-			debounceCh = nil
-			debounceTimer = nil
-			reload()
+			w.debounceCh = nil
+			w.debounceTimer = nil
+			w.fw.reload()
 		}
+	}
+}
+
+// onEvent reacts when either the watched file's base name matches
+// (ordinary edits / atomic-rename saves) or the resolved real path
+// changed (Kubernetes ..data symlink swap, which never names the config
+// file in its events).
+func (w *fileWatch[T]) onEvent(event fsnotify.Event) {
+	if !isRelevantEvent(event) {
+		return
+	}
+	real := w.resolvedPath()
+	if filepath.Base(event.Name) != w.base {
+		if real == "" || real == w.lastResolved {
+			return
+		}
+		w.lastResolved = real
+	} else if real != "" {
+		w.lastResolved = real
+	}
+	w.armDebounce()
+}
+
+// resolvedPath tracks the real path to detect Kubernetes ConfigMap /
+// Secret updates. k8s swaps the mount's `..data` symlink atomically, so
+// events never fire for the logical config file (config.yaml ->
+// ..data/config.yaml); only the resolved target changes. EvalSymlinks may
+// fail if the file is briefly absent mid-swap — that reads as "unchanged"
+// and a later event follows once the swap settles.
+func (w *fileWatch[T]) resolvedPath() string {
+	real, err := filepath.EvalSymlinks(w.fw.path)
+	if err != nil {
+		return ""
+	}
+	return real
+}
+
+func (w *fileWatch[T]) armDebounce() {
+	if w.debounceTimer == nil {
+		w.debounceTimer = time.NewTimer(w.fw.cfg.debounce)
+		w.debounceCh = w.debounceTimer.C
+	} else {
+		w.debounceTimer.Reset(w.fw.cfg.debounce)
 	}
 }
 

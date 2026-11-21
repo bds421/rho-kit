@@ -2,24 +2,15 @@ package app
 
 import (
 	"context"
-	"crypto/tls"
-	"errors"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
-	"os/signal"
-	"sync"
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
-	"github.com/bds421/rho-kit/httpx/v2/healthhttp"
-	"github.com/bds421/rho-kit/httpx/v2/middleware/stack"
-	"github.com/bds421/rho-kit/httpx/v2/slohttp"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
-	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 // Builder configures and runs a service's infrastructure lifecycle.
@@ -341,430 +332,47 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
-
 	if err := b.Validate(); err != nil {
 		return err
 	}
 
-	// 0. Convert builder config to modules. Modules created from With*()
-	// config are prepended so they initialize before user-registered modules.
-	// Exception: an app/tracing module (any module implementing
-	// [TracingProvider]) MUST initialize before the builtin HTTP-client
-	// module so the HTTP client can observe TracingActive() and wrap its
-	// transport in OTel instrumentation. Without this reordering the HTTP
-	// client always saw tracingActive=false because the tracing module
-	// hadn't initialized yet (regression-tested by
-	// TestHTTPClient_PicksUpTracingFromUserModule).
-	builtinModules := b.buildIntegrationModules()
-	allModules := make([]Module, 0, len(builtinModules)+len(b.modules))
-	var deferredUserModules []Module
-	for _, m := range b.modules {
-		if _, ok := m.(TracingProvider); ok {
-			allModules = append(allModules, m)
-		} else {
-			deferredUserModules = append(deferredUserModules, m)
-		}
+	r := &appRun{b: b, logger: logger, modules: b.orderedModules()}
+	r.httpCfg = resolveHTTPConfig(r.modules)
+	defer r.closeUnownedTLS()
+	if err := r.setupServerTLS(); err != nil {
+		return err
 	}
-	allModules = append(allModules, builtinModules...)
-	allModules = append(allModules, deferredUserModules...)
-	// Resolve HTTP-server config from the first registered
-	// [HTTPConfigProvider] (typically app/http.Module). Zero value
-	// matches the kit's hardened defaults: TLS required, default
-	// stack on, internal ops loopback-only. allModules is finalized
-	// above so resolveHTTPConfig sees the exact slice the rest of Run
-	// uses (no in-place append aliasing).
-	httpCfg := resolveHTTPConfig(allModules)
-
-	// 1. TLS -- server TLS is still needed here for the public server.
-	// Client TLS is now handled by the httpClientModule.
-	//
-	// When ReloadingTLS was called, swap the static snapshot for a
-	// reloading source so the public server, the default outbound HTTP
-	// client, and any consumer that reads infra.TLSCertificateSource
-	// share the same poll loop. The source's Close hook tears down the
-	// background poller on shutdown.
-	var (
-		serverTLS    *tls.Config
-		tlsSource    netutil.CertificateSource
-		tlsReloadSrc *netutil.FilesCertificateSource
-		tlsErr       error
-		// closeReloadingTLS closes the reloading source when RunContext
-		// returns before runner.Run takes ownership via shutdown hooks.
-		closeReloadingTLS func()
-	)
-	defer func() {
-		if closeReloadingTLS != nil {
-			closeReloadingTLS()
-		}
-	}()
-	if httpCfg.reloadingTLSActive {
-		src, srcErr := b.cfg.TLS.Reloading(httpCfg.reloadingTLSOpts...)
-		if srcErr != nil {
-			return redact.WrapSafe("build reloading TLS source", srcErr)
-		}
-		// Own Close on early-return paths until runner.Run hands off.
-		closeReloadingTLS = func() { _ = src.Close() }
-		// Thread the same server TLS options into the reloading path so
-		// OptionalClientCertificates / future client-auth opt-outs
-		// take effect identically whether or not TLS reload is wired —
-		// otherwise enabling reload would silently flip
-		// VerifyClientCertIfGiven back to RequireAndVerifyClientCert.
-		serverTLS = netutil.ReloadingServerTLS(src, b.serverTLSOptions()...)
-		tlsSource = src
-		tlsReloadSrc = src
-		b.shutdownHooks = append(b.shutdownHooks, func(context.Context) {
-			if err := src.Close(); err != nil {
-				logger.Warn("tls-reload source close failed", "error", err)
-			}
-		})
-	} else {
-		serverTLS, tlsErr = b.cfg.TLS.ServerTLS(b.serverTLSOptions()...)
-		if tlsErr != nil {
-			return redact.WrapSafe("build server TLS config", tlsErr)
-		}
-	}
-
-	// 2. Lifecycle Runner -- manages all long-running goroutines.
-	// Shutdown hooks fire from BeforeStop — synchronously after ctx
-	// cancellation but BEFORE any component's Stop runs, so hooks see
-	// live DB / broker / cache connections.
-	runnerOpts := []lifecycle.RunnerOption{
-		lifecycle.WithBeforeStop(func(ctx context.Context) {
-			runShutdownHooks(ctx, b.shutdownHooks, logger)
-		}),
-	}
-	runner := lifecycle.NewRunner(logger, runnerOpts...)
-
-	// (EventBus is now an opt-in bridge module under app/eventbus —
-	// see eventbus.Module and eventbus.Bus(infra). Services that
-	// need it call b.With(eventbus.Module()).)
-
-	// 2.6. TLS reload-on-signal bridge — only registered when the
-	// caller wired TLSReloadOnSignal alongside ReloadingTLS
-	// (Validate enforces the combination). The bridge runs as a
-	// lifecycle component so its goroutine exits cleanly on shutdown
-	// even when the FilesCertificateSource itself is closed later
-	// from a shutdown hook.
-	if len(httpCfg.tlsReloadSignals) > 0 && tlsReloadSrc != nil {
-		signals := append([]os.Signal(nil), httpCfg.tlsReloadSignals...)
-		src := tlsReloadSrc
-		runner.AddFunc("tls-reload-signal", func(ctx context.Context) error {
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, signals...)
-			defer signal.Stop(sigCh)
-			for {
-				select {
-				case <-ctx.Done():
-					return nil
-				case <-sigCh:
-					if err := src.Reload(); err != nil {
-						logger.Warn("tls-reload-on-signal reload failed, keeping previous snapshot",
-							"error", err)
-					}
-				}
-			}
-		})
-	}
-
-	// (Rate limiters are now opt-in bridge modules under
-	// app/ratelimit — see ratelimit.IP and ratelimit.Keyed.)
-
-	// (Audit log is now an opt-in bridge module under app/auditlog —
-	// see auditlog.Module and auditlog.Logger(infra).)
-
-	// (Cron is now an opt-in bridge module under app/cron, which
-	// reads the optional leader gate via the ElectorProvider
-	// capability at its Init time.)
-
-	// 7. Early background goroutines
+	r.newRunner()
+	r.addTLSReloadSignal()
 	for _, bg := range b.earlyBgs {
-		runner.AddFunc(bg.name, bg.fn)
+		r.runner.AddFunc(bg.name, bg.fn)
 	}
 
-	// 8. Modules — initialize in registration order, close in reverse on shutdown.
-	//
-	// Pre-Init hook: adapter modules that need the kit-level serverTLS
-	// (e.g., app/grpc) implement ServerTLSReceiver and are handed the
-	// resolved *tls.Config before Init runs. This lets them auto-wire
-	// the same TLS surface as the HTTP server without app/v2 importing
-	// the adapter packages.
-	if serverTLS != nil {
-		for _, m := range allModules {
-			if recv, ok := m.(ServerTLSReceiver); ok {
-				recv.SetServerTLS(serverTLS)
-			}
-		}
+	closeModules, err := r.initModules(ctx)
+	if err != nil {
+		return err
 	}
-	if len(allModules) > 0 {
-		// FR-013 [MED]: bound module Init so a module that hangs
-		// (KMS DNS, broker connect) cannot block startup forever.
-		startupTimeout := b.startupTimeout
-		if startupTimeout <= 0 {
-			startupTimeout = defaultStartupTimeout
-		}
-		initCtx, initCancel := context.WithTimeout(ctx, startupTimeout)
-		moduleCleanup, moduleErr := initModules(
-			initCtx,
-			allModules,
-			b.name,
-			logger,
-			runner,
-			b.cfg,
-			tlsSource,
-		)
-		initCancel()
-		if moduleErr != nil {
-			return moduleErr
-		}
-		defer func() {
-			cleanupCtx, cancel := detachedTimeoutContext(ctx, 10*time.Second)
-			defer cancel()
-			moduleCleanup(cleanupCtx)
-		}()
-
-		// Collect health checks from all modules.
-		for _, m := range allModules {
-			checks := m.HealthChecks()
-			for _, check := range checks {
-				if err := health.ValidateDependencyCheck(check); err != nil {
-					return redact.WrapSafe("module health check invalid", err)
-				}
-			}
-			b.healthChecks = append(b.healthChecks, checks...)
-		}
+	defer closeModules()
+	if err := r.collectModuleHealthChecks(); err != nil {
+		return err
 	}
 
-	// 10. Router — build HTTP handler with all infrastructure available.
-	// lateBgs collects goroutines registered via infra.Background() inside routerFn.
-	// A mutex protects concurrent access, and a frozen flag prevents calls after
-	// routerFn returns (the goroutines would be lost).
-	var lateBgs []bgSpec
-	var lateBgsMu sync.Mutex
-	var lateBgsFrozen bool
-
-	infra := Infrastructure{
-		Logger:        logger,
-		ServerTLS:     serverTLS,
-		TLSCertSource: tlsSource,
-		Config:        b.cfg,
-		Background: func(name string, fn func(ctx context.Context) error) {
-			validateBackgroundSpec(name, fn)
-			lateBgsMu.Lock()
-			defer lateBgsMu.Unlock()
-			if lateBgsFrozen {
-				panic("app: RunContext Background() must only be called synchronously within RouterFunc")
-			}
-			lateBgs = append(lateBgs, bgSpec{name: name, fn: fn})
-		},
-		SetCustomReadiness: func(h http.Handler) {
-			if h == nil {
-				panic("app: SetCustomReadiness requires a non-nil handler")
-			}
-			lateBgsMu.Lock()
-			defer lateBgsMu.Unlock()
-			if lateBgsFrozen {
-				panic("app: RunContext SetCustomReadiness() must only be called synchronously within RouterFunc")
-			}
-			b.customReadiness = h
-		},
-		AddHealthCheck: func(check health.DependencyCheck) {
-			validateDependencyCheck(check, "Infrastructure.AddHealthCheck")
-			lateBgsMu.Lock()
-			defer lateBgsMu.Unlock()
-			if lateBgsFrozen {
-				panic("app: RunContext AddHealthCheck() must only be called synchronously within RouterFunc")
-			}
-			b.healthChecks = append(b.healthChecks, check)
-		},
+	handler := r.publicHandler()
+	internal := r.internalServer()
+	internalErrCh := startInternalServer(ctx, internal)
+	defer r.stopInternalServer(ctx, internal)
+	if err := r.watchInternalServer(internalErrCh); err != nil {
+		return err
 	}
-
-	// Let modules populate the infrastructure before the RouterFunc sees it.
-	for _, m := range allModules {
-		m.Populate(&infra)
-	}
-
-	// Worker roles (WithoutPublicServer) skip the router, the public
-	// middleware chain and the public listener entirely.
-	var httpHandler http.Handler
-	switch {
-	case b.noPublicServer:
-		// No public handler; Validate rejected a Router.
-	case b.routerFn != nil:
-		httpHandler = b.routerFn(infra)
-	default:
-		httpHandler = http.NotFoundHandler()
-	}
-	// Compose the inbound middleware chain. Bridge modules in app/*
-	// declare which phase they target via [MiddlewareInstaller];
-	// the kit's hardcoded ordering (budget → tenant → auth →
-	// signedrequest → ratelimit → stack) lives in the
-	// [MiddlewarePhase] constants, not here. This block stays the
-	// canonical assembly point so adapters cannot independently
-	// inject middleware in arbitrary positions — the Builder
-	// remains the single owner of chain order.
-	//
-	// Tenant + budget are now MiddlewareInstaller modules; their
-	// PhaseTenant / PhaseBudget contributions flow through
-	// applyPhasedMiddleware alongside every other bridge.
-	if !b.noPublicServer {
-		httpHandler = applyPhasedMiddleware(httpHandler, allModules)
-	}
-	if !b.noPublicServer && !httpCfg.disableDefaultStack {
-		// FR-009 [MED]: pass the resolved logger so the request stack uses
-		// the same logger as infrastructure setup. Pre-fix this hardcoded
-		// slog.Default(), so [Builder.Logger] silently failed to take
-		// effect on the public middleware chain.
-		httpHandler = stack.Default(httpHandler, logger, httpCfg.stackOpts...)
-	}
-
-	// Freeze late background registration — any calls after routerFn returns
-	// would silently lose the goroutine since we've already iterated lateBgs.
-	lateBgsMu.Lock()
-	lateBgsFrozen = true
-	lateBgsMu.Unlock()
-
-	// Start late background goroutines (registered inside routerFn).
-	for _, bg := range lateBgs {
-		runner.AddFunc(bg.name, bg.fn)
-	}
-
-	// 11. Internal server (readiness + health + metrics).
-	// Started outside the Runner so it outlives workers during drain —
-	// health checks and metrics remain available while components shut down.
-	healthChecker := &health.Checker{
-		Version: health.ResolveVersion(b.version),
-		Checks:  b.healthChecks,
-	}
-
-	// Adapter modules that participate in health-checker wiring (e.g., the
-	// public gRPC server's RegisterHealth path used by app/grpc) implement
-	// HealthCheckerReceiver. The Builder hands them the resolved checker
-	// before assembling internal handlers so the adapter can register
-	// the gRPC health service on its own grpc.Server when configured.
-	for _, m := range allModules {
-		if recv, ok := m.(HealthCheckerReceiver); ok {
-			recv.SetHealthChecker(healthChecker)
-		}
-	}
-
-	// Runtime SetCustomReadiness (set inside RouterFunc) wins over
-	// the startup-time override from app/http.Module(http.CustomReadiness(...)).
-	var readiness http.Handler
-	switch {
-	case b.customReadiness != nil:
-		readiness = b.customReadiness
-	case httpCfg.customReadiness != nil:
-		readiness = httpCfg.customReadiness
-	default:
-		readiness = healthhttp.Handler(healthChecker)
-	}
-	var internalOpts []healthhttp.InternalHandlerOption
-	for _, m := range allModules {
-		if sp, ok := m.(SLOCheckerProvider); ok {
-			if checker := sp.SLOChecker(); checker != nil {
-				internalOpts = append(internalOpts, healthhttp.WithSLOHandler(slohttp.Handler(checker)))
-				break
-			}
-		}
-	}
-	serverErrorLogOpt := serverErrorLogOption(logger)
-	internalHandler := healthhttp.NewInternalHandler(b.version, readiness, internalOpts...)
-	// Adapter modules can wrap the internal handler to add transport-specific
-	// endpoints (e.g., gRPC health over h2c when app/grpc is registered).
-	// This avoids importing grpc-go from app/v2 just to serve internal health.
-	for _, m := range allModules {
-		if wrap, ok := m.(InternalHandlerWrapper); ok {
-			internalHandler = wrap.WrapInternalHandler(internalHandler, healthChecker)
-		}
-	}
-	internalSrvOpts := []httpx.ServerOption{serverErrorLogOpt}
-	if internalTLS := httpCfg.internalTLS; internalTLS != nil {
-		internalSrvOpts = append(internalSrvOpts, httpx.WithTLSConfig(internalTLS))
-	} else if serverTLS != nil {
-		internalSrvOpts = append(internalSrvOpts, httpx.WithTLSConfig(serverTLS))
-	}
-	internalSrv := httpx.NewServer(listenAddr(b.cfg.Internal.Addr(), httpCfg.internalListener), internalHandler, internalSrvOpts...)
-	// Adapter modules may mutate the internal server post-construction
-	// (e.g., app/grpc enables HTTP/2 or h2c, according to whether the
-	// resolved kit-level TLS configuration is active, so the gRPC health
-	// service rides the same listener without the deprecated h2c.NewHandler
-	// wrapper).
-	for _, m := range allModules {
-		if cfg, ok := m.(InternalServerConfigurator); ok {
-			cfg.ConfigureInternalServer(internalSrv)
-		}
-	}
-	internalServerComponent := serverComponent(internalSrv, httpCfg.internalListener)
-	internalErrCh := make(chan error, 1)
-	go func() {
-		if srvErr := internalServerComponent.Start(ctx); srvErr != nil && !errors.Is(srvErr, http.ErrServerClosed) {
-			internalErrCh <- srvErr
-		}
-	}()
-	defer func() {
-		shutdownCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
-		defer cancel()
-		if shutdownErr := internalServerComponent.Stop(shutdownCtx); shutdownErr != nil {
-			logger.Warn("internal server shutdown error", redact.Error(shutdownErr))
-		}
-	}()
-
-	// Brief pause to detect early bind failures (port conflict, permission denied).
-	select {
-	case srvErr := <-internalErrCh:
-		return redact.WrapSafe("internal server failed to start", srvErr)
-	case <-time.After(50 * time.Millisecond):
-	}
-	logger.Info("internal server started", slog.String("addr", listenAddr(b.cfg.Internal.Addr(), httpCfg.internalListener)))
-
-	// Monitor internal server for post-startup failures (e.g., accept loop errors).
-	// If the internal server dies, the entire service shuts down — running without
-	// health checks or metrics is unsafe in production.
-	runner.AddFunc("internal-server-monitor", func(ctx context.Context) error {
-		select {
-		case srvErr := <-internalErrCh:
-			return redact.WrapSafe("internal server failed", srvErr)
-		case <-ctx.Done():
-			return nil
-		}
-	})
-
-	// 13. Adapter-owned long-running components (e.g., the public gRPC
-	// server in app/grpc) implement [lifecycle.Component] and register
-	// themselves with the Runner via [Module.AttachToRunner]. Calling
-	// AttachToRunner here — before public-server registration — means
-	// the gRPC server is stopped AFTER the public HTTP server (reverse
-	// registration order).
-	for _, m := range allModules {
-		if attacher, ok := m.(RunnerAttacher); ok {
-			attacher.AttachToRunner(runner)
-		}
-	}
+	r.attachAdapters()
 
 	if b.noPublicServer {
 		logger.Info("public server disabled (WithoutPublicServer)")
-		closeReloadingTLS = nil
-		return runner.Run(ctx)
+	} else {
+		r.addPublicServer(handler)
 	}
-
-	// 14. Public server — added last so it is stopped first (reverse order).
-	// Caller server options are applied FIRST; kit hardened defaults
-	// (error log + resolved TLS / mTLS config) are applied AFTER so
-	// security-critical settings cannot be silently relaxed via
-	// app/http.WithServerOption (matches that option's godoc).
-	srvOpts := make([]httpx.ServerOption, 0, len(httpCfg.serverOpts)+2)
-	srvOpts = append(srvOpts, httpCfg.serverOpts...)
-	srvOpts = append(srvOpts, serverErrorLogOpt)
-	if serverTLS != nil {
-		srvOpts = append(srvOpts, httpx.WithTLSConfig(serverTLS))
-	}
-	srv := httpx.NewServer(listenAddr(b.cfg.Server.Addr(), httpCfg.publicListener), httpHandler, srvOpts...)
-	runner.Add("public-server", serverComponent(srv, httpCfg.publicListener))
-
-	// 15. Run — signal handling, component lifecycle, graceful shutdown.
-	// Hand off reloading TLS ownership to the shutdown hook path.
-	closeReloadingTLS = nil
-	return runner.Run(ctx)
+	r.closeTLS = nil
+	return r.runner.Run(ctx)
 }
 
 // serverComponent serves srv on l when the HTTP module gave one, otherwise

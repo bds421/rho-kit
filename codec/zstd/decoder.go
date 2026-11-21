@@ -3,6 +3,7 @@ package zstd
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 
 	kzstd "github.com/klauspost/compress/zstd"
@@ -92,7 +93,7 @@ func (d *Decoder) Decode(src []byte) ([]byte, error) {
 	if err := h.Decode(src); err != nil {
 		return nil, err
 	}
-	bound := min(uint64(d.limits.MaxSize), uint64(len(src))*uint64(d.limits.MaxRatio))
+	bound := min(uint64(max(d.limits.MaxSize, 0)), uint64(len(src))*uint64(d.limits.MaxRatio))
 	if err := d.check(h, src, bound); err != nil {
 		return nil, err
 	}
@@ -103,8 +104,8 @@ func (d *Decoder) Decode(src []byte) ([]byte, error) {
 	d.slots <- struct{}{}
 	defer func() { <-d.slots }()
 	if d.held != nil {
-		d.held(int64(capacity))
-		defer d.held(-int64(capacity))
+		d.held(int64(min(capacity, math.MaxInt64)))
+		defer d.held(-int64(min(capacity, math.MaxInt64)))
 	}
 	out, err := d.dec.DecodeAll(src, make([]byte, 0, capacity))
 	switch {

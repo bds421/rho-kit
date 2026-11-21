@@ -400,10 +400,9 @@ func TestConstantTimeEqual_EqualAndDiffer(t *testing.T) {
 	}
 }
 
-// TestEqual covers the exported String.Equal contract end-to-end: equal and
-// differing secrets, self-comparison, the documented nil/uninitialised/zeroed
-// "empty" cases, and that two distinct Strings holding the same plaintext are
-// compared by value (not identity).
+// TestEqual covers the exported String.Equal contract for content: equal and
+// differing secrets, self-comparison, and that two distinct Strings holding
+// the same plaintext are compared by value (not identity).
 func TestEqual(t *testing.T) {
 	t.Run("equal content", func(t *testing.T) {
 		a := NewFromString(plain)
@@ -429,7 +428,11 @@ func TestEqual(t *testing.T) {
 		b := NewFromString("abcd")
 		assert.False(t, a.Equal(b))
 	})
+}
 
+// TestEqual_Empty covers the documented nil, uninitialised and zeroed
+// "empty" cases of String.Equal.
+func TestEqual_Empty(t *testing.T) {
 	t.Run("nil receiver equals nil argument", func(t *testing.T) {
 		var a, b *String
 		assert.True(t, a.Equal(b), "two nil receivers are both empty and equal")
@@ -461,7 +464,11 @@ func TestEqual(t *testing.T) {
 		b := NewFromString("")
 		assert.True(t, a.Equal(b), "a zeroed secret is empty")
 	})
+}
 
+// TestEqual_DoesNotMutateOperands checks that Equal wipes its temporary
+// copies, not the wrapped secrets.
+func TestEqual_DoesNotMutateOperands(t *testing.T) {
 	t.Run("comparison does not mutate operands", func(t *testing.T) {
 		a := NewFromString(plain)
 		b := NewFromString(plain)

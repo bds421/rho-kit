@@ -227,205 +227,183 @@ func TestBuilder_Lifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
+	t.Run("StartServeShutdownWithHealthChecks", testLifecycleServesWithHealthChecks)
+	t.Run("BackgroundAndShutdownHook", testLifecycleBackgroundAndShutdownHook)
+	t.Run("RunContextCancellation", testLifecycleRunContextCancellation)
+}
 
-	t.Run("StartServeShutdownWithHealthChecks", func(t *testing.T) {
-		srvPort := freePort(t)
-		intPort := freePort(t)
+// lifecycleAddrs is a loopback config on free ports and the URLs of its
+// public and internal servers.
+func lifecycleAddrs(t *testing.T) (cfg BaseConfig, srvURL, intURL string) {
+	srvPort := freePort(t)
+	intPort := freePort(t)
+	cfg = BaseConfig{
+		Server:   ServerConfig{Host: "127.0.0.1", Port: srvPort},
+		Internal: InternalConfig{Host: "127.0.0.1", Port: intPort},
+	}
+	return cfg, fmt.Sprintf("http://127.0.0.1:%d", srvPort), fmt.Sprintf("http://127.0.0.1:%d", intPort)
+}
 
-		cfg := BaseConfig{
-			Server:   ServerConfig{Host: "127.0.0.1", Port: srvPort},
-			Internal: InternalConfig{Host: "127.0.0.1", Port: intPort},
-		}
+// interruptAndWait sends SIGINT and returns Run's error, then drains
+// pending signals before the next test.
+func interruptAndWait(t *testing.T, errCh <-chan error) error {
+	t.Helper()
+	require.NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGINT))
+	defer drainSignals()
+	select {
+	case runErr := <-errCh:
+		return runErr
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return within 10s after SIGINT")
+		return nil
+	}
+}
 
-		var routerCalled atomic.Bool
-
-		b := New("lifecycle-test", "v0.0.1", cfg).
-			With(allowPlaintextOnly()).
-			WithoutRateLimit().
-			AddHealthCheck(health.DependencyCheck{
-				Name:     "test-dep",
-				Check:    func(_ context.Context) string { return health.StatusHealthy },
-				Critical: true,
-			}).
-			AddHealthCheck(health.DependencyCheck{
-				Name:     "non-critical",
-				Check:    func(_ context.Context) string { return health.StatusDegraded },
-				Critical: false,
-			}).
-			Router(func(infra Infrastructure) http.Handler {
-				routerCalled.Store(true)
-				infra.AddHealthCheck(health.DependencyCheck{
-					Name:  "late-check",
-					Check: func(_ context.Context) string { return health.StatusHealthy },
-				})
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write([]byte(`{"ok":true}`))
-				})
+func testLifecycleServesWithHealthChecks(t *testing.T) {
+	cfg, srvURL, intURL := lifecycleAddrs(t)
+	var routerCalled atomic.Bool
+	b := New("lifecycle-test", "v0.0.1", cfg).
+		With(allowPlaintextOnly()).
+		WithoutRateLimit().
+		AddHealthCheck(health.DependencyCheck{
+			Name:     "test-dep",
+			Check:    func(_ context.Context) string { return health.StatusHealthy },
+			Critical: true,
+		}).
+		AddHealthCheck(health.DependencyCheck{
+			Name:     "non-critical",
+			Check:    func(_ context.Context) string { return health.StatusDegraded },
+			Critical: false,
+		}).
+		Router(func(infra Infrastructure) http.Handler {
+			routerCalled.Store(true)
+			infra.AddHealthCheck(health.DependencyCheck{
+				Name:  "late-check",
+				Check: func(_ context.Context) string { return health.StatusHealthy },
 			})
-
-		errCh := make(chan error, 1)
-		go func() { errCh <- b.Run() }()
-
-		srvURL := fmt.Sprintf("http://127.0.0.1:%d", srvPort)
-		intURL := fmt.Sprintf("http://127.0.0.1:%d", intPort)
-		waitForHTTP(t, srvURL, 3*time.Second)
-		waitForHTTP(t, intURL+"/ready", 3*time.Second)
-
-		assert.True(t, routerCalled.Load(), "RouterFunc should have been called")
-
-		// Verify the public server serves requests.
-		resp, err := http.Get(srvURL)
-		require.NoError(t, err)
-		defer func() { _ = resp.Body.Close() }()
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-
-		// Verify health checks (including late-registered checks).
-		resp2, err := http.Get(intURL + "/ready")
-		require.NoError(t, err)
-		body, _ := io.ReadAll(resp2.Body)
-		_ = resp2.Body.Close()
-		assert.Equal(t, http.StatusOK, resp2.StatusCode)
-		var healthResp health.Response
-		require.NoError(t, json.Unmarshal(body, &healthResp))
-		assert.Equal(t, "degraded", healthResp.Status) // non-critical degraded
-		assert.Equal(t, "v0.0.1", healthResp.Version)
-		assert.Equal(t, "healthy", healthResp.Services["test-dep"])
-		assert.Equal(t, "degraded", healthResp.Services["non-critical"])
-		assert.Equal(t, "healthy", healthResp.Services["late-check"])
-
-		// Graceful shutdown via SIGINT.
-		require.NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGINT))
-
-		select {
-		case runErr := <-errCh:
-			if runErr != nil && runErr.Error() != "context canceled" {
-				t.Fatalf("unexpected Run error: %v", runErr)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatal("Run did not return within 10s after SIGINT")
-		}
-		// Drain pending signals before next test.
-		drainSignals()
-	})
-
-	t.Run("BackgroundAndShutdownHook", func(t *testing.T) {
-		srvPort := freePort(t)
-		intPort := freePort(t)
-
-		cfg := BaseConfig{
-			Server:   ServerConfig{Host: "127.0.0.1", Port: srvPort},
-			Internal: InternalConfig{Host: "127.0.0.1", Port: intPort},
-		}
-
-		var bgStarted atomic.Bool
-		var bgStopped atomic.Bool
-		var hookCalled atomic.Bool
-		var lateBgStarted atomic.Bool
-
-		b := New("lifecycle-bg-test", "v0.0.2", cfg).
-			With(allowPlaintextOnly()).
-			WithoutRateLimit().
-			Background("early-bg", func(ctx context.Context) error {
-				bgStarted.Store(true)
-				<-ctx.Done()
-				bgStopped.Store(true)
-				return nil
-			}).
-			OnShutdown(func(ctx context.Context) {
-				hookCalled.Store(true)
-			}).
-			Router(func(infra Infrastructure) http.Handler {
-				infra.Background("late-bg", func(ctx context.Context) error {
-					lateBgStarted.Store(true)
-					<-ctx.Done()
-					return nil
-				})
-				return http.NotFoundHandler()
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"ok":true}`))
 			})
+		})
 
-		errCh := make(chan error, 1)
-		go func() { errCh <- b.Run() }()
+	errCh := make(chan error, 1)
+	go func() { errCh <- b.Run() }()
+	waitForHTTP(t, srvURL, 3*time.Second)
+	waitForHTTP(t, intURL+"/ready", 3*time.Second)
+	assert.True(t, routerCalled.Load(), "RouterFunc should have been called")
 
-		intURL := fmt.Sprintf("http://127.0.0.1:%d", intPort)
-		waitForHTTP(t, intURL+"/ready", 3*time.Second)
+	resp, err := http.Get(srvURL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assertLifecycleHealth(t, intURL)
 
-		time.Sleep(100 * time.Millisecond)
-		assert.True(t, bgStarted.Load(), "early background should have started")
-		assert.True(t, lateBgStarted.Load(), "late background should have started")
+	if runErr := interruptAndWait(t, errCh); runErr != nil && runErr.Error() != "context canceled" {
+		t.Fatalf("unexpected Run error: %v", runErr)
+	}
+}
 
-		require.NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGINT))
+// assertLifecycleHealth checks /ready, including the late-registered check.
+func assertLifecycleHealth(t *testing.T, intURL string) {
+	t.Helper()
+	resp, err := http.Get(intURL + "/ready")
+	require.NoError(t, err)
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	var healthResp health.Response
+	require.NoError(t, json.Unmarshal(body, &healthResp))
+	assert.Equal(t, "degraded", healthResp.Status) // non-critical degraded
+	assert.Equal(t, "v0.0.1", healthResp.Version)
+	assert.Equal(t, "healthy", healthResp.Services["test-dep"])
+	assert.Equal(t, "degraded", healthResp.Services["non-critical"])
+	assert.Equal(t, "healthy", healthResp.Services["late-check"])
+}
 
-		select {
-		case <-errCh:
-		case <-time.After(10 * time.Second):
-			t.Fatal("Run did not return within 10s after SIGINT")
-		}
-
-		assert.True(t, bgStopped.Load(), "early background should have stopped")
-		assert.True(t, hookCalled.Load(), "shutdown hook should have been called")
-		// Drain any pending SIGINT delivery before allowing next test to start.
-		drainSignals()
-	})
-
-	t.Run("RunContextCancellation", func(t *testing.T) {
-		srvPort := freePort(t)
-		intPort := freePort(t)
-
-		cfg := BaseConfig{
-			Server:   ServerConfig{Host: "127.0.0.1", Port: srvPort},
-			Internal: InternalConfig{Host: "127.0.0.1", Port: intPort},
-		}
-
-		var bgStarted atomic.Bool
-		var bgStopped atomic.Bool
-		var moduleCloseValue any
-		var moduleCloseErr error
-		module := newStubModule("ctx-value-module")
-		module.stopFn = func(closeCtx context.Context) error {
-			moduleCloseValue = closeCtx.Value(runContextValueKey{})
-			moduleCloseErr = closeCtx.Err()
+func testLifecycleBackgroundAndShutdownHook(t *testing.T) {
+	cfg, _, intURL := lifecycleAddrs(t)
+	var bgStarted, bgStopped, hookCalled, lateBgStarted atomic.Bool
+	b := New("lifecycle-bg-test", "v0.0.2", cfg).
+		With(allowPlaintextOnly()).
+		WithoutRateLimit().
+		Background("early-bg", func(ctx context.Context) error {
+			bgStarted.Store(true)
+			<-ctx.Done()
+			bgStopped.Store(true)
 			return nil
-		}
-
-		b := New("lifecycle-context-test", "v0.0.3", cfg).
-			With(allowPlaintextOnly()).
-			WithoutRateLimit().
-			With(module).
-			Background("ctx-bg", func(ctx context.Context) error {
-				bgStarted.Store(true)
+		}).
+		OnShutdown(func(ctx context.Context) {
+			hookCalled.Store(true)
+		}).
+		Router(func(infra Infrastructure) http.Handler {
+			infra.Background("late-bg", func(ctx context.Context) error {
+				lateBgStarted.Store(true)
 				<-ctx.Done()
-				bgStopped.Store(true)
 				return nil
-			}).
-			Router(func(infra Infrastructure) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.WriteHeader(http.StatusNoContent)
-				})
 			})
+			return http.NotFoundHandler()
+		})
 
-		parent := context.WithValue(context.Background(), runContextValueKey{}, "trace-123")
-		ctx, cancel := context.WithCancel(parent)
-		errCh := make(chan error, 1)
-		go func() { errCh <- b.RunContext(ctx) }()
+	errCh := make(chan error, 1)
+	go func() { errCh <- b.Run() }()
+	waitForHTTP(t, intURL+"/ready", 3*time.Second)
 
-		srvURL := fmt.Sprintf("http://127.0.0.1:%d", srvPort)
-		intURL := fmt.Sprintf("http://127.0.0.1:%d", intPort)
-		waitForHTTP(t, srvURL, 3*time.Second)
-		waitForHTTP(t, intURL+"/ready", 3*time.Second)
-		assert.Eventually(t, bgStarted.Load, time.Second, 10*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	assert.True(t, bgStarted.Load(), "early background should have started")
+	assert.True(t, lateBgStarted.Load(), "late background should have started")
 
-		cancel()
-		select {
-		case runErr := <-errCh:
-			require.NoError(t, runErr)
-		case <-time.After(10 * time.Second):
-			t.Fatal("RunContext did not return within 10s after context cancellation")
-		}
-		assert.True(t, bgStopped.Load(), "background should observe RunContext cancellation")
-		assert.Equal(t, "trace-123", moduleCloseValue, "module cleanup should preserve parent context values")
-		assert.NoError(t, moduleCloseErr, "module cleanup should not inherit parent cancellation")
-	})
+	_ = interruptAndWait(t, errCh)
+	assert.True(t, bgStopped.Load(), "early background should have stopped")
+	assert.True(t, hookCalled.Load(), "shutdown hook should have been called")
+}
+
+func testLifecycleRunContextCancellation(t *testing.T) {
+	cfg, srvURL, intURL := lifecycleAddrs(t)
+	var bgStarted, bgStopped atomic.Bool
+	var moduleCloseValue any
+	var moduleCloseErr error
+	module := newStubModule("ctx-value-module")
+	module.stopFn = func(closeCtx context.Context) error {
+		moduleCloseValue = closeCtx.Value(runContextValueKey{})
+		moduleCloseErr = closeCtx.Err()
+		return nil
+	}
+
+	b := New("lifecycle-context-test", "v0.0.3", cfg).
+		With(allowPlaintextOnly()).
+		WithoutRateLimit().
+		With(module).
+		Background("ctx-bg", func(ctx context.Context) error {
+			bgStarted.Store(true)
+			<-ctx.Done()
+			bgStopped.Store(true)
+			return nil
+		}).
+		Router(func(infra Infrastructure) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})
+		})
+
+	parent := context.WithValue(context.Background(), runContextValueKey{}, "trace-123")
+	ctx, cancel := context.WithCancel(parent)
+	errCh := make(chan error, 1)
+	go func() { errCh <- b.RunContext(ctx) }()
+	waitForHTTP(t, srvURL, 3*time.Second)
+	waitForHTTP(t, intURL+"/ready", 3*time.Second)
+	assert.Eventually(t, bgStarted.Load, time.Second, 10*time.Millisecond)
+
+	cancel()
+	select {
+	case runErr := <-errCh:
+		require.NoError(t, runErr)
+	case <-time.After(10 * time.Second):
+		t.Fatal("RunContext did not return within 10s after context cancellation")
+	}
+	assert.True(t, bgStopped.Load(), "background should observe RunContext cancellation")
+	assert.Equal(t, "trace-123", moduleCloseValue, "module cleanup should preserve parent context values")
+	assert.NoError(t, moduleCloseErr, "module cleanup should not inherit parent cancellation")
 }
 
 func TestRunShutdownHooks_RecoversPanicInHookGoroutine(t *testing.T) {

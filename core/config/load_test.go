@@ -382,66 +382,31 @@ func TestLoad_URLParseErrorDoesNotEchoValue(t *testing.T) {
 
 func TestLoad_SecretTypedParseErrorsDoNotEchoValue(t *testing.T) {
 	const secretValue = "secret-token"
+	type durationCfg struct {
+		Timeout time.Duration `env:"TEST_SECRET_DURATION" secret:"true"`
+	}
+	type intCfg struct {
+		Value int `env:"TEST_SECRET_INT" secret:"true"`
+	}
+	type uintCfg struct {
+		Value uint `env:"TEST_SECRET_UINT" secret:"true"`
+	}
+	type boolCfg struct {
+		Enabled bool `env:"TEST_SECRET_BOOL" secret:"true"`
+	}
+	type floatCfg struct {
+		Rate float64 `env:"TEST_SECRET_FLOAT" secret:"true"`
+	}
 	tests := []struct {
 		name    string
 		envName string
 		load    func() error
 	}{
-		{
-			name:    "duration",
-			envName: "TEST_SECRET_DURATION",
-			load: func() error {
-				type cfg struct {
-					Timeout time.Duration `env:"TEST_SECRET_DURATION" secret:"true"`
-				}
-				_, err := Load[cfg]()
-				return err
-			},
-		},
-		{
-			name:    "int",
-			envName: "TEST_SECRET_INT",
-			load: func() error {
-				type cfg struct {
-					Value int `env:"TEST_SECRET_INT" secret:"true"`
-				}
-				_, err := Load[cfg]()
-				return err
-			},
-		},
-		{
-			name:    "uint",
-			envName: "TEST_SECRET_UINT",
-			load: func() error {
-				type cfg struct {
-					Value uint `env:"TEST_SECRET_UINT" secret:"true"`
-				}
-				_, err := Load[cfg]()
-				return err
-			},
-		},
-		{
-			name:    "bool",
-			envName: "TEST_SECRET_BOOL",
-			load: func() error {
-				type cfg struct {
-					Enabled bool `env:"TEST_SECRET_BOOL" secret:"true"`
-				}
-				_, err := Load[cfg]()
-				return err
-			},
-		},
-		{
-			name:    "float",
-			envName: "TEST_SECRET_FLOAT",
-			load: func() error {
-				type cfg struct {
-					Rate float64 `env:"TEST_SECRET_FLOAT" secret:"true"`
-				}
-				_, err := Load[cfg]()
-				return err
-			},
-		},
+		{name: "duration", envName: "TEST_SECRET_DURATION", load: loadError[durationCfg]},
+		{name: "int", envName: "TEST_SECRET_INT", load: loadError[intCfg]},
+		{name: "uint", envName: "TEST_SECRET_UINT", load: loadError[uintCfg]},
+		{name: "bool", envName: "TEST_SECRET_BOOL", load: loadError[boolCfg]},
+		{name: "float", envName: "TEST_SECRET_FLOAT", load: loadError[floatCfg]},
 	}
 
 	for _, tt := range tests {
@@ -455,6 +420,12 @@ func TestLoad_SecretTypedParseErrorsDoNotEchoValue(t *testing.T) {
 			assert.NotContains(t, err.Error(), secretValue)
 		})
 	}
+}
+
+// loadError loads a T and returns only the error.
+func loadError[T any]() error {
+	_, err := Load[T]()
+	return err
 }
 
 func TestLoad_UnexportedFieldsSkipped(t *testing.T) {

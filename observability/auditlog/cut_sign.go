@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -134,7 +135,7 @@ func (c Cut) signed() []byte {
 	b = binary.BigEndian.AppendUint64(b, uint64(c.Events))
 	b = binary.BigEndian.AppendUint64(b, uint64(c.Before.UnixMicro()))
 	b = binary.BigEndian.AppendUint64(b, uint64(c.IssuedAt.UnixMicro()))
-	b = binary.BigEndian.AppendUint32(b, uint32(len(c.Watermark)))
+	b = binary.BigEndian.AppendUint32(b, uint32(min(len(c.Watermark), math.MaxUint32)))
 	b = append(b, c.Watermark...)
 	return append(b, c.Digest...)
 }

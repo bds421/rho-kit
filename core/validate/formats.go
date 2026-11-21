@@ -259,76 +259,36 @@ func parametricFormat(name string) *jsonschema.Format {
 	switch {
 	case strings.HasPrefix(name, "starts-with:"):
 		want := strings.TrimPrefix(name, "starts-with:")
-		return &jsonschema.Format{
-			Name: name,
-			Validate: func(v any) error {
-				s, ok := v.(string)
-				if !ok {
-					return errors.New("not a string")
-				}
-				if s == "" {
-					return nil
-				}
-				if !strings.HasPrefix(s, want) {
-					return fmt.Errorf("does not start with %q", want)
-				}
-				return nil
-			},
-		}
+		return stringFormat(name, func(s string) error {
+			if !strings.HasPrefix(s, want) {
+				return fmt.Errorf("does not start with %q", want)
+			}
+			return nil
+		})
 	case strings.HasPrefix(name, "ends-with:"):
 		want := strings.TrimPrefix(name, "ends-with:")
-		return &jsonschema.Format{
-			Name: name,
-			Validate: func(v any) error {
-				s, ok := v.(string)
-				if !ok {
-					return errors.New("not a string")
-				}
-				if s == "" {
-					return nil
-				}
-				if !strings.HasSuffix(s, want) {
-					return fmt.Errorf("does not end with %q", want)
-				}
-				return nil
-			},
-		}
+		return stringFormat(name, func(s string) error {
+			if !strings.HasSuffix(s, want) {
+				return fmt.Errorf("does not end with %q", want)
+			}
+			return nil
+		})
 	case strings.HasPrefix(name, "contains:"):
 		want := strings.TrimPrefix(name, "contains:")
-		return &jsonschema.Format{
-			Name: name,
-			Validate: func(v any) error {
-				s, ok := v.(string)
-				if !ok {
-					return errors.New("not a string")
-				}
-				if s == "" {
-					return nil
-				}
-				if !strings.Contains(s, want) {
-					return fmt.Errorf("does not contain %q", want)
-				}
-				return nil
-			},
-		}
+		return stringFormat(name, func(s string) error {
+			if !strings.Contains(s, want) {
+				return fmt.Errorf("does not contain %q", want)
+			}
+			return nil
+		})
 	case strings.HasPrefix(name, "excludes-all:"):
 		chars := strings.TrimPrefix(name, "excludes-all:")
-		return &jsonschema.Format{
-			Name: name,
-			Validate: func(v any) error {
-				s, ok := v.(string)
-				if !ok {
-					return errors.New("not a string")
-				}
-				if s == "" {
-					return nil
-				}
-				if strings.ContainsAny(s, chars) {
-					return errors.New("contains disallowed character")
-				}
-				return nil
-			},
-		}
+		return stringFormat(name, func(s string) error {
+			if strings.ContainsAny(s, chars) {
+				return errors.New("contains disallowed character")
+			}
+			return nil
+		})
 	}
 	// Unknown parametric form: reject every value. Schema build already
 	// requires known parametric prefixes (starts-with:/ends-with:/…);
@@ -337,4 +297,22 @@ func parametricFormat(name string) *jsonschema.Format {
 	return &jsonschema.Format{Name: name, Validate: func(any) error {
 		return fmt.Errorf("unknown parametric format %q", name)
 	}}
+}
+
+// stringFormat is a Format that checks non-empty strings with check,
+// rejects other types and leaves the empty string to "required".
+func stringFormat(name string, check func(string) error) *jsonschema.Format {
+	return &jsonschema.Format{
+		Name: name,
+		Validate: func(v any) error {
+			s, ok := v.(string)
+			if !ok {
+				return errors.New("not a string")
+			}
+			if s == "" {
+				return nil
+			}
+			return check(s)
+		},
+	}
 }

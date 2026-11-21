@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"runtime/debug"
 	"time"
 
@@ -249,7 +250,7 @@ func NewCircuitBreaker(threshold int, cooldownPeriod time.Duration, opts ...Opti
 		MaxRequests: 1,
 		Timeout:     cooldownPeriod,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			return counts.ConsecutiveFailures >= uint32(threshold)
+			return counts.ConsecutiveFailures >= uint32(min(threshold, math.MaxUint32))
 		},
 		// Default predicates: only nil errors are successes. Caller-driven
 		// cancellation (context.Canceled) is excluded (neither success nor

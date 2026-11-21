@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"math"
 	"time"
 )
 
@@ -95,7 +96,7 @@ func canonicalEvent(event Event) []byte {
 
 func appendLenPrefixed(dst, payload []byte) []byte {
 	var header [4]byte
-	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
+	binary.BigEndian.PutUint32(header[:], uint32(min(len(payload), math.MaxUint32)))
 	dst = append(dst, header[:]...)
 	dst = append(dst, payload...)
 	return dst

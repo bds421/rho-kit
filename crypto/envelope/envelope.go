@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"unicode"
 	"unicode/utf8"
 
@@ -250,17 +251,17 @@ func (e *Encryptor) Rewrap(ctx context.Context, blob []byte) ([]byte, error) {
 // buildHeader serialises the header: magic, version, uint16 keyID
 // length, keyID bytes, uint16 wrapped-DEK length, wrapped DEK. The 16-bit
 // keyID length leaves room for fully-qualified GCP and Azure key
-// resources.
+// resources; callers have checked that both lengths fit.
 func buildHeader(keyID string, wrappedDEK []byte) []byte {
 	out := make([]byte, 0, 3+1+2+len(keyID)+2+len(wrappedDEK))
 	out = append(out, blobMagic[:]...)
 	out = append(out, blobVersion)
 	var kp [2]byte
-	binary.BigEndian.PutUint16(kp[:], uint16(len(keyID)))
+	binary.BigEndian.PutUint16(kp[:], uint16(min(len(keyID), math.MaxUint16)))
 	out = append(out, kp[:]...)
 	out = append(out, []byte(keyID)...)
 	var lp [2]byte
-	binary.BigEndian.PutUint16(lp[:], uint16(len(wrappedDEK)))
+	binary.BigEndian.PutUint16(lp[:], uint16(min(len(wrappedDEK), math.MaxUint16)))
 	out = append(out, lp[:]...)
 	out = append(out, wrappedDEK...)
 	return out

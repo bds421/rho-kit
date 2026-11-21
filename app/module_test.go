@@ -519,17 +519,8 @@ func TestModule_LifecycleCloseOrder(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	runner := lifecycle.NewRunner(logger)
 
-	cleanup, err := initModules(
-		context.Background(),
-		[]Module{mod1, mod2},
-		"test-service",
-		logger,
-		runner,
-		BaseConfig{},
-		nil,
-	)
+	cleanup, err := initModules(context.Background(), []Module{mod1, mod2}, "test-service", logger, runner, BaseConfig{}, nil)
 	require.NoError(t, err)
-
 	assert.Equal(t, []string{"first", "second"}, initOrder)
 	assert.True(t, mod1.initCalled.Load())
 	assert.True(t, mod2.initCalled.Load())
