@@ -65,42 +65,10 @@ func NewComputeMetrics(opts ...MetricsOption) *ComputeMetrics {
 	reg := cfg.registerer
 
 	m := &ComputeMetrics{
-		hits: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "cache",
-				Subsystem: "compute",
-				Name:      "hits_total",
-				Help:      "Total cache compute hits (fresh data returned).",
-			},
-			[]string{"name"},
-		),
-		misses: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "cache",
-				Subsystem: "compute",
-				Name:      "misses_total",
-				Help:      "Total cache compute misses (computation triggered).",
-			},
-			[]string{"name"},
-		),
-		staleServes: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "cache",
-				Subsystem: "compute",
-				Name:      "stale_serves_total",
-				Help:      "Total stale-while-revalidate serves.",
-			},
-			[]string{"name"},
-		),
-		errors: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "cache",
-				Subsystem: "compute",
-				Name:      "errors_total",
-				Help:      "Total errors during cache computation.",
-			},
-			[]string{"name"},
-		),
+		hits:        computeCounter("hits_total", "Total cache compute hits (fresh data returned)."),
+		misses:      computeCounter("misses_total", "Total cache compute misses (computation triggered)."),
+		staleServes: computeCounter("stale_serves_total", "Total stale-while-revalidate serves."),
+		errors:      computeCounter("errors_total", "Total errors during cache computation."),
 		singleflightInflight: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: "cache",
@@ -120,15 +88,8 @@ func NewComputeMetrics(opts ...MetricsOption) *ComputeMetrics {
 			},
 			[]string{"name"},
 		),
-		singleflightFollowers: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "cache",
-				Subsystem: "compute",
-				Name:      "singleflight_followers_total",
-				Help:      "Total callers that became followers of an in-flight singleflight leader (compute deduplicated).",
-			},
-			[]string{"name"},
-		),
+		singleflightFollowers: computeCounter("singleflight_followers_total",
+			"Total callers that became followers of an in-flight singleflight leader (compute deduplicated)."),
 	}
 
 	m.hits = promutil.MustRegisterOrGet(reg, m.hits)
@@ -140,6 +101,19 @@ func NewComputeMetrics(opts ...MetricsOption) *ComputeMetrics {
 	m.singleflightFollowers = promutil.MustRegisterOrGet(reg, m.singleflightFollowers)
 
 	return m
+}
+
+// computeCounter is a compute-cache counter labelled by cache name.
+func computeCounter(name, help string) *prometheus.CounterVec {
+	return prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "cache",
+			Subsystem: "compute",
+			Name:      name,
+			Help:      help,
+		},
+		[]string{"name"},
+	)
 }
 
 // WithComputePrometheusMetrics enables Prometheus metrics on the

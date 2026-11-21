@@ -666,39 +666,45 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 	}
 
 	entry, err := l.store.AppendChained(ctx, e.TenantID, func(prev Entry, prevSeq int64) (Entry, error) {
-		entry := e
-		if entry.ID == "" {
-			id, err := l.newID()
-			if err != nil {
-				return Entry{}, err
-			}
-			entry.ID = id
-		}
-		entry.SignatureKeyID = keyID
-		entry.Seq = prevSeq + 1
-		if prevSeq == 0 {
-			entry.PrevHash = zeroPrevHash
-		} else {
-			h, err := entryHash(prev)
-			if err != nil {
-				return Entry{}, redact.WrapError("actionlog: prev hash", err)
-			}
-			entry.PrevHash = h
-		}
-		if err := validateExceptMetadata(entry); err != nil {
-			return Entry{}, err
-		}
-		sig, err := computeSignature(entry, secret)
-		if err != nil {
-			return Entry{}, redact.WrapError("actionlog: compute signature", err)
-		}
-		entry.Signature = sig
-		return entry, nil
+		return l.chainEntry(e, prev, prevSeq, keyID, secret)
 	})
 	if err != nil {
 		return Entry{}, err
 	}
 	return cloneEntry(entry), nil
+}
+
+// chainEntry links e after prev (Seq prevSeq) in the tenant's chain and
+// signs it under keyID.
+func (l *signedLogger) chainEntry(e, prev Entry, prevSeq int64, keyID string, secret []byte) (Entry, error) {
+	entry := e
+	if entry.ID == "" {
+		id, err := l.newID()
+		if err != nil {
+			return Entry{}, err
+		}
+		entry.ID = id
+	}
+	entry.SignatureKeyID = keyID
+	entry.Seq = prevSeq + 1
+	if prevSeq == 0 {
+		entry.PrevHash = zeroPrevHash
+	} else {
+		h, err := entryHash(prev)
+		if err != nil {
+			return Entry{}, redact.WrapError("actionlog: prev hash", err)
+		}
+		entry.PrevHash = h
+	}
+	if err := validateExceptMetadata(entry); err != nil {
+		return Entry{}, err
+	}
+	sig, err := computeSignature(entry, secret)
+	if err != nil {
+		return Entry{}, redact.WrapError("actionlog: compute signature", err)
+	}
+	entry.Signature = sig
+	return entry, nil
 }
 
 // Get reads and verifies an entry.

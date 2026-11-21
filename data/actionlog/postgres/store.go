@@ -191,9 +191,39 @@ func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry,
 		limit = defaultLimit
 	}
 
-	// Build the WHERE clause incrementally. Using positional placeholders
-	// keeps the parameter list aligned with the SQL string and avoids any
-	// risk of operator-supplied filter values being interpolated.
+	sql, args := listQuery(q, limit, cursorTime, cursorID)
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, "", redact.WrapError("actionlog/postgres: list", err)
+	}
+	defer rows.Close()
+
+	out := make([]actionlog.Entry, 0, limit)
+	for rows.Next() {
+		entry, scanErr := scanEntry(rows)
+		if scanErr != nil {
+			return nil, "", redact.WrapError("actionlog/postgres: list scan", scanErr)
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", redact.WrapError("actionlog/postgres: list iterate", err)
+	}
+	var next string
+	if len(out) > limit {
+		last := out[limit-1]
+		next = s.cursorSigner.Encode(last.OccurredAt, last.ID)
+		out = out[:limit]
+	}
+	return out, next, nil
+}
+
+// listQuery builds List's SELECT over q's filters, after the cursor
+// position when q has one. Positional placeholders keep the parameter list
+// aligned with the SQL string and avoid any risk of operator-supplied
+// filter values being interpolated. It fetches limit+1 rows so List can
+// tell whether another page exists without issuing a second COUNT(*) query.
+func listQuery(q actionlog.Query, limit int, cursorTime time.Time, cursorID string) (string, []any) {
 	args := make([]any, 0, 6)
 	clauses := make([]string, 0, 6)
 	add := func(expr string, val any) {
@@ -231,35 +261,9 @@ FROM action_log_entries`
 	if len(clauses) > 0 {
 		sql += " WHERE " + joinAnd(clauses)
 	}
-	// Fetch limit+1 rows so we can tell whether another page exists
-	// without issuing a second COUNT(*) query.
 	args = append(args, limit+1)
 	sql += fmt.Sprintf(" ORDER BY occurred_at DESC, id DESC LIMIT $%d", len(args))
-
-	rows, err := s.pool.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, "", redact.WrapError("actionlog/postgres: list", err)
-	}
-	defer rows.Close()
-
-	out := make([]actionlog.Entry, 0, limit)
-	for rows.Next() {
-		entry, scanErr := scanEntry(rows)
-		if scanErr != nil {
-			return nil, "", redact.WrapError("actionlog/postgres: list scan", scanErr)
-		}
-		out = append(out, entry)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, "", redact.WrapError("actionlog/postgres: list iterate", err)
-	}
-	var next string
-	if len(out) > limit {
-		last := out[limit-1]
-		next = s.cursorSigner.Encode(last.OccurredAt, last.ID)
-		out = out[:limit]
-	}
-	return out, next, nil
+	return sql, args
 }
 
 // RangeByTenantSeq calls fn for every entry for tenantID ordered by Seq ASC.

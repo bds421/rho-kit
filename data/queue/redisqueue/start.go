@@ -45,6 +45,19 @@ func StartProcessors(
 		logger = slog.Default()
 	}
 
+	if err := validateBindings(bindings); err != nil {
+		return err
+	}
+	for _, binding := range bindings {
+		wg.Add(1)
+		go runProcessor(ctx, queue, binding, wg, logger, shutdownFn)
+	}
+	return nil
+}
+
+// validateBindings rejects a binding with an empty queue name, a nil
+// handler or a queue name an earlier binding already has.
+func validateBindings(bindings []Binding) error {
 	seen := make(map[string]struct{}, len(bindings))
 	for i, b := range bindings {
 		if b.Queue == "" {
@@ -65,33 +78,32 @@ func StartProcessors(
 		}
 		seen[b.Queue] = struct{}{}
 	}
-
-	for _, binding := range bindings {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					logger.Error("queue processor panicked",
-						redact.String("queue", binding.Queue),
-						redact.Panic(r),
-						"stack", string(debug.Stack()),
-					)
-					if shutdownFn != nil {
-						shutdownFn()
-					}
-				}
-			}()
-			if err := queue.Process(ctx, binding.Queue, binding.Handler); err != nil && ctx.Err() == nil {
-				logger.Error("queue processor permanently failed",
-					redact.String("queue", binding.Queue),
-					redact.Error(err),
-				)
-				if shutdownFn != nil {
-					shutdownFn()
-				}
-			}
-		}()
-	}
 	return nil
+}
+
+// runProcessor processes binding's queue until ctx ends, calling
+// shutdownFn (if non-nil) when the processor panics or fails for good.
+func runProcessor(ctx context.Context, queue *Queue, binding Binding, wg *sync.WaitGroup, logger *slog.Logger, shutdownFn func()) {
+	defer wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("queue processor panicked",
+				redact.String("queue", binding.Queue),
+				redact.Panic(r),
+				"stack", string(debug.Stack()),
+			)
+			if shutdownFn != nil {
+				shutdownFn()
+			}
+		}
+	}()
+	if err := queue.Process(ctx, binding.Queue, binding.Handler); err != nil && ctx.Err() == nil {
+		logger.Error("queue processor permanently failed",
+			redact.String("queue", binding.Queue),
+			redact.Error(err),
+		)
+		if shutdownFn != nil {
+			shutdownFn()
+		}
+	}
 }

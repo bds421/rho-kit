@@ -947,24 +947,7 @@ func TestComputeCache_InflightEntryNotLeakedWhenJoiningBackgroundRefresh(t *test
 
 	release := make(chan struct{})
 	entered := make(chan struct{}, 1)
-	var calls atomic.Int32
-	fn := func(context.Context) (string, time.Duration, error) {
-		n := calls.Add(1)
-		if n == 1 {
-			// Seed value with a very short primary TTL so the next
-			// read falls into the stale window.
-			return "v1", 20 * time.Millisecond, nil
-		}
-		// The background refresh (singleflight leader) blocks here,
-		// holding leadership for the key while the foreground compute
-		// joins it.
-		select {
-		case entered <- struct{}{}:
-		default:
-		}
-		<-release
-		return "v2", time.Minute, nil
-	}
+	fn := seedThenBlockingCompute(release, entered)
 
 	// Seed v1.
 	val, err := cc.GetOrCompute(context.Background(), "k", fn)
@@ -1018,11 +1001,41 @@ func TestComputeCache_InflightEntryNotLeakedWhenJoiningBackgroundRefresh(t *test
 	// NOT be classified as a follower. With v2 now cached fresh this is a
 	// plain hit, but we force a recompute by deleting the entry again so
 	// the solo caller goes through computeAndStore's classification path.
+	assertSoloRecomputeIsNoFollower(t, cc, backend, metrics, fullKey)
+}
+
+// seedThenBlockingCompute returns "v1" with a short TTL on its first call;
+// every later call signals entered and blocks until release closes.
+func seedThenBlockingCompute(release <-chan struct{}, entered chan<- struct{}) ComputeFunc[string] {
+	var calls atomic.Int32
+	return func(context.Context) (string, time.Duration, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			// Seed value with a very short primary TTL so the next
+			// read falls into the stale window.
+			return "v1", 20 * time.Millisecond, nil
+		}
+		// The background refresh (singleflight leader) blocks here,
+		// holding leadership for the key while the foreground compute
+		// joins it.
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return "v2", time.Minute, nil
+	}
+}
+
+// assertSoloRecomputeIsNoFollower recomputes key "k" with no other caller
+// and checks that the compute counts no follower and records no wait.
+func assertSoloRecomputeIsNoFollower(t *testing.T, cc *ComputeCache[string], backend *MemoryCache, metrics *ComputeMetrics, fullKey string) {
+	t.Helper()
 	require.NoError(t, backend.Delete(context.Background(), fullKey))
 	followersBefore := getCounterValue(t, metrics.singleflightFollowers, "leak_cache")
 	waitBefore := gatherHistogramSampleCount(t, metrics.singleflightWait, "leak_cache")
 
-	_, err = cc.GetOrCompute(context.Background(), "k", func(context.Context) (string, time.Duration, error) {
+	_, err := cc.GetOrCompute(context.Background(), "k", func(context.Context) (string, time.Duration, error) {
 		return "v3", time.Minute, nil
 	})
 	require.NoError(t, err)

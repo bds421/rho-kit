@@ -48,6 +48,23 @@ func StartConsumers(
 		logger = slog.Default()
 	}
 
+	if err := validateBindings(bindings); err != nil {
+		return err
+	}
+	for i, binding := range bindings {
+		bound, err := consumer.cloneForStream()
+		if err != nil {
+			return &redis.BindingError{Index: i, Reason: "clone consumer for stream: " + err.Error()}
+		}
+		wg.Add(1)
+		go runConsumer(ctx, bound, binding, wg, logger, shutdownFn)
+	}
+	return nil
+}
+
+// validateBindings rejects a binding with an empty or malformed stream
+// name, a nil handler or a stream name an earlier binding already has.
+func validateBindings(bindings []Binding) error {
 	seen := make(map[string]int, len(bindings))
 	for i, b := range bindings {
 		if b.Stream == "" {
@@ -69,37 +86,32 @@ func StartConsumers(
 		}
 		seen[b.Stream] = i
 	}
-
-	for i, binding := range bindings {
-		bound, err := consumer.cloneForStream()
-		if err != nil {
-			return &redis.BindingError{Index: i, Reason: "clone consumer for stream: " + err.Error()}
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					logger.Error("stream consumer panicked",
-						redact.String("stream", binding.Stream),
-						redact.Panic(r),
-						"stack", string(debug.Stack()),
-					)
-					if shutdownFn != nil {
-						shutdownFn()
-					}
-				}
-			}()
-			if err := bound.Consume(ctx, binding.Stream, binding.Handler); err != nil && ctx.Err() == nil {
-				logger.Error("stream consumer permanently failed",
-					redact.String("stream", binding.Stream),
-					redact.Error(err),
-				)
-				if shutdownFn != nil {
-					shutdownFn()
-				}
-			}
-		}()
-	}
 	return nil
+}
+
+// runConsumer consumes binding's stream with bound until ctx ends, calling
+// shutdownFn (if non-nil) when the consumer panics or fails for good.
+func runConsumer(ctx context.Context, bound *Consumer, binding Binding, wg *sync.WaitGroup, logger *slog.Logger, shutdownFn func()) {
+	defer wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("stream consumer panicked",
+				redact.String("stream", binding.Stream),
+				redact.Panic(r),
+				"stack", string(debug.Stack()),
+			)
+			if shutdownFn != nil {
+				shutdownFn()
+			}
+		}
+	}()
+	if err := bound.Consume(ctx, binding.Stream, binding.Handler); err != nil && ctx.Err() == nil {
+		logger.Error("stream consumer permanently failed",
+			redact.String("stream", binding.Stream),
+			redact.Error(err),
+		)
+		if shutdownFn != nil {
+			shutdownFn()
+		}
+	}
 }

@@ -238,46 +238,7 @@ func (rc *Cache) Get(ctx context.Context, key string) (val []byte, err error) {
 		return nil, err
 	}
 	if rc.maxValueSize > 0 {
-		res, err := cappedGetScript.Run(ctx, rc.client, []string{rc.redisKey(key)}, rc.maxValueSize).Result()
-		if err != nil {
-			if isServerCmdError(err) {
-				rc.metrics.misses.WithLabelValues(rc.name).Inc()
-				return nil, sharedcache.ErrCacheMiss
-			}
-			return nil, redact.WrapError("redis cache get", err)
-		}
-		pair, ok := res.([]any)
-		if !ok || len(pair) < 1 {
-			return nil, errors.New("rediscache: unexpected capped-get script result shape")
-		}
-		tag, ok := pair[0].(int64)
-		if !ok {
-			return nil, errors.New("rediscache: unexpected capped-get script result shape")
-		}
-		switch tag {
-		case 0:
-			rc.metrics.misses.WithLabelValues(rc.name).Inc()
-			return nil, sharedcache.ErrCacheMiss
-		case -1:
-			rc.metrics.misses.WithLabelValues(rc.name).Inc()
-			return nil, fmt.Errorf("redis cache get: %w", sharedcache.ErrValueTooLarge)
-		case 1:
-			if len(pair) < 2 {
-				return nil, errors.New("rediscache: unexpected capped-get script result shape")
-			}
-			switch v := pair[1].(type) {
-			case string:
-				val = []byte(v)
-			case []byte:
-				val = v
-			default:
-				return nil, errors.New("rediscache: unexpected capped-get value type")
-			}
-			rc.metrics.hits.WithLabelValues(rc.name).Inc()
-			return val, nil
-		default:
-			return nil, errors.New("rediscache: unexpected capped-get script tag")
-		}
+		return rc.getCapped(ctx, key)
 	}
 	val, err = rc.client.Get(ctx, rc.redisKey(key)).Bytes()
 	if errors.Is(err, goredis.Nil) || isServerCmdError(err) {
@@ -292,6 +253,52 @@ func (rc *Cache) Get(ctx context.Context, key string) (val []byte, err error) {
 	}
 	rc.metrics.hits.WithLabelValues(rc.name).Inc()
 	return val, nil
+}
+
+// getCapped reads key through cappedGetScript, which pairs STRLEN with GET
+// in one atomic round-trip.
+func (rc *Cache) getCapped(ctx context.Context, key string) ([]byte, error) {
+	res, err := cappedGetScript.Run(ctx, rc.client, []string{rc.redisKey(key)}, rc.maxValueSize).Result()
+	if err != nil {
+		if isServerCmdError(err) {
+			rc.metrics.misses.WithLabelValues(rc.name).Inc()
+			return nil, sharedcache.ErrCacheMiss
+		}
+		return nil, redact.WrapError("redis cache get", err)
+	}
+	pair, ok := res.([]any)
+	if !ok || len(pair) < 1 {
+		return nil, errors.New("rediscache: unexpected capped-get script result shape")
+	}
+	tag, ok := pair[0].(int64)
+	if !ok {
+		return nil, errors.New("rediscache: unexpected capped-get script result shape")
+	}
+	switch tag {
+	case 0:
+		rc.metrics.misses.WithLabelValues(rc.name).Inc()
+		return nil, sharedcache.ErrCacheMiss
+	case -1:
+		rc.metrics.misses.WithLabelValues(rc.name).Inc()
+		return nil, fmt.Errorf("redis cache get: %w", sharedcache.ErrValueTooLarge)
+	case 1:
+		if len(pair) < 2 {
+			return nil, errors.New("rediscache: unexpected capped-get script result shape")
+		}
+		var val []byte
+		switch v := pair[1].(type) {
+		case string:
+			val = []byte(v)
+		case []byte:
+			val = v
+		default:
+			return nil, errors.New("rediscache: unexpected capped-get value type")
+		}
+		rc.metrics.hits.WithLabelValues(rc.name).Inc()
+		return val, nil
+	default:
+		return nil, errors.New("rediscache: unexpected capped-get script tag")
+	}
 }
 
 // Set stores a value in Redis with the given TTL. Zero TTL means no expiration.
@@ -381,36 +388,57 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 	// Without a cap configured, MGET in a single round-trip is the
 	// efficient path. Skip the per-key pipeline.
 	if rc.maxValueSize <= 0 {
-		rkeys := make([]string, len(keys))
-		for i, k := range keys {
-			rkeys[i] = rc.redisKey(k)
-		}
-		vals, mgetErr := rc.client.MGet(ctx, rkeys...).Result()
-		if mgetErr != nil {
-			return nil, redact.WrapError("redis cache mget", mgetErr)
-		}
-		out = make(map[string][]byte, len(keys))
-		for i, v := range vals {
-			if v == nil {
-				rc.metrics.misses.WithLabelValues(rc.name).Inc()
-				continue
-			}
-			s, ok := v.(string)
-			if !ok {
-				// A non-string MGET reply (e.g. a wrong-typed key) yields
-				// no usable value; count it as a miss to match the nil
-				// case and the capped path's per-key miss accounting.
-				rc.metrics.misses.WithLabelValues(rc.name).Inc()
-				continue
-			}
-			rc.metrics.hits.WithLabelValues(rc.name).Inc()
-			out[keys[i]] = []byte(s)
-		}
+		return rc.mgetUncapped(ctx, keys)
+	}
+	getKeys, err := rc.underCapKeys(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	out = make(map[string][]byte, len(keys))
+	if len(getKeys) == 0 {
 		return out, nil
 	}
+	if err := rc.getUnderCapKeys(ctx, getKeys, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
-	// Round-trip 1: STRLEN every key. The pipeline carries no GET so
-	// no oversize bytes traverse the wire here.
+// mgetUncapped reads keys with one MGET round-trip.
+func (rc *Cache) mgetUncapped(ctx context.Context, keys []string) (map[string][]byte, error) {
+	rkeys := make([]string, len(keys))
+	for i, k := range keys {
+		rkeys[i] = rc.redisKey(k)
+	}
+	vals, err := rc.client.MGet(ctx, rkeys...).Result()
+	if err != nil {
+		return nil, redact.WrapError("redis cache mget", err)
+	}
+	out := make(map[string][]byte, len(keys))
+	for i, k := range keys {
+		if i >= len(vals) {
+			break
+		}
+		s, ok := vals[i].(string)
+		if !ok {
+			// A nil reply is a missing key; a non-string reply (e.g. a
+			// wrong-typed key) yields no usable value either, so both
+			// count as a miss, matching the capped path's per-key miss
+			// accounting.
+			rc.metrics.misses.WithLabelValues(rc.name).Inc()
+			continue
+		}
+		rc.metrics.hits.WithLabelValues(rc.name).Inc()
+		out[k] = []byte(s)
+	}
+	return out, nil
+}
+
+// underCapKeys is the capped MGet's first round-trip: STRLEN for every key,
+// so no oversize bytes traverse the wire. It returns the keys whose value
+// fits the cap and counts the others as misses. STRLEN returns 0 for
+// missing keys (Redis treats them as empty), so those stay candidates.
+func (rc *Cache) underCapKeys(ctx context.Context, keys []string) ([]string, error) {
 	pipe := rc.client.Pipeline()
 	strLens := make([]*goredis.IntCmd, len(keys))
 	for i, k := range keys {
@@ -423,26 +451,20 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) && !isServerCmdError(err) {
 		return nil, redact.WrapError("redis cache mget strlen pipeline", err)
 	}
-
-	// Decide which keys are under the cap. STRLEN returns 0 for
-	// missing keys (Redis treats them as empty); we issue GET only
-	// for under-cap candidates and count clear miss/oversize cases
-	// up front.
 	getKeys := make([]string, 0, len(keys))
-	out = make(map[string][]byte, len(keys))
 	for i, k := range keys {
-		sz, slErr := strLens[i].Result()
-		if slErr != nil {
+		sz, err := strLens[i].Result()
+		if err != nil {
 			// A per-key server error (e.g. WRONGTYPE for a key holding
 			// a list/hash) is treated as a miss, matching the uncapped
 			// MGET path where Redis returns nil for wrong-typed keys.
 			// Failing the whole batch here would let one hostile
 			// co-tenant deny every capped request containing that key.
-			if isServerCmdError(slErr) {
+			if isServerCmdError(err) {
 				rc.metrics.misses.WithLabelValues(rc.name).Inc()
 				continue
 			}
-			return nil, redact.WrapError("redis cache mget strlen", slErr)
+			return nil, redact.WrapError("redis cache mget strlen", err)
 		}
 		if sz > int64(rc.maxValueSize) {
 			rc.metrics.misses.WithLabelValues(rc.name).Inc()
@@ -450,34 +472,35 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 		}
 		getKeys = append(getKeys, k)
 	}
-	if len(getKeys) == 0 {
-		return out, nil
-	}
+	return getKeys, nil
+}
 
-	// Round-trip 2: GET only the under-cap keys.
-	pipe = rc.client.Pipeline()
+// getUnderCapKeys is the capped MGet's second round-trip: GET only the keys
+// underCapKeys kept, storing each hit in out.
+func (rc *Cache) getUnderCapKeys(ctx context.Context, getKeys []string, out map[string][]byte) error {
+	pipe := rc.client.Pipeline()
 	gets := make([]*goredis.StringCmd, len(getKeys))
 	for i, k := range getKeys {
 		gets[i] = pipe.Get(ctx, rc.redisKey(k))
 	}
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) && !isServerCmdError(err) {
-		return nil, redact.WrapError("redis cache mget get pipeline", err)
+		return redact.WrapError("redis cache mget get pipeline", err)
 	}
 	for i, k := range getKeys {
-		val, gErr := gets[i].Bytes()
-		if errors.Is(gErr, goredis.Nil) {
+		val, err := gets[i].Bytes()
+		if errors.Is(err, goredis.Nil) {
 			rc.metrics.misses.WithLabelValues(rc.name).Inc()
 			continue
 		}
-		if gErr != nil {
-			// As with STRLEN above, a per-key server error (e.g. the
-			// value's type changed to a list/hash between STRLEN and
-			// GET) is treated as a miss rather than failing the batch.
-			if isServerCmdError(gErr) {
+		if err != nil {
+			// As with STRLEN, a per-key server error (e.g. the value's
+			// type changed to a list/hash between STRLEN and GET) is
+			// treated as a miss rather than failing the batch.
+			if isServerCmdError(err) {
 				rc.metrics.misses.WithLabelValues(rc.name).Inc()
 				continue
 			}
-			return nil, redact.WrapError("redis cache mget get", gErr)
+			return redact.WrapError("redis cache mget get", err)
 		}
 		if len(val) > rc.maxValueSize {
 			// TOCTOU: value grew between STRLEN and GET.
@@ -487,7 +510,7 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte
 		rc.metrics.hits.WithLabelValues(rc.name).Inc()
 		out[k] = val
 	}
-	return out, nil
+	return nil
 }
 
 // isServerCmdError reports whether err is a per-key error reply returned

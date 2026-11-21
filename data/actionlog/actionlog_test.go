@@ -163,10 +163,17 @@ func TestAppend_RejectsMissingFields(t *testing.T) {
 	}
 }
 
-func TestAppend_RejectsInvalidBoundedFields(t *testing.T) {
-	store := newMemStore()
-	logger := New(store, newTestSecrets(t))
+// entryMutation turns a valid entry into one Append must reject.
+type entryMutation struct {
+	name string
+	mut  func(*Entry)
+}
 
+// assertAppendRejects checks that Append rejects each mutation of a valid
+// entry with ErrInvalidEntry.
+func assertAppendRejects(t *testing.T, cases []entryMutation) {
+	t.Helper()
+	logger := New(newMemStore(), newTestSecrets(t))
 	base := Entry{
 		TenantID: "tenant",
 		Actor:    "agent",
@@ -175,10 +182,22 @@ func TestAppend_RejectsInvalidBoundedFields(t *testing.T) {
 		Reason:   "ok",
 		Outcome:  OutcomeSuccess,
 	}
-	cases := []struct {
-		name string
-		mut  func(*Entry)
-	}{
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			entry := base
+			c.mut(&entry)
+			_, err := logger.Append(context.Background(), entry)
+			assert.ErrorIs(t, err, ErrInvalidEntry)
+			if c.name == "id too long" {
+				assert.NotContains(t, err.Error(), "128")
+				assert.NotContains(t, err.Error(), "129")
+			}
+		})
+	}
+}
+
+func TestAppend_RejectsInvalidBoundedFields(t *testing.T) {
+	assertAppendRejects(t, []entryMutation{
 		{"id too long", func(e *Entry) { e.ID = strings.Repeat("a", MaxIDLen+1) }},
 		{"id invalid utf8", func(e *Entry) { e.ID = string([]byte{0xff}) }},
 		{"id contains nul", func(e *Entry) { e.ID = "entry\x001" }},
@@ -202,6 +221,11 @@ func TestAppend_RejectsInvalidBoundedFields(t *testing.T) {
 		{"reason too long", func(e *Entry) { e.Reason = strings.Repeat("r", MaxReasonLen+1) }},
 		{"reason invalid utf8", func(e *Entry) { e.Reason = string([]byte{0xff}) }},
 		{"reason contains nul", func(e *Entry) { e.Reason = "reason\x00bad" }},
+	})
+}
+
+func TestAppend_RejectsInvalidMetadata(t *testing.T) {
+	assertAppendRejects(t, []entryMutation{
 		{"metadata too large", func(e *Entry) { e.Metadata = map[string]any{"blob": strings.Repeat("x", MaxMetadataBytes+1)} }},
 		{"metadata too many entries", func(e *Entry) {
 			e.Metadata = make(map[string]any, MaxMetadataEntries+1)
@@ -224,19 +248,7 @@ func TestAppend_RejectsInvalidBoundedFields(t *testing.T) {
 			e.Metadata = m
 		}},
 		{"metadata unsupported value", func(e *Entry) { e.Metadata = map[string]any{"fn": func() {}} }},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			entry := base
-			c.mut(&entry)
-			_, err := logger.Append(context.Background(), entry)
-			assert.ErrorIs(t, err, ErrInvalidEntry)
-			if c.name == "id too long" {
-				assert.NotContains(t, err.Error(), "128")
-				assert.NotContains(t, err.Error(), "129")
-			}
-		})
-	}
+	})
 }
 
 func TestAppend_RejectsLongSignatureKeyID(t *testing.T) {

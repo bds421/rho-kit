@@ -2,6 +2,7 @@ package idempotency
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -174,7 +175,7 @@ func TestMemoryStore_Set_LockSweptMidCallReturnsLockLost(t *testing.T) {
 	advance(2 * time.Second)
 	store.setCount = evictInterval - 1
 	err = store.Set(ctx, "k", token, CachedResponse{StatusCode: 200}, time.Minute)
-	if err != ErrLockLost {
+	if !errors.Is(err, ErrLockLost) {
 		t.Fatalf("Set after lock expiry: got %v, want ErrLockLost", err)
 	}
 	if _, exists := store.items["k"]; exists {

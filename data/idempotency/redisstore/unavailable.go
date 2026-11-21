@@ -123,3 +123,12 @@ func translateUnavailable(err error) error {
 	}
 	return err
 }
+
+// storeError returns err as [ErrStoreUnavailable] when the store is
+// unreachable, and otherwise redacted and wrapped under op.
+func storeError(op string, err error) error {
+	if isReadOnlyError(err) || isConnectionUnavailable(err) {
+		return translateUnavailable(err)
+	}
+	return redact.WrapError(op, err)
+}

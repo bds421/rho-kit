@@ -102,33 +102,9 @@ func NewConsumerMetrics(opts ...ConsumerMetricsOption) *ConsumerMetrics {
 	reg := cfg.registerer
 
 	m := &ConsumerMetrics{
-		messagesConsumed: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "redis",
-				Subsystem: "stream",
-				Name:      "messages_consumed_total",
-				Help:      "Total messages consumed from streams.",
-			},
-			[]string{"stream", "group"},
-		),
-		messagesFailed: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "redis",
-				Subsystem: "stream",
-				Name:      "messages_failed_total",
-				Help:      "Total messages that failed processing.",
-			},
-			[]string{"stream", "group"},
-		),
-		messagesDeadLettered: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "redis",
-				Subsystem: "stream",
-				Name:      "messages_dead_lettered_total",
-				Help:      "Total messages moved to dead-letter stream.",
-			},
-			[]string{"stream", "group"},
-		),
+		messagesConsumed:     consumerCounter("messages_consumed_total", "Total messages consumed from streams."),
+		messagesFailed:       consumerCounter("messages_failed_total", "Total messages that failed processing."),
+		messagesDeadLettered: consumerCounter("messages_dead_lettered_total", "Total messages moved to dead-letter stream."),
 		processingDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "redis",
@@ -157,6 +133,15 @@ func NewConsumerMetrics(opts ...ConsumerMetricsOption) *ConsumerMetrics {
 	m.pendingMessages = promutil.MustRegisterOrGet(reg, m.pendingMessages)
 
 	return m
+}
+
+// consumerCounter is a redis stream consumer counter labelled by stream and
+// group.
+func consumerCounter(name, help string) *prometheus.CounterVec {
+	return prometheus.NewCounterVec(
+		prometheus.CounterOpts{Namespace: "redis", Subsystem: "stream", Name: name, Help: help},
+		[]string{"stream", "group"},
+	)
 }
 
 var defaultConsumerMetrics = sync.OnceValue(func() *ConsumerMetrics { return NewConsumerMetrics() })
@@ -934,19 +919,7 @@ func (c *Consumer) handleMessage(ctx context.Context, stream, dlStream string, r
 	defer ackCancel()
 
 	if err == nil {
-		if ackErr := c.client.XAck(ackCtx, stream, c.group, raw.ID).Err(); ackErr != nil {
-			c.logger.Error("failed to ACK message",
-				redact.String("stream", stream),
-				redact.String("redis_id", raw.ID),
-				redact.Error(ackErr),
-			)
-			// Do not count as consumed: the message remains in the PEL and
-			// will be redelivered. Counting here double-counts on the
-			// successful second pass (matches deadLetter's XACK-fail policy).
-			return
-		}
-		c.clearLocalDelivery(raw.ID)
-		c.metrics.messagesConsumed.WithLabelValues(streamLabel, groupLabel).Inc()
+		c.acknowledge(ackCtx, stream, raw.ID, streamLabel, groupLabel)
 		return
 	}
 
@@ -978,6 +951,23 @@ func (c *Consumer) handleMessage(ctx context.Context, stream, dlStream string, r
 		c.noteLocalDelivery(raw.ID, deliveryCount)
 	}
 	c.handleRetryOrDeadLetter(ackCtx, stream, dlStream, raw, msg, deliveryCount, err)
+}
+
+// acknowledge ACKs a handled message and counts it as consumed.
+func (c *Consumer) acknowledge(ackCtx context.Context, stream, redisID, streamLabel, groupLabel string) {
+	if ackErr := c.client.XAck(ackCtx, stream, c.group, redisID).Err(); ackErr != nil {
+		c.logger.Error("failed to ACK message",
+			redact.String("stream", stream),
+			redact.String("redis_id", redisID),
+			redact.Error(ackErr),
+		)
+		// Do not count as consumed: the message remains in the PEL and
+		// will be redelivered. Counting here double-counts on the
+		// successful second pass (matches deadLetter's XACK-fail policy).
+		return
+	}
+	c.clearLocalDelivery(redisID)
+	c.metrics.messagesConsumed.WithLabelValues(streamLabel, groupLabel).Inc()
 }
 
 func (c *Consumer) deadLetterInvalidMessage(ctx context.Context, stream, dlStream string, raw goredis.XMessage, err error) {

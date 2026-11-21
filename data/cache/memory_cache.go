@@ -265,50 +265,8 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 		mc.costFunc = func(value []byte) int64 { return int64(len(value)) }
 	}
 
-	maxCost := mc.maxCost
-	numCounters := mc.numCounters
-	if maxCost <= 0 {
-		if mc.maxSize > 0 {
-			maxCost = int64(mc.maxSize)
-		} else if mc.entryCost {
-			// WithEntryCost without WithMaxSize/WithMaxCost used to
-			// inherit the 64 MiB *byte* default as a ~67-million-entry
-			// cap. Prefer a 1e6-entry budget when counting entries.
-			maxCost = 1_000_000
-		} else {
-			maxCost = int64(64 * 1024 * 1024)
-		}
-	}
-	mc.maxCost = maxCost // record effective budget for inspection / tests
-	if numCounters <= 0 {
-		numCounters = int64(1_000_000)
-		if mc.maxSize > 0 {
-			numCounters = int64(mc.maxSize) * 10
-		}
-	}
-	bufferItems := mc.bufferItems
-	if bufferItems <= 0 {
-		bufferItems = 64
-	}
-
-	// Default to 60s cleanup interval so TTL-expired entries are always
-	// evicted, even if WithCleanupInterval is not explicitly called.
-	// Ristretto interprets TtlTickerDurationInSec=0 as "disable TTL cleanup"
-	// which would cause expired entries to accumulate in memory.
-	ttlSeconds := int64(60)
-	if mc.cleanupInterval > 0 {
-		ttlSeconds = int64(math.Max(1, mc.cleanupInterval.Seconds()))
-	}
-
-	cache, err := ristretto.NewCache(&ristretto.Config[string, []byte]{
-		NumCounters:            numCounters,
-		MaxCost:                maxCost,
-		BufferItems:            bufferItems,
-		Metrics:                mc.metricsEnabled,
-		Cost:                   mc.costFunc,
-		IgnoreInternalCost:     mc.ignoreIntCost,
-		TtlTickerDurationInSec: ttlSeconds,
-	})
+	mc.maxCost = mc.effectiveMaxCost() // record effective budget for inspection / tests
+	cache, err := ristretto.NewCache(mc.ristrettoConfig())
 	if err != nil {
 		return nil, redact.WrapError("memory cache: init failed", err)
 	}
@@ -334,6 +292,58 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 	runtime.AddCleanup(mc, func(rc *ristrettoCloser) { rc.close() }, mc.closer)
 
 	return mc, nil
+}
+
+// effectiveMaxCost is the configured MaxCost, or its default for the
+// configured cost accounting.
+func (mc *MemoryCache) effectiveMaxCost() int64 {
+	switch {
+	case mc.maxCost > 0:
+		return mc.maxCost
+	case mc.maxSize > 0:
+		return int64(mc.maxSize)
+	case mc.entryCost:
+		// WithEntryCost without WithMaxSize/WithMaxCost used to
+		// inherit the 64 MiB *byte* default as a ~67-million-entry
+		// cap. Prefer a 1e6-entry budget when counting entries.
+		return 1_000_000
+	default:
+		return int64(64 * 1024 * 1024)
+	}
+}
+
+// ristrettoConfig is the ristretto configuration for the effective
+// mc.maxCost and the configured options.
+func (mc *MemoryCache) ristrettoConfig() *ristretto.Config[string, []byte] {
+	numCounters := mc.numCounters
+	if numCounters <= 0 {
+		numCounters = int64(1_000_000)
+		if mc.maxSize > 0 {
+			numCounters = int64(mc.maxSize) * 10
+		}
+	}
+	bufferItems := mc.bufferItems
+	if bufferItems <= 0 {
+		bufferItems = 64
+	}
+
+	// Default to 60s cleanup interval so TTL-expired entries are always
+	// evicted, even if WithCleanupInterval is not explicitly called.
+	// Ristretto interprets TtlTickerDurationInSec=0 as "disable TTL cleanup"
+	// which would cause expired entries to accumulate in memory.
+	ttlSeconds := int64(60)
+	if mc.cleanupInterval > 0 {
+		ttlSeconds = int64(math.Max(1, mc.cleanupInterval.Seconds()))
+	}
+	return &ristretto.Config[string, []byte]{
+		NumCounters:            numCounters,
+		MaxCost:                mc.maxCost,
+		BufferItems:            bufferItems,
+		Metrics:                mc.metricsEnabled,
+		Cost:                   mc.costFunc,
+		IgnoreInternalCost:     mc.ignoreIntCost,
+		TtlTickerDurationInSec: ttlSeconds,
+	}
 }
 
 // runNXClaimsSweeper periodically drops nxClaims entries whose recorded
@@ -371,29 +381,35 @@ func runNXClaimsSweeper(weakCache weak.Pointer[MemoryCache], stop <-chan struct{
 			if mc == nil {
 				return
 			}
-			mc.nxClaims.Range(func(k, v any) bool {
-				c, ok := v.(nxClaim)
-				if !ok {
-					return true
-				}
-				key, _ := k.(string)
-				// Drop expired TTL claims. Zero-TTL claims never expire
-				// by wall clock, so also drop when the underlying cache
-				// no longer holds the key (evicted/deleted) — otherwise
-				// the map grows unbounded (review-11 zero-TTL SetNX).
-				if !c.expiresAt.IsZero() && now.After(c.expiresAt) {
-					mc.nxClaims.Delete(k)
-					return true
-				}
-				if c.expiresAt.IsZero() && key != "" {
-					if _, present := mc.cache.Get(key); !present {
-						mc.nxClaims.Delete(k)
-					}
-				}
-				return true
-			})
+			mc.sweepNXClaims(now)
 		}
 	}
+}
+
+// sweepNXClaims drops the nxClaims entries that are no longer claims at
+// now.
+func (mc *MemoryCache) sweepNXClaims(now time.Time) {
+	mc.nxClaims.Range(func(k, v any) bool {
+		c, ok := v.(nxClaim)
+		if !ok {
+			return true
+		}
+		key, _ := k.(string)
+		// Drop expired TTL claims. Zero-TTL claims never expire
+		// by wall clock, so also drop when the underlying cache
+		// no longer holds the key (evicted/deleted) — otherwise
+		// the map grows unbounded (review-11 zero-TTL SetNX).
+		if !c.expiresAt.IsZero() && now.After(c.expiresAt) {
+			mc.nxClaims.Delete(k)
+			return true
+		}
+		if c.expiresAt.IsZero() && key != "" {
+			if _, present := mc.cache.Get(key); !present {
+				mc.nxClaims.Delete(k)
+			}
+		}
+		return true
+	})
 }
 
 // stopBackgroundSweeper closes the nxClaims sweeper. Safe to call
