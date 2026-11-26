@@ -616,7 +616,7 @@ func blockJWKSRedirect(_ *http.Request, _ []*http.Request) error {
 }
 
 func cloneTLSConfigWithFloor(cfg *tls.Config) *tls.Config {
-	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, minimumTLSVersion)
+	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, minimumTLSVersion, tlsclone.WithAllowPeerVerifier())
 	if err != nil {
 		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
 			panic("jwtutil: JWKS HTTP client TLS InsecureSkipVerify=true is not permitted")

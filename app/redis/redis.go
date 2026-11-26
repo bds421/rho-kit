@@ -238,7 +238,7 @@ func isLoopbackAddr(addr string) bool {
 func cloneOptions(opts *goredis.Options) *goredis.Options {
 	optsCopy := *opts
 	if optsCopy.TLSConfig != nil {
-		tlsConfig, err := tlsclone.ConfigWithFloor(optsCopy.TLSConfig, tls.VersionTLS12)
+		tlsConfig, err := tlsclone.ConfigWithFloor(optsCopy.TLSConfig, tls.VersionTLS12, tlsclone.WithAllowPeerVerifier())
 		if err != nil {
 			if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
 				panic("redis: TLS InsecureSkipVerify=true is not permitted")

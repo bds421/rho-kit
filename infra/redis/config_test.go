@@ -2,12 +2,15 @@ package redis
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"log/slog"
 	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 )
 
 var _ slog.LogValuer = Config{}
@@ -347,4 +350,24 @@ func TestRedisURLHasCredentials_RequiresPassword(t *testing.T) {
 	u2, err := url.Parse("rediss://someuser:secret@host:6379/0")
 	require.NoError(t, err)
 	assert.True(t, redisURLHasCredentials(u2))
+}
+
+func TestCloneTLSConfigWithFloor_AcceptsPeerVerifier(t *testing.T) {
+	cfg := &tls.Config{
+		InsecureSkipVerify: true,
+		VerifyConnection:   tlsclone.PeerVerifier(func() (*x509.CertPool, error) { return x509.NewCertPool(), nil }),
+	}
+	cloned, err := cloneTLSConfigWithFloor(cfg)
+	require.NoError(t, err)
+	assert.True(t, tlsclone.VerifiesPeer(cloned))
+}
+
+func TestCloneTLSConfigWithFloor_RejectsInsecureSkipVerifyWithoutPeerVerifier(t *testing.T) {
+	_, err := cloneTLSConfigWithFloor(&tls.Config{InsecureSkipVerify: true})
+	require.ErrorContains(t, err, "InsecureSkipVerify")
+	_, err = cloneTLSConfigWithFloor(&tls.Config{
+		InsecureSkipVerify: true,
+		VerifyConnection:   func(tls.ConnectionState) error { return nil },
+	})
+	require.ErrorContains(t, err, "InsecureSkipVerify")
 }

@@ -133,7 +133,7 @@ func (c Config) checkFR077(resolved string) error {
 }
 
 func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
-	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion)
+	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion, tlsclone.WithAllowPeerVerifier())
 	if err != nil {
 		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
 			return nil, fmt.Errorf("redis: TLS InsecureSkipVerify=true is not permitted")

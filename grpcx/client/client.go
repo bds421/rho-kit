@@ -72,7 +72,8 @@ type clientConfig struct {
 
 // WithTLSConfig pins the *tls.Config used for transport credentials.
 // MinVersion is floored to TLS 1.2; [tls.Config.InsecureSkipVerify]
-// is rejected. Callers using the kit's Builder typically pass
+// is rejected unless the kit's peer verifier replaces stdlib
+// verification (a [security/netutil.ReloadingClientTLS] config). Callers using the kit's Builder typically pass
 // [app.Infrastructure.ClientTLS] — already floored to TLS 1.3 via
 // [security/netutil].
 //
@@ -448,7 +449,7 @@ func resolveCredentials(target string, cfg *clientConfig) (credentials.Transport
 	if cfg.tlsConfig == nil {
 		panic("grpcx/client: NewClient requires WithTLSConfig (or WithInsecure for loopback)")
 	}
-	floored, err := tlsclone.ConfigWithFloor(cfg.tlsConfig, tls.VersionTLS12)
+	floored, err := tlsclone.ConfigWithFloor(cfg.tlsConfig, tls.VersionTLS12, tlsclone.WithAllowPeerVerifier())
 	if err != nil {
 		return nil, fmt.Errorf("grpcx/client: TLS config: %w", err)
 	}

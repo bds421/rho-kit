@@ -123,7 +123,8 @@ func openFGAURLLogState(rawURL string) (valid, hostConfigured bool) {
 // New builds a Decider from cfg. Returns an error if the SDK client
 // fails to construct — typically a malformed APIURL — or if the
 // caller-supplied HTTP client's TLS config is rejected by the kit
-// floor (e.g. InsecureSkipVerify).
+// floor (e.g. InsecureSkipVerify without the kit's peer verifier that
+// security/netutil.ReloadingClientTLS installs).
 func New(cfg Config) (*Decider, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
@@ -274,7 +275,7 @@ func cloneDefaultTransport() *http.Transport {
 }
 
 func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
-	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, minimumHTTPClientTLSVersion)
+	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, minimumHTTPClientTLSVersion, tlsclone.WithAllowPeerVerifier())
 	if err != nil {
 		return nil, fmt.Errorf("openfga: http client tls: %w", err)
 	}

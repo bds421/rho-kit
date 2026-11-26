@@ -3,6 +3,7 @@ package openfga
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/openfga/go-sdk/credentials"
 
 	"github.com/bds421/rho-kit/authz/v2"
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 )
 
 const testStoreID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -510,5 +512,21 @@ func TestAllow_RejectsNilContext(t *testing.T) {
 	}
 	if got := err.Error(); got != "openfga: context must not be nil" {
 		t.Fatalf("error = %q", got)
+	}
+}
+
+func TestCloneTLSConfigWithFloor_PeerVerifier(t *testing.T) {
+	cloned, err := cloneTLSConfigWithFloor(&tls.Config{
+		InsecureSkipVerify: true,
+		VerifyConnection:   tlsclone.PeerVerifier(func() (*x509.CertPool, error) { return x509.NewCertPool(), nil }),
+	})
+	if err != nil {
+		t.Fatalf("peer-verifier config rejected: %v", err)
+	}
+	if !tlsclone.VerifiesPeer(cloned) {
+		t.Fatal("the clone must keep the kit's peer verifier")
+	}
+	if _, err := cloneTLSConfigWithFloor(&tls.Config{InsecureSkipVerify: true}); err == nil {
+		t.Fatal("InsecureSkipVerify without the kit's peer verifier must be rejected")
 	}
 }
