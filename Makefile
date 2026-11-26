@@ -158,7 +158,7 @@ check-dashboards:
 	done
 	@promtool check rules observability/dashboards/prometheus/*.yaml
 
-## check-publishable: Static pre-tag gate for internal module pins, replaces, and Go directives
+## check-publishable: Static pre-tag gate for internal module pins, replaces, Go directives and per-module LICENSE files
 check-publishable:
 	@bash tools/check-publishable.sh
 

@@ -8,6 +8,7 @@ set -euo pipefail
 #   - optional EXPECTED_INTERNAL_VERSION pins are consistent when requested
 #   - local internal replace directives point at real workspace modules
 #   - all module go directives match go.work
+#   - every module directory has a LICENSE identical to LICENSE.md
 #
 # Why: local `replace` directives let the workspace build even when an
 # internal require is wrong. Downstream consumers do not inherit those replaces;
@@ -196,4 +197,34 @@ if [[ -n "$go_version_mismatches" ]]; then
 fi
 
 echo "OK: all module Go directives match go.work (${expected_go_version})."
+
+# A module zip holds only its own directory, so the root LICENSE.md is in
+# none of them: pkg.go.dev and license scanners find a module's license
+# only in a LICENSE beside its go.mod. Tracked go.mod files only, so other
+# worktrees under the checkout do not count.
+missing_licenses=""
+licensed_modules=0
+while IFS= read -r -d '' mod; do
+  licensed_modules=$((licensed_modules + 1))
+  dir="$(dirname "$mod")"
+  if ! cmp -s LICENSE.md "$dir/LICENSE"; then
+    missing_licenses+="$dir"$'\n'
+  fi
+done < <(git ls-files -z -- ':(glob)**/go.mod')
+
+if [[ "$licensed_modules" -eq 0 ]]; then
+  echo "ERROR: pre-tag gate failed — git lists no go.mod files to check for a LICENSE."
+  exit 1
+fi
+
+if [[ -n "$missing_licenses" ]]; then
+  echo "ERROR: pre-tag gate failed — modules without a LICENSE identical to LICENSE.md:"
+  echo
+  printf '%s' "$missing_licenses"
+  echo
+  echo "Copy LICENSE.md to LICENSE in each of these module directories."
+  exit 1
+fi
+
+echo "OK: every module carries a LICENSE identical to LICENSE.md."
 finished=yes

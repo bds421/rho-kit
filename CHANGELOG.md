@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### app/redis, infra/redis, grpcx/client, security/jwtutil, authz/openfga
+
+- **fix: the TLS clones accept a `netutil.ReloadingClientTLS` config.**
+  `app/redis.Module`, `infra/redis.Connect`/`ConnectUniversal`/
+  `Config.Options`, `grpcx/client.WithTLSConfig`, the JWKS HTTP client of
+  `security/jwtutil` and the OpenFGA HTTP client panicked or failed on its
+  `InsecureSkipVerify`, although the kit's peer verifier
+  (`tlsclone.PeerVerifier`) in `VerifyConnection` checks chain and host
+  name on every handshake. They now clone with
+  `tlsclone.WithAllowPeerVerifier()`, as the messaging backends and the
+  outbound HTTP client do; `InsecureSkipVerify` with no or another
+  `VerifyConnection` is still refused.
+
+### infra/sqldb/pgx
+
+- **feat(infra/sqldb/pgx): `Config.ClientCertificate func() (*tls.Certificate,
+  error)`** is called on every TLS handshake, so each new physical
+  connection presents the current client certificate and a renewed one
+  needs no restart; pass the `ClientCertificate` method of a
+  `netutil.CertificateSource`. It is set on the TLS config of the primary
+  host and of every TLS fallback. `Connect` fails when the DSN does not
+  enable TLS or also sets `sslcert`/`sslkey`; the sslmode checks and the
+  server verification are unchanged. Existing connections keep their
+  certificate until `Pool.Reset` or their lifetime ends.
+
+### every module
+
+- **build: each module carries its license.** A module zip holds only its
+  own directory, so none had the root `LICENSE.md`, and pkg.go.dev and
+  license scanners found no license. Every directory with a go.mod (the
+  published modules, examples included, and the internal `tools/*`
+  modules) now has a `LICENSE` identical to `LICENSE.md`, and
+  `make check-publishable` (run by `ci`, `ci-fast`, `release-candidate`
+  and the release workflow) fails for a tracked go.mod without one.
+
 ### infra/sqldb/dbtest
 
 - **feat(infra/sqldb/dbtest): one PostgreSQL container per package.**
