@@ -28,6 +28,7 @@ package pgx
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -57,6 +58,16 @@ type Config struct {
 	// authentication until they are closed; call [Pool.Reset] after a rotation
 	// event to force fresh connections.
 	PasswordProvider func(context.Context) (string, error)
+
+	// ClientCertificate, when set, is called on every TLS handshake, so each
+	// new physical connection presents the certificate it returns. Use it for
+	// client certificates that renew while the process runs; pass the
+	// ClientCertificate method of a security/netutil.CertificateSource.
+	// The DSN must enable TLS and must not set sslcert or sslkey as well.
+	// The sslmode checks and the server verification sslmode selects are
+	// unchanged. Existing pooled connections keep the certificate they
+	// opened with; call [Pool.Reset] after a renewal to replace them early.
+	ClientCertificate func() (*tls.Certificate, error)
 
 	// PrepareConn, when set, runs every time a connection is taken from the
 	// pool, with the context of the call that takes it. Use it to put
@@ -115,6 +126,7 @@ func (c Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.Bool("dsn_configured", c.DSN != ""),
 		slog.Bool("password_provider_configured", c.PasswordProvider != nil),
+		slog.Bool("client_certificate_configured", c.ClientCertificate != nil),
 		slog.Bool("allow_plaintext_loopback_for_tests", c.AllowPlaintextLoopbackForTests),
 		slog.Bool("allow_sslmode_require", c.AllowSSLModeRequire),
 		slog.Int("max_conns", int(c.MaxConns)),
@@ -193,6 +205,9 @@ func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 	}
 	applyPoolDefaults(pcfg, cfg, cfg.DSN)
 	applyPasswordProvider(pcfg, cfg.PasswordProvider)
+	if err := applyClientCertificate(pcfg, cfg.ClientCertificate); err != nil {
+		return nil, err
+	}
 	if cfg.PrepareConn != nil {
 		pcfg.PrepareConn = cfg.PrepareConn
 	}
@@ -563,6 +578,43 @@ func applyPasswordProvider(pcfg *pgxpool.Config, provider func(context.Context) 
 		connCfg.Password = password
 		return nil
 	}
+}
+
+// applyClientCertificate sets GetClientCertificate on every TLS config pgx
+// dials with, the primary host's and each TLS fallback's. pgx copies the
+// config per connection, so each handshake asks source for the current
+// certificate.
+func applyClientCertificate(pcfg *pgxpool.Config, source func() (*tls.Certificate, error)) error {
+	if source == nil {
+		return nil
+	}
+	cc := pcfg.ConnConfig
+	if cc.TLSConfig == nil {
+		return errors.New("pgx: Config.ClientCertificate requires a DSN that enables TLS")
+	}
+	configs := []*tls.Config{cc.TLSConfig}
+	for _, fb := range cc.Fallbacks {
+		if fb.TLSConfig != nil {
+			configs = append(configs, fb.TLSConfig)
+		}
+	}
+	get := func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		cert, err := source()
+		if err != nil {
+			return nil, redact.WrapError("pgx: client certificate", err)
+		}
+		if cert == nil {
+			return nil, errors.New("pgx: client certificate source returned no certificate")
+		}
+		return cert, nil
+	}
+	for _, tc := range configs {
+		if len(tc.Certificates) > 0 {
+			return errors.New("pgx: set the client certificate through Config.ClientCertificate or the DSN's sslcert and sslkey, not both")
+		}
+		tc.GetClientCertificate = get
+	}
+	return nil
 }
 
 // requireLoopbackHost rejects any host that isn't a loopback address

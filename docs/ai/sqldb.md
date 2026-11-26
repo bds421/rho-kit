@@ -287,6 +287,13 @@ the password embedded in the DSN. Existing pooled connections keep their
 current authentication until they age out; call `Pool.Reset()` after a rotation
 event to force the pool to open fresh connections.
 
+For a client certificate that renews while the process runs, set
+`pgxbackend.Config.ClientCertificate`, for example to the `ClientCertificate`
+method of a `netutil.CertificateSource`. It is called on every TLS handshake,
+so each new physical connection presents the current certificate; the DSN must
+enable TLS and must not set `sslcert` or `sslkey` as well. The sslmode checks
+above are unchanged.
+
 ## Testing
 
 Use the split Docker-backed helper only in integration tests:

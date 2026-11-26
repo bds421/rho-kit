@@ -28,6 +28,8 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwk"
 	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/lestrrat-go/jwx/v3/jwt"
+
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 )
 
 func newTestJWKSServer(t *testing.T, jwksData []byte) *httptest.Server {
@@ -2534,4 +2536,21 @@ func publicKeyAsHMACSecrets(t *testing.T, key *ecdsa.PrivateKey, kid string) map
 		"PEM":                       ecdsaPublicKeyPEM(t, &key.PublicKey),
 		"base64url-of-uncompressed": []byte(base64.RawURLEncoding.EncodeToString(pubPoint)),
 	}
+}
+
+func TestCloneTLSConfigWithFloor_PeerVerifier(t *testing.T) {
+	cloned := cloneTLSConfigWithFloor(&tls.Config{
+		InsecureSkipVerify: true,
+		VerifyConnection:   tlsclone.PeerVerifier(func() (*x509.CertPool, error) { return x509.NewCertPool(), nil }),
+	})
+	if !tlsclone.VerifiesPeer(cloned) {
+		t.Fatal("the clone must keep the kit's peer verifier")
+	}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for InsecureSkipVerify without the kit's peer verifier")
+		}
+	}()
+	_ = cloneTLSConfigWithFloor(&tls.Config{InsecureSkipVerify: true})
 }

@@ -28,7 +28,10 @@ Each layer has a documented opt-out (`WithoutRecovery`, `WithoutLogging`,
 ## Operability
 
 - TLS `MinVersion` is floored to TLS 1.2 via `tlsclone.ConfigWithFloor`;
-  `InsecureSkipVerify=true` panics inside the floor helper.
+  `InsecureSkipVerify=true` makes `NewClient` return an error unless
+  `VerifyConnection` is the kit's peer verifier (a
+  `netutil.ReloadingClientTLS` config), which replaces stdlib
+  verification and is accepted.
 - `WithInsecure` panics if `target` is not a loopback address.
 - **Keepalive is non-overridable from caller `DialOptions`.** The kit
   appends `grpc.WithKeepaliveParams(defaults)` AFTER any caller-supplied

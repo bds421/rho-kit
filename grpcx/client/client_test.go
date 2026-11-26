@@ -3,6 +3,7 @@ package client_test
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 	grpcx "github.com/bds421/rho-kit/grpcx/v2"
 	"github.com/bds421/rho-kit/grpcx/v2/client"
 	"github.com/bds421/rho-kit/resilience/v2/retry"
@@ -250,6 +252,22 @@ func TestNewClient_RejectsInsecureSkipVerifyTLSConfig(t *testing.T) {
 	require.Error(t, err, "InsecureSkipVerify=true must be rejected; NewClient returned no error")
 	require.Contains(t, err.Error(), "InsecureSkipVerify",
 		"expected the rejection to mention InsecureSkipVerify, got %v", err)
+}
+
+func TestNewClient_AcceptsPeerVerifierTLSConfig(t *testing.T) {
+	// A security/netutil.ReloadingClientTLS config sets InsecureSkipVerify
+	// and verifies through the kit's peer verifier; NewClient accepts it.
+	conn, err := client.NewClient("api.example.com:443",
+		client.WithTLSConfig(&tls.Config{
+			MinVersion:         tls.VersionTLS13,
+			InsecureSkipVerify: true,
+			VerifyConnection:   tlsclone.PeerVerifier(func() (*x509.CertPool, error) { return x509.NewCertPool(), nil }),
+		}),
+		client.WithoutLogging(),
+		client.WithoutMetrics(),
+	)
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
 }
 
 func TestNewClient_AcceptsTLSConfigWithFloor(t *testing.T) {
