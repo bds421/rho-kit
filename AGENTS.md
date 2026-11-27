@@ -153,7 +153,7 @@ row you start from:
 | Sign/verify webhooks (HMAC) | `crypto/signing` | [security](docs/ai/security.md) |
 | Verify JWTs (JWKS) | `security/jwtutil` | [security](docs/ai/security.md) |
 | Revoke JWTs after logout | `security/jwtutil/revocation` | [security](docs/ai/security.md) |
-| OAuth2 / OIDC relying-party client (login via Auth0 / Keycloak / Cognito / Google / Okta) | `app/oidc` + `auth/oauth2/redis` for multi-replica browser sessions (PKCE, state/nonce CSRF guards, `/oauth/*` routes); use raw `auth/oauth2` for custom mounts | [security](docs/ai/security.md) |
+| OAuth2 / OIDC relying-party client (login via Auth0 / Keycloak / Cognito / Google / Okta) | `app/oidc` + `auth/oauth2/redis` for multi-replica browser sessions (PKCE, state/nonce CSRF guards, `/oauth/*` routes); use raw `auth/oauth2` for custom mounts; `auth/oauth2.Flow` when the application keeps its own sessions or configures providers at runtime; `auth/oauth2/oauth2test` as a local provider in tests | [security](docs/ai/security.md) |
 | Obtain outbound OAuth client-credentials token | `auth/oauth2.NewClientCredentials` (lifecycle component; deadline-safe serialized refresh + health/metrics) | [security](docs/ai/security.md) |
 | Read the canonical authenticated principal | `security/identity` (`FromContext`; mapped verified claims only) | [security](docs/ai/security.md) |
 | mTLS between services | `security/netutil` | [security](docs/ai/security.md) |

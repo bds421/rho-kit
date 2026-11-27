@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.52.0 — unreleased
+
+Every workspace module is released at v2.52.0 (`release/v2.52.0`). No breaking changes.
+
+### auth/oauth2
+
+- **feat: `Flow`, a sign-in without kit sessions.** `NewFlow(stateStore)`,
+  `Flow.Start` and `Flow.Finish` run the authorization-code flow with
+  state, nonce, PKCE (S256), the per-state browser binding cookie and
+  single-use state, and return the verified issuer, subject and claims
+  (`Result`). The application mints its own session and cookie. The
+  provider `Config` is passed per sign-in and found again at the callback
+  through a `Resolver` by the `Key` the start stored, so providers can be
+  added and changed while the process runs; discovery is cached per issuer
+  (`WithFlowDiscoveryTTL`, `Flow.Forget`). `StateEntry` gains `Key` and
+  `Data`.
+- **feat: `oauth2test.NewIssuer`,** a local OpenID Connect provider for
+  tests of relying parties: discovery, JWKS, an authorization endpoint that
+  signs the configured claims in at once (or denies), a token endpoint that
+  checks client, registered redirect URI and PKCE verifier.
+- The browser binding of `Client` and `Flow` is one implementation.
+
+### auth/oauth2/redis
+
+- **feat: `Store.TakeState`** reads and deletes a state with GETDEL; the
+  `States()` view implements `Take`, so `Client` and `Flow` consume a state
+  atomically instead of Get then Delete.
+
 ## v2.51.1 — 2026-11-27
 
 Every workspace module is released at v2.51.1 (`release/v2.51.1`). No breaking changes.

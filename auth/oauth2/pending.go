@@ -21,18 +21,37 @@ const maxPendingSignIns = 5
 // sign-in instead of failing.
 const pendingRecoveryWindow = time.Hour
 
+// binding ties a login state to the browser that started it: one cookie per
+// pending sign-in, keyed by a hash of the state. [Client] and [Flow] share it.
+type binding struct {
+	prefix   string
+	path     string
+	domain   string
+	secure   bool
+	lifetime time.Duration
+	// legacy is the single cookie name older releases set; it is cleared.
+	legacy string
+}
+
 func (c *Client) pendingLifetime() time.Duration {
 	return c.stateTTL + pendingRecoveryWindow
 }
 
-func (c *Client) pendingCookiePrefix() string {
-	return c.cookieName + "_state_"
+func (c *Client) binding() binding {
+	return binding{
+		prefix:   c.cookieName + "_state_",
+		path:     c.flowCookiePath(),
+		domain:   c.cookieDomain,
+		secure:   c.cookieSecure,
+		lifetime: c.pendingLifetime(),
+		legacy:   c.cookieName + "_state",
+	}
 }
 
-// pendingCookieName keys the browser binding by the state value, so
-// concurrent sign-ins in several tabs each keep their own cookie.
-func (c *Client) pendingCookieName(state string) string {
-	return c.pendingCookiePrefix() + stateBindingValue(state)[:16]
+// cookieName keys the browser binding by the state value, so concurrent
+// sign-ins in several tabs each keep their own cookie.
+func (b binding) cookieName(state string) string {
+	return b.prefix + stateBindingValue(state)[:16]
 }
 
 // stateBindingValue returns the cookie value for a login state token. It is a
@@ -43,71 +62,74 @@ func stateBindingValue(state string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-func (c *Client) pendingCookie(state string, now time.Time) *http.Cookie {
-	lifetime := c.pendingLifetime()
+func (b binding) cookie(state string, now time.Time) *http.Cookie {
 	return &http.Cookie{
-		Name:     c.pendingCookieName(state),
+		Name:     b.cookieName(state),
 		Value:    strconv.FormatInt(now.UnixNano(), 10) + "." + stateBindingValue(state),
-		Path:     c.flowCookiePath(),
-		Domain:   c.cookieDomain,
+		Path:     b.path,
+		Domain:   b.domain,
 		HttpOnly: true,
-		Secure:   c.cookieSecure,
+		Secure:   b.secure,
 		// Lax so the cookie is sent on the top-level IdP redirect back to
-		// /callback (Strict would drop it on that hop).
+		// the callback (Strict would drop it on that hop).
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(lifetime.Seconds()),
-		Expires:  now.Add(lifetime),
+		MaxAge:   int(b.lifetime.Seconds()),
+		Expires:  now.Add(b.lifetime),
 	}
 }
 
-func (c *Client) expiredCookie(name, path string) *http.Cookie {
+func (b binding) expired(name, path string) *http.Cookie {
 	return &http.Cookie{
 		Name:     name,
 		Value:    "",
 		Path:     path,
-		Domain:   c.cookieDomain,
+		Domain:   b.domain,
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   c.cookieSecure,
+		Secure:   b.secure,
 		SameSite: http.SameSiteLaxMode,
 	}
 }
 
-// isBound reports whether the browser holds the binding cookie minted for
-// state at /login. Server-side single-use storage alone only prevents replay;
+func (c *Client) expiredCookie(name, path string) *http.Cookie {
+	return c.binding().expired(name, path)
+}
+
+// bound reports whether the browser holds the binding cookie minted for
+// state at login. Server-side single-use storage alone only prevents replay;
 // the browser binding is what stops login CSRF (session swap).
-func (c *Client) isBound(r *http.Request, state string) bool {
+func (b binding) bound(r *http.Request, state string) bool {
 	if state == "" {
 		return false
 	}
-	cookie, err := r.Cookie(c.pendingCookieName(state))
+	cookie, err := r.Cookie(b.cookieName(state))
 	if err != nil {
 		return false
 	}
-	_, binding, ok := strings.Cut(cookie.Value, ".")
-	return ok && subtle.ConstantTimeCompare([]byte(binding), []byte(stateBindingValue(state))) == 1
+	_, value, ok := strings.Cut(cookie.Value, ".")
+	return ok && subtle.ConstantTimeCompare([]byte(value), []byte(stateBindingValue(state))) == 1
 }
 
-func (c *Client) clearPending(w http.ResponseWriter, state string) {
+func (b binding) clear(w http.ResponseWriter, state string) {
 	if state != "" {
-		http.SetCookie(w, c.expiredCookie(c.pendingCookieName(state), c.flowCookiePath()))
+		http.SetCookie(w, b.expired(b.cookieName(state), b.path))
 	}
 }
 
-// startPending binds a new state to the browser, dropping the oldest pending
+// start binds a new state to the browser, dropping the oldest pending
 // sign-ins beyond maxPendingSignIns and the single cookie older releases set.
-func (c *Client) startPending(w http.ResponseWriter, r *http.Request, state string, now time.Time) {
+func (b binding) start(w http.ResponseWriter, r *http.Request, state string, now time.Time) {
 	type pending struct {
 		name    string
 		started int64
 	}
 	var open []pending
 	for _, cookie := range r.Cookies() {
-		if cookie.Name == c.cookieName+"_state" {
-			http.SetCookie(w, c.expiredCookie(cookie.Name, "/"))
+		if b.legacy != "" && cookie.Name == b.legacy {
+			http.SetCookie(w, b.expired(cookie.Name, "/"))
 			continue
 		}
-		if !strings.HasPrefix(cookie.Name, c.pendingCookiePrefix()) {
+		if !strings.HasPrefix(cookie.Name, b.prefix) {
 			continue
 		}
 		started, _, _ := strings.Cut(cookie.Value, ".")
@@ -116,8 +138,16 @@ func (c *Client) startPending(w http.ResponseWriter, r *http.Request, state stri
 	}
 	slices.SortFunc(open, func(a, b pending) int { return cmp.Compare(a.started, b.started) })
 	for len(open) >= maxPendingSignIns {
-		http.SetCookie(w, c.expiredCookie(open[0].name, c.flowCookiePath()))
+		http.SetCookie(w, b.expired(open[0].name, b.path))
 		open = open[1:]
 	}
-	http.SetCookie(w, c.pendingCookie(state, now))
+	http.SetCookie(w, b.cookie(state, now))
+}
+
+func (c *Client) isBound(r *http.Request, state string) bool { return c.binding().bound(r, state) }
+
+func (c *Client) clearPending(w http.ResponseWriter, state string) { c.binding().clear(w, state) }
+
+func (c *Client) startPending(w http.ResponseWriter, r *http.Request, state string, now time.Time) {
+	c.binding().start(w, r, state, now)
 }

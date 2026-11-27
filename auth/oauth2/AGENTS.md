@@ -85,6 +85,24 @@ or UserInfo without re-discovering endpoints.
   login request minus max_age (`ErrStaleAuthentication`); a step-up sends
   the live session's `preferred_username` as `login_hint`
   (`WithStepUpHintClaim(name)`, empty for none)
+- Sessions of the caller's own: `NewFlow(stateStore, opts...)` runs the same
+  sign-in without kit sessions or session cookie. `Flow.Start(w, r,
+  StartRequest{Config, Key, Data, RedirectTo, Prompt, MaxAge, LoginHint})`
+  stores the state (with `Key` and `Data`, `StateEntry.Key`/`Data`), sets the
+  browser binding cookie (`__Host-oidc_state_<hash prefix>`, Lax, path `/`;
+  `WithFlowCookie(prefix, path)`, `WithFlowInsecureCookie()` for http tests)
+  and returns the authorization URL. `Flow.Finish(w, r, resolver)` checks
+  the binding, takes the state, asks the `Resolver` for the `Config` by
+  `Key`, exchanges the code and returns `Result{Key, Data, RedirectTo,
+  Issuer, Subject, Claims, AMR, AuthTime}`, or a sentinel error; it writes
+  no body. The `Config` is given per sign-in, so providers change at
+  runtime; discovery is cached per issuer (`WithFlowDiscoveryTTL`, 1 h;
+  `Flow.Forget(issuer)`). `WithFlowHTTPClient` for a guarded dialer,
+  `WithFlowStateTTL` (10 min), `WithFlowClock`
+- `oauth2test.NewIssuer(t, clientID, clientSecret, redirectURIs...)`: a local
+  OIDC provider for tests (discovery, JWKS, an authorize endpoint that signs
+  `SetClaims` in at once or answers `access_denied` after `Deny(true)`, a
+  token endpoint checking client, redirect URI and PKCE, RS256 ID tokens)
 
 ## Security defaults
 
@@ -136,6 +154,9 @@ value persisted at login. No transport-only trust shortcut is taken.
   session timeout, restart loop guard, foreign (CSRF) callback never
   exchanged, pending bound, branded translated error page
 - Logout clears cookie (MaxAge=-1)
+- Flow: verified identity with key, data and deep link; unbound browser,
+  provider error, removed provider, wrong secret and expired state refused;
+  single-use state; relative deep links only
 - MemorySessionStore + MemoryStateStore TTL expiry
 - Absolute lifetime cap (incl. refresh TTL cap), idle timeout with
   header/context background markers, activity write throttling, logout

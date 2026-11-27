@@ -65,3 +65,20 @@ func TestInputAndBackendFailuresFailClosed(t *testing.T) {
 	_, err = store.Get(context.Background(), "missing")
 	assert.True(t, errors.Is(err, oauth2.ErrSessionNotFound))
 }
+
+func TestTakeStateUsesAStateOnce(t *testing.T) {
+	_, store := newStore(t)
+	states := store.States()
+	taker, ok := states.(interface {
+		Take(context.Context, string) (oauth2.StateEntry, error)
+	})
+	require.True(t, ok, "the state view consumes atomically")
+	entry := oauth2.StateEntry{Nonce: "n", Key: "provider-1", Data: "link", CreatedAt: time.Now().UTC()}
+	require.NoError(t, states.Put(context.Background(), "s", entry, time.Minute))
+	got, err := taker.Take(context.Background(), "s")
+	require.NoError(t, err)
+	assert.Equal(t, "provider-1", got.Key)
+	assert.Equal(t, "link", got.Data)
+	_, err = taker.Take(context.Background(), "s")
+	assert.ErrorIs(t, err, oauth2.ErrStateNotFound)
+}

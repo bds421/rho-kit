@@ -166,6 +166,12 @@ type StateEntry struct {
 	// was. The callback then requires auth_time no older than MaxAge
 	// before CreatedAt.
 	MaxAge *int `json:",omitempty"`
+	// Key names the configuration a [Flow] sign-in started with, so the
+	// callback verifies against the same provider. Empty for [Client].
+	Key string `json:",omitempty"`
+	// Data is the caller's own value of a [Flow] sign-in, opaque to the
+	// kit and returned by [Flow.Finish]. Empty for [Client].
+	Data string `json:",omitempty"`
 }
 
 // Sentinel errors.

@@ -362,6 +362,21 @@ Cognito, and Google without provider SDKs. Firebase browser sign-in is a
 client-SDK flow; verify the Firebase-issued JWT at an API boundary with the
 normal JWKS path instead of treating it as an OIDC browser RP.
 
+An application that keeps its own sessions (its own cookie and session
+table), or whose providers are configured at runtime, uses `oauth2.Flow`
+instead: `Start` returns the authorization URL for a `Config` given per
+sign-in, `Finish` returns the verified issuer, subject and claims, and the
+application mints its session itself. `auth/oauth2/redis` `Store.States()`
+holds the state and consumes it with GETDEL. Tests run against
+`auth/oauth2/oauth2test.NewIssuer`, a local provider.
+
+```go
+flow, _ := oauth2.NewFlow(redisStore.States(), oauth2.WithFlowHTTPClient(guarded))
+url, err := flow.Start(w, r, oauth2.StartRequest{Config: cfg, Key: providerID})
+// callback:
+res, err := flow.Finish(w, r, func(ctx context.Context, key string) (oauth2.Config, error) { return load(ctx, key) })
+```
+
 ```go
 redisStore := oauth2redis.New(redisClient, oauth2redis.WithPrefix("orders:oidc:"))
 oidcModule := appoidc.Module(oauth2.Config{

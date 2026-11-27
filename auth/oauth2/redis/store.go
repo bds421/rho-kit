@@ -273,6 +273,17 @@ func (s *Store) PutState(ctx context.Context, state string, entry oauth2.StateEn
 	return nil
 }
 
+// TakeState returns and deletes a state in one step (GETDEL), so a callback
+// that arrives twice uses it once. It returns ErrStateNotFound as GetState.
+func (s *Store) TakeState(ctx context.Context, state string) (oauth2.StateEntry, error) {
+	if err := validateRead(ctx, state); err != nil {
+		return oauth2.StateEntry{}, err
+	}
+	key := s.stateKey(state)
+	b, err := s.client.GetDel(ctx, key).Bytes()
+	return s.decodeState(key, b, err)
+}
+
 // GetState returns ErrStateNotFound for an absent or expired state token.
 func (s *Store) GetState(ctx context.Context, state string) (oauth2.StateEntry, error) {
 	if err := validateRead(ctx, state); err != nil {
@@ -280,6 +291,10 @@ func (s *Store) GetState(ctx context.Context, state string) (oauth2.StateEntry, 
 	}
 	key := s.stateKey(state)
 	b, err := s.client.Get(ctx, key).Bytes()
+	return s.decodeState(key, b, err)
+}
+
+func (s *Store) decodeState(key string, b []byte, err error) (oauth2.StateEntry, error) {
 	if errors.Is(err, goredis.Nil) {
 		return oauth2.StateEntry{}, oauth2.ErrStateNotFound
 	}
@@ -323,6 +338,11 @@ func (s StateStore) Get(ctx context.Context, state string) (oauth2.StateEntry, e
 }
 func (s StateStore) Delete(ctx context.Context, state string) error {
 	return s.DeleteState(ctx, state)
+}
+
+// Take consumes a state atomically; oauth2.Client and oauth2.Flow use it.
+func (s StateStore) Take(ctx context.Context, state string) (oauth2.StateEntry, error) {
+	return s.TakeState(ctx, state)
 }
 
 // States returns the state-store view for use with oauth2.WithStateStore.
