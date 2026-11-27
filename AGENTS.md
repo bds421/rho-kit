@@ -41,6 +41,9 @@ Integration tests require Docker and the `integration` build tag:
 go test -tags integration ./...
 ```
 
+A branch and its review run `make lint test` only. The integration suite
+runs once on merged `main`, before a release.
+
 ## Golden Path
 
 Every service is wired through `app.Builder`; the pattern, its notes and
