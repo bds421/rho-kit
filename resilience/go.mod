@@ -26,8 +26,8 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.59.0
-	github.com/bds421/rho-kit/observability/v2 v2.59.0
+	github.com/bds421/rho-kit/core/v2 v2.60.0
+	github.com/bds421/rho-kit/observability/v2 v2.60.0
 	github.com/cenkalti/backoff/v6 v6.0.1
 	github.com/prometheus/client_golang v1.25.0
 	github.com/sony/gobreaker/v2 v2.4.0
