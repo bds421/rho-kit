@@ -3,8 +3,8 @@ module github.com/bds421/rho-kit/data/idempotency/redisstore/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.56.0
-	github.com/bds421/rho-kit/data/v2 v2.56.0
+	github.com/bds421/rho-kit/core/v2 v2.57.0
+	github.com/bds421/rho-kit/data/v2 v2.57.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.47.0
