@@ -3,18 +3,19 @@ module github.com/bds421/rho-kit/examples/agentic-service/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.55.0
-	github.com/bds421/rho-kit/data/v2 v2.55.0
-	github.com/bds421/rho-kit/httpx/v2 v2.55.0
+	github.com/bds421/rho-kit/core/v2 v2.56.0
+	github.com/bds421/rho-kit/data/v2 v2.56.0
+	github.com/bds421/rho-kit/httpx/v2 v2.56.0
 	github.com/stretchr/testify v1.12.1
 )
 
 require (
-	github.com/bds421/rho-kit/authz/v2 v2.55.0 // indirect
-	github.com/bds421/rho-kit/crypto/v2 v2.55.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.55.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.55.0 // indirect
-	github.com/bds421/rho-kit/security/v2 v2.55.0 // indirect
+	github.com/bds421/rho-kit/authz/v2 v2.56.0 // indirect
+	github.com/bds421/rho-kit/crypto/v2 v2.56.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.56.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.56.0 // indirect
+	github.com/bds421/rho-kit/runtime/v2 v2.56.0 // indirect
+	github.com/bds421/rho-kit/security/v2 v2.56.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v6 v6.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -24,6 +25,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/lestrrat-go/dsig v1.4.0 // indirect
 	github.com/lestrrat-go/jwx/v4 v4.6.0 // indirect
 	github.com/lestrrat-go/option/v3 v3.0.0-alpha1 // indirect
