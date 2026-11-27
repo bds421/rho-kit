@@ -1,5 +1,5 @@
-github.com/bds421/rho-kit/core/v2 v2.52.0 h1:gnt/xhbuZRlF04kqH3bA8CcRFf2rR6ZWv4SkLuFduaA=
-github.com/bds421/rho-kit/core/v2 v2.52.0/go.mod h1:XOnxFqKaT+WcMS07fbrHvTmk6P6Qrb49cqy/55o5AnQ=
+github.com/bds421/rho-kit/core/v2 v2.52.1 h1:OqOqPMnpdATq/gR2AZ445jbdiytO/iuNb6a3fxrahFk=
+github.com/bds421/rho-kit/core/v2 v2.52.1/go.mod h1:XOnxFqKaT+WcMS07fbrHvTmk6P6Qrb49cqy/55o5AnQ=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
