@@ -442,10 +442,13 @@ additional poll. Keep periodic polling enabled: disconnected listeners and lost
 notifications must recover from durable rows, not from the hint stream.
 
 In a multi-process deployment, a direct call wakes only that process's relay.
-Each worker can use a dedicated LISTEN connection with a fixed channel and empty
-notification payload, establish LISTEN before its first poll, and call Wake after
-reconnect to catch up. Keep listener cancellation and completion in the worker's
-lifecycle; never treat a hint as an acknowledgement or an authorization decision.
+Give the writing stores `outboxpostgres.WithNotify(channel)`: `Insert` sends a
+notification on the channel in the entry's transaction, delivered at commit.
+Run `outboxpostgres.Listen(ctx, pool, channel, relay.Wake)` as a background task
+of the relay's process: it holds a LISTEN connection of its own, wakes the relay
+per notification and after every (re)connect, connects again after
+`WithListenRetry` (1 s) when the connection fails, and returns nil when ctx
+ends. Never treat a hint as an acknowledgement or an authorization decision.
 
 For a Postgres relay that currently serves only selected destinations, configure
 the maintained store before creating the relay:

@@ -212,7 +212,7 @@ row you start from:
 | Per-request health endpoints | `httpx/healthhttp` | [observability](docs/ai/observability.md) |
 | Tamper-evident audit log (implementation: HMAC chain, Store, VerifyChain) | `observability/auditlog` (in-process `MemoryStore`) → `observability/auditlog/postgres` (durable, schema via `cmd/kit-migrate auditlog`; `MigrationsInSchema` + `WithSchema` for tables in a chosen schema) | [observability](docs/ai/observability.md) |
 | Tamper-evident audit log (Builder wiring as an app.Module) | `app/auditlog` (thin bridge; pass to `app.Builder.With(...)`) | [observability](docs/ai/observability.md) |
-| Transactional outbox (at-least-once messaging, DB + broker) | `infra/outbox` (Relay) + `infra/outbox/postgres` (durable Store; schema via `cmd/kit-migrate outbox`; `WithTx`/`RequireTx` for caller-tx atomicity; `MigrationsInSchema` + `WithSchema`/`WithInboxSchema` for tables in a chosen schema) | [messaging](docs/ai/messaging.md) |
+| Transactional outbox (at-least-once messaging, DB + broker) | `infra/outbox` (Relay) + `infra/outbox/postgres` (durable Store; schema via `cmd/kit-migrate outbox`; `WithTx`/`RequireTx` for caller-tx atomicity; `MigrationsInSchema` + `WithSchema`/`WithInboxSchema` for tables in a chosen schema; `WithNotify` + `Listen` wake a relay in another process) | [messaging](docs/ai/messaging.md) |
 | Transactional inbox (dedupe inbound delivery + local work in one DB transaction) | `infra/inbox/postgres` (`Process` / `ProcessInTx`; schema is co-published by `cmd/kit-migrate outbox`) | [messaging](docs/ai/messaging.md) |
 | Distributed tracing helpers | `observability/tracing` | [observability](docs/ai/observability.md) |
 | RFC 7807 problem-details responses | `httpx/problemdetails` | [http](docs/ai/http.md) |

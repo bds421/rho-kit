@@ -32,7 +32,9 @@ type Store struct {
 	pool *pgxpool.Pool
 	// table is the schema-qualified outbox_entries of WithSchema; empty
 	// leaves it to search_path.
-	table               string
+	table string
+	// notifyChannel is the channel of WithNotify; empty sends no notification.
+	notifyChannel       string
 	claimTopics         []string
 	claimRoutingKeys    []string
 	claimMessageTypes   []string
@@ -163,16 +165,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`
 		[]byte(entry.Payload), headers, string(status), entry.Attempts,
 		createdAt.UTC(), createdAt.UTC(), published, nextRetry, lastErr,
 	}
-	var err error
-	if tx, ok := TxFromContext(ctx); ok {
-		_, err = tx.Exec(ctx, s.sql(q), args...)
-	} else {
-		_, err = s.pool.Exec(ctx, s.sql(q), args...)
-	}
-	if err != nil {
-		return redact.WrapError("outbox/postgres: insert", err)
-	}
-	return nil
+	return s.insert(ctx, s.sql(q), args)
 }
 
 // FetchPending claims up to limit pending entries by transitioning
