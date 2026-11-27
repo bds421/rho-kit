@@ -617,6 +617,34 @@ Use `SSRFSafeClientFollowRedirects(maxHops, ...)` only when redirects are part
 of the upstream contract. It validates the initial request URL and every
 redirect hop, then re-resolves each dial through the SSRF guard.
 
+### Egress to addresses callers name, with a host allowlist
+
+For calls to URLs a user or an admin names (webhooks, an identity provider's
+discovery and tokens, a file URL), `NewEgressClient(opts...)` returns one
+long-lived `*http.Client` whose dialer resolves through the system and judges
+every address in `net.Dialer.Control`, at connect time, so neither a redirect
+nor DNS rebinding reaches a private network. Public addresses pass, over https
+only. `WithEgressHosts(func(ctx, host, port) (bool, error))` lists hosts and
+ports an admin allowed: such a host may use http and reach
+`DefaultInternalRanges` (loopback, RFC 1918, unique-local, CGNAT;
+`WithEgressInternalRanges` replaces them). Link-local and the cloud metadata
+addresses inside those ranges are never reachable. No proxy is taken from the
+environment. Redirects are bounded (`WithEgressMaxRedirects`, 3), never go
+from https to http, never lead from a host not listed into a listed one, and
+drop the headers named by `WithEgressStripOnRedirect(prefixes...)` on another
+host. `WithEgressMaxResponse(n)` fails a body read past n bytes with
+`ErrEgressResponseTooLarge`; every refusal wraps `ErrEgressRefused`.
+`EgressDialer(opts...)` is the guarded DialContext alone. In tests,
+`WithEgressNetworks(127.0.0.0/8)` lets a loopback server stand for a public
+host and `WithEgressRootCAs` trusts its certificate.
+
+```go
+client := netutil.NewEgressClient(
+    netutil.WithEgressHosts(allowlist.Allowed), // host and port an admin listed
+    netutil.WithEgressStripOnRedirect("X-Example-"),
+)
+```
+
 ### Internal networks and NAT64
 
 `WithAllowedNetworks(prefixes...)` opens only the listed private networks.

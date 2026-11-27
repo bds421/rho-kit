@@ -160,7 +160,7 @@ row you start from:
 | Obtain outbound OAuth client-credentials token | `auth/oauth2.NewClientCredentials` (lifecycle component; deadline-safe serialized refresh + health/metrics) | [security](docs/ai/security.md) |
 | Read the canonical authenticated principal | `security/identity` (`FromContext`; mapped verified claims only) | [security](docs/ai/security.md) |
 | mTLS between services | `security/netutil` | [security](docs/ai/security.md) |
-| Prevent SSRF | `security/netutil` | [security](docs/ai/security.md) |
+| Prevent SSRF | `security/netutil` (`NewEgressClient` for URLs callers name: connect-time guard, host-and-port allowlist into internal ranges, safe redirects) | [security](docs/ai/security.md) |
 | Validate structs | `core/validate` | [utilities](docs/ai/utilities.md) |
 | Cursor pagination | `httpx/pagination` | [utilities](docs/ai/utilities.md) |
 | Typed application errors | `core/apperror` | [utilities](docs/ai/utilities.md) |
