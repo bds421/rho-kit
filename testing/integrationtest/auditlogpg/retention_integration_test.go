@@ -7,10 +7,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -121,4 +124,41 @@ func TestPostgres_PruneJoinsTheCallersTransaction(t *testing.T) {
 	require.NoError(t, err)
 	_, err = logger.Verify(ctx, record.Verification(testRetention, testMinimum, now))
 	require.NoError(t, err)
+}
+
+// A pruning role that may read and delete the events, but not update
+// them, applies a cut: the chain lock serialises it, no row lock needed.
+func TestPostgres_ApplyCutWithoutUpdateOnTheEvents(t *testing.T) {
+	ctx := context.Background()
+	dsn := startPostgres(t)
+	admin := openAndMigrate(t, dsn)
+	logger := newLogger(t, admin)
+	defer func() { _ = logger.Close() }()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	appendAged(t, logger, now, 500, 450, 10)
+	c, err := logger.ComputeCut(ctx, auditlog.Verification{}, now.Add(-testRetention), now)
+	require.NoError(t, err)
+
+	u, err := url.Parse(dsn)
+	require.NoError(t, err)
+	// Roles outlive the test's database on the shared cluster.
+	role := "audit_pruner_" + strings.TrimPrefix(u.Path, "/")
+	quoted := pgx.Identifier{role}.Sanitize()
+	for _, stmt := range []string{
+		"CREATE ROLE " + quoted + " LOGIN PASSWORD 'pruner'",
+		"GRANT SELECT, DELETE ON audit_log_events TO " + quoted,
+		"GRANT SELECT, INSERT, UPDATE ON audit_log_retention TO " + quoted,
+	} {
+		_, err := admin.Exec(ctx, stmt)
+		require.NoError(t, err)
+	}
+	u.User = url.UserPassword(role, "pruner")
+	pool, err := pgxpool.New(ctx, u.String())
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	removed, err := postgresstore.New(pool).ApplyCut(ctx, c, testRetentionKey, testMinimum, now)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, removed)
+	assert.Len(t, actions(t, logger), 1)
 }

@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.60.0 — 2026-11-27
+
+Every workspace module is released at v2.60.0 (`release/v2.60.0`). No breaking changes.
+
+### observability/auditlog/postgres
+
+- **fix: applying a cut needs no UPDATE on the events.** `Store.ApplyCut`
+  read the oldest entries with `SELECT … FOR UPDATE`, and PostgreSQL takes
+  that row lock only for a role with UPDATE, so a pruning role had to hold
+  UPDATE on the table it should only read and delete. The chain lock that
+  every append and cut takes already serialises them, so the read takes no
+  row lock now. A pruning role needs SELECT and DELETE on
+  `audit_log_events` and SELECT, INSERT and UPDATE on `audit_log_retention`.
+
 ## v2.59.0 — 2026-11-27
 
 Every workspace module is released at v2.59.0 (`release/v2.59.0`). No breaking changes.

@@ -25,10 +25,12 @@ func (s *Store) RetentionRecord(ctx context.Context, key []byte) (auditlog.Reten
 
 // ApplyCut removes the events c names and replaces the sealed record in
 // one transaction, as [auditlog.RetentionStore] describes. It holds the
-// chain lock and locks the record and the rows it checks. When ctx carries
-// a transaction from [WithTx], it runs inside it and the chain lock is held
-// until that ends. The role needs DELETE on audit_log_events and INSERT and
-// UPDATE on audit_log_retention; nothing else should have them.
+// chain lock, which every append and cut takes, so the rows it checks need
+// no row lock; it locks only the record. When ctx carries a transaction
+// from [WithTx], it runs inside it and the chain lock is held until that
+// ends. The role needs SELECT and DELETE on audit_log_events and SELECT,
+// INSERT and UPDATE on audit_log_retention, and no UPDATE on the events;
+// nothing else should have DELETE or the retention writes.
 func (s *Store) ApplyCut(ctx context.Context, c auditlog.Cut, key []byte, minimum time.Duration, now time.Time) (int64, error) {
 	if s == nil || s.pool == nil {
 		return 0, errors.New("auditlog/postgres: store not initialized")
@@ -66,7 +68,7 @@ func (s *Store) applyCut(ctx context.Context, tx pgx.Tx, c auditlog.Cut, key []b
 	if err != nil || c.Events == 0 {
 		return 0, err
 	}
-	rows, err := tx.Query(ctx, s.sql(`SELECT seq, hmac FROM audit_log_events ORDER BY seq LIMIT $1 FOR UPDATE`), c.Events+1)
+	rows, err := tx.Query(ctx, s.sql(`SELECT seq, hmac FROM audit_log_events ORDER BY seq LIMIT $1`), c.Events+1)
 	if err != nil {
 		return 0, fmt.Errorf("auditlog/postgres: read the cut: %w", err)
 	}
