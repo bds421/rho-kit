@@ -4,8 +4,8 @@ go 1.27.4
 
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
-	github.com/bds421/rho-kit/core/v2 v2.52.1
-	github.com/bds421/rho-kit/data/v2 v2.52.1
+	github.com/bds421/rho-kit/core/v2 v2.53.0
+	github.com/bds421/rho-kit/data/v2 v2.53.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/stretchr/testify v1.12.1
 )
