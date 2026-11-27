@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.56.0 — 2026-11-27
+
+Every workspace module is released at v2.56.0 (`release/v2.56.0`). No breaking changes.
+
+### httpx/mcp
+
+- **feat: rate limits per operation inside a tool call.** `WithCallLimits`
+  makes every operation a handler runs count against the caller's limits:
+  the handler calls `Charge(ctx)` before each, which asks every limit with
+  the MCP request and returns a `*CallLimitedError` (matching
+  `ErrCallLimited`, a rate-limit apperror, with `RetryAfter`) when one
+  refuses. `LimitByIP` adapts the per-IP limiter (its client address,
+  trusted proxies included) and `LimitByKey` a keyed limiter under a key
+  taken from the request.
+
 ## v2.55.0 — 2026-11-27
 
 Every workspace module is released at v2.55.0 (`release/v2.55.0`). No breaking changes.
