@@ -128,9 +128,13 @@ func (r *Registry) Client(pool *pgxpool.Pool, logger *slog.Logger) (*river.Clien
 }
 
 // InsertOnly is a River client that enqueues jobs without working them,
-// for roles that leave the work to a worker role.
+// for roles that leave the work to a worker role. It inserts a kind no
+// worker of this registry works (River's SkipUnknownJobCheck): the worker
+// role registers it.
 func (r *Registry) InsertOnly(pool *pgxpool.Pool, logger *slog.Logger) (*river.Client[pgx.Tx], error) {
-	return river.NewClient(riverpgxv5.New(pool), r.config(logger))
+	c := r.config(logger)
+	c.SkipUnknownJobCheck = true
+	return river.NewClient(riverpgxv5.New(pool), c)
 }
 
 // config is River's configuration of either client. River's nightly
