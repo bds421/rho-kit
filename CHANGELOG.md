@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.54.0 — 2026-11-27
+
+Every workspace module is released at v2.54.0 (`release/v2.54.0`). No breaking changes.
+
+### auth/oauth2
+
+- **feat: `Flow.VerifyLogoutToken`, back-channel logout without kit
+  sessions.** It checks a `logout_token` the provider of a `Config` given
+  per call posted (OpenID Connect Back-Channel Logout 1.0: signature, `iss`,
+  `aud`, `exp`, `iat` at most five minutes old and a minute ahead, the
+  logout event, `sid` and/or `sub`, no `nonce`), records its `jti` and
+  returns `LogoutToken{Issuer, Subject, SID}`; errors
+  `ErrLogoutTokenInvalid` and `ErrLogoutTokenReplayed`. The replay cache is
+  the state store when it implements `ReplayCache` (`auth/oauth2/redis`
+  does), otherwise in-process; `WithFlowReplayCache` sets one. `Client` and
+  `Flow` share the checks.
+- `Result.SID` is the sign-in's provider session, so the application can
+  record it for the logout.
+- `oauth2test.Issuer.LogoutToken` signs back-channel logout tokens for tests.
+
 ## v2.53.0 — 2026-11-27
 
 Every workspace module is released at v2.53.0 (`release/v2.53.0`). No breaking changes.
