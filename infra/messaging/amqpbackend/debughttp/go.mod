@@ -3,16 +3,16 @@ module github.com/bds421/rho-kit/infra/messaging/amqpbackend/debughttp/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.53.0
-	github.com/bds421/rho-kit/httpx/v2 v2.53.0
-	github.com/bds421/rho-kit/infra/v2 v2.53.0
+	github.com/bds421/rho-kit/core/v2 v2.54.0
+	github.com/bds421/rho-kit/httpx/v2 v2.54.0
+	github.com/bds421/rho-kit/infra/v2 v2.54.0
 	github.com/stretchr/testify v1.12.1
 )
 
 require (
-	github.com/bds421/rho-kit/io/v2 v2.53.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.53.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.53.0 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.54.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.54.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.54.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
