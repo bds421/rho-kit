@@ -15,6 +15,10 @@ Every workspace module is released at v2.51.1 (`release/v2.51.1`). No breaking c
   with an expired token gets the same code marked temporary, so the SDK
   retries the refresh on the open connection instead of disconnecting. A bad
   signature or any other verification failure stays `DisconnectInvalidToken`.
+  A token past its `exp` but within the verifier's clock skew counts as
+  expired too; it used to start a connection that centrifuge refused with
+  the non-retryable `ErrorExpired`, or, with a connect policy, a reconnect
+  loop on `DisconnectExpired`.
   The expired connect is logged at debug, not as a warning.
 - **docs:** `WithJWTAuth` and `WithVerifiedRefreshPolicy` say that without a
   refresh policy the node closes each connection when its token expires.

@@ -387,7 +387,11 @@ func (n *Node) verifyConnectToken(ctx context.Context, rawToken string) (*jwtuti
 		n.metrics.observeConnect(connectOutcomeRejected)
 		return nil, cfg.DisconnectInvalidToken
 	}
-	claims, err := n.verifier.VerifyContext(ctx, token, time.Now())
+	now := time.Now()
+	claims, err := n.verifier.VerifyContext(ctx, token, now)
+	if err == nil && pastExpiry(claims, now) {
+		err = jwtutil.ErrTokenExpired
+	}
 	if err != nil {
 		outcome, reply := connectVerifyFailure(err)
 		n.metrics.observeConnect(outcome)
@@ -413,6 +417,14 @@ func (n *Node) verifyConnectToken(ctx context.Context, rawToken string) (*jwtuti
 		return nil, cfg.DisconnectInvalidToken
 	}
 	return claims, nil
+}
+
+// pastExpiry reports a verified token whose exp has passed but lies within the
+// verifier's clock skew. It is valid, but a connection cannot start or
+// continue on it: centrifuge would answer the non-retryable ErrorExpired
+// instead of asking the client for a new token.
+func pastExpiry(claims *jwtutil.Claims, now time.Time) bool {
+	return claims.ExpiresAt <= now.Unix()
 }
 
 // applyConnectPolicy asks the connect policy about verified claims and

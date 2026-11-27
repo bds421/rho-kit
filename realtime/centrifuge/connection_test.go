@@ -274,13 +274,16 @@ func TestExpiredConnectTokenGetsTokenExpired(t *testing.T) {
 		return conn, ctx
 	}
 	expired := time.Now().Add(-5 * time.Minute)
-	conn, ctx := connect(signUntil(fixtureSubject, expired))
-	if reply := readSocketReply(t, ctx, conn, 1); reply.Error == nil || reply.Error.Code != int(cfg.ErrorTokenExpired.Code) {
-		t.Fatalf("expired connect token: reply %+v, want token expired", reply.Error)
+	// Past the verifier's clock skew, and within it.
+	for _, exp := range []time.Time{expired, time.Now().Add(-time.Second)} {
+		conn, ctx := connect(signUntil(fixtureSubject, exp))
+		if reply := readSocketReply(t, ctx, conn, 1); reply.Error == nil || reply.Error.Code != int(cfg.ErrorTokenExpired.Code) {
+			t.Fatalf("connect token expired at %v: reply %+v, want token expired", exp, reply.Error)
+		}
 	}
 
 	// A bad signature stays a terminal invalid token, expired or not.
-	conn, ctx = connect(signOther(fixtureSubject, expired))
+	conn, ctx := connect(signOther(fixtureSubject, expired))
 	if _, _, err := conn.Read(ctx); websocket.CloseStatus(err) != websocket.StatusCode(cfg.DisconnectInvalidToken.Code) {
 		t.Fatalf("expired token with a bad signature: %v, want close %d", err, cfg.DisconnectInvalidToken.Code)
 	}
@@ -303,9 +306,12 @@ func TestExpiredRefreshTokenGetsTemporaryTokenExpired(t *testing.T) {
 	if reply := readSocketReply(t, ctx, conn, 1); reply.Error != nil {
 		t.Fatal(reply.Error)
 	}
-	socketCommand(t, ctx, conn, map[string]any{"id": 2, "refresh": map[string]any{"token": signUntil(fixtureSubject, expired)}})
-	if reply := readSocketReply(t, ctx, conn, 2); reply.Error == nil || reply.Error.Code != int(cfg.ErrorTokenExpired.Code) || !reply.Error.Temporary {
-		t.Fatalf("expired refresh token: reply %+v, want temporary token expired", reply.Error)
+	// Past the verifier's clock skew, and within it.
+	for id, exp := range map[int]time.Time{20: expired, 21: time.Now().Add(-time.Second)} {
+		socketCommand(t, ctx, conn, map[string]any{"id": id, "refresh": map[string]any{"token": signUntil(fixtureSubject, exp)}})
+		if reply := readSocketReply(t, ctx, conn, id); reply.Error == nil || reply.Error.Code != int(cfg.ErrorTokenExpired.Code) || !reply.Error.Temporary {
+			t.Fatalf("refresh token expired at %v: reply %+v, want temporary token expired", exp, reply.Error)
+		}
 	}
 	// The connection stays open: the next refresh with a new token succeeds.
 	socketCommand(t, ctx, conn, map[string]any{"id": 3, "refresh": map[string]any{"token": signUntil(fixtureSubject, valid)}})

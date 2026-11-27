@@ -158,8 +158,9 @@ func (n *Node) refresh(client *cfg.Client, event cfg.RefreshEvent, cb cfg.Refres
 		cb(cfg.RefreshReply{}, cfg.DisconnectInvalidToken)
 		return
 	}
-	claims, err := n.verifier.VerifyContext(client.Context(), extractBearer(event.Token), time.Now())
-	if errors.Is(err, jwtutil.ErrTokenExpired) {
+	now := time.Now()
+	claims, err := n.verifier.VerifyContext(client.Context(), extractBearer(event.Token), now)
+	if errors.Is(err, jwtutil.ErrTokenExpired) || (err == nil && pastExpiry(claims, now)) {
 		cb(cfg.RefreshReply{}, errRefreshTokenExpired)
 		return
 	}
