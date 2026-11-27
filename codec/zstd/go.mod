@@ -3,6 +3,6 @@
 // free of it.
 module github.com/bds421/rho-kit/codec/zstd/v2
 
-go 1.26.8
+go 1.27.4
 
-require github.com/klauspost/compress v1.20.3
+require github.com/klauspost/compress v1.20.5

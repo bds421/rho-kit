@@ -42,7 +42,7 @@ func TestOrSystem_PassesThrough(t *testing.T) {
 func TestFixed_AlwaysReturnsSameInstant(t *testing.T) {
 	want := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	c := clock.Fixed(want)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if got := c(); !got.Equal(want) {
 			t.Fatalf("Fixed call %d: got %v, want %v", i, got, want)
 		}
@@ -82,17 +82,17 @@ func TestStub_FuncReadsLatest(t *testing.T) {
 func TestStub_ConcurrentReadsAndWrites(t *testing.T) {
 	s := clock.NewStub(time.Unix(0, 0))
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 1000; j++ {
+			for range 1000 {
 				s.Advance(time.Microsecond)
 			}
 		}()
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 1000; j++ {
+			for range 1000 {
 				_ = s.Now()
 			}
 		}()
@@ -111,10 +111,10 @@ func TestStub_ConcurrentAdvanceLosesNoIncrements(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < perG; j++ {
+			for range perG {
 				s.Advance(step)
 			}
 		}()

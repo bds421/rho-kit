@@ -174,10 +174,10 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	reg := cfg.registerer
 
 	m := &Metrics{
-		messagesEnqueued:  queueCounter("messages_enqueued_total", "Total messages enqueued."),
-		messagesProcessed: queueCounter("messages_processed_total", "Total messages successfully processed."),
-		messagesFailed:    queueCounter("messages_failed_total", "Total messages that failed processing."),
-		messagesDeadLettered: queueCounter("messages_dead_lettered_total",
+		messagesEnqueued:  queueCounter("redis_queue_messages_enqueued_total", "Total messages enqueued."),
+		messagesProcessed: queueCounter("redis_queue_messages_processed_total", "Total messages successfully processed."),
+		messagesFailed:    queueCounter("redis_queue_messages_failed_total", "Total messages that failed processing."),
+		messagesDeadLettered: queueCounter("redis_queue_messages_dead_lettered_total",
 			"Total messages moved to the asynq archive (dead-letter set)."),
 		processingDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -189,11 +189,11 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 			},
 			[]string{"queue"},
 		),
-		messagesRetried: queueCounter("messages_retried_total", "Total messages re-enqueued for retry."),
-		processingDepth: queueGauge("processing_depth",
+		messagesRetried: queueCounter("redis_queue_messages_retried_total", "Total messages re-enqueued for retry."),
+		processingDepth: queueGauge("redis_queue_processing_depth",
 			"Number of messages currently active (claimed by a worker) in the asynq queue."),
-		queueDepth: queueGauge("queue_depth", "Number of messages waiting in the asynq pending state."),
-		dlqDepth: queueGauge("dlq_depth",
+		queueDepth: queueGauge("redis_queue_queue_depth", "Number of messages waiting in the asynq pending state."),
+		dlqDepth: queueGauge("redis_queue_dlq_depth",
 			"Number of messages currently in the asynq archive (dead-letter). Polled alongside queue_depth so operators can alert on a growing DLQ without standing up a separate poller."),
 	}
 
@@ -210,18 +210,21 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	return m
 }
 
-// queueCounter is a redis queue counter labelled by queue.
+// queueCounter is a redis queue counter labelled by queue. Callers pass
+// the full metric name, so tools/check-dashboard-metrics.sh finds it as one
+// literal.
 func queueCounter(name, help string) *prometheus.CounterVec {
 	return prometheus.NewCounterVec(
-		prometheus.CounterOpts{Namespace: "redis", Subsystem: "queue", Name: name, Help: help},
+		prometheus.CounterOpts{Name: name, Help: help},
 		[]string{"queue"},
 	)
 }
 
-// queueGauge is a redis queue gauge labelled by queue.
+// queueGauge is a redis queue gauge labelled by queue. Callers pass the
+// full metric name, as for queueCounter.
 func queueGauge(name, help string) *prometheus.GaugeVec {
 	return prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{Namespace: "redis", Subsystem: "queue", Name: name, Help: help},
+		prometheus.GaugeOpts{Name: name, Help: help},
 		[]string{"queue"},
 	)
 }

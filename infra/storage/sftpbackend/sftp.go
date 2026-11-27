@@ -664,7 +664,7 @@ func (b *Backend) rejectSymlinkAncestors(client Client, remotePath string) error
 		return nil
 	}
 
-	for _, part := range strings.Split(path.Dir(rel), "/") {
+	for part := range strings.SplitSeq(path.Dir(rel), "/") {
 		if part == "" || part == "." {
 			continue
 		}
@@ -1232,8 +1232,7 @@ func isNotExist(err error) bool {
 		return true
 	}
 	// pkg/sftp returns *sftp.StatusError for SSH_FX_NO_SUCH_FILE.
-	var statusErr *sftp.StatusError
-	if errors.As(err, &statusErr) {
+	if statusErr, ok := errors.AsType[*sftp.StatusError](err); ok {
 		return statusErr.Code == ssh_FX_NO_SUCH_FILE
 	}
 	return false

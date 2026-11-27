@@ -148,7 +148,7 @@ func TestValidateHeaders_RejectsOversizedTotalBytes(t *testing.T) {
 	// per-value size. 64 entries × 8 KiB = 512 KiB, which exceeds
 	// the 256 KiB total cap.
 	headers := map[string]string{}
-	for i := 0; i < MaxHeaderCount; i++ {
+	for i := range MaxHeaderCount {
 		headers[fmt.Sprintf("X-Pack-%05d", i)] = strings.Repeat("x", MaxHeaderValueBytes)
 	}
 	err := ValidateHeaders(headers)
@@ -162,7 +162,7 @@ func TestValidateHeaders_RejectsOversizedTotalBytes(t *testing.T) {
 // (well under the byte cap) is admitted.
 func TestValidateHeaders_AcceptsExactlyAtCountAndByteCaps(t *testing.T) {
 	headers := map[string]string{}
-	for i := 0; i < MaxHeaderCount; i++ {
+	for i := range MaxHeaderCount {
 		headers[fmt.Sprintf("X-Pack-%05d", i)] = "v"
 	}
 	require.NoError(t, ValidateHeaders(headers))

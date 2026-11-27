@@ -380,7 +380,6 @@ func TestS3Backend_GetErrorMapping(t *testing.T) {
 	t.Run("returns ErrObjectNotFound on bodyless 404 (generic APIError)", func(t *testing.T) {
 		t.Parallel()
 		for _, code := range []string{"NoSuchKey", "NotFound"} {
-			code := code
 			t.Run(code, func(t *testing.T) {
 				t.Parallel()
 				client := &mockS3Client{
@@ -967,7 +966,6 @@ func TestS3Backend_CopyMissingSource(t *testing.T) {
 			{"NotFound", &smithyErr{code: "NotFound", message: "Not Found"}},
 		}
 		for _, tc := range cases {
-			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockS3Client{

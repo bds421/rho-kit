@@ -86,7 +86,7 @@ func TestAcquire_DefaultRoutesToPrimary(t *testing.T) {
 	require.NoError(t, err)
 	defer rp.Close()
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_, _ = rp.Acquire(context.Background())
 	}
 	require.Equal(t, 5, primary.acquireCount())
@@ -107,7 +107,7 @@ func TestAcquire_ReadOnlyRoutesToReplicaRoundRobin(t *testing.T) {
 	require.NoError(t, err)
 	defer rp.Close()
 
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		_, _ = rp.Acquire(context.Background(), readreplica.WithReadOnly())
 	}
 	// Round-robin: 3 each
@@ -222,15 +222,13 @@ func TestReplicaConcurrency(t *testing.T) {
 
 	var wg sync.WaitGroup
 	var ops atomic.Int64
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 50; j++ {
+	for range 50 {
+		wg.Go(func() {
+			for range 50 {
 				_, _ = rp.Acquire(context.Background(), readreplica.WithReadOnly())
 				ops.Add(1)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	require.Equal(t, int64(2500), ops.Load())
@@ -318,7 +316,7 @@ func TestAcquire_ZeroReplicaPassThroughDoesNotCountFallback(t *testing.T) {
 	require.NoError(t, err)
 	defer rp.Close()
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_, err := rp.Acquire(context.Background(), readreplica.WithReadOnly())
 		require.NoError(t, err)
 	}
@@ -332,8 +330,8 @@ func TestAcquire_CallerCancelDoesNotEvictReplicas(t *testing.T) {
 	primary := &fakeAcquirer{name: "p"}
 	// Acquire respects the caller's context: return ctx.Err() so the
 	// pool sees a cancellation-shaped failure rather than a replica fault.
-	r1 := &ctxAwareAcquirer{fakeAcquirer: fakeAcquirer{name: "r1"}}
-	r2 := &ctxAwareAcquirer{fakeAcquirer: fakeAcquirer{name: "r2"}}
+	r1 := &ctxAwareAcquirer{name: "r1"}
+	r2 := &ctxAwareAcquirer{name: "r2"}
 	rp, err := readreplica.New(readreplica.Config{
 		Primary:  primary,
 		Replicas: []readreplica.Acquirer{r1, r2},
@@ -345,7 +343,7 @@ func TestAcquire_CallerCancelDoesNotEvictReplicas(t *testing.T) {
 	require.NoError(t, err)
 	defer rp.Close()
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // already canceled
 		_, _ = rp.Acquire(ctx, readreplica.WithReadOnly())

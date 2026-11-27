@@ -318,10 +318,7 @@ func (l *Limiter) ensureRoomLocked(sh *gcraShard, now time.Time) {
 		return
 	}
 	// Ceil division so total capacity is at least maxKeys.
-	perShard := (l.maxKeys + numShards - 1) / numShards
-	if perShard < 1 {
-		perShard = 1
-	}
+	perShard := max((l.maxKeys+numShards-1)/numShards, 1)
 	if len(sh.tats) < perShard {
 		return
 	}

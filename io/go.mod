@@ -4,8 +4,8 @@
 // sprawl without changing dep weight. See AGENTS.md "Module shape".
 module github.com/bds421/rho-kit/io/v2
 
-go 1.26.8
+go 1.27.4
 
 require github.com/stretchr/testify v1.12.1
 
-require go.yaml.in/yaml/v3 v3.0.5 // indirect
+require go.yaml.in/yaml/v3 v3.0.6 // indirect

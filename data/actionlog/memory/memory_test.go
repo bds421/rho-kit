@@ -181,7 +181,6 @@ func TestStore_LatestForTenantPicksHighestSeq(t *testing.T) {
 	// Append t1 entries out of Seq order: 2 then 1. The latest must be
 	// the Seq=2 entry, not the most recently appended Seq=1 entry.
 	for _, seq := range []int64{2, 1} {
-		seq := seq
 		_, err := store.AppendChained(ctx, "t1", func(actionlog.Entry, int64) (actionlog.Entry, error) {
 			e := validStoreEntry("t1-seq-"+itoa(seq), "t1", nil)
 			e.Seq = seq
@@ -343,7 +342,7 @@ func TestStore_RangeByTenantSeqStreamsInOrder(t *testing.T) {
 	store := New(testCursorSigner(t))
 	logger := actionlog.New(store, newTestSecrets(t))
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, err := logger.Append(context.Background(), actionlog.Entry{
 			TenantID: "t", Actor: "a", Action: "x", Outcome: actionlog.OutcomeSuccess,
 		})
@@ -363,7 +362,7 @@ func TestList_DefaultLimitApplied(t *testing.T) {
 	store := New(testCursorSigner(t))
 	logger := actionlog.New(store, newTestSecrets(t))
 
-	for i := 0; i < defaultLimit+10; i++ {
+	for range defaultLimit + 10 {
 		_, err := logger.Append(context.Background(), actionlog.Entry{
 			TenantID: "t", Actor: "a", Action: "x", Outcome: actionlog.OutcomeSuccess,
 		})
@@ -385,7 +384,7 @@ func TestList_CursorPaginatesAllRows(t *testing.T) {
 	logger := actionlog.New(store, newTestSecrets(t))
 
 	const total = 25
-	for i := 0; i < total; i++ {
+	for range total {
 		_, err := logger.Append(context.Background(), actionlog.Entry{
 			TenantID: "t", Actor: "a", Action: "x", Outcome: actionlog.OutcomeSuccess,
 		})

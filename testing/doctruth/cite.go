@@ -29,7 +29,7 @@ func documents(o Options) ([]string, error) {
 		return nil, fmt.Errorf("listing the documents: %w", err)
 	}
 	var files []string
-	for _, f := range strings.Fields(string(out)) {
+	for f := range strings.FieldsSeq(string(out)) {
 		if o.Documents(f) {
 			files = append(files, f)
 		}

@@ -610,16 +610,14 @@ func (c *Connection) startReconnect() {
 		}
 		return
 	}
-	c.reconnectWG.Add(1)
-	go func() {
-		defer c.reconnectWG.Done()
+	c.reconnectWG.Go(func() {
 		for {
 			c.reconnect()
 			if !c.drainPendingReconnect() {
 				return
 			}
 		}
-	}()
+	})
 }
 
 // drainPendingReconnect releases the reconnecting flag and, if a reconnect

@@ -36,7 +36,6 @@ func TestCORS_PanicsWithoutExplicitAllowedOrigins(t *testing.T) {
 		{WithAllowedOrigins("", " \t ")},
 	}
 	for _, opts := range cases {
-		opts := opts
 		assert.Panics(t, func() {
 			New(opts...)
 		})

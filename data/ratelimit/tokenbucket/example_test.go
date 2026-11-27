@@ -13,7 +13,7 @@ func ExampleNew() {
 	defer func() { _ = lim.Close() }()
 
 	ctx := context.Background()
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		ok, _, _ := lim.Allow(ctx, "user-1")
 		fmt.Println(i, ok)
 	}

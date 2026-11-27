@@ -451,7 +451,7 @@ func writeAll(w io.Writer, p []byte) error {
 func readResponse(r io.Reader) (string, error) {
 	var b strings.Builder
 	var one [1]byte
-	for i := 0; i < maxResponseBytes; i++ {
+	for range maxResponseBytes {
 		n, err := r.Read(one[:])
 		if n == 1 {
 			switch one[0] {

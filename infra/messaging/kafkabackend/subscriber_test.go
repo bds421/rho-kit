@@ -44,7 +44,7 @@ func TestNewSubscriber_PreservesGroupAndTopics(t *testing.T) {
 func TestSubscriber_Consume_ValidatesBinding(t *testing.T) {
 	sub := mustSubscriber(t)
 	err := sub.Consume(context.Background(), messaging.Binding{
-		BindingSpec: messaging.BindingSpec{Exchange: ""},
+		Exchange: "",
 	}, func(context.Context, messaging.Delivery) error { return nil })
 	require.ErrorIs(t, err, messaging.ErrInvalidRoute)
 }
@@ -52,7 +52,7 @@ func TestSubscriber_Consume_ValidatesBinding(t *testing.T) {
 func TestSubscriber_Consume_RejectsForeignTopic(t *testing.T) {
 	sub := mustSubscriber(t)
 	err := sub.Consume(context.Background(), messaging.Binding{
-		BindingSpec: messaging.BindingSpec{Exchange: "other"},
+		Exchange: "other",
 	}, func(context.Context, messaging.Delivery) error { return nil })
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in the subscriber topic set")
@@ -61,7 +61,7 @@ func TestSubscriber_Consume_RejectsForeignTopic(t *testing.T) {
 func TestSubscriber_Consume_RejectsMismatchedQueue(t *testing.T) {
 	sub := mustSubscriber(t)
 	err := sub.Consume(context.Background(), messaging.Binding{
-		BindingSpec: messaging.BindingSpec{Exchange: "events", ConsumerGroup: "other-group"},
+		Exchange: "events", ConsumerGroup: "other-group",
 	}, func(context.Context, messaging.Delivery) error { return nil })
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not match subscriber group")
@@ -70,7 +70,7 @@ func TestSubscriber_Consume_RejectsMismatchedQueue(t *testing.T) {
 func TestSubscriber_Consume_NilHandlerErrors(t *testing.T) {
 	sub := mustSubscriber(t)
 	err := sub.Consume(context.Background(), messaging.Binding{
-		BindingSpec: messaging.BindingSpec{Exchange: "events"},
+		Exchange: "events",
 	}, nil)
 	assert.ErrorIs(t, err, messaging.ErrInvalidConsumer)
 }

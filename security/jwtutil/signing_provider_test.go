@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v3/jwa"
-	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 )
 
 func mustECDSAKey(t *testing.T) *ecdsa.PrivateKey {
@@ -47,7 +47,7 @@ func staticRotator(k crypto.PrivateKey) KeyRotator {
 // default thumbprint-kid path.
 func verifierForKey(t *testing.T, pub any, alg jwa.SignatureAlgorithm) *KeySet {
 	t.Helper()
-	pubJWK, err := jwk.Import(pub)
+	pubJWK, err := jwk.Import[jwk.Key](pub)
 	if err != nil {
 		t.Fatalf("jwk.Import public: %v", err)
 	}
@@ -166,7 +166,6 @@ func TestNewSigningProvider_RejectsNilKey(t *testing.T) {
 
 func TestNewSigningProvider_RejectsHMACAlg(t *testing.T) {
 	for _, alg := range []jwa.SignatureAlgorithm{jwa.HS256(), jwa.HS384(), jwa.HS512()} {
-		alg := alg
 		t.Run(alg.String(), func(t *testing.T) {
 			_, err := NewSigningProvider(context.Background(),
 				staticRotator(mustECDSAKey(t)),
@@ -377,7 +376,7 @@ func TestSigningProvider_MintsRandomJTIByDefault(t *testing.T) {
 	ks := verifierForKey(t, priv.Public(), jwa.ES256())
 	ks.ExpectedIssuer = "svc"
 	ks.ExpectedAudience = "aud"
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		tok, err := p.Sign(Claims{Subject: "alice"})
 		if err != nil {
 			t.Fatalf("Sign: %v", err)
@@ -503,7 +502,6 @@ func TestSigningProvider_RefreshRejectsWrongShapeKey(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			checkWrongShapeRotationRejected(t, tc.alg, tc.good(t), tc.wrong(t), tc.wantKty)
 		})
@@ -594,7 +592,6 @@ func TestNewSigningProvider_RejectsWrongShapeInitialKey(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := NewSigningProvider(context.Background(),
 				staticRotator(tc.wrong(t)),
@@ -848,10 +845,8 @@ func TestSigningProvider_RaceSignAndRefresh(t *testing.T) {
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 4 {
+		wg.Go(func() {
 			for {
 				select {
 				case <-stop:
@@ -860,9 +855,9 @@ func TestSigningProvider_RaceSignAndRefresh(t *testing.T) {
 				}
 				_, _ = p.Sign(Claims{Subject: "alice"})
 			}
-		}()
+		})
 	}
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		if err := p.refresh(context.Background()); err != nil {
 			t.Errorf("refresh: %v", err)
 		}

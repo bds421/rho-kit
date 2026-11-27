@@ -132,7 +132,7 @@ func TestManager_List(t *testing.T) {
 	ctx := context.Background()
 	repo := NewMemoryRepository()
 	m := NewManager(repo)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		_, _, err := m.Issue(ctx, IssueOptions{Owner: "owner-a"})
 		require.NoError(t, err)
 	}

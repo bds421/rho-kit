@@ -18,9 +18,9 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
-	"github.com/lestrrat-go/jwx/v3/jwa"
-	"github.com/lestrrat-go/jwx/v3/jwk"
-	"github.com/lestrrat-go/jwx/v3/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 )
 
 const testUUID = "550e8400-e29b-41d4-a716-446655440000"
@@ -305,7 +305,7 @@ func testKey(t *testing.T) *ecdsa.PrivateKey {
 
 func testJWKS(t *testing.T, key *ecdsa.PrivateKey, kid string) []byte {
 	t.Helper()
-	pubJWK, err := jwk.Import(key.PublicKey)
+	pubJWK, err := jwk.Import[jwk.Key](key.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func signJWT(t *testing.T, key *ecdsa.PrivateKey, kid string, claims map[string]
 		}
 	}
 
-	jwkKey, err := jwk.Import(key)
+	jwkKey, err := jwk.Import[jwk.Key](key)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -132,7 +132,7 @@ func TestConsumerMetrics_RecordDeliveryOutcomes(t *testing.T) {
 	c.metrics = metrics
 	msg, err := messaging.NewMessage("test.event", "payload")
 	require.NoError(t, err)
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	t.Run("acked", func(t *testing.T) {
 		ack := &fakeAcknowledger{}
@@ -164,11 +164,10 @@ func TestConsumerMetrics_RecordFailureOutcomes(t *testing.T) {
 		c := newTestConsumer(nil, ConsumerHooks{})
 		c.metrics = metrics
 		ack := &fakeAcknowledger{}
-		binding := messaging.Binding{BindingSpec: messaging.BindingSpec{
+		binding := messaging.Binding{
 			ConsumerGroup: "retry-queue",
 			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
-		}}
+			Retry:         &messaging.RetryPolicy{MaxRetries: 3}}
 
 		c.handleFailure(context.Background(), makeAMQPDelivery(ack, msg), msg, binding, errors.New("transient"))
 
@@ -181,12 +180,10 @@ func TestConsumerMetrics_RecordFailureOutcomes(t *testing.T) {
 		c.metrics = metrics
 		ack := &fakeAcknowledger{}
 		binding := messaging.Binding{
-			BindingSpec: messaging.BindingSpec{
-				ConsumerGroup: "dead-queue",
-				RoutingKey:    "test.event",
-				Retry:         &messaging.RetryPolicy{MaxRetries: 3},
-			},
-			DeadExchange: "events.dead",
+			ConsumerGroup: "dead-queue",
+			RoutingKey:    "test.event",
+			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+			DeadExchange:  "events.dead",
 		}
 		delivery := makeAMQPDelivery(ack, msg)
 		delivery.Headers = deadLetterHeaders("dead-queue", 3)

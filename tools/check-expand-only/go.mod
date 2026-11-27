@@ -1,6 +1,6 @@
 module github.com/bds421/rho-kit/tools/check-expand-only
 
-go 1.26.8
+go 1.27.4
 
 require github.com/bds421/rho-kit/testing/expandonly/v2 v2.44.0
 

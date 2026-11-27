@@ -21,8 +21,8 @@ import (
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
 	cfg "github.com/centrifugal/centrifuge"
 	"github.com/coder/websocket"
-	"github.com/lestrrat-go/jwx/v3/jwa"
-	"github.com/lestrrat-go/jwx/v3/jws"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jws"
 )
 
 const fixtureSubject = "11111111-1111-4111-8111-111111111111"
@@ -172,7 +172,10 @@ func TestVerifiedConnectionPoliciesPreserveJWTIdentityAndDefaultChannelDenial(t 
 		t.Fatal("identity-changing refresh did not close the transport")
 	}
 	select {
-	case <-disconnected:
+	case event := <-disconnected:
+		if event.Code != cfg.DisconnectInvalidToken.Code {
+			t.Fatalf("disconnect code %d, want %d", event.Code, cfg.DisconnectInvalidToken.Code)
+		}
 	case <-ctx.Done():
 		t.Fatal("identity-changing refresh did not disconnect")
 	}

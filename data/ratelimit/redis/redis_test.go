@@ -59,7 +59,7 @@ func TestAllow_AdmitsBurstAtSameInstant(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	l := New(client, time.Second, 5, WithClock(func() time.Time { return now }))
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ok, _, err := l.Allow(context.Background(), "alice")
 		require.NoError(t, err, "i=%d", i)
 		assert.True(t, ok, "burst slot %d should admit at the same instant", i)
@@ -327,7 +327,7 @@ func TestAllow_ConcurrentSameKeyConvergesToBurst(t *testing.T) {
 	var ok atomic.Int64
 	var deny atomic.Int64
 	done := make(chan struct{})
-	for i := 0; i < callers; i++ {
+	for range callers {
 		go func() {
 			defer func() { done <- struct{}{} }()
 			admitted, _, err := l.Allow(context.Background(), "shared")
@@ -341,7 +341,7 @@ func TestAllow_ConcurrentSameKeyConvergesToBurst(t *testing.T) {
 			}
 		}()
 	}
-	for i := 0; i < callers; i++ {
+	for range callers {
 		<-done
 	}
 	assert.Equal(t, int64(burst), ok.Load(), "exactly burst events must admit at the same instant")

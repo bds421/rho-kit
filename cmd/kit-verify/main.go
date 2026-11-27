@@ -503,7 +503,7 @@ var probes = []Probe{
 			saw429 := false
 			retryAfter := ""
 			target := cfg.url(cfg.rateLimitPath)
-			for i := 0; i < burst; i++ {
+			for range burst {
 				resp, err := hc.Get(target)
 				if err != nil {
 					return fail("GET request failed")

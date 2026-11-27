@@ -30,12 +30,10 @@ func TestTypedSubscription_DispatchesValidatedEvents(t *testing.T) {
 		"test-orders",
 		consumer,
 		messaging.Binding{
-			BindingSpec: messaging.BindingSpec{
-				Exchange:      "orders",
-				ConsumerGroup: "billing",
-				RoutingKey:    "order.created",
-				WithoutRetry:  true,
-			},
+			Exchange:      "orders",
+			ConsumerGroup: "billing",
+			RoutingKey:    "order.created",
+			WithoutRetry:  true,
 		},
 		typed,
 		messaging.WithSubscriptionLogger(logger),
@@ -44,11 +42,9 @@ func TestTypedSubscription_DispatchesValidatedEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		_ = sub.Start(ctx)
-	}()
+	})
 
 	// Give Consume time to install the handler.
 	time.Sleep(50 * time.Millisecond)

@@ -518,7 +518,7 @@ func (b *Backend) Healthy() bool {
 	defer cancel()
 
 	pager := b.client.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{
-		MaxResults: ptrInt32(1),
+		MaxResults: new(int32(1)),
 	})
 	if !pager.More() {
 		return true
@@ -527,8 +527,6 @@ func (b *Backend) Healthy() bool {
 	return err == nil
 }
 
-func ptrInt32(v int32) *int32 { return &v }
-
 // toAzureMetadata converts map[string]string to Azure's map[string]*string.
 func toAzureMetadata(m map[string]string) map[string]*string {
 	if len(m) == 0 {
@@ -536,7 +534,6 @@ func toAzureMetadata(m map[string]string) map[string]*string {
 	}
 	out := make(map[string]*string, len(m))
 	for k, v := range m {
-		v := v
 		out[k] = &v
 	}
 	return out

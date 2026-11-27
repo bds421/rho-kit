@@ -3,4 +3,4 @@
 // dependency wait or an advisory affects the pinned one.
 module github.com/bds421/rho-kit/cmd/kit-basepin/v2
 
-go 1.26.8
+go 1.27.4

@@ -152,16 +152,16 @@ func readGauge(t *testing.T, reg prometheus.Gatherer, desc *prometheus.Desc) flo
 // `Desc{fqName: "foo", ...}`.
 func descShortName(s string) string {
 	const prefix = `fqName: "`
-	i := strings.Index(s, prefix)
-	if i < 0 {
+	_, after, ok := strings.Cut(s, prefix)
+	if !ok {
 		return ""
 	}
-	rest := s[i+len(prefix):]
-	end := strings.IndexByte(rest, '"')
-	if end < 0 {
+	rest := after
+	before0, _, ok0 := strings.Cut(rest, "\"")
+	if !ok0 {
 		return ""
 	}
-	return rest[:end]
+	return before0
 }
 
 // newDisconnectedPool returns a pgxpool that has not actually established a

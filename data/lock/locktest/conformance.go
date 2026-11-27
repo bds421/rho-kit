@@ -188,10 +188,8 @@ func testConcurrentWinner(t *testing.T, factory Factory) {
 		maxHolders atomic.Int32 // high-water mark of concurrent holders
 	)
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 16 {
+		wg.Go(func() {
 			got, ok, err := l.Acquire(ctx, key)
 			if err != nil || !ok || got == nil {
 				return
@@ -218,7 +216,7 @@ func testConcurrentWinner(t *testing.T, factory Factory) {
 
 			inCritical.Add(-1)
 			_ = got.Release(ctx)
-		}()
+		})
 	}
 	wg.Wait()
 

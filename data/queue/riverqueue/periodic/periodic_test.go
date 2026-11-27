@@ -100,8 +100,7 @@ func TestAnOrganizationsRunIsScoped(t *testing.T) {
 		t.Errorf("ran with scope %q, %v", scoped, err)
 	}
 	err := r.runOrgTask(t.Context(), &river.Job[orgArgs]{Args: orgArgs{Name: "sync", OrgID: "bad"}})
-	var cancel *river.JobCancelError
-	if !errors.As(err, &cancel) {
+	if _, ok := errors.AsType[*river.JobCancelError](err); !ok {
 		t.Errorf("a refused scope: %v", err)
 	}
 }

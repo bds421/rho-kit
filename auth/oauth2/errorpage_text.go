@@ -49,7 +49,7 @@ var errorTexts = map[string]errorText{
 // in an Accept-Language header, English when none matches.
 func preferredLanguage(header string) string {
 	best, bestQ := "en", 0.0
-	for _, part := range strings.Split(header, ",") {
+	for part := range strings.SplitSeq(header, ",") {
 		tag, params, _ := strings.Cut(strings.TrimSpace(part), ";")
 		primary, _, _ := strings.Cut(strings.ToLower(tag), "-")
 		if _, ok := errorTexts[primary]; !ok {

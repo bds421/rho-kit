@@ -23,10 +23,8 @@ import (
 func TestSubscriber_Consume_RejectsRetryBinding(t *testing.T) {
 	sub := mustSubscriber(t)
 	err := sub.Consume(context.Background(), messaging.Binding{
-		BindingSpec: messaging.BindingSpec{
-			Exchange: "events",
-			Retry:    &messaging.RetryPolicy{MaxRetries: 3, Delay: 0},
-		},
+		Exchange: "events",
+		Retry:    &messaging.RetryPolicy{MaxRetries: 3, Delay: 0},
 	}, func(context.Context, messaging.Delivery) error { return nil })
 	require.ErrorIs(t, err, messaging.ErrRetryUnsupported)
 }

@@ -478,7 +478,7 @@ func quote(stmt string) string {
 
 func stripComments(stmt string) string {
 	var b strings.Builder
-	for _, l := range strings.Split(stmt, "\n") {
+	for l := range strings.SplitSeq(stmt, "\n") {
 		if t := strings.TrimSpace(l); strings.HasPrefix(t, "--") {
 			continue
 		}

@@ -229,7 +229,7 @@ func TestAppend_RejectsInvalidMetadata(t *testing.T) {
 		{"metadata too large", func(e *Entry) { e.Metadata = map[string]any{"blob": strings.Repeat("x", MaxMetadataBytes+1)} }},
 		{"metadata too many entries", func(e *Entry) {
 			e.Metadata = make(map[string]any, MaxMetadataEntries+1)
-			for i := 0; i < MaxMetadataEntries+1; i++ {
+			for i := range MaxMetadataEntries + 1 {
 				e.Metadata[fmt.Sprintf("k%d", i)] = i
 			}
 		}},
@@ -237,7 +237,7 @@ func TestAppend_RejectsInvalidMetadata(t *testing.T) {
 		{"metadata invalid string", func(e *Entry) { e.Metadata = map[string]any{"k": "bad\x00value"} }},
 		{"metadata too deep", func(e *Entry) {
 			var cur any = "leaf"
-			for i := 0; i < MaxMetadataDepth+1; i++ {
+			for range MaxMetadataDepth + 1 {
 				cur = []any{cur}
 			}
 			e.Metadata = map[string]any{"deep": cur}
@@ -612,7 +612,7 @@ func TestVerifyChain_DetectsDeletion(t *testing.T) {
 	store := newMemStore()
 	logger := New(store, newTestSecrets(t))
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, err := logger.Append(context.Background(), Entry{
 			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
 		})
@@ -635,7 +635,7 @@ func TestVerifyChain_ErrorDoesNotReflectTenantOrEntryID(t *testing.T) {
 	store := newMemStore()
 	logger := New(store, newTestSecrets(t))
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, err := logger.Append(context.Background(), Entry{
 			TenantID: "secret-token", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
 		})
@@ -658,7 +658,7 @@ func TestVerifyChain_DetectsReorder(t *testing.T) {
 	store := newMemStore()
 	logger := New(store, newTestSecrets(t))
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, err := logger.Append(context.Background(), Entry{
 			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
 		})
@@ -691,7 +691,7 @@ func TestAppend_ConcurrentMonotonicSeq(t *testing.T) {
 	const n = 32
 	var wg sync.WaitGroup
 	wg.Add(n)
-	for i := 0; i < n; i++ {
+	for range n {
 		go func() {
 			defer wg.Done()
 			_, err := logger.Append(context.Background(), Entry{
@@ -928,7 +928,7 @@ func TestVerifyChain_SpansKeyRotation(t *testing.T) {
 
 	v1 := NewStaticSecrets("v1", map[string][]byte{"v1": old})
 	logger1 := New(store, v1)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		_, err := logger1.Append(context.Background(), Entry{
 			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
 		})
@@ -940,7 +940,7 @@ func TestVerifyChain_SpansKeyRotation(t *testing.T) {
 		"v2": newKey,
 	})
 	logger2 := New(store, v2)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		_, err := logger2.Append(context.Background(), Entry{
 			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
 		})
@@ -989,7 +989,7 @@ func TestList_MemoizesSecretResolution(t *testing.T) {
 	logger := New(store, newTestSecrets(t))
 
 	const rows = 5
-	for i := 0; i < rows; i++ {
+	for range rows {
 		_, err := logger.Append(context.Background(), Entry{
 			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
 		})
@@ -1012,7 +1012,7 @@ func TestVerifyChain_MemoizesSecretResolution(t *testing.T) {
 	logger := New(store, newTestSecrets(t))
 
 	const rows = 5
-	for i := 0; i < rows; i++ {
+	for range rows {
 		_, err := logger.Append(context.Background(), Entry{
 			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
 		})

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -14,11 +15,11 @@ import (
 
 // timeType is the canonical reflect.Type of time.Time, treated as a
 // JSON string with `date-time` format by the inferred schema.
-var timeType = reflect.TypeOf(time.Time{})
+var timeType = reflect.TypeFor[time.Time]()
 
 // rawMessageType maps json.RawMessage onto a schema that admits any
 // JSON value, matching what the field literally encodes.
-var rawMessageType = reflect.TypeOf(json.RawMessage{})
+var rawMessageType = reflect.TypeFor[json.RawMessage]()
 
 // builtSchema is the structSchema walker's result: the in-memory
 // schema, the set of required-non-empty field paths (used for the
@@ -243,8 +244,8 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 		seenRequired: map[string]struct{}{},
 		directNames:  directFieldNames(t),
 	}
-	for i := 0; i < t.NumField(); i++ {
-		if err := w.addField(t.Field(i)); err != nil {
+	for field := range t.Fields() {
+		if err := w.addField(field); err != nil {
 			return nil, err
 		}
 	}
@@ -281,8 +282,7 @@ type structWalk struct {
 // entry plus a stale required marker from the losing embedded field.
 func directFieldNames(t reflect.Type) map[string]struct{} {
 	names := map[string]struct{}{}
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
+	for f := range t.Fields() {
 		if isFlattenedEmbed(f) || !f.IsExported() {
 			continue
 		}
@@ -456,10 +456,8 @@ func admitNull(s *jsonschemago.Schema) {
 		s.Types = []string{s.Type, "null"}
 		s.Type = ""
 	case len(s.Types) > 0:
-		for _, t := range s.Types {
-			if t == "null" {
-				return
-			}
+		if slices.Contains(s.Types, "null") {
+			return
 		}
 		s.Types = append(s.Types, "null")
 	}
@@ -674,10 +672,10 @@ func applyLengthRule(minimum, maximum **int, key, value string) error {
 		return fmt.Errorf("validate: invalid %s constraint %q", key, value)
 	}
 	if key != "max" {
-		*minimum = ptrInt(n)
+		*minimum = new(n)
 	}
 	if key != "min" {
-		*maximum = ptrInt(n)
+		*maximum = new(n)
 	}
 	return nil
 }
@@ -731,13 +729,13 @@ func applyBoundRule(s *jsonschemago.Schema, key, value string) error {
 	}
 	switch key {
 	case "min", "gte":
-		s.Minimum = ptrFloat(f)
+		s.Minimum = new(f)
 	case "max", "lte":
-		s.Maximum = ptrFloat(f)
+		s.Maximum = new(f)
 	case "gt":
-		s.ExclusiveMinimum = ptrFloat(f)
+		s.ExclusiveMinimum = new(f)
 	default:
-		s.ExclusiveMaximum = ptrFloat(f)
+		s.ExclusiveMaximum = new(f)
 	}
 	return nil
 }
@@ -862,8 +860,8 @@ func splitTagFields(tag string) []string {
 // splitRule splits a `key=value` rule into its parts. Bare rules
 // (`required`, `email`, `uuid`) return key=rule, value="".
 func splitRule(rule string) (string, string) {
-	if idx := strings.IndexByte(rule, '='); idx >= 0 {
-		return rule[:idx], rule[idx+1:]
+	if before, after, ok := strings.Cut(rule, "="); ok {
+		return before, after
 	}
 	return rule, ""
 }
@@ -901,6 +899,3 @@ func atof(s string) (float64, bool) {
 	f, err := strconv.ParseFloat(s, 64)
 	return f, err == nil
 }
-
-func ptrInt(n int) *int           { return &n }
-func ptrFloat(f float64) *float64 { return &f }

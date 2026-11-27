@@ -79,8 +79,7 @@ func NewPoolStatsCollector(p *pgxpool.Pool, instance string, opts ...MetricsOpti
 
 	c := describePoolStats(p, instance)
 	if err := reg.Register(c); err != nil {
-		var are prometheus.AlreadyRegisteredError
-		if errors.As(err, &are) {
+		if are, ok := errors.AsType[prometheus.AlreadyRegisteredError](err); ok {
 			if existing, ok := are.ExistingCollector.(*PoolStatsCollector); ok {
 				return existing, nil
 			}

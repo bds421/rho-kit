@@ -19,7 +19,7 @@ func TestMemoryStateStore_PrunesAbandonedEntries(t *testing.T) {
 	s := NewMemoryStateStore()
 	ctx := context.Background()
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		key := "abandoned-" + time.Duration(i).String()
 		if err := s.Put(ctx, key, StateEntry{Nonce: "n"}, time.Millisecond); err != nil {
 			t.Fatalf("Put: %v", err)
@@ -47,7 +47,7 @@ func TestMemorySessionStore_PrunesAbandonedEntries(t *testing.T) {
 	s := NewMemorySessionStore()
 	ctx := context.Background()
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		key := "old-" + time.Duration(i).String()
 		if err := s.Put(ctx, key, Session{UserID: "u"}, time.Millisecond); err != nil {
 			t.Fatalf("Put: %v", err)

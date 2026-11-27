@@ -135,7 +135,6 @@ func TestNewChecker_ValidatesThresholdAndPercentile(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Panics(t, func() {
 				NewChecker(prometheus.NewRegistry(), tc.slo)
@@ -324,7 +323,7 @@ func TestChecker_Evaluate_Latency_NoBreach(t *testing.T) {
 	reg.MustRegister(hist)
 
 	// All requests under 0.1s -> p99 well under 0.5s threshold
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		hist.Observe(0.05)
 	}
 
@@ -346,7 +345,7 @@ func TestChecker_Evaluate_Latency_Breached(t *testing.T) {
 	reg.MustRegister(hist)
 
 	// Most requests slow -> p99 above 0.5s threshold
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		hist.Observe(2.0)
 	}
 

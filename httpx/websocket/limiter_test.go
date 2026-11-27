@@ -10,7 +10,7 @@ import (
 
 func TestConnLimiter_NilIsUnlimited(t *testing.T) {
 	var l *connLimiter
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		assert.True(t, l.tryAcquire(),
 			"nil limiter must always permit acquire")
 	}
@@ -53,10 +53,10 @@ func TestConnLimiter_RaceFreeCounting(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(workers)
-	for i := 0; i < workers; i++ {
+	for range workers {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < iterations; j++ {
+			for range iterations {
 				if l.tryAcquire() {
 					// Slot acquired — release immediately so other
 					// workers can compete for it.

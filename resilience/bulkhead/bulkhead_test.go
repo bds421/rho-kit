@@ -176,23 +176,21 @@ func TestBulkhead_ConcurrentLoad(t *testing.T) {
 	const cap = 4
 	b := New("test", cap, WithMaxQueueWait(1*time.Second))
 
-	var maxObserved int32
+	var maxObserved atomic.Int32
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 50 {
+		wg.Go(func() {
 			_ = b.ExecuteCtx(context.Background(), func(context.Context) error {
-				if v := int32(b.InFlight()); v > atomic.LoadInt32(&maxObserved) {
-					atomic.StoreInt32(&maxObserved, v)
+				if v := int32(b.InFlight()); v > maxObserved.Load() {
+					maxObserved.Store(v)
 				}
 				time.Sleep(2 * time.Millisecond)
 				return nil
 			})
-		}()
+		})
 	}
 	wg.Wait()
-	assert.LessOrEqual(t, int(atomic.LoadInt32(&maxObserved)), cap,
+	assert.LessOrEqual(t, int(maxObserved.Load()), cap,
 		"in-flight must never exceed capacity under contention")
 }
 

@@ -855,7 +855,7 @@ func TestRelay_QueuedBatchEntriesAreHeartbeated(t *testing.T) {
 	// them as stale-eligible the instant they sit in "processing" without a
 	// fresh heartbeat.
 	staleCreated := time.Now().UTC().Add(-1 * time.Hour)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		require.NoError(t, store.Insert(ctx, outbox.Entry{
 			ID:          uuid.UUID(id.NewBytes()),
 			Topic:       "t",
@@ -1098,7 +1098,7 @@ func TestRelay_ResetsClaimedEntriesOnShutdown(t *testing.T) {
 
 	const n = 3
 	wantIDs := make(map[string]struct{}, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		e := outbox.Entry{
 			ID:          uuid.UUID(id.NewBytes()),
 			Topic:       "t",

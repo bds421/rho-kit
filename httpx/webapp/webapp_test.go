@@ -1,6 +1,7 @@
 package webapp
 
 import (
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,9 +24,7 @@ func build() fstest.MapFS {
 func serve(t *testing.T, h http.Handler, method, target string, header http.Header) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, target, nil)
-	for k, v := range header {
-		req.Header[k] = v
-	}
+	maps.Copy(req.Header, header)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec

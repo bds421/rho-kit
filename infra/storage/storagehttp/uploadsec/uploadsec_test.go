@@ -330,7 +330,7 @@ func animatedGIF(t *testing.T) []byte {
 	t.Helper()
 	pal := color.Palette{color.Black, color.White, color.RGBA{R: 255, A: 255}}
 	g := &gif.GIF{}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		img := image.NewPaletted(image.Rect(0, 0, 4, 4), pal)
 		img.SetColorIndex(i, i, 2)
 		g.Image = append(g.Image, img)
@@ -754,7 +754,7 @@ func crcIEEE(data []byte) (byte, byte, byte, byte) {
 	crc := uint32(0xffffffff)
 	for _, b := range data {
 		crc ^= uint32(b)
-		for i := 0; i < 8; i++ {
+		for range 8 {
 			if crc&1 != 0 {
 				crc = (crc >> 1) ^ poly
 			} else {

@@ -281,12 +281,10 @@ func TestComputeBindings_OriginalSpecPreserved(t *testing.T) {
 func TestFindBinding_ClonesRetryPolicy(t *testing.T) {
 	retry := &messaging.RetryPolicy{MaxRetries: 3, Delay: time.Second}
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{
-			Exchange:      "ex",
-			ConsumerGroup: "q",
-			RoutingKey:    "rk",
-			Retry:         retry,
-		},
+		Exchange:      "ex",
+		ConsumerGroup: "q",
+		RoutingKey:    "rk",
+		Retry:         retry,
 	}
 
 	found, err := messaging.FindBinding([]messaging.Binding{binding}, "rk")
@@ -547,7 +545,7 @@ func TestValidateBindingSpecs_DoesNotReflectBindingMetadata(t *testing.T) {
 
 func TestFindBinding_DoesNotReflectRoutingKey(t *testing.T) {
 	_, err := messaging.FindBinding([]messaging.Binding{{
-		BindingSpec: messaging.BindingSpec{RoutingKey: "known"},
+		RoutingKey: "known",
 	}}, "secret-token")
 
 	require.Error(t, err)

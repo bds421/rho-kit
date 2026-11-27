@@ -3,6 +3,7 @@ package openapigen
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	jsonschema "github.com/google/jsonschema-go/jsonschema"
 )
@@ -84,10 +85,8 @@ type routeConfig struct {
 // objects (description, externalDocs, …).
 func WithTags(tags ...string) RouteOption {
 	return func(c *routeConfig) error {
-		for _, t := range tags {
-			if t == "" {
-				return errors.New("openapigen: WithTags: empty tag name")
-			}
+		if slices.Contains(tags, "") {
+			return errors.New("openapigen: WithTags: empty tag name")
 		}
 		c.tags = append(c.tags, tags...)
 		return nil

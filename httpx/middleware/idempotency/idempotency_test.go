@@ -669,11 +669,9 @@ func TestConcurrentRequestsSameKey(t *testing.T) {
 	// First request: acquires the lock and blocks inside the handler.
 	var firstCode atomic.Int32
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		firstCode.Store(int32(doRequest()))
-	}()
+	})
 
 	// Wait until the first request is provably holding the lock.
 	select {
@@ -1704,7 +1702,7 @@ func TestMiddleware_NoSemanticHeaders_DoesNotAccidentallyDifferentiate(t *testin
 	})
 	handler := Middleware(store, WithAllowSharedKeys(), WithoutBodyFingerprint())(inner)
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		r := httptest.NewRequest(http.MethodPost, "/orders", nil)
 		r.Header.Set("Idempotency-Key", "shared-key")
 		// Header that is NOT configured as semantic — must not

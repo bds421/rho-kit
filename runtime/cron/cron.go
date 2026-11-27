@@ -40,16 +40,16 @@ func sanitizeCronParseError(err error) string {
 	}
 	msg := err.Error()
 	// Standard field-count errors end with ": [expression]".
-	if i := strings.Index(msg, ": ["); i >= 0 {
-		return msg[:i]
+	if before, _, ok := strings.Cut(msg, ": ["); ok {
+		return before
 	}
 	// @every parse failures embed the duration literal; keep only the class.
 	if strings.Contains(msg, "failed to parse duration") || strings.Contains(msg, "invalid duration") {
 		return "failed to parse @every duration"
 	}
 	// Fallback: drop anything after the first colon-space that might carry input.
-	if i := strings.Index(msg, ": "); i >= 0 {
-		return msg[:i]
+	if before, _, ok := strings.Cut(msg, ": "); ok {
+		return before
 	}
 	return "invalid cron expression"
 }

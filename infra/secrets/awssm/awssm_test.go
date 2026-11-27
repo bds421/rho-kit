@@ -22,12 +22,10 @@ func (f *fakeAPI) GetSecretValue(_ context.Context, _ *secretsmanager.GetSecretV
 	return f.out, f.err
 }
 
-func strPtr(s string) *string { return &s }
-
 func TestLoader_GetReturnsSecretString(t *testing.T) {
 	api := &fakeAPI{out: &secretsmanager.GetSecretValueOutput{
-		SecretString: strPtr("hunter2"),
-		VersionId:    strPtr("abc"),
+		SecretString: new("hunter2"),
+		VersionId:    new("abc"),
 	}}
 	l := awssm.New(api)
 	s, err := l.Get(context.Background(), "prod/api/key")
@@ -39,7 +37,7 @@ func TestLoader_GetReturnsSecretString(t *testing.T) {
 func TestLoader_GetReturnsSecretBinary(t *testing.T) {
 	api := &fakeAPI{out: &secretsmanager.GetSecretValueOutput{
 		SecretBinary: []byte{0x01, 0x02, 0x03},
-		VersionId:    strPtr("v1"),
+		VersionId:    new("v1"),
 	}}
 	l := awssm.New(api)
 	s, err := l.Get(context.Background(), "k")
@@ -63,7 +61,7 @@ func TestLoader_OtherErrorMapsToUnavailable(t *testing.T) {
 
 func TestLoader_NoPayloadMapsToUnavailable(t *testing.T) {
 	api := &fakeAPI{out: &secretsmanager.GetSecretValueOutput{
-		VersionId: strPtr("v1"),
+		VersionId: new("v1"),
 	}}
 	l := awssm.New(api)
 	_, err := l.Get(context.Background(), "k")

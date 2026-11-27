@@ -231,7 +231,7 @@ func TestConcurrentConsume_DoesNotExceedCap(t *testing.T) {
 	var wg sync.WaitGroup
 	var admitted atomic.Int64
 	wg.Add(callers)
-	for i := 0; i < callers; i++ {
+	for range callers {
 		go func() {
 			defer wg.Done()
 			ok, _, _, err := b.Consume(context.Background(), "shared", each)
@@ -448,7 +448,7 @@ func TestConcurrentSweepAndConsume_PreservesCap(t *testing.T) {
 	var wg sync.WaitGroup
 	var totalAdmitted atomic.Int64
 	wg.Add(callers)
-	for i := 0; i < callers; i++ {
+	for range callers {
 		go func() {
 			defer wg.Done()
 			ctx := context.Background()
@@ -517,7 +517,7 @@ func TestSweepDoesNotOverGrantCapDuringRollover(t *testing.T) {
 	t.Cleanup(func() { _ = b.Close() })
 
 	ctx := context.Background()
-	for w := 0; w < windows; w++ {
+	for w := range windows {
 		// Pre-spawn the callers and block them on a barrier BEFORE
 		// advancing the clock, so the window flip and the burst of rolling
 		// Consumes land at the same instant the sweeper is scanning the
@@ -531,7 +531,7 @@ func TestSweepDoesNotOverGrantCapDuringRollover(t *testing.T) {
 		start.Add(1)
 		ready.Add(callers)
 		done.Add(callers)
-		for i := 0; i < callers; i++ {
+		for range callers {
 			go func() {
 				defer done.Done()
 				ready.Done()
@@ -651,12 +651,11 @@ func TestRace_SweepConsumePeekRefund(t *testing.T) {
 	// "amount=0" is a no-op fast path; we want Refund to be a real
 	// state-mutating call.
 	wg.Add(callers)
-	for i := 0; i < callers; i++ {
-		i := i
+	for i := range callers {
 		go func() {
 			defer wg.Done()
 			ctx := context.Background()
-			for j := 0; j < iterationsPerCaller; j++ {
+			for j := range iterationsPerCaller {
 				select {
 				case <-stop:
 					return
@@ -766,10 +765,10 @@ func TestRace_SweepEvictsBetweenLoadAndLock(t *testing.T) {
 	const iters = 200
 	var wg sync.WaitGroup
 	wg.Add(callers)
-	for i := 0; i < callers; i++ {
+	for range callers {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < iters; j++ {
+			for range iters {
 				ok, _, _, err := b.Consume(ctx, "k", 5)
 				if err != nil {
 					t.Errorf("Consume err: %v", err)

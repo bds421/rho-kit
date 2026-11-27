@@ -73,7 +73,7 @@ func TestNew_AllowsUnderLimit(t *testing.T) {
 	mw := New(newFakeLimiter(3))
 	h := mw(okHandler())
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, reqWithTenant(t, "acme"))
 		require.Equal(t, http.StatusOK, rec.Code, "request %d should pass", i+1)

@@ -109,7 +109,7 @@ type Request struct {
 	Payload   json.RawMessage `json:"payload,omitempty"`
 	State     State           `json:"state"`
 	DecidedBy string          `json:"decided_by,omitempty"`
-	DecidedAt time.Time       `json:"decided_at,omitempty"`
+	DecidedAt time.Time       `json:"decided_at"`
 	Reason    string          `json:"reason,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	ExpiresAt time.Time       `json:"expires_at"`

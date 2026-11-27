@@ -31,7 +31,7 @@ func TestMemoryStore_SweepExpiredLocked_LocksNotStarvedByItems(t *testing.T) {
 	// Seed more expired items than the eviction budget so a budget-bounded
 	// sweep would, under the bug, spend its entire scan allowance on items.
 	itemCount := evictBudget + 50
-	for i := 0; i < itemCount; i++ {
+	for i := range itemCount {
 		store.items[fmt.Sprintf("item-%d", i)] = memEntry{
 			resp:      CachedResponse{StatusCode: 200},
 			expiresAt: clk(),
@@ -68,7 +68,7 @@ func TestMemoryStore_TryLock_SweepsAbandonedLocks(t *testing.T) {
 
 	// Many abandoned (soon-to-expire) locks under distinct keys.
 	abandoned := evictBudget + 10
-	for i := 0; i < abandoned; i++ {
+	for i := range abandoned {
 		store.locks[fmt.Sprintf("dead-%d", i)] = memLock{
 			token:     "tok",
 			expiresAt: clk().Add(time.Second),
@@ -80,7 +80,7 @@ func TestMemoryStore_TryLock_SweepsAbandonedLocks(t *testing.T) {
 
 	// Drive TryLock on fresh keys enough times to trigger opportunistic
 	// lock eviction. Each acquires a new live lock for its own key.
-	for i := 0; i < tryLockEvictInterval*2; i++ {
+	for i := range tryLockEvictInterval * 2 {
 		key := fmt.Sprintf("live-%d", i)
 		_, _, ok, err := store.TryLock(ctx, key, []byte("fp"), time.Minute)
 		if err != nil || !ok {

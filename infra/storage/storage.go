@@ -72,7 +72,7 @@ func ValidateKey(key string) error {
 	if strings.ContainsRune(key, '\\') {
 		return fmt.Errorf("%w: storage key must not contain backslashes", ErrValidation)
 	}
-	for _, seg := range strings.Split(key, "/") {
+	for seg := range strings.SplitSeq(key, "/") {
 		if seg == "" {
 			return fmt.Errorf("%w: storage key must not contain empty path segments", ErrValidation)
 		}
@@ -108,7 +108,7 @@ func ValidatePrefix(prefix string) error {
 	if strings.ContainsRune(prefix, '\\') {
 		return fmt.Errorf("%w: storage prefix must not contain backslashes", ErrValidation)
 	}
-	for _, seg := range strings.Split(strings.TrimSuffix(prefix, "/"), "/") {
+	for seg := range strings.SplitSeq(strings.TrimSuffix(prefix, "/"), "/") {
 		if seg == "" {
 			return fmt.Errorf("%w: storage prefix must not contain empty path segments", ErrValidation)
 		}

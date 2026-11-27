@@ -222,8 +222,8 @@ func normalizeAllowedMIMEType(value string) (mediaType string, wildcard bool) {
 	if trimmed == "" {
 		panic("storage: AllowedMIMETypes requires non-empty MIME types")
 	}
-	if strings.HasSuffix(trimmed, "/*") {
-		prefix := strings.TrimSuffix(trimmed, "/*")
+	if before, ok := strings.CutSuffix(trimmed, "/*"); ok {
+		prefix := before
 		if prefix == "" || strings.ContainsAny(prefix, ";/ \t\r\n") {
 			panic("storage: invalid MIME wildcard")
 		}
@@ -302,10 +302,7 @@ func (lr *limitReader) Read(p []byte) (int, error) {
 		lr.overflow = true
 		// Return only the bytes that fit within the limit. lr.remaining is
 		// negative, so n + remaining trims the overflow portion.
-		valid := n + int(lr.remaining)
-		if valid < 0 {
-			valid = 0
-		}
+		valid := max(n+int(lr.remaining), 0)
 		return valid, fmt.Errorf("%w: content exceeds maximum size", ErrValidation)
 	}
 

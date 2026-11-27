@@ -92,8 +92,7 @@ func TestValidateColumn_Unsafe(t *testing.T) {
 			t.Errorf("ValidateColumn(%q) should have returned an error", col)
 			continue
 		}
-		var vErr *apperror.ValidationError
-		if !errors.As(err, &vErr) {
+		if _, ok := errors.AsType[*apperror.ValidationError](err); !ok {
 			t.Errorf("ValidateColumn(%q) error type = %T, want *apperror.ValidationError", col, err)
 		}
 	}

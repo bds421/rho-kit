@@ -1,6 +1,7 @@
 package redisbackend
 
 import (
+	"maps"
 	"strconv"
 
 	stream "github.com/bds421/rho-kit/data/stream/redisstream/v2"
@@ -15,9 +16,7 @@ func toStreamMessage(msg messaging.Message) stream.Message {
 		extraHeaders = 1
 	}
 	headers := make(map[string]string, len(msg.Headers)+extraHeaders)
-	for k, v := range msg.Headers {
-		headers[k] = v
-	}
+	maps.Copy(headers, msg.Headers)
 	if msg.SchemaVersion != 0 {
 		headers[messaging.HeaderSchemaVersion] = strconv.FormatUint(uint64(msg.SchemaVersion), 10)
 	}
@@ -115,8 +114,6 @@ func cloneStringHeaders(headers map[string]string) map[string]string {
 		return nil
 	}
 	clone := make(map[string]string, len(headers))
-	for k, v := range headers {
-		clone[k] = v
-	}
+	maps.Copy(clone, headers)
 	return clone
 }

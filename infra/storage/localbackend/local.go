@@ -227,7 +227,7 @@ func (b *Backend) openDestDir(root *os.Root, dir string) (*os.Root, error) {
 // O_EXCL so a name collision (or a swapped component) cannot truncate an
 // existing file. It returns the file's name (relative to dirRoot) and handle.
 func createTempIn(dirRoot *os.Root) (string, *os.File, error) {
-	for attempt := 0; attempt < 1000; attempt++ {
+	for range 1000 {
 		name := ".tmp-" + nextTempSuffix()
 		f, err := dirRoot.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 		if err == nil {

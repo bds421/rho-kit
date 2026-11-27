@@ -15,7 +15,7 @@ import (
 // chosen, also not through the "*" wildcard.
 func Select(acceptEncoding string, offered []string) string {
 	weights := make(map[string]float64)
-	for _, raw := range strings.Split(acceptEncoding, ",") {
+	for raw := range strings.SplitSeq(acceptEncoding, ",") {
 		token, q := parseEntry(raw)
 		if token == "" {
 			continue
@@ -45,8 +45,8 @@ func parseEntry(raw string) (string, float64) {
 	q := 1.0
 	for _, p := range parts[1:] {
 		p = strings.TrimSpace(p)
-		if strings.HasPrefix(p, "q=") {
-			parsed, err := strconv.ParseFloat(strings.TrimPrefix(p, "q="), 64)
+		if after, ok := strings.CutPrefix(p, "q="); ok {
+			parsed, err := strconv.ParseFloat(after, 64)
 			if err == nil {
 				q = parsed
 			}

@@ -18,6 +18,7 @@
 package labelguard
 
 import (
+	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -253,9 +254,7 @@ func (g *AllowedLabels) vecName(c prometheus.Collector) string {
 	name := describeName(c)
 
 	next := make(map[prometheus.Collector]string, len(prev)+1)
-	for k, v := range prev {
-		next[k] = v
-	}
+	maps.Copy(next, prev)
 	next[c] = name
 	g.vecNames.Store(&next)
 	return name
@@ -299,14 +298,14 @@ func describeName(c prometheus.Collector) string {
 // future client_golang format changes.
 func parseFQName(s string) string {
 	const marker = `fqName: "`
-	i := strings.Index(s, marker)
-	if i < 0 {
+	_, after, ok := strings.Cut(s, marker)
+	if !ok {
 		return "<unknown>"
 	}
-	rest := s[i+len(marker):]
-	end := strings.Index(rest, `"`)
-	if end < 0 {
+	rest := after
+	before0, _, ok0 := strings.Cut(rest, `"`)
+	if !ok0 {
 		return "<unknown>"
 	}
-	return rest[:end]
+	return before0
 }

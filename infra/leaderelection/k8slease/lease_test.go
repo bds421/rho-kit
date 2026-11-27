@@ -312,8 +312,7 @@ func TestRun_DoubleInvocationRejected(t *testing.T) {
 	}
 	e.started.Store(true) // simulate prior Run
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	err := e.Run(ctx, leaderelection.Callbacks{})
 	require.Error(t, err)
 	require.ErrorContains(t, err, "Run already invoked")

@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v3/jwa"
-	"github.com/lestrrat-go/jwx/v3/jwk"
-	"github.com/lestrrat-go/jwx/v3/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -42,7 +42,7 @@ func testKeyAndProvider(t *testing.T) (*jwtutil.Provider, *ecdsa.PrivateKey) {
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 
-	pubJWK, err := jwk.Import(privKey.PublicKey)
+	pubJWK, err := jwk.Import[jwk.Key](privKey.PublicKey)
 	require.NoError(t, err)
 	require.NoError(t, pubJWK.Set(jwk.KeyIDKey, "test-key"))
 	require.NoError(t, pubJWK.Set(jwk.AlgorithmKey, jwa.ES256()))
@@ -125,7 +125,7 @@ func signTestToken(t *testing.T, privKey *ecdsa.PrivateKey, subject string, perm
 		require.NoError(t, tok.Set("permissions", permissions))
 	}
 
-	jwkKey, err := jwk.Import(privKey)
+	jwkKey, err := jwk.Import[jwk.Key](privKey)
 	require.NoError(t, err)
 	require.NoError(t, jwkKey.Set(jwk.KeyIDKey, "test-key"))
 
@@ -611,7 +611,7 @@ func TestRequireScopeUnary_HasScope_Allowed(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, tok.Set("scopes", "read write"))
 
-	jwkKey, err := jwk.Import(privKey)
+	jwkKey, err := jwk.Import[jwk.Key](privKey)
 	require.NoError(t, err)
 	require.NoError(t, jwkKey.Set(jwk.KeyIDKey, "test-key"))
 

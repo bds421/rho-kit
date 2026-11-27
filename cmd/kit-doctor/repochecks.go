@@ -151,7 +151,7 @@ func checkCodeownersSecuritySensitive(root string) ([]rules.Finding, error) {
 // separated field.
 func codeownersPatterns(s string) map[string]struct{} {
 	out := map[string]struct{}{}
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		trim := strings.TrimSpace(line)
 		if trim == "" || strings.HasPrefix(trim, "#") {
 			continue
@@ -243,7 +243,7 @@ func checkDependencyAllowlist(root string) ([]rules.Finding, error) {
 // the module path; trailing tokens may be a `# comment`.
 func allowlistEntries(s string) map[string]struct{} {
 	out := map[string]struct{}{}
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		trim := strings.TrimSpace(line)
 		if trim == "" || strings.HasPrefix(trim, "#") {
 			continue

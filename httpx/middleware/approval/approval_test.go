@@ -589,7 +589,7 @@ func TestEnsureBodyBuffered_GetBodyReplaysPayload(t *testing.T) {
 
 	// GetBody must yield the buffered payload, not the original body, and must
 	// be replayable more than once.
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		rc, err := r2.GetBody()
 		require.NoError(t, err)
 		got, err := io.ReadAll(rc)

@@ -466,23 +466,19 @@ func TestBus_ConcurrentPublishSubscribe(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 10 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			Subscribe(bus, func(_ context.Context, _ testEvent) error {
 				count.Add(1)
 				return nil
 			})
-		}()
+		})
 	}
 	wg.Wait()
 
 	for range 100 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_ = Publish(bus, context.Background(), testEvent{ID: "concurrent"})
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -581,7 +577,7 @@ func TestUnsubscribe_CompactionTriggersAtThreshold(t *testing.T) {
 	}
 
 	// Tombstone the first 7 — under threshold (8); no compaction yet.
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		bus.Unsubscribe(subs[i])
 	}
 	bus.mu.RLock()

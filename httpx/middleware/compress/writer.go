@@ -303,7 +303,7 @@ func headersAllowCompress(h http.Header, contentTypes []string) bool {
 	}
 	// Cache-Control: no-transform forbids intermediary recoding.
 	if cc := h.Get("Cache-Control"); cc != "" {
-		for _, token := range strings.Split(cc, ",") {
+		for token := range strings.SplitSeq(cc, ",") {
 			if strings.EqualFold(strings.TrimSpace(token), "no-transform") {
 				return false
 			}

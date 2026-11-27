@@ -127,10 +127,7 @@ func OpaqueLabelValue(prefix string, opaqueParts ...string) string {
 func truncateOpaqueLabelValue(visible string, rawParts []string) string {
 	sum := sha256.Sum256([]byte(strings.Join(rawParts, "\x00")))
 	suffix := hex.EncodeToString(sum[:6])
-	keep := MaxStaticLabelValueBytes - len(suffix) - 1
-	if keep < 1 {
-		keep = 1
-	}
+	keep := max(MaxStaticLabelValueBytes-len(suffix)-1, 1)
 	if len(visible) > keep {
 		visible = strings.TrimRight(visible[:keep], "-_")
 	}

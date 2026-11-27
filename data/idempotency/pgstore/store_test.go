@@ -161,13 +161,7 @@ func TestHeadersWithinBound_RejectsOversize(t *testing.T) {
 func maximalValidHeaders() map[string][]string {
 	// Leave a few bytes of headroom for the name so total stays <= cap.
 	name := "H"
-	valueLen := idempotency.MaxCachedHeadersBytes - len(name)
-	if valueLen > idempotency.MaxCachedHeaderValueBytes {
-		valueLen = idempotency.MaxCachedHeaderValueBytes
-	}
-	if valueLen < 1 {
-		valueLen = 1
-	}
+	valueLen := max(min(idempotency.MaxCachedHeadersBytes-len(name), idempotency.MaxCachedHeaderValueBytes), 1)
 	return map[string][]string{
 		name: {strings.Repeat("v", valueLen)},
 	}

@@ -178,8 +178,7 @@ func TestWorker_StartRejectsRestartAfterStop(t *testing.T) {
 		return nil
 	}, WithJitter(0))
 
-	startCtx, cancelStart := context.WithCancel(context.Background())
-	defer cancelStart()
+	startCtx := t.Context()
 	startDone := make(chan error, 1)
 	go func() { startDone <- w.Start(startCtx) }()
 
@@ -242,7 +241,7 @@ func TestWorker_StopReturnsCtxErrOnDeadline(t *testing.T) {
 	defer func() {
 		close(release)
 		cancelStart()
-		<-startDone
+		assert.NoError(t, <-startDone)
 	}()
 
 	<-running

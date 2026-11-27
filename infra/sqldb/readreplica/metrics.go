@@ -121,8 +121,7 @@ func routingPoolGauge(name, help string) *prometheus.GaugeVec {
 // fighting over registration.
 func registerCounter(reg prometheus.Registerer, c prometheus.Counter) (prometheus.Counter, error) {
 	if err := reg.Register(c); err != nil {
-		var are prometheus.AlreadyRegisteredError
-		if errors.As(err, &are) {
+		if are, ok := errors.AsType[prometheus.AlreadyRegisteredError](err); ok {
 			if existing, ok := are.ExistingCollector.(prometheus.Counter); ok {
 				return existing, nil
 			}
@@ -138,8 +137,7 @@ func registerCounter(reg prometheus.Registerer, c prometheus.Counter) (prometheu
 // vector rather than clobbering a single shared gauge.
 func registerGaugeVec(reg prometheus.Registerer, v *prometheus.GaugeVec) (*prometheus.GaugeVec, error) {
 	if err := reg.Register(v); err != nil {
-		var are prometheus.AlreadyRegisteredError
-		if errors.As(err, &are) {
+		if are, ok := errors.AsType[prometheus.AlreadyRegisteredError](err); ok {
 			if existing, ok := are.ExistingCollector.(*prometheus.GaugeVec); ok {
 				return existing, nil
 			}

@@ -109,8 +109,7 @@ func hasEnvTagsVisited(t reflect.Type, visited map[reflect.Type]struct{}) bool {
 		return false
 	}
 	visited[t] = struct{}{}
-	for i := range t.NumField() {
-		field := t.Field(i)
+	for field := range t.Fields() {
 		if !field.IsExported() {
 			continue
 		}
@@ -408,7 +407,7 @@ func classifyReadError(err error) error {
 }
 
 func setField(fv reflect.Value, val, envName string, isSecret bool) error {
-	if fv.Type() == reflect.TypeOf((*url.URL)(nil)) {
+	if fv.Type() == reflect.TypeFor[*url.URL]() {
 		return setURL(fv, val, envName)
 	}
 
@@ -469,7 +468,7 @@ func setURL(fv reflect.Value, val, envName string) error {
 // setSigned sets a signed integer field; a time.Duration parses as a
 // duration.
 func setSigned(fv reflect.Value, val, envName string, isSecret bool) error {
-	if fv.Type() == reflect.TypeOf(time.Duration(0)) {
+	if fv.Type() == reflect.TypeFor[time.Duration]() {
 		d, err := time.ParseDuration(val)
 		if err != nil {
 			return invalidParseError(envName, "duration", val, isSecret, err)

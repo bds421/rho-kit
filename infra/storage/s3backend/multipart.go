@@ -264,8 +264,7 @@ func validateMultipartUpload(upload storage.MultipartUpload) error {
 }
 
 func isNoSuchUpload(err error) bool {
-	var typed *types.NoSuchUpload
-	if errors.As(err, &typed) {
+	if _, ok := errors.AsType[*types.NoSuchUpload](err); ok {
 		return true
 	}
 	var api smithy.APIError

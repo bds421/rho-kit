@@ -58,7 +58,7 @@ func Wrap(inner cache.Cache) cache.Cache {
 		panic("cache/tenant: Wrap inner cache must not be nil")
 	}
 	if bulk, ok := inner.(cache.BulkCache); ok {
-		return &scopedBulk{scoped: scoped{inner: inner}, bulk: bulk}
+		return &scopedBulk{inner: inner, bulk: bulk}
 	}
 	return &scoped{inner: inner}
 }

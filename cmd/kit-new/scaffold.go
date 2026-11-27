@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"text/template"
 )
@@ -48,7 +49,7 @@ func ValidateModulePath(path string) error {
 	if strings.HasPrefix(path, "/") || strings.HasSuffix(path, "/") {
 		return fmt.Errorf("kit-new: ModulePath must not start or end with a slash")
 	}
-	for _, elem := range strings.Split(path, "/") {
+	for elem := range strings.SplitSeq(path, "/") {
 		if !modulePathElement.MatchString(elem) {
 			return fmt.Errorf("kit-new: ModulePath must be a valid Go module path (slash-separated elements of letters, digits, and -._~)")
 		}
@@ -105,7 +106,7 @@ type Params struct {
 // scaffolded go.mod when [Params.GoVersion] is empty. Tracks the
 // kit's minimum supported toolchain — bumped in a coordinated PR
 // when the kit raises its floor.
-const DefaultGoVersion = "1.26"
+const DefaultGoVersion = "1.27"
 
 // rhoVersionPattern accepts the version specifiers Go accepts in a
 // go.mod require directive: full semver tags ("v2.0.0",
@@ -114,7 +115,7 @@ const DefaultGoVersion = "1.26"
 // non-version sentinels would produce a go.mod that does not parse.
 var rhoVersionPattern = regexp.MustCompile(`^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 
-// goVersionPattern accepts only major.minor (e.g. "1.26"). Patch
+// goVersionPattern accepts only major.minor (e.g. "1.27"). Patch
 // versions are deliberately rejected: a `go` directive in go.mod is a
 // minimum-required floor, and pinning to a patch version forces every
 // downstream toolchain to that exact build for no benefit.
@@ -214,8 +215,8 @@ func scaffold(outDir string, p Params) error {
 
 // rollBack removes the created files, newest first, and absOutDir.
 func rollBack(created []string, absOutDir string) {
-	for i := len(created) - 1; i >= 0; i-- {
-		_ = os.Remove(created[i])
+	for _, c := range slices.Backward(created) {
+		_ = os.Remove(c)
 	}
 	// Best-effort: remove the output dir if we created it empty of keepers.
 	_ = os.Remove(absOutDir)

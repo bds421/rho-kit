@@ -102,9 +102,9 @@ func NewConsumerMetrics(opts ...ConsumerMetricsOption) *ConsumerMetrics {
 	reg := cfg.registerer
 
 	m := &ConsumerMetrics{
-		messagesConsumed:     consumerCounter("messages_consumed_total", "Total messages consumed from streams."),
-		messagesFailed:       consumerCounter("messages_failed_total", "Total messages that failed processing."),
-		messagesDeadLettered: consumerCounter("messages_dead_lettered_total", "Total messages moved to dead-letter stream."),
+		messagesConsumed:     consumerCounter("redis_stream_messages_consumed_total", "Total messages consumed from streams."),
+		messagesFailed:       consumerCounter("redis_stream_messages_failed_total", "Total messages that failed processing."),
+		messagesDeadLettered: consumerCounter("redis_stream_messages_dead_lettered_total", "Total messages moved to dead-letter stream."),
 		processingDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "redis",
@@ -136,10 +136,11 @@ func NewConsumerMetrics(opts ...ConsumerMetricsOption) *ConsumerMetrics {
 }
 
 // consumerCounter is a redis stream consumer counter labelled by stream and
-// group.
+// group. Callers pass the full metric name, so
+// tools/check-dashboard-metrics.sh finds it as one literal.
 func consumerCounter(name, help string) *prometheus.CounterVec {
 	return prometheus.NewCounterVec(
-		prometheus.CounterOpts{Namespace: "redis", Subsystem: "stream", Name: name, Help: help},
+		prometheus.CounterOpts{Name: name, Help: help},
 		[]string{"stream", "group"},
 	)
 }
@@ -838,10 +839,7 @@ func streamHandlerContext(parent context.Context, handlerTimeout, shutdownGrace 
 	// (still capped by the handler run bound).
 	select {
 	case <-parent.Done():
-		d := shutdownGrace
-		if handlerTimeout < d {
-			d = handlerTimeout
-		}
+		d := min(handlerTimeout, shutdownGrace)
 		return context.WithTimeout(base, d)
 	default:
 	}

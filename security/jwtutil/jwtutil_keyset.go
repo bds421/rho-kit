@@ -4,13 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v3/jwa"
-	"github.com/lestrrat-go/jwx/v3/jwk"
-	"github.com/lestrrat-go/jwx/v3/jws"
-	"github.com/lestrrat-go/jwx/v3/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jws"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
@@ -249,12 +250,7 @@ func allowsVerifyOperation(k jwk.Key) bool {
 	if !ok {
 		return true
 	}
-	for _, op := range ops {
-		if op == jwk.KeyOpVerify {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ops, jwk.KeyOpVerify)
 }
 
 func allowsSignatureAlgorithm(k jwk.Key) bool {
@@ -275,7 +271,7 @@ func allowsSignatureAlgorithm(k jwk.Key) bool {
 // misconfigured signer private key mounted as the verifier input cannot leave
 // live signing material in process memory.
 func ParseKeySetFromPEM(pemData []byte, kid string) (*KeySet, error) {
-	key, err := jwk.ParseKey(pemData, jwk.WithPEM(true))
+	key, err := jwk.ParseKey(pemData, jwk.WithX509(true))
 	if err != nil {
 		return nil, fmt.Errorf("parse PEM key: %w", err)
 	}
@@ -467,15 +463,14 @@ func registeredClaims(tok jwt.Token) (*Claims, error) {
 // readEntitlementClaims reads the optional permissions and scopes claims.
 // A present claim of the wrong shape rejects the token.
 func readEntitlementClaims(tok jwt.Token, claims *Claims) error {
-	var perms []any
-	switch err := tok.Get("permissions", &perms); {
+	switch perms, err := jwt.Get[[]any](tok, "permissions"); {
 	case err == nil:
 		converted, convErr := toStringSlice(perms)
 		if convErr != nil {
 			return errMalformedPermissionsClaim
 		}
 		claims.Permissions = converted
-	case errors.Is(err, jwt.ClaimNotFoundError()):
+	case errors.Is(err, jwt.ClaimNotFoundError{}):
 		// Older issuers and role-less tokens omit permissions entirely.
 		// That is a valid token; downstream RBAC fails closed on the empty set.
 	default:
@@ -489,11 +484,10 @@ func readEntitlementClaims(tok jwt.Token, claims *Claims) error {
 		)
 		return errMalformedPermissionsClaim
 	}
-	var scopes string
-	switch err := tok.Get("scopes", &scopes); {
+	switch scopes, err := jwt.Get[string](tok, "scopes"); {
 	case err == nil:
 		claims.Scopes = scopes
-	case errors.Is(err, jwt.ClaimNotFoundError()):
+	case errors.Is(err, jwt.ClaimNotFoundError{}):
 		// Optional claim; empty string is the correct zero value.
 	default:
 		slog.Warn("jwt: scopes claim malformed; rejecting token",
@@ -536,8 +530,8 @@ func mergeStringClaimNames(extra []string) []string {
 
 func populateStringClaims(tok jwt.Token, c *Claims, names []string) {
 	for _, name := range names {
-		var s string
-		if err := tok.Get(name, &s); err != nil || s == "" {
+		s, err := jwt.Get[string](tok, name)
+		if err != nil || s == "" {
 			continue
 		}
 		if c.stringClaims == nil {

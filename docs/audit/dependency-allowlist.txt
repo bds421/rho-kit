@@ -13,7 +13,7 @@
 aidanwoods.dev/go-paseto
 github.com/go-jose/go-jose/v4
 github.com/google/jsonschema-go
-github.com/lestrrat-go/jwx/v3
+github.com/lestrrat-go/jwx/v4
 github.com/tink-crypto/tink-go/v2
 golang.org/x/crypto
 
@@ -33,7 +33,7 @@ github.com/riverqueue/river/riverdriver/riverpgxv5
 github.com/riverqueue/river/rivertype
 
 # Messaging, scheduling, and resilience.
-github.com/cenkalti/backoff/v5
+github.com/cenkalti/backoff/v6
 github.com/nats-io/nats.go
 github.com/open-feature/go-sdk
 github.com/openfga/go-sdk

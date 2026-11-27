@@ -46,9 +46,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v3/jwa"
-	"github.com/lestrrat-go/jwx/v3/jwk"
-	"github.com/lestrrat-go/jwx/v3/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	apphttp "github.com/bds421/rho-kit/app/http/v2"
 	"github.com/bds421/rho-kit/app/v2"
@@ -165,7 +165,7 @@ func newSigningKey() (*signingKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	pubJWK, err := jwk.Import(priv.PublicKey)
+	pubJWK, err := jwk.Import[jwk.Key](priv.PublicKey)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +210,7 @@ func (s *signingKey) SignToken(sub string, ttl time.Duration) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	jwkKey, err := jwk.Import(s.priv)
+	jwkKey, err := jwk.Import[jwk.Key](s.priv)
 	if err != nil {
 		return "", err
 	}

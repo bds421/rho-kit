@@ -156,8 +156,7 @@ func TestSubscription_DoubleStartRejected(t *testing.T) {
 		func(context.Context, messaging.Delivery) error { return nil },
 		messaging.WithSubscriptionLogger(newQuietLogger()),
 	)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go func() { _ = sub.Start(ctx) }()
 	time.Sleep(50 * time.Millisecond)
@@ -191,8 +190,7 @@ func TestSubscription_SurfacesConsumerError(t *testing.T) {
 		messaging.WithSubscriptionLogger(newQuietLogger()),
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	err := sub.Start(ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "consume")
@@ -256,8 +254,7 @@ func TestTypedSubscription_DecodeFailureSurfaces(t *testing.T) {
 		messaging.WithSubscriptionLogger(newQuietLogger()),
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = sub.Start(ctx) }()
 
 	// Wait until the kit's wrapper has been invoked for the bad delivery
@@ -296,8 +293,7 @@ func TestTypedSubscription_ValidationFailsForInvalidPayload(t *testing.T) {
 		messaging.WithSubscriptionLogger(newQuietLogger()),
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = sub.Start(ctx) }()
 
 	require.Eventually(t, func() bool {
@@ -370,7 +366,7 @@ func TestSubscriptionGroup_StartsAllSubsConcurrently(t *testing.T) {
 		"both consumers must enter Consume in parallel")
 
 	cancel()
-	<-done
+	assert.ErrorIs(t, <-done, context.Canceled)
 }
 
 func TestSubscriptionGroup_AddAfterStartRejected(t *testing.T) {
@@ -383,8 +379,7 @@ func TestSubscriptionGroup_AddAfterStartRejected(t *testing.T) {
 	)
 	require.NoError(t, g.Add(sub))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = g.Start(ctx) }()
 	time.Sleep(50 * time.Millisecond)
 
@@ -409,8 +404,7 @@ func TestSubscriptionGroup_EmptyIsNoOp(t *testing.T) {
 func TestSubscriptionGroup_StopCancelsEmptyRunningGroup(t *testing.T) {
 	g := messaging.NewSubscriptionGroup(newQuietLogger())
 
-	runCtx, runCancel := context.WithCancel(context.Background())
-	defer runCancel()
+	runCtx := t.Context()
 	startDone := make(chan error, 1)
 	go func() { startDone <- g.Start(runCtx) }()
 
@@ -422,8 +416,9 @@ func TestSubscriptionGroup_StopCancelsEmptyRunningGroup(t *testing.T) {
 	require.NoError(t, g.Stop(stopCtx))
 
 	select {
-	case <-startDone:
+	case err := <-startDone:
 		// Start returned because Stop cancelled the group.
+		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("empty group Start did not return after Stop")
 	}
@@ -469,8 +464,7 @@ func TestSubscriptionGroup_StopBeforeStartDoesNotDisableLaterStop(t *testing.T) 
 
 	// Start the group under a context we deliberately never cancel, so the
 	// only way the group can exit is via a working Stop.
-	runCtx, runCancel := context.WithCancel(context.Background())
-	defer runCancel()
+	runCtx := t.Context()
 	startDone := make(chan error, 1)
 	go func() { startDone <- g.Start(runCtx) }()
 
@@ -487,8 +481,9 @@ func TestSubscriptionGroup_StopBeforeStartDoesNotDisableLaterStop(t *testing.T) 
 	require.NoError(t, g.Stop(stopCtx))
 
 	select {
-	case <-startDone:
-		// Group exited because Stop cancelled it. Good.
+	case err := <-startDone:
+		// Group exited because Stop cancelled it, not its own context.
+		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("Start did not return after Stop — early Stop disabled cancellation")
 	}

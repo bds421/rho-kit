@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v3/jwa"
-	"github.com/lestrrat-go/jwx/v3/jwk"
-	"github.com/lestrrat-go/jwx/v3/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -28,7 +28,7 @@ func signTestTokenWithClaims(t *testing.T, privKey *ecdsa.PrivateKey, claims map
 	for k, v := range claims {
 		require.NoError(t, tok.Set(k, v))
 	}
-	jwkKey, err := jwk.Import(privKey)
+	jwkKey, err := jwk.Import[jwk.Key](privKey)
 	require.NoError(t, err)
 	require.NoError(t, jwkKey.Set(jwk.KeyIDKey, "test-key"))
 	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.ES256(), jwkKey))

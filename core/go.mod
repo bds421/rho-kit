@@ -6,7 +6,7 @@
 // regardless. See AGENTS.md "Module shape" for the consolidation map.
 module github.com/bds421/rho-kit/core/v2
 
-go 1.26.8
+go 1.27.4
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1
@@ -17,7 +17,7 @@ require (
 )
 
 require (
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 )

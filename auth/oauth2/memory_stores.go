@@ -214,9 +214,7 @@ func cloneSession(s Session) Session {
 	}
 	if s.Claims != nil {
 		out.Claims = make(map[string]any, len(s.Claims))
-		for k, v := range s.Claims {
-			out.Claims[k] = v
-		}
+		maps.Copy(out.Claims, s.Claims)
 	}
 	return out
 }

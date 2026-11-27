@@ -186,7 +186,7 @@ func testConcurrentReadWrite(t *testing.T, factory Factory) {
 
 	var wg sync.WaitGroup
 	var errs atomic.Int32
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

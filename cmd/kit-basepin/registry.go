@@ -39,7 +39,7 @@ func (r *registry) endpoint(host string) string {
 // anonymous pull token.
 func (r *registry) get(method string, p pin, path, accept string) (*http.Response, error) {
 	u := r.endpoint(p.Host) + "/v2/" + p.Repository + path
-	for try := 0; try < 2; try++ {
+	for try := range 2 {
 		req, err := http.NewRequest(method, u, nil)
 		if err != nil {
 			return nil, err
@@ -72,7 +72,7 @@ func (r *registry) token(p pin, challenge string) error {
 		return fmt.Errorf("%s: unsupported challenge %q", p.Host, challenge)
 	}
 	values := map[string]string{}
-	for _, part := range strings.Split(params, ",") {
+	for part := range strings.SplitSeq(params, ",") {
 		if k, v, ok := strings.Cut(strings.TrimSpace(part), "="); ok {
 			values[k] = strings.Trim(v, `"`)
 		}

@@ -443,10 +443,10 @@ func TestLogger_LogE_ConcurrentAppendDoesNotForkChain(t *testing.T) {
 	const perWriter = 20
 	var wg sync.WaitGroup
 	wg.Add(writers)
-	for w := 0; w < writers; w++ {
+	for w := range writers {
 		go func(id int) {
 			defer wg.Done()
-			for i := 0; i < perWriter; i++ {
+			for range perWriter {
 				_ = l.LogE(ctx, Event{
 					Actor:    fmt.Sprintf("worker-%d", id),
 					Action:   "ping",

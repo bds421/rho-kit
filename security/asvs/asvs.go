@@ -46,7 +46,7 @@ package asvs
 import (
 	"errors"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -153,7 +153,7 @@ func IDs() []ID {
 	for _, c := range catalog {
 		out = append(out, c.ID)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 
@@ -186,11 +186,11 @@ func ParseAnnotation(line string) []ID {
 	}
 
 	const marker = "asvs:"
-	idx := strings.Index(trimmed, marker)
-	if idx < 0 {
+	_, after, ok := strings.Cut(trimmed, marker)
+	if !ok {
 		return nil
 	}
-	rest := strings.TrimSpace(trimmed[idx+len(marker):])
+	rest := strings.TrimSpace(after)
 	rest = strings.TrimSuffix(rest, "*/")
 	rest = strings.TrimSpace(rest)
 	if rest == "" {

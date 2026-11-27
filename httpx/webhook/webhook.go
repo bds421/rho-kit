@@ -397,16 +397,13 @@ func isPermanentTransportError(err error) bool {
 	if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
 		return true
 	}
-	var ua x509.UnknownAuthorityError
-	if errors.As(err, &ua) {
+	if _, ok := errors.AsType[x509.UnknownAuthorityError](err); ok {
 		return true
 	}
-	var he x509.HostnameError
-	if errors.As(err, &he) {
+	if _, ok := errors.AsType[x509.HostnameError](err); ok {
 		return true
 	}
-	var ce x509.CertificateInvalidError
-	if errors.As(err, &ce) {
+	if _, ok := errors.AsType[x509.CertificateInvalidError](err); ok {
 		return true
 	}
 	var sre x509.SystemRootsError
@@ -444,8 +441,7 @@ func isRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
-	var perm *permanentErr
-	if errors.As(err, &perm) {
+	if _, ok := errors.AsType[*permanentErr](err); ok {
 		return false
 	}
 	var retr *retryableErr

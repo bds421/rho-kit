@@ -52,7 +52,7 @@ func TestLimiter_Degradation_Passthrough(t *testing.T) {
 	}))
 
 	// When unhealthy with passthrough, requests should pass through without rate limiting.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.RemoteAddr = "10.0.0.1:1234"
 		rec := httptest.NewRecorder()
@@ -216,7 +216,7 @@ func TestKeyedLimiter_Degradation_Passthrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("X-API-Key", "key1")
 		rec := httptest.NewRecorder()

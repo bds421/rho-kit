@@ -97,7 +97,7 @@ func validDNSIdentity(s string) bool {
 	if s == "" || len(s) > 253 || strings.ContainsAny(s, "/\\:*?[]") {
 		return false
 	}
-	for _, label := range strings.Split(s, ".") {
+	for label := range strings.SplitSeq(s, ".") {
 		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
 			return false
 		}

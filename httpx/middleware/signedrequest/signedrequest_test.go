@@ -962,7 +962,7 @@ func TestMemoryNonceStore_WithSweepEvery_Deferred(t *testing.T) {
 	s := NewMemoryNonceStore(time.Second, WithSweepEvery(1_000_000))
 	s.now = func() time.Time { return now }
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		nonce := "n-" + string(rune('a'+i))
 		ok, _ := s.SeenOrStore(context.Background(), nonce)
 		require.True(t, ok)

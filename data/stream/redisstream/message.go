@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -106,9 +107,7 @@ func (m Message) Clone() Message {
 	}
 	if m.Headers != nil {
 		headers := make(map[string]string, len(m.Headers))
-		for k, v := range m.Headers {
-			headers[k] = v
-		}
+		maps.Copy(headers, m.Headers)
 		m.Headers = headers
 	}
 	return m

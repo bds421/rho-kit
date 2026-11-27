@@ -270,7 +270,7 @@ func TestStreamIdleTimeout_PanicStopsWatchdogPromptly(t *testing.T) {
 
 	before := runtime.NumGoroutine()
 	const panics = 20
-	for i := 0; i < panics; i++ {
+	for range panics {
 		func() {
 			defer func() {
 				r := recover()

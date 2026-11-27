@@ -171,7 +171,7 @@ func validateHostname(v any) error {
 	if len(s) > 253 {
 		return errors.New("hostname length out of range")
 	}
-	for _, label := range strings.Split(s, ".") {
+	for label := range strings.SplitSeq(s, ".") {
 		if len(label) == 0 || len(label) > 63 {
 			return errors.New("invalid hostname label")
 		}

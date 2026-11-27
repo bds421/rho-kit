@@ -227,10 +227,7 @@ func defaultShouldTrip(status int, panicked bool) bool {
 }
 
 func defaultOnOpenRespond(w http.ResponseWriter, _ *http.Request, retryAfter time.Duration) {
-	secs := int64(math.Ceil(retryAfter.Seconds()))
-	if secs < 1 {
-		secs = 1
-	}
+	secs := max(int64(math.Ceil(retryAfter.Seconds())), 1)
 	w.Header().Set(HeaderState, string(circuitbreaker.StateOpen))
 	w.Header().Set(HeaderRetry, strconv.FormatInt(secs, 10))
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

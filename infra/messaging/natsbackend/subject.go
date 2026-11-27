@@ -144,7 +144,7 @@ func validateLiteralToken(token string, wildcards bool) error {
 // hexNibble returns the value of an upper-case hex digit, as [SubjectToken]
 // writes them.
 func hexNibble(c byte) (byte, bool) {
-	for n := byte(0); n < byte(len(hexDigits)); n++ {
+	for n := range byte(len(hexDigits)) {
 		if hexDigits[n] == c {
 			return n, true
 		}

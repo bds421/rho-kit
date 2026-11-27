@@ -93,10 +93,7 @@ func New(lim ratelimit.Limiter) func(http.Handler) http.Handler {
 			if !allowed {
 				w.Header().Set(scopeHeader, scopeValue)
 				if retryAfter > 0 {
-					seconds := int(math.Ceil(retryAfter.Seconds()))
-					if seconds < 1 {
-						seconds = 1
-					}
+					seconds := max(int(math.Ceil(retryAfter.Seconds())), 1)
 					w.Header().Set("Retry-After", strconv.Itoa(seconds))
 				}
 				httpx.WriteError(w, http.StatusTooManyRequests, "tenant rate limit exceeded")

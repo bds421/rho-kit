@@ -221,13 +221,11 @@ func TestStaticKeyStore_ConcurrentAccess(t *testing.T) {
 	store := MustNewStaticKeyStore(map[string][]byte{"k1": testKey(32, 1)}, "k1")
 	var wg sync.WaitGroup
 	ctx := context.Background()
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 100 {
+		wg.Go(func() {
 			_, _ = store.Key(ctx, "k1")
 			_, _, _ = store.CurrentKeyID(ctx)
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -275,27 +273,23 @@ func TestStaticKeyStore_Close_NilReceiverIsSafe(t *testing.T) {
 // must report the cleared key by returning an empty id.
 func TestStaticKeyStore_KeyRaceWithCloseNeverReturnsNilNil(t *testing.T) {
 	ctx := context.Background()
-	for iter := 0; iter < 5000; iter++ {
+	for range 5000 {
 		store := MustNewStaticKeyStore(map[string][]byte{"k1": testKey(32, 1)}, "k1")
 
 		var wg sync.WaitGroup
 		start := make(chan struct{})
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			_ = store.Close()
-		}()
+		})
 
 		readers := 8
-		for r := 0; r < readers; r++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range readers {
+			wg.Go(func() {
 				<-start
 				readDuringClose(ctx, t, store)
-			}()
+			})
 		}
 
 		close(start)
@@ -309,7 +303,7 @@ func TestStaticKeyStore_KeyRaceWithCloseNeverReturnsNilNil(t *testing.T) {
 // readDuringClose spins so a reader is mid-flight when Close lands, hitting
 // the window between the presence check and the secret read.
 func readDuringClose(ctx context.Context, t *testing.T, store *StaticKeyStore) {
-	for i := 0; i < 64; i++ {
+	for range 64 {
 		if k, err := store.Key(ctx, "k1"); err == nil && k == nil {
 			t.Errorf("Key returned (nil, nil): success-shaped result with no key")
 			return

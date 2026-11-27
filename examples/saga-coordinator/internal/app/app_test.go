@@ -145,12 +145,10 @@ func TestRunSaga_ConcurrentRetriesSerialize(t *testing.T) {
 
 	const N = 8
 	var wg sync.WaitGroup
-	for i := 0; i < N; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range N {
+		wg.Go(func() {
 			_, _ = c.runSaga(context.Background(), "concurrent-key", OrderRequest{OrderID: "ord-4", Amount: 10})
-		}()
+		})
 	}
 	wg.Wait()
 	assert.Equal(t, int32(1), reserveCalls.Load(), "the exclusive section + cache must guarantee single execution under concurrent retries")
@@ -268,10 +266,8 @@ func TestKeyedMutex_ConcurrentSameKeySerializes(t *testing.T) {
 
 	const N = 64
 	var wg sync.WaitGroup
-	for i := 0; i < N; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range N {
+		wg.Go(func() {
 			release := km.Lock("hot")
 			cur := inCritical.Add(1)
 			for {
@@ -282,7 +278,7 @@ func TestKeyedMutex_ConcurrentSameKeySerializes(t *testing.T) {
 			}
 			inCritical.Add(-1)
 			release()
-		}()
+		})
 	}
 	wg.Wait()
 

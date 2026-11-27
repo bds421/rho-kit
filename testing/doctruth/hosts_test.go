@@ -1,6 +1,7 @@
 package doctruth
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -19,9 +20,7 @@ func hostsRepository(t *testing.T, extra map[string]string) string {
 		"internal/unused/u.go":      "package unused\n\nconst U = \"https://not-shipped.io\"\n",
 		"internal/attest/r.go":      "package attest\n\nconst R = \"https://api.example.com https://x.test\"\n",
 	}
-	for k, v := range extra {
-		files[k] = v
-	}
+	maps.Copy(files, extra)
 	return repository(t, files)
 }
 

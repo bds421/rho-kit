@@ -275,10 +275,7 @@ func (s *Store) claimResumableQuery(olderThan time.Duration) (string, []any) {
 	if olderThan > 0 {
 		// Floor sub-millisecond olderThan at 1ms so Milliseconds()==0 cannot
 		// erase the staleness guard (double-execution window).
-		ms := olderThan.Milliseconds()
-		if ms < 1 {
-			ms = 1
-		}
+		ms := max(olderThan.Milliseconds(), 1)
 		query = fmt.Sprintf(`
 WITH candidates AS (
   SELECT id FROM %s

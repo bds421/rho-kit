@@ -330,15 +330,15 @@ func (s *CursorSigner) Decode(cursor string) (string, error) {
 	if len(cursor) > MaxCursorLen {
 		return "", ErrCursorInvalid
 	}
-	idx := strings.IndexByte(cursor, '.')
-	if idx < 0 {
+	before, after, ok := strings.Cut(cursor, ".")
+	if !ok {
 		return "", ErrCursorInvalid
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(cursor[:idx])
+	payload, err := base64.RawURLEncoding.DecodeString(before)
 	if err != nil {
 		return "", ErrCursorInvalid
 	}
-	sig, err := base64.RawURLEncoding.DecodeString(cursor[idx+1:])
+	sig, err := base64.RawURLEncoding.DecodeString(after)
 	if err != nil {
 		return "", ErrCursorInvalid
 	}

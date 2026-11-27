@@ -377,11 +377,8 @@ func TestValidateCachedResponse_TotalHeaderBytesCap(t *testing.T) {
 	// Use MaxCachedHeaders entries with large values under per-value cap.
 	per := MaxCachedHeaderValueBytes
 	// total ~ MaxCachedHeaders * per can exceed MaxCachedHeadersBytes
-	n := MaxCachedHeadersBytes/per + 2
-	if n > MaxCachedHeaders {
-		n = MaxCachedHeaders
-	}
-	for i := 0; i < n; i++ {
+	n := min(MaxCachedHeadersBytes/per+2, MaxCachedHeaders)
+	for i := range n {
 		headers[fmt.Sprintf("H%d", i)] = []string{strings.Repeat("v", per)}
 	}
 	err := ValidateCachedResponse(CachedResponse{StatusCode: 200, Headers: headers})

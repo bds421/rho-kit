@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -111,8 +112,8 @@ func forwardedClient(forwarded string, trusted []*net.IPNet) (client net.IP, unt
 	if len(parts) > maxForwardedForParts {
 		return nil, true
 	}
-	for i := len(parts) - 1; i >= 0; i-- {
-		candidate := strings.TrimSpace(parts[i])
+	for _, part := range slices.Backward(parts) {
+		candidate := strings.TrimSpace(part)
 		if candidate == "" {
 			continue
 		}

@@ -212,10 +212,7 @@ func writeRejected(w http.ResponseWriter, scope string, remaining int64, retryAf
 		w.Header().Set(HeaderScope, scope)
 	}
 	w.Header().Set(HeaderRemaining, strconv.FormatInt(remaining, 10))
-	secs := int64(math.Ceil(retryAfter.Seconds()))
-	if secs < 1 {
-		secs = 1
-	}
+	secs := max(int64(math.Ceil(retryAfter.Seconds())), 1)
 	w.Header().Set(HeaderRetry, strconv.FormatInt(secs, 10))
 	// JSON body kept tiny on purpose — the meaningful information is
 	// in the headers, the body is human-readable companion text.

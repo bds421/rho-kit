@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -665,7 +666,7 @@ func TestStruct_FieldErrorOrder_IsDeterministic(t *testing.T) {
 	// Repeat to surface any non-determinism that would manifest as map
 	// iteration order flapping between runs of the same process.
 	const iterations = 20
-	for i := 0; i < iterations; i++ {
+	for i := range iterations {
 		err := Struct(req{})
 		if err == nil {
 			t.Fatalf("iter %d: expected validation error", i)
@@ -933,12 +934,7 @@ func schemaAdmitsType(s *jsonschemago.Schema, want string) bool {
 	if s.Type == want {
 		return true
 	}
-	for _, t := range s.Types {
-		if t == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.Types, want)
 }
 
 // TestStruct_ByteArrayValidates confirms a struct carrying a byte-array
@@ -1045,7 +1041,7 @@ func TestSchemaForType_FreezesFormatRegistry(t *testing.T) {
 	type req struct {
 		Name string `json:"name" jsonschema:"format=mustbefoo"`
 	}
-	if _, err := v.SchemaForType(reflect.TypeOf(req{})); err != nil {
+	if _, err := v.SchemaForType(reflect.TypeFor[req]()); err != nil {
 		t.Fatalf("SchemaForType: %v", err)
 	}
 	// Registry must now be frozen; registering another format must fail.

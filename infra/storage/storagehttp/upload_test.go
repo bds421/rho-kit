@@ -451,7 +451,7 @@ func TestParseAndStore_SkippedParts(t *testing.T) {
 		backend := newLocalBackend(t)
 		var buf bytes.Buffer
 		w := multipart.NewWriter(&buf)
-		for i := 0; i < maxSkippedParts+1; i++ {
+		for range maxSkippedParts + 1 {
 			part, err := w.CreateFormField("other")
 			require.NoError(t, err)
 			_, err = part.Write([]byte("x"))

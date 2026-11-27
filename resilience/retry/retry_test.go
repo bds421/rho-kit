@@ -603,8 +603,7 @@ func TestLoop_PanicsOnNilFn(t *testing.T) {
 			t.Fatal("expected panic when Loop called with nil fn")
 		}
 	}()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	Loop(ctx, slog.Default(), "test", nil)
 }
 
@@ -710,8 +709,7 @@ func TestLoop_PanicsOnNilOption(t *testing.T) {
 			t.Fatal("expected panic when Loop called with nil option")
 		}
 	}()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	Loop(ctx, slog.Default(), "test", func(context.Context) error { return nil }, nil)
 }
 
@@ -732,8 +730,7 @@ func TestLoop_PanicsOnInvalidPolicyOption(t *testing.T) {
 			t.Fatalf("panic reflected invalid duration: %q", msg)
 		}
 	}()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	Loop(ctx, slog.Default(), "test", func(context.Context) error { return nil }, WithMaxElapsedTime(-time.Second))
 }
 
@@ -930,7 +927,7 @@ func TestBackoff_NextClampsPostJitterToMaxDelay(t *testing.T) {
 		Jitter:     0.5, // cenkalti can return up to MaxInterval*(1+jitter)
 	}
 	bo := p.NewBackoff()
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		d := bo.Next()
 		if d > p.MaxDelay {
 			t.Fatalf("Next() = %v exceeds MaxDelay %v on iteration %d", d, p.MaxDelay, i)

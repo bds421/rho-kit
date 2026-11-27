@@ -56,10 +56,7 @@ func WriteLinkHeader(w http.ResponseWriter, u *url.URL, total, offset, limit int
 		// Known total: first/prev/next/last as appropriate.
 		if offset > 0 {
 			parts = appendLink(parts, u, "first", 0, limit)
-			prev := offset - limit
-			if prev < 0 {
-				prev = 0
-			}
+			prev := max(offset-limit, 0)
 			parts = appendLink(parts, u, "prev", prev, limit)
 		}
 		if next, ok := nextPageOffset(offset, limit); ok && next < total {

@@ -254,12 +254,9 @@ func (s *String) Equal(other *String) bool {
 // A wave-66 review caught that the earlier byte cast meant a
 // 256-byte longer all-zero suffix could falsely report equality.
 func constantTimeEqual(a, b []byte) bool {
-	maxLen := len(a)
-	if len(b) > maxLen {
-		maxLen = len(b)
-	}
+	maxLen := max(len(b), len(a))
 	var v uint
-	for i := 0; i < maxLen; i++ {
+	for i := range maxLen {
 		var ai, bi byte
 		if i < len(a) {
 			ai = a[i]

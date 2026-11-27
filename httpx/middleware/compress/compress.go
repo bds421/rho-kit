@@ -220,7 +220,7 @@ func selectEncoder(acceptEncoding string, encoders []Encoder) Encoder {
 func addVary(h http.Header, value string) {
 	existing := h.Values("Vary")
 	for _, v := range existing {
-		for _, token := range strings.Split(v, ",") {
+		for token := range strings.SplitSeq(v, ",") {
 			if strings.EqualFold(strings.TrimSpace(token), value) {
 				return
 			}

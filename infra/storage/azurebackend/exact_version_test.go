@@ -68,9 +68,8 @@ func (client *exactBlobClient) DownloadVersion(
 	_ string,
 	version string,
 ) (blob.DownloadStreamResponse, error) {
-	return blob.DownloadStreamResponse{DownloadResponse: blob.DownloadResponse{
-		Body: io.NopCloser(strings.NewReader(version)), VersionID: &version,
-	}}, nil
+	return blob.DownloadStreamResponse{
+		Body: io.NopCloser(strings.NewReader(version)), VersionID: &version}, nil
 }
 
 func (client *exactBlobClient) DeleteVersion(

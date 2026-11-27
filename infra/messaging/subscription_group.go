@@ -120,7 +120,6 @@ func (g *SubscriptionGroup) Start(ctx context.Context) error {
 	errCh := make(chan error, len(subs))
 	g.wg.Add(len(subs))
 	for _, sub := range subs {
-		sub := sub
 		go func() {
 			defer g.wg.Done()
 			if err := sub.Start(runCtx); err != nil {

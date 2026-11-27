@@ -53,8 +53,7 @@ func isReadOnlyError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var rerr goredis.Error
-	if errors.As(err, &rerr) {
+	if rerr, ok := errors.AsType[goredis.Error](err); ok {
 		msg := strings.TrimPrefix(rerr.Error(), "ERR ")
 		if strings.HasPrefix(msg, "READONLY") {
 			return true

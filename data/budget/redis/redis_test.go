@@ -310,7 +310,7 @@ func TestConsume_ConcurrentSameKeyDoesNotExceedCap(t *testing.T) {
 	var wg sync.WaitGroup
 	var ok atomic.Int64
 	wg.Add(callers)
-	for i := 0; i < callers; i++ {
+	for range callers {
 		go func() {
 			defer wg.Done()
 			admitted, _, _, err := b.Consume(context.Background(), "shared", 1)

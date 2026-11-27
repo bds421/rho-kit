@@ -23,7 +23,7 @@ func TestWithCSPNonceGivesEachPageTheRequestsNonce(t *testing.T) {
 	for _, target := range []string{"/", "/settings", "/index.html"} {
 		rec := serve(t, h, http.MethodGet, target, http.Header{"Accept-Encoding": {"br"}})
 		policy := rec.Header().Get("Content-Security-Policy")
-		nonce := strings.SplitN(strings.SplitN(policy, "'nonce-", 2)[1], "'", 2)[0]
+		nonce, _, _ := strings.Cut(strings.SplitN(policy, "'nonce-", 2)[1], "'")
 		body := rec.Body.String()
 		if !strings.Contains(body, `<base href="/portal/">`) || !strings.Contains(body, `<meta property="csp-nonce" nonce="`+nonce+`"></head>`) {
 			t.Fatalf("%s: %s under %s", target, body, policy)

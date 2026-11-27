@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"reflect"
 	"sort"
@@ -390,15 +391,11 @@ func cloneResponse(in Response) Response {
 	out := Response{Description: in.Description}
 	if len(in.Headers) > 0 {
 		out.Headers = make(map[string]Header, len(in.Headers))
-		for k, v := range in.Headers {
-			out.Headers[k] = v
-		}
+		maps.Copy(out.Headers, in.Headers)
 	}
 	if len(in.Content) > 0 {
 		out.Content = make(map[string]MediaType, len(in.Content))
-		for k, v := range in.Content {
-			out.Content[k] = v
-		}
+		maps.Copy(out.Content, in.Content)
 	}
 	return out
 }
@@ -431,15 +428,11 @@ func cloneComponents(in *Components) *Components {
 	out := &Components{}
 	if len(in.Schemas) > 0 {
 		out.Schemas = make(map[string]*jsonschema.Schema, len(in.Schemas))
-		for k, v := range in.Schemas {
-			out.Schemas[k] = v
-		}
+		maps.Copy(out.Schemas, in.Schemas)
 	}
 	if len(in.SecuritySchemes) > 0 {
 		out.SecuritySchemes = make(map[string]SecurityScheme, len(in.SecuritySchemes))
-		for k, v := range in.SecuritySchemes {
-			out.SecuritySchemes[k] = v
-		}
+		maps.Copy(out.SecuritySchemes, in.SecuritySchemes)
 	}
 	return out
 }
@@ -487,7 +480,7 @@ func (s *Spec) Handler() http.Handler {
 func schemaFor[T any]() (*jsonschema.Schema, error) {
 	schema, err := validate.SchemaFor[T]()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s: %w", ErrSchemaGeneration, reflect.TypeOf((*T)(nil)).Elem(), err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrSchemaGeneration, reflect.TypeFor[T](), err)
 	}
 	return schema, nil
 }

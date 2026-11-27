@@ -74,6 +74,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -388,7 +389,7 @@ func parseGoMod(content string) (moduleName string, versions map[string]string) 
 		moduleName = m[1]
 	}
 	inRequireBlock := false
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		trim := strings.TrimSpace(line)
 		if !inRequireBlock {
 			if trim == "require (" {
@@ -489,11 +490,8 @@ func moduleForImport(importPath string, versions map[string]string) string {
 func filterByImport(services []service, target string) []service {
 	out := make([]service, 0, len(services))
 	for _, s := range services {
-		for _, p := range s.KitPackages {
-			if p == target {
-				out = append(out, s)
-				break
-			}
+		if slices.Contains(s.KitPackages, target) {
+			out = append(out, s)
 		}
 	}
 	return out

@@ -67,7 +67,7 @@ func testPublisherSequentialHappyPath(t *testing.T, factory PublisherFactory) {
 	p := factory(t)
 	ctx := context.Background()
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		msg, err := messaging.NewMessage("test.event", map[string]int{"n": i})
 		require.NoError(t, err)
 		require.NoError(t, p.Publish(ctx, "test-exchange", "rk", msg),
@@ -81,7 +81,7 @@ func testPublisherConcurrentSafe(t *testing.T, factory PublisherFactory) {
 
 	var errs atomic.Int32
 	var wg sync.WaitGroup
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

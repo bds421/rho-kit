@@ -18,16 +18,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v3/jwa"
-	"github.com/lestrrat-go/jwx/v3/jwk"
-	"github.com/lestrrat-go/jwx/v3/jws"
-	"github.com/lestrrat-go/jwx/v3/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jws"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/bds421/rho-kit/core/v2/tlsclone"
 )
@@ -77,7 +77,7 @@ func testKey(t *testing.T) *ecdsa.PrivateKey {
 
 func testJWKS(t *testing.T, key *ecdsa.PrivateKey, kid string) []byte {
 	t.Helper()
-	pubJWK, err := jwk.Import(key.PublicKey)
+	pubJWK, err := jwk.Import[jwk.Key](key.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func signJWT(t *testing.T, key *ecdsa.PrivateKey, kid string, claims map[string]
 		}
 	}
 
-	jwkKey, err := jwk.Import(key)
+	jwkKey, err := jwk.Import[jwk.Key](key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestParseKeySet_InvalidJSON(t *testing.T) {
 
 func TestParseKeySet_RejectsNonVerificationKeyOps(t *testing.T) {
 	key := testKey(t)
-	pubJWK, err := jwk.Import(key.PublicKey)
+	pubJWK, err := jwk.Import[jwk.Key](key.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestParseKeySet_RejectsNonVerificationKeyOps(t *testing.T) {
 
 func TestParseKeySet_AcceptsVerificationKeyOps(t *testing.T) {
 	key := testKey(t)
-	pubJWK, err := jwk.Import(key.PublicKey)
+	pubJWK, err := jwk.Import[jwk.Key](key.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestParseKeySet_AcceptsVerificationKeyOps(t *testing.T) {
 
 func TestParseKeySet_StripsPrivateKeyMaterial(t *testing.T) {
 	key := testKey(t)
-	privateJWK, err := jwk.Import(key)
+	privateJWK, err := jwk.Import[jwk.Key](key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2110,7 +2110,7 @@ func TestProvider_Verify_ConcurrentSharedKeySet(t *testing.T) {
 
 	verifyLoop := func(p *Provider, token string) {
 		defer wg.Done()
-		for i := 0; i < iters; i++ {
+		for range iters {
 			if _, err := p.Verify(token, now); err != nil {
 				errs <- fmt.Errorf("verify failed mid-loop: %w", err)
 				return
@@ -2118,7 +2118,7 @@ func TestProvider_Verify_ConcurrentSharedKeySet(t *testing.T) {
 		}
 	}
 
-	for i := 0; i < workers; i++ {
+	for range workers {
 		go verifyLoop(p1, tokenA)
 		go verifyLoop(p2, tokenB)
 	}
@@ -2307,12 +2307,12 @@ func TestVerify_TimingFloorClosesKidExistenceSideChannel(t *testing.T) {
 
 	const samples = 9
 	durations := make([]time.Duration, samples)
-	for i := 0; i < samples; i++ {
+	for i := range samples {
 		start := time.Now()
 		_, _ = ks.Verify(tokenWrongKid, now)
 		durations[i] = time.Since(start)
 	}
-	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	slices.Sort(durations)
 	median := durations[samples/2]
 
 	// The floor is 50 µs. Allow some slack for sleep wakeup
@@ -2519,7 +2519,7 @@ func publicKeyAsHMACSecrets(t *testing.T, key *ecdsa.PrivateKey, kid string) map
 		t.Fatalf("PublicKey.Bytes: %v", err)
 	}
 
-	pubJWK, err := jwk.Import(key.PublicKey)
+	pubJWK, err := jwk.Import[jwk.Key](key.PublicKey)
 	if err != nil {
 		t.Fatalf("jwk.Import: %v", err)
 	}

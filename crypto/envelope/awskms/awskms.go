@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -310,7 +311,7 @@ func sameKMSARNScope(a, b string) bool {
 	if len(aParts) != 6 || len(bParts) != 6 {
 		return false
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if aParts[i] != bParts[i] {
 			return false
 		}
@@ -351,9 +352,7 @@ func cloneContext(in map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 

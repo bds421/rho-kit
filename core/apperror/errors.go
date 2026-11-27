@@ -578,8 +578,7 @@ func IsPayloadTooLarge(err error) bool {
 
 // AsValidation extracts the *ValidationError from the error chain.
 func AsValidation(err error) (*ValidationError, bool) {
-	var target *ValidationError
-	if errors.As(err, &target) {
+	if target, ok := errors.AsType[*ValidationError](err); ok {
 		return target, true
 	}
 	return nil, false
@@ -587,8 +586,7 @@ func AsValidation(err error) (*ValidationError, bool) {
 
 // AsRateLimit extracts the *RateLimitError from the error chain.
 func AsRateLimit(err error) (*RateLimitError, bool) {
-	var target *RateLimitError
-	if errors.As(err, &target) {
+	if target, ok := errors.AsType[*RateLimitError](err); ok {
 		return target, true
 	}
 	return nil, false
@@ -596,8 +594,7 @@ func AsRateLimit(err error) (*RateLimitError, bool) {
 
 // AsNotFound extracts the *NotFoundError from the error chain.
 func AsNotFound(err error) (*NotFoundError, bool) {
-	var target *NotFoundError
-	if errors.As(err, &target) {
+	if target, ok := errors.AsType[*NotFoundError](err); ok {
 		return target, true
 	}
 	return nil, false
@@ -605,8 +602,7 @@ func AsNotFound(err error) (*NotFoundError, bool) {
 
 // AsUnavailable extracts the *UnavailableError from the error chain.
 func AsUnavailable(err error) (*UnavailableError, bool) {
-	var target *UnavailableError
-	if errors.As(err, &target) {
+	if target, ok := errors.AsType[*UnavailableError](err); ok {
 		return target, true
 	}
 	return nil, false

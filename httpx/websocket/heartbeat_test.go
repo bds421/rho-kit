@@ -56,8 +56,7 @@ func TestRunHeartbeat_NoopOnNonPositiveInterval(t *testing.T) {
 	metrics := NewMetrics(WithRegisterer(reg))
 	conn := &fakeHeartbeatConn{}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Should return immediately when interval is zero rather than
 	// spinning a ticker that the caller cannot turn off.
@@ -140,8 +139,7 @@ func TestRunHeartbeat_ClosesOnPingError(t *testing.T) {
 	metrics := NewMetrics(WithRegisterer(reg))
 	conn := &fakeHeartbeatConn{pingErr: errors.New("simulated ping failure")}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	done := make(chan struct{})
 	go func() {
@@ -177,8 +175,7 @@ func TestRunHeartbeat_TimeoutBucketOnDeadline(t *testing.T) {
 	// error surfaced is context.DeadlineExceeded — a real timeout.
 	conn := &fakeHeartbeatConn{pingBlocks: true}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	done := make(chan struct{})
 	go func() {
@@ -212,8 +209,7 @@ func TestRunHeartbeat_TolerantOfNilLogger(t *testing.T) {
 	metrics := NewMetrics(WithRegisterer(reg))
 	conn := &fakeHeartbeatConn{pingErr: io.ErrClosedPipe}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	done := make(chan struct{})
 	go func() {

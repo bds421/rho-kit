@@ -39,7 +39,6 @@ func TestClassifyVaultError_Transient(t *testing.T) {
 	// must map to a retryable UnavailableError so caller backoff engages
 	// during routine failovers. The generic 408/5xx set is also covered.
 	for _, status := range []int{408, 412, 472, 473, 500, 502, 503, 504} {
-		status := status
 		t.Run(statusString(status), func(t *testing.T) {
 			err := classifyVaultError("encrypt", respErr(status))
 			if !apperror.IsUnavailable(err) {
@@ -58,7 +57,6 @@ func TestClassifyVaultError_Transient(t *testing.T) {
 
 func TestClassifyVaultError_AccessDenied(t *testing.T) {
 	for _, status := range []int{401, 403} {
-		status := status
 		t.Run(statusString(status), func(t *testing.T) {
 			err := classifyVaultError("decrypt", respErr(status))
 			if !apperror.IsPermanent(err) {

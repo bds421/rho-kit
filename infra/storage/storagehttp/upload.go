@@ -127,8 +127,7 @@ func ParseAndStore(ctx context.Context, r *http.Request, backend storage.Storage
 // wrapUploadError classifies transport-level size limit failures as
 // [storage.ErrValidation] (4xx) and redacts other causes.
 func wrapUploadError(message string, err error) error {
-	var maxBytes *http.MaxBytesError
-	if errors.As(err, &maxBytes) {
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 		return fmt.Errorf("%w: %s: request body too large", storage.ErrValidation, message)
 	}
 	return storage.WrapSafe(message, err)

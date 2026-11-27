@@ -3,4 +3,4 @@
 // fixed vulnerability is older than its severity allows.
 module github.com/bds421/rho-kit/cmd/kit-vulngate/v2
 
-go 1.26.8
+go 1.27.4

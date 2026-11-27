@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"time"
 
@@ -114,9 +115,7 @@ func Component(cfg Config, opts ...Option) (*Profiler, error) {
 	// or affect a running session's tag map.
 	if cfg.Tags != nil {
 		tags := make(map[string]string, len(cfg.Tags))
-		for k, v := range cfg.Tags {
-			tags[k] = v
-		}
+		maps.Copy(tags, cfg.Tags)
 		cfg.Tags = tags
 	}
 	return &Profiler{cfg: cfg, logger: cc.logger}, nil

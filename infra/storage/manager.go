@@ -2,6 +2,7 @@ package storage
 
 import (
 	"errors"
+	"slices"
 	"sort"
 	"sync"
 
@@ -243,8 +244,8 @@ func (m *Manager) Close() error {
 	m.closed = true
 
 	var errs []error
-	for i := len(m.order) - 1; i >= 0; i-- {
-		name := m.order[i]
+	for _, name := range slices.Backward(m.order) {
+
 		if err := Close(m.backends[name]); err != nil {
 			errs = append(errs, redact.WrapError("close backend", err))
 		}

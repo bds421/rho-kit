@@ -75,8 +75,7 @@ func IsContentionError(err error) bool {
 	if errors.Is(err, redsync.ErrFailed) {
 		return true
 	}
-	var taken *redsync.ErrTaken
-	if errors.As(err, &taken) {
+	if _, ok := errors.AsType[*redsync.ErrTaken](err); ok {
 		return true
 	}
 	var nodeTaken *redsync.ErrNodeTaken
@@ -92,8 +91,7 @@ func IsLockLostError(err error) bool {
 	if errors.Is(err, redsync.ErrLockAlreadyExpired) {
 		return true
 	}
-	var taken *redsync.ErrTaken
-	if errors.As(err, &taken) {
+	if _, ok := errors.AsType[*redsync.ErrTaken](err); ok {
 		return true
 	}
 	var nodeTaken *redsync.ErrNodeTaken

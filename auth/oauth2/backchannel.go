@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -289,12 +290,7 @@ func (c *Client) backChannelDelete(ctx context.Context, tok logoutToken) (int, [
 }
 
 func containsString(list []string, v string) bool {
-	for _, s := range list {
-		if s == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, v)
 }
 
 func writeLogoutError(w http.ResponseWriter, status int) {

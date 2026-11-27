@@ -85,7 +85,7 @@ func TestCircuitBreaker_ShouldTripFalse_DoesNotTripOnTransportError(t *testing.T
 
 	rt := newCBTransport(stub, neverTrip, 2, time.Minute)
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		req, _ := http.NewRequest(http.MethodGet, "http://example.test", nil)
 		resp, err := rt.RoundTrip(req)
 		if resp != nil {
@@ -113,7 +113,7 @@ func TestCircuitBreaker_DefaultPredicate_IgnoresContextCanceled(t *testing.T) {
 
 	rt := newCBTransport(stub, defaultShouldTrip, 3, time.Minute)
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		req, _ := http.NewRequest(http.MethodGet, "http://example.test", nil)
 		resp, err := rt.RoundTrip(req)
 		if resp != nil {
@@ -139,7 +139,7 @@ func TestCircuitBreaker_DefaultPredicate_TripsOnDeadlineExceeded(t *testing.T) {
 
 	rt := newCBTransport(stub, defaultShouldTrip, 2, time.Minute)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		req, _ := http.NewRequest(http.MethodGet, "http://example.test", nil)
 		resp, err := rt.RoundTrip(req)
 		if resp != nil {
@@ -170,7 +170,7 @@ func TestCircuitBreaker_ShouldTripTrue_TripsOnTransportError(t *testing.T) {
 
 	rt := newCBTransport(stub, alwaysTrip, 2, time.Minute)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		req, _ := http.NewRequest(http.MethodGet, "http://example.test", nil)
 		resp, err := rt.RoundTrip(req)
 		if resp != nil {
@@ -242,7 +242,7 @@ func TestCircuitBreaker_RepeatedServerErrors_OpenBreaker(t *testing.T) {
 
 	rt := newCBTransport(http.DefaultTransport, defaultShouldTrip, 2, time.Minute)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
 		resp, err := rt.RoundTrip(req)
 		if err != nil {
@@ -316,7 +316,7 @@ func TestCircuitBreaker_ExcludedDoesNotResetFailureStreak(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusBadGateway, Body: http.NoBody}, nil
 	}), defaultShouldTrip, 3, time.Minute)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		req, _ := http.NewRequest(http.MethodGet, "http://example.test", nil)
 		resp, err := rt.RoundTrip(req)
 		if resp != nil {
@@ -361,7 +361,7 @@ func TestCircuitBreaker_HostIsolation(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 	}), defaultShouldTrip, 2, time.Minute, nil, true)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		req, _ := http.NewRequest(http.MethodGet, "http://bad.example/x", nil)
 		resp, err := rt.RoundTrip(req)
 		if err != nil {

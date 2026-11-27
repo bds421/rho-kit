@@ -76,10 +76,7 @@ func (t *throttledReader) Read(p []byte) (int, error) {
 	}
 
 	// Cap the read size to a chunk that can be sent within ~100ms.
-	maxChunk := t.bytesPerSecond / 10
-	if maxChunk < 1 {
-		maxChunk = 1
-	}
+	maxChunk := max(t.bytesPerSecond/10, 1)
 	if int64(len(p)) > maxChunk {
 		p = p[:maxChunk]
 	}

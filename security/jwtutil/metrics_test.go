@@ -100,7 +100,7 @@ func TestMetricsCollector_ReportsStaleRejectedFailures(t *testing.T) {
 	p.mu.Unlock()
 
 	// Two stale rejections increment the counter once (transition, not per-request).
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		_, err := p.Verify("any.token.here", now)
 		require.Error(t, err)
 		require.True(t, errors.Is(err, ErrKeySetStale), "got %v, want ErrKeySetStale", err)

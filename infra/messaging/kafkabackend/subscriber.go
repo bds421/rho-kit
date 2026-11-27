@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -470,12 +471,7 @@ func (s *Subscriber) ConsumeOnce(ctx context.Context, b messaging.Binding, handl
 }
 
 func (s *Subscriber) subscribesTo(topic string) bool {
-	for _, t := range s.topics {
-		if t == topic {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.topics, topic)
 }
 
 func (s *Subscriber) newReader(topic string) (*kafka.Reader, error) {
@@ -633,8 +629,7 @@ func isFatalKafkaFetchError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var ke kafka.Error
-	if errors.As(err, &ke) {
+	if ke, ok := errors.AsType[kafka.Error](err); ok {
 		switch ke {
 		case kafka.TopicAuthorizationFailed,
 			kafka.GroupAuthorizationFailed,

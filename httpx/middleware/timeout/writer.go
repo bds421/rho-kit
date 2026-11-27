@@ -3,6 +3,7 @@ package timeout
 import (
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -165,9 +166,7 @@ func (tw *timeoutWriter) writeToReal() {
 	buf := tw.buf
 	tw.mu.Unlock()
 
-	for k, v := range hdrs {
-		tw.w.Header()[k] = v
-	}
+	maps.Copy(tw.w.Header(), hdrs)
 	tw.w.WriteHeader(code)
 	if len(buf) > 0 {
 		_, _ = tw.w.Write(buf)

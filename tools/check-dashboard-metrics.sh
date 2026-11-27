@@ -202,7 +202,7 @@ sort -u -o "$allow_file" "$allow_file"
 # least one underscore to distinguish from PromQL keywords).
 {
   # Grafana: pull only the `"expr": "..."` JSON values.
-  find "$dashboards_dir/grafana" -name '*.json' -print0 |
+  git ls-files -z -- "$dashboards_dir/grafana/*.json" |
     xargs -0 awk '
       /"expr"[[:space:]]*:[[:space:]]*"/ {
         # Strip everything before "expr": "
@@ -214,7 +214,7 @@ sort -u -o "$allow_file" "$allow_file"
       }
     '
   # Prometheus rule YAML: dump every line; the allowlist will filter.
-  find "$dashboards_dir/prometheus" -name '*.yaml' -print0 |
+  git ls-files -z -- "$dashboards_dir/prometheus/*.yaml" |
     xargs -0 cat
 } |
   grep -oE '[a-z][a-z0-9_]+_[a-z0-9_]+' |
@@ -222,7 +222,9 @@ sort -u -o "$allow_file" "$allow_file"
 
 candidate_count=$(wc -l < "$candidates_file" | tr -d ' ')
 
-# Collect emitted metric names from Go sources. We need three views:
+# Collect emitted metric names from the tracked Go sources only (git
+# ls-files): a worktree or untracked copy under the checkout must not
+# satisfy the check. We need three views:
 #
 #   1. Bare string literals (e.g. const RouteLabel = "queue_size").
 #      Cheap to grep, catches metric names declared as named consts.
@@ -243,18 +245,10 @@ candidate_count=$(wc -l < "$candidates_file" | tr -d ' ')
 # auto-expose _bucket / _count / _sum so we treat a base name in code
 # as also emitting those three derived series.
 {
-  find . -name '*.go' \
-      -not -name '*_test.go' \
-      -not -path './vendor/*' \
-      -not -path './node_modules/*' \
-      -print0 |
+  git ls-files -z -- '*.go' ':!:*_test.go' |
     xargs -0 grep -hoE '[a-z][a-z0-9_]+_[a-z0-9_]+'
 
-  find . -name '*.go' \
-      -not -name '*_test.go' \
-      -not -path './vendor/*' \
-      -not -path './node_modules/*' \
-      -print0 |
+  git ls-files -z -- '*.go' ':!:*_test.go' |
     xargs -0 awk '
       BEGIN { current_ns=""; current_sub="" }
       FNR == 1 { current_ns=""; current_sub="" }
@@ -310,7 +304,7 @@ candidate_count=$(wc -l < "$candidates_file" | tr -d ' ')
   # `- record: name(:suffix)*` line declares a synthetic metric the
   # rules engine will emit. Allow both the bare prefix and the full
   # rule name so dashboards can reference either spelling.
-  find "$dashboards_dir/prometheus" -name '*.yaml' -print0 |
+  git ls-files -z -- "$dashboards_dir/prometheus/*.yaml" |
     xargs -0 awk '
       /^[[:space:]]*-[[:space:]]*record:[[:space:]]*/ {
         name=$0

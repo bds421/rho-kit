@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"strconv"
 	"strings"
@@ -421,9 +422,7 @@ func cloneStringMap(values map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(values))
-	for k, v := range values {
-		out[k] = v
-	}
+	maps.Copy(out, values)
 	return out
 }
 
@@ -432,9 +431,7 @@ func cloneFloat64Map(values map[string]float64) map[string]float64 {
 		return nil
 	}
 	out := make(map[string]float64, len(values))
-	for k, v := range values {
-		out[k] = v
-	}
+	maps.Copy(out, values)
 	return out
 }
 

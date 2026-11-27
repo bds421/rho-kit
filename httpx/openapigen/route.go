@@ -1,5 +1,7 @@
 package openapigen
 
+import "maps"
+
 // newRouteState builds a registered operation from its route options.
 func newRouteState(method, path string, cfg *routeConfig) *routeState {
 	rs := &routeState{
@@ -31,9 +33,7 @@ func newRouteState(method, path string, cfg *routeConfig) *routeState {
 	}
 	if len(cfg.requestExamples) > 0 {
 		rs.requestExamples = make(map[string]any, len(cfg.requestExamples))
-		for k, v := range cfg.requestExamples {
-			rs.requestExamples[k] = v
-		}
+		maps.Copy(rs.requestExamples, cfg.requestExamples)
 	}
 
 	for status := range cfg.responseStatuses() {
@@ -75,9 +75,7 @@ func (cfg *routeConfig) response(status int) Response {
 	var headers map[string]Header
 	if hs, ok := cfg.responseHeaders[status]; ok && len(hs) > 0 {
 		headers = make(map[string]Header, len(hs))
-		for name, h := range hs {
-			headers[name] = h
-		}
+		maps.Copy(headers, hs)
 	}
 	return Response{
 		Description: desc,

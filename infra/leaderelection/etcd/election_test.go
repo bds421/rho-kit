@@ -257,7 +257,10 @@ func TestRun_AcquireHoldRelease(t *testing.T) {
 	}
 
 	select {
-	case <-done:
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run returned %v, want context.Canceled", err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after ctx cancel")
 	}
@@ -288,8 +291,7 @@ func TestRun_SessionExpiryCancelsLeaderCtx(t *testing.T) {
 		OnLost: func() { close(lost) },
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go func() { _ = e.Run(ctx, cb) }()
 
@@ -630,7 +632,10 @@ func TestRun_BackendTermError_StillWarns(t *testing.T) {
 	go func() { done <- e.Run(ctx, leaderelection.Callbacks{}) }()
 
 	select {
-	case <-done:
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run returned %v, want context.Canceled", err)
+		}
 	case <-time.After(2 * time.Second):
 		cancel()
 		t.Fatal("Run did not return within budget")

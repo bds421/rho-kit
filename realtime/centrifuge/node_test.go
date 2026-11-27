@@ -124,7 +124,7 @@ func TestNode_DoubleStartRejected(t *testing.T) {
 	require.Contains(t, err.Error(), "already invoked")
 
 	cancel()
-	<-done
+	require.NoError(t, <-done)
 }
 
 func TestNode_StopIsIdempotent(t *testing.T) {

@@ -360,13 +360,7 @@ func (r *Runner) stopAll(parent context.Context) error {
 	}
 	const perStepMinimum = 1 * time.Second
 	const perStepCap = 5 * time.Second
-	perStep := r.stopTimeout / time.Duration(n)
-	if perStep > perStepCap {
-		perStep = perStepCap
-	}
-	if perStep < perStepMinimum {
-		perStep = perStepMinimum
-	}
+	perStep := max(min(r.stopTimeout/time.Duration(n), perStepCap), perStepMinimum)
 
 	var errs []error
 	for i := n - 1; i >= 0; i-- {

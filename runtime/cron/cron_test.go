@@ -168,8 +168,7 @@ func TestScheduler_StartRejectsSecondStart(t *testing.T) {
 func TestScheduler_StartRejectsRestartAfterStop(t *testing.T) {
 	s := New(nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	startDone := make(chan error, 1)
 	go func() { startDone <- s.Start(ctx) }()
 	waitForSchedulerStarted(t, s)
@@ -368,8 +367,7 @@ func TestScheduler_SetJobTimeout_AppliesPerRunDeadline(t *testing.T) {
 	})
 	s.SetJobTimeout("timed", 25*time.Millisecond)
 
-	startCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	startCtx := t.Context()
 
 	go func() { _ = s.Start(startCtx) }()
 

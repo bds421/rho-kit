@@ -26,7 +26,7 @@ func TestCleanupInterval_SaturatesOnLargeWindow(t *testing.T) {
 func TestLimiterAllow(t *testing.T) {
 	rl := NewLimiter(3, time.Minute)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if allowed, _, _ := rl.Allow(context.Background(), "1.2.3.4"); !allowed {
 			t.Fatalf("request %d should be allowed", i+1)
 		}
@@ -108,7 +108,7 @@ func TestLimiterMiddleware(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		req := httptest.NewRequest("GET", "/", nil)
 		req.RemoteAddr = "10.0.0.1:1234"
 		w := httptest.NewRecorder()
@@ -396,8 +396,7 @@ func TestLimiterRun_StopAfterStopBeforeStartDoesNotLeak(t *testing.T) {
 	// A Start that slips past the stopped guard would launch a cleanup
 	// goroutine. If Start is correctly rejected, no goroutine exists and
 	// the channel below stays empty.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	done := make(chan error, 1)
 	go func() { done <- rl.Start(ctx) }()
 

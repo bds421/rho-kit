@@ -106,10 +106,7 @@ func (sb *spooledBody) appendChunk(chunk []byte, inMemoryMax int64, spoolDir str
 	// Fill the in-memory portion first.
 	if int64(len(sb.mem)) < inMemoryMax {
 		room := inMemoryMax - int64(len(sb.mem))
-		take := int64(len(chunk))
-		if take > room {
-			take = room
-		}
+		take := min(int64(len(chunk)), room)
 		sb.mem = append(sb.mem, chunk[:take]...)
 		chunk = chunk[take:]
 	}

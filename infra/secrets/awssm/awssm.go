@@ -59,12 +59,11 @@ func New(api API, opts ...Option) *Loader {
 //     error, or when AWS returns neither SecretString nor SecretBinary
 func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 	out, err := l.api.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
-		SecretId:     awsStringPtr(key),
-		VersionStage: awsStringPtr(l.stage),
+		SecretId:     new(key),
+		VersionStage: new(l.stage),
 	})
 	if err != nil {
-		var nf *smtypes.ResourceNotFoundException
-		if errors.As(err, &nf) {
+		if _, ok := errors.AsType[*smtypes.ResourceNotFoundException](err); ok {
 			return secrets.Secret{}, secrets.ErrSecretNotFound
 		}
 		return secrets.Secret{}, redact.WrapSentinel(secrets.ErrLoaderUnavailable,
@@ -89,5 +88,3 @@ func (l *Loader) Get(ctx context.Context, key string) (secrets.Secret, error) {
 	}
 	return secrets.MakeSecret(raw, version), nil
 }
-
-func awsStringPtr(s string) *string { return &s }

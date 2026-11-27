@@ -456,7 +456,7 @@ func TestWithGzipLevel_PanicsOnOutOfRange(t *testing.T) {
 
 func containsVary(h http.Header, value string) bool {
 	for _, v := range h.Values("Vary") {
-		for _, token := range strings.Split(v, ",") {
+		for token := range strings.SplitSeq(v, ",") {
 			if strings.EqualFold(strings.TrimSpace(token), value) {
 				return true
 			}

@@ -221,14 +221,12 @@ func TestCachedLoader_ConcurrentRefreshDueHitsSpawnOneRefresh(t *testing.T) {
 	// only the first should spawn a refresh goroutine, the rest are no-ops
 	// because a refresh is already in flight.
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 50 {
+		wg.Go(func() {
 			got, gerr := c.Get(context.Background(), "k")
 			require.NoError(t, gerr)
 			require.Equal(t, "old", got.Value.RevealString())
-		}()
+		})
 	}
 	wg.Wait()
 

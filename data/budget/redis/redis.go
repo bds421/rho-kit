@@ -369,10 +369,7 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 	// integer overflow inside the script (and would always reject
 	// anyway since no charge larger than the cap can fit).
 	if amount > b.cap {
-		retry := nextStart.Sub(now)
-		if retry < 0 {
-			retry = 0
-		}
+		retry := max(nextStart.Sub(now), 0)
 		rem, perr := peekScript.Run(ctx, b.client,
 			[]string{b.bucketKey(key, periodID)},
 			b.cap,
@@ -410,10 +407,7 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 	// pick the period boundary so WithRedisTime stays consistent
 	// across local-clock skew. Floor at zero to defend against the
 	// rare case where the clock advances between fetch and use.
-	retry := nextStart.Sub(now)
-	if retry < 0 {
-		retry = 0
-	}
+	retry := max(nextStart.Sub(now), 0)
 	return false, remaining, retry, nil
 }
 

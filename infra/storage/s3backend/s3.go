@@ -549,12 +549,10 @@ func s3MetricErr(err error) error {
 }
 
 func isS3NotFound(err error) bool {
-	var notFound *types.NotFound
-	if errors.As(err, &notFound) {
+	if _, ok := errors.AsType[*types.NotFound](err); ok {
 		return true
 	}
-	var noSuchKey *types.NoSuchKey
-	if errors.As(err, &noSuchKey) {
+	if _, ok := errors.AsType[*types.NoSuchKey](err); ok {
 		return true
 	}
 	// S3-compatible endpoints or intermediary proxies may return a bodyless
@@ -562,8 +560,7 @@ func isS3NotFound(err error) bool {
 	// "NoSuchKey" or "NotFound") rather than a typed NoSuchKey/NotFound. Match
 	// those codes too so missing objects are treated as control flow, not a
 	// generic operation error, consistently across Get/Delete/Exists.
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 		switch apiErr.ErrorCode() {
 		case "NoSuchKey", "NotFound":
 			return true

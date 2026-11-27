@@ -118,7 +118,7 @@ func TestMemoryPrefixRepository_ConcurrentSafeAndReturnsClone(t *testing.T) {
 
 	// Concurrent readers/writers must not race (run with -race).
 	var wg sync.WaitGroup
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

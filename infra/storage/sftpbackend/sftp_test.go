@@ -152,8 +152,8 @@ func (m *mockSFTPClient) ReadDir(p string) ([]os.FileInfo, error) {
 		}
 
 		// Find the first path segment.
-		slashIdx := strings.Index(remainder, "/")
-		if slashIdx == -1 {
+		before, _, ok := strings.Cut(remainder, "/")
+		if !ok {
 			// Direct child file.
 			if !seen[remainder] {
 				seen[remainder] = true
@@ -161,7 +161,7 @@ func (m *mockSFTPClient) ReadDir(p string) ([]os.FileInfo, error) {
 			}
 		} else {
 			// Subdirectory.
-			dirName := remainder[:slashIdx]
+			dirName := before
 			if !seen[dirName] {
 				seen[dirName] = true
 				result = append(result, fakeFileInfo{name: dirName, dir: true})
@@ -864,8 +864,8 @@ func unsortedReadDir(m *mockSFTPClient) func(string) ([]os.FileInfo, error) {
 // immediateChild is the directory entry a key's remainder below a listed
 // directory shows there: the file itself, or the subdirectory holding it.
 func immediateChild(remainder string, size int) fakeFileInfo {
-	if slashIdx := strings.Index(remainder, "/"); slashIdx != -1 {
-		return fakeFileInfo{name: remainder[:slashIdx], dir: true}
+	if before, _, ok := strings.Cut(remainder, "/"); ok {
+		return fakeFileInfo{name: before, dir: true}
 	}
 	return fakeFileInfo{name: remainder, size: int64(size)}
 }

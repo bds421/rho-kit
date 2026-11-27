@@ -132,7 +132,7 @@ func TestErrorChainTypes(t *testing.T) {
 	t.Run("bounds runaway wrap chains", func(t *testing.T) {
 		// Stack of 20 wraps; helper must cap at 16.
 		err := fmt.Errorf("leaf")
-		for i := 0; i < 20; i++ {
+		for i := range 20 {
 			err = fmt.Errorf("wrap %d: %w", i, err)
 		}
 		chain := ErrorChainTypes(err)

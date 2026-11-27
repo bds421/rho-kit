@@ -95,33 +95,27 @@ func (p *progressReader) Read(buf []byte) (int, error) {
 	if n == 0 && err == nil {
 		return n, err
 	}
-
-	shouldFire := true
-	if p.cfg.throttle > 0 || p.cfg.minDelta > 0 {
-		shouldFire = false
-		now := time.Now()
-		if p.lastFireAt.IsZero() {
-			shouldFire = true
-		} else {
-			if p.cfg.throttle > 0 && now.Sub(p.lastFireAt) >= p.cfg.throttle {
-				shouldFire = true
-			}
-			if p.cfg.minDelta > 0 && p.read-p.lastFireB >= p.cfg.minDelta {
-				shouldFire = true
-			}
-		}
-		// Always fire the final callback so the consumer sees completion.
-		if err != nil {
-			shouldFire = true
-		}
-		if shouldFire {
-			p.lastFireAt = now
-			p.lastFireB = p.read
-		}
-	}
-
-	if shouldFire && (n > 0 || err != nil) {
+	if p.shouldFire(err) {
 		p.fn(p.read, p.total)
 	}
 	return n, err
+}
+
+// shouldFire reports whether the read just made is reported, applying the
+// throttle and the minimum delta, and records the reported state.
+func (p *progressReader) shouldFire(err error) bool {
+	if p.cfg.throttle <= 0 && p.cfg.minDelta <= 0 {
+		return true
+	}
+	now := time.Now()
+	fire := p.lastFireAt.IsZero() ||
+		(p.cfg.throttle > 0 && now.Sub(p.lastFireAt) >= p.cfg.throttle) ||
+		(p.cfg.minDelta > 0 && p.read-p.lastFireB >= p.cfg.minDelta) ||
+		// Always fire the final callback so the consumer sees completion.
+		err != nil
+	if fire {
+		p.lastFireAt = now
+		p.lastFireB = p.read
+	}
+	return fire
 }

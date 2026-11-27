@@ -88,7 +88,7 @@ func TestStruct_FieldOrderInsideSliceElement(t *testing.T) {
 	type req struct {
 		Items []elem `json:"items" jsonschema:"required"`
 	}
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		err := Struct(req{Items: []elem{{}}})
 		ve, ok := apperror.AsValidation(err)
 		if !ok {
@@ -352,7 +352,7 @@ type shadowEmbeddedLast struct {
 // leave a duplicate PropertyOrder entry and does not mark the field
 // required when the winning (shallower) parent field is optional.
 func TestSchema_EmbeddedFirstShadowNoDuplicateOrder(t *testing.T) {
-	bs, err := buildSchema(reflect.TypeOf(shadowEmbeddedFirst{}))
+	bs, err := buildSchema(reflect.TypeFor[shadowEmbeddedFirst]())
 	if err != nil {
 		t.Fatalf("buildSchema: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestSchema_EmbeddedFirstShadowNoDuplicateOrder(t *testing.T) {
 // embedded required field shadowed by an earlier-declared optional
 // parent field does not leak a stale required marker.
 func TestSchema_EmbeddedLastShadowDropsStaleRequired(t *testing.T) {
-	bs, err := buildSchema(reflect.TypeOf(shadowEmbeddedLast{}))
+	bs, err := buildSchema(reflect.TypeFor[shadowEmbeddedLast]())
 	if err != nil {
 		t.Fatalf("buildSchema: %v", err)
 	}

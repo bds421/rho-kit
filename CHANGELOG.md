@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### every module: Go 1.27 (breaking)
+
+- **build!: rho-kit needs Go 1.27.** Every module declares `go 1.27.4`, so
+  a consumer needs Go 1.27.4 or newer and a `go` directive of at least
+  1.27.4 in its go.mod. `kit-new` scaffolds `go 1.27` and a CI job on
+  Go 1.27.4. Go 1.27's `go fix` modernised the code
+  (`sync.WaitGroup.Go`, `t.Context`, range over integers,
+  `errors.AsType`, `slices` and `maps`); behaviour is unchanged.
+
+### security/jwtutil: jwx v4 (breaking)
+
+- **build!: jwx v4.** `jwtutil.WithSigningMethod` takes a
+  `jwa.SignatureAlgorithm` from `github.com/lestrrat-go/jwx/v4/jwa`; a
+  consumer that passes one imports that path instead of `.../jwx/v3/jwa`.
+  No other jwx type is part of the kit's API. On Go 1.27 jwx v4 needs no
+  `GOEXPERIMENT`. Verification changes only for malformed input: jwx v4
+  rejects protected headers with control characters or invalid UTF-8 and
+  malformed NumericDate strings such as `"1.5.5"`.
+
 ### app/redis, infra/redis, grpcx/client, security/jwtutil, authz/openfga
 
 - **fix: the TLS clones accept a `netutil.ReloadingClientTLS` config.**
@@ -70,6 +89,29 @@
   `Hash(sets, modules, extra...)` names the state from the migration files,
   the versions of named modules and extra text, and fails on a module the
   binary does not link.
+
+### dependencies
+
+- **chore(deps): every requirement at its newest release that is at least
+  7 days old** (supersedes Dependabot #153, #109–#111 and #119–#122),
+  among them River v0.51.2, pgx v5.13.0, gRPC v1.85.0, nats.go v1.56.0,
+  amqp091-go v1.17.0, goose v3.30.1, go-jose v4.1.9, testcontainers-go
+  v0.45.0, the Kubernetes client v0.37.2, the AWS SDK (s3 v1.116.0, kms
+  v1.63.0), google.golang.org/api v0.316.0 and golang.org/x/crypto
+  v0.59.0, net v0.63.0, oauth2 v0.38.0.
+- **chore(deps)(resilience/retry): cenkalti/backoff v6.** The new major
+  changes only backoff's own retry helpers; `ExponentialBackOff`, which
+  the kit wraps, is unchanged.
+- **build:** golangci-lint v2.15.0 (its errcheck now checks errors
+  received from a channel, which the tests and an example now do; two
+  functions over the gocognit limit are split), govulncheck v1.10.0, and
+  the workflows and the `kit-new` CI template pin actions/checkout v7.0.1
+  and actions/setup-go v7.1.0 by commit SHA.
+- **build(tools): `make check-dashboard-metrics` reads tracked files
+  only** (`git ls-files`), so a worktree or untracked copy under the
+  checkout no longer satisfies it. The redis, redis stream and redis queue
+  metric helpers take the full metric name, so the check finds each name
+  as one literal; the exposed names are unchanged.
 
 ## v2.49.0 — 2026-11-20
 

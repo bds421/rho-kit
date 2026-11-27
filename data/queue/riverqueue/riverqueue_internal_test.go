@@ -46,7 +46,7 @@ func TestDriverFromPoolWithListenerSchemaRejectsNonCanonicalIdentifiers(t *testi
 // twice — defeating the idempotency-token semantics and diverging from
 // the redisqueue sibling, which keys strictly on the message ID.
 func TestEnvelopeArgs_DedupeKeyedByIDOnly(t *testing.T) {
-	typ := reflect.TypeOf(envelopeArgs{})
+	typ := reflect.TypeFor[envelopeArgs]()
 
 	cases := []struct {
 		field      string

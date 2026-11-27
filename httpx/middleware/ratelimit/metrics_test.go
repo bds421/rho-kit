@@ -233,7 +233,7 @@ func TestKeyedActiveKeysGauge_ConstructionScrapeRace(t *testing.T) {
 		}
 	}()
 
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		_ = NewKeyedLimiter(100, time.Minute,
 			WithKeyedMetrics(metrics),
 			WithKeyedLimiterName("api_key"),

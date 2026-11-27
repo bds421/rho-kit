@@ -191,7 +191,7 @@ func newTransitHandler(t *testing.T, expectedContext string) http.Handler {
 			return
 		}
 		ciphertext := "vault:v3:" + base64.StdEncoding.EncodeToString([]byte(plaintext))
-		writeVaultData(t, w, map[string]interface{}{"ciphertext": ciphertext})
+		writeVaultData(t, w, map[string]any{"ciphertext": ciphertext})
 	})
 	mux.HandleFunc("/v1/platform/transit/decrypt/orders", func(w http.ResponseWriter, r *http.Request) {
 		req, ok := readTransitRequest(t, r, "decrypt", expectedContext)
@@ -208,7 +208,7 @@ func newTransitHandler(t *testing.T, expectedContext string) http.Handler {
 			t.Errorf("decode fake ciphertext: %v", err)
 			return
 		}
-		writeVaultData(t, w, map[string]interface{}{
+		writeVaultData(t, w, map[string]any{
 			"plaintext": base64.StdEncoding.EncodeToString(raw),
 		})
 	})
@@ -218,13 +218,13 @@ func newTransitHandler(t *testing.T, expectedContext string) http.Handler {
 // readTransitRequest checks the method and the context of an encrypt or
 // decrypt request (op) and returns its body. Like decodeTransitField it
 // reports failures via t.Error*.
-func readTransitRequest(t *testing.T, r *http.Request, op, expectedContext string) (map[string]interface{}, bool) {
+func readTransitRequest(t *testing.T, r *http.Request, op, expectedContext string) (map[string]any, bool) {
 	t.Helper()
 	if r.Method != http.MethodPut {
 		t.Errorf("%s method = %s, want PUT", op, r.Method)
 		return nil, false
 	}
-	var req map[string]interface{}
+	var req map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		t.Errorf("decode %s request: %v", op, err)
 		return nil, false
@@ -243,7 +243,7 @@ func readTransitRequest(t *testing.T, r *http.Request, op, expectedContext strin
 // decodeTransitField reads a base64 Transit field. It is called from server
 // goroutines, so it reports failures via t.Error* and signals success through
 // the boolean rather than aborting with t.Fatal*.
-func decodeTransitField(t *testing.T, req map[string]interface{}, field string) (string, bool) {
+func decodeTransitField(t *testing.T, req map[string]any, field string) (string, bool) {
 	t.Helper()
 	value, ok := req[field].(string)
 	if !ok || value == "" {
@@ -260,10 +260,10 @@ func decodeTransitField(t *testing.T, req map[string]interface{}, field string) 
 
 // writeVaultData encodes a Vault-style {"data": ...} response. It runs on a
 // server goroutine, so an encode failure is reported via t.Error*.
-func writeVaultData(t *testing.T, w http.ResponseWriter, data map[string]interface{}) {
+func writeVaultData(t *testing.T, w http.ResponseWriter, data map[string]any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{"data": data}); err != nil {
+	if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
 		t.Errorf("write response: %v", err)
 	}
 }

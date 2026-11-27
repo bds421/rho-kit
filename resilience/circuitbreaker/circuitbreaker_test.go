@@ -128,8 +128,7 @@ func TestExecuteCtx_AlreadyCancelledShortCircuits(t *testing.T) {
 func TestExecuteCtx_PassesCtxToFn(t *testing.T) {
 	cb := NewCircuitBreaker(2, time.Minute)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	var got context.Context
 	err := cb.ExecuteCtx(ctx, func(c context.Context) error {

@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"slices"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -175,10 +176,8 @@ func (c *keyedActiveKeysCollector) add(rl *KeyedLimiter) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, existing := range c.limiters {
-		if existing == rl {
-			return
-		}
+	if slices.Contains(c.limiters, rl) {
+		return
 	}
 	c.limiters = append(c.limiters, rl)
 }

@@ -72,7 +72,7 @@ func TestValidateObjectMetaRejectsInvalidMetadata(t *testing.T) {
 	}
 
 	tooMany := ObjectMeta{Custom: make(map[string]string, maxCustomMetaEntries+1)}
-	for i := 0; i < maxCustomMetaEntries+1; i++ {
+	for i := range maxCustomMetaEntries + 1 {
 		tooMany.Custom["k"+strings.Repeat("x", i+1)] = "v"
 	}
 	tests = append(tests, struct {

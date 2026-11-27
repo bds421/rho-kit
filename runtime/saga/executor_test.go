@@ -229,7 +229,7 @@ func TestDurableExecutor_ResumeStuckSagasReleasedByCtxCancel(t *testing.T) {
 	}))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	for i := 0; i < stuck; i++ {
+	for i := range stuck {
 		require.NoError(t, store.Put(ctx, saga.Instance{
 			ID:         "blocked-" + string(rune('a'+i)),
 			Definition: "ctx-block",
@@ -555,7 +555,7 @@ func TestDurableExecutor_ConcurrentRunSameInstanceDoesNotDoubleForward(t *testin
 	var wg sync.WaitGroup
 	wg.Add(2)
 	errs := make(chan error, 2)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		go func() {
 			defer wg.Done()
 			errs <- exec.Run(context.Background(), id)

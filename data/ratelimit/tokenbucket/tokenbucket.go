@@ -355,10 +355,7 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 	if secs >= float64(maxRetryAfter)/float64(time.Second) {
 		return false, maxRetryAfter, nil
 	}
-	delay := time.Duration(secs * float64(time.Second))
-	if delay < time.Nanosecond {
-		delay = time.Nanosecond
-	}
+	delay := max(time.Duration(secs*float64(time.Second)), time.Nanosecond)
 	return false, delay, nil
 }
 

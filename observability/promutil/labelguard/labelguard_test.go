@@ -218,23 +218,21 @@ func TestPermit_ConcurrentObservationsAreRaceFree(t *testing.T) {
 	// the assertion can fail if even one rejection is lost or
 	// misattributed across goroutines.
 	want := make([]int, vecs)
-	for round := 0; round < rounds; round++ {
+	for round := range rounds {
 		want[round%vecs] += goroutines
 	}
 
 	var wg sync.WaitGroup
-	for w := 0; w < goroutines; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for round := 0; round < rounds; round++ {
+	for range goroutines {
+		wg.Go(func() {
+			for round := range rounds {
 				cv := cvs[round%vecs]
 				// Mix accepted and rejected to exercise both the
 				// cache-miss write path and the lock-free read path.
 				g.ObserveCounter(cv, prometheus.Labels{"method": "GET"})
 				g.ObserveCounter(cv, prometheus.Labels{"method": "BAD"})
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

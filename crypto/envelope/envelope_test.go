@@ -477,16 +477,14 @@ func TestEncrypt_ConsistentUnderConcurrentRotation(t *testing.T) {
 
 	var stop atomic.Bool
 	var rotWG sync.WaitGroup
-	rotWG.Add(1)
-	go func() {
-		defer rotWG.Done()
+	rotWG.Go(func() {
 		toggleActiveKey(k, &stop)
-	}()
+	})
 
 	var wg sync.WaitGroup
 	wg.Add(writers)
 	errs := make(chan error, writers*perWriter)
-	for w := 0; w < writers; w++ {
+	for range writers {
 		go func() {
 			defer wg.Done()
 			if err := roundTrips(enc, []byte("rotation-race-payload"), perWriter); err != nil {
@@ -519,7 +517,7 @@ func toggleActiveKey(k *kekstatic.KEK, stop *atomic.Bool) {
 
 // roundTrips encrypts and decrypts pt n times and returns the first failure.
 func roundTrips(enc *envelope.Encryptor, pt []byte, n int) error {
-	for i := 0; i < n; i++ {
+	for range n {
 		blob, err := enc.Encrypt(context.Background(), pt, nil)
 		if err != nil {
 			return err

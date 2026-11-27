@@ -276,8 +276,8 @@ func pluralize(n int, unit string) string {
 		return "1 " + unit
 	}
 	plural := unit + "s"
-	if strings.HasSuffix(unit, "y") {
-		plural = strings.TrimSuffix(unit, "y") + "ies"
+	if before, ok := strings.CutSuffix(unit, "y"); ok {
+		plural = before + "ies"
 	}
 	return strconv.Itoa(n) + " " + plural
 }

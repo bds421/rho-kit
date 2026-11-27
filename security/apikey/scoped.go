@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -276,12 +277,7 @@ func (r *ScopedResolver) Resolve(ctx context.Context, presented string) (Princip
 
 // HasScope reports whether principal carries the exact scope string.
 func HasScope(p Principal, scope string) bool {
-	for _, s := range p.Scopes {
-		if s == scope {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.Scopes, scope)
 }
 
 func parseScopedToken(token, prefix string) (lookupPrefix, secret string, err error) {

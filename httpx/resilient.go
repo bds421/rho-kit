@@ -335,8 +335,7 @@ func (t *circuitBreakerTransport) RoundTrip(req *http.Request) (*http.Response, 
 
 	// A predicate-excluded transport error was wrapped to avoid counting it.
 	// Unwrap so the caller observes the original error, with no response.
-	var nc *notCountedError
-	if errors.As(err, &nc) {
+	if nc, ok := errors.AsType[*notCountedError](err); ok {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}

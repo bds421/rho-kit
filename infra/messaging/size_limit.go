@@ -2,6 +2,7 @@ package messaging
 
 import (
 	"fmt"
+	"maps"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
 )
@@ -113,9 +114,7 @@ func (l MessageSizeLimiter) WithRouteMaxBytes(exchange, routingKey string, maxBy
 		l.routeMaxBytes = make(map[messageSizeRoute]int, 1)
 	} else {
 		clone := make(map[messageSizeRoute]int, len(l.routeMaxBytes)+1)
-		for k, v := range l.routeMaxBytes {
-			clone[k] = v
-		}
+		maps.Copy(clone, l.routeMaxBytes)
 		l.routeMaxBytes = clone
 	}
 	l.routeMaxBytes[messageSizeRoute{exchange: exchange, routingKey: routingKey}] = maxBytes

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
@@ -563,8 +564,8 @@ func initOneModule(ctx context.Context, m Module, mc ModuleContext) error {
 // Each close is wrapped in panic recovery so that a misbehaving module
 // cannot prevent subsequent modules from being cleaned up.
 func closeModules(ctx context.Context, modules []Module, logger *slog.Logger) {
-	for i := len(modules) - 1; i >= 0; i-- {
-		m := modules[i]
+	for _, m := range slices.Backward(modules) {
+
 		func() {
 			defer func() {
 				if r := recover(); r != nil {

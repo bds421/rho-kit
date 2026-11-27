@@ -265,7 +265,7 @@ func (p *RoutingPool) acquireReplica(ctx context.Context) (*pgxpool.Conn, bool) 
 // returns the first connection acquired.
 func (p *RoutingPool) acquireFromReplicas(ctx context.Context, start int, requireHealthy bool) (*pgxpool.Conn, bool) {
 	n := len(p.replicas)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		idx := (start + i) % n
 		st := p.replicas[idx]
 		if st.healthy.Load() != requireHealthy {

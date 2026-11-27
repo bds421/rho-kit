@@ -24,7 +24,7 @@ import (
 func setupQuorum(t *testing.T, n int) []goredislib.UniversalClient {
 	t.Helper()
 	clients := make([]goredislib.UniversalClient, 0, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		mr := miniredis.RunT(t)
 		c := goredislib.NewClient(&goredislib.Options{
 			Addr:               mr.Addr(),
@@ -136,7 +136,7 @@ func TestQuorumLocker_SurvivesMinorityFailure(t *testing.T) {
 	// rather than going through the t.Cleanup-driven helper.
 	mrs := make([]*miniredis.Miniredis, 3)
 	clients := make([]goredislib.UniversalClient, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		mrs[i] = miniredis.RunT(t)
 		clients[i] = goredislib.NewClient(&goredislib.Options{
 			Addr:               mrs[i].Addr(),
@@ -174,7 +174,7 @@ func TestQuorumLocker_SurvivesMinorityFailure(t *testing.T) {
 func TestQuorumLocker_LosesWithoutMajority(t *testing.T) {
 	mrs := make([]*miniredis.Miniredis, 3)
 	clients := make([]goredislib.UniversalClient, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		mrs[i] = miniredis.RunT(t)
 		clients[i] = goredislib.NewClient(&goredislib.Options{
 			Addr:               mrs[i].Addr(),

@@ -542,12 +542,10 @@ func (r *Relay) publishConcurrently(ctx context.Context, entries []Entry, heartb
 		if ctx.Err() != nil {
 			break
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
 			r.publishEntry(ctx, entry, heartbeat)
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -680,10 +678,7 @@ func (r *Relay) startBatchHeartbeat(ctx context.Context, entries []Entry) *batch
 		doneCh:  make(chan struct{}),
 	}
 
-	interval := r.staleDuration / 3
-	if interval < minHeartbeatInterval {
-		interval = minHeartbeatInterval
-	}
+	interval := max(r.staleDuration/3, minHeartbeatInterval)
 
 	go func() {
 		defer close(h.doneCh)

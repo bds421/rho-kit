@@ -73,8 +73,7 @@ func (e safeCauseError) Unwrap() error {
 // IsTransient reports whether err (or any error in its chain) is a transient
 // storage error. Returns false for nil and non-StorageError errors.
 func IsTransient(err error) bool {
-	var se *StorageError
-	if errors.As(err, &se) {
+	if se, ok := errors.AsType[*StorageError](err); ok {
 		return se.Transient()
 	}
 	return false

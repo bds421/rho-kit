@@ -1636,7 +1636,7 @@ func countJournalLines(t *testing.T, path string) int {
 		t.Fatalf("read state file: %v", err)
 	}
 	count := 0
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		if strings.TrimSpace(line) != "" {
 			count++
 		}

@@ -3,6 +3,7 @@ package doctruth
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,9 +83,7 @@ func CheckHosts(o HostOptions) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	for h, from := range o.Unnamed {
-		hosts[h] = from
-	}
+	maps.Copy(hosts, o.Unnamed)
 	var findings []string
 	for _, h := range sortedKeys(hosts) {
 		if _, link := o.NotDialed[h]; !link && !declared(o.Declared, h) {
@@ -137,7 +136,7 @@ func shippedHosts(o HostOptions) (map[string]string, error) {
 	}
 	hosts := map[string]string{}
 	built := map[string]bool{}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		fields := strings.SplitN(line, "\t", 3)
 		if len(fields) < 3 || !slices.Contains(modules, fields[0]) {
 			continue
@@ -186,8 +185,7 @@ func goCmd(dir, goos string, args ...string) (string, error) {
 	}
 	out, err := cmd.Output()
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			return "", fmt.Errorf("go %s: %w: %s", strings.Join(args[:2], " "), err, strings.TrimSpace(string(exit.Stderr)))
 		}
 		return "", fmt.Errorf("go %s: %w", strings.Join(args[:2], " "), err)
@@ -200,7 +198,7 @@ func goCmd(dir, goos string, args ...string) (string, error) {
 func headedSection(doc, name string) string {
 	var section []string
 	level, fenced := 0, false
-	for _, line := range strings.Split(doc, "\n") {
+	for line := range strings.SplitSeq(doc, "\n") {
 		if strings.HasPrefix(line, "```") {
 			fenced = !fenced
 		}

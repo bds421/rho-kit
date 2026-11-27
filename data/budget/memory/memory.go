@@ -294,10 +294,7 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 	// values consistent with the period boundary above. Floor at zero
 	// to defend against the rare case where the clock advances
 	// between the period decision and this calculation.
-	retry := nextStart.Sub(now)
-	if retry < 0 {
-		retry = 0
-	}
+	retry := max(nextStart.Sub(now), 0)
 	// Defensive: a future change to Refund or external state could
 	// in principle leave used > cap. Treat that as "no headroom"
 	// rather than letting `cap - used` underflow remaining.
@@ -345,10 +342,7 @@ func (b *Budget) Peek(ctx context.Context, key string) (int64, error) {
 	if bk.periodN.Load() != periodID {
 		return b.cap, nil
 	}
-	rem := b.cap - bk.used.Load()
-	if rem < 0 {
-		rem = 0
-	}
+	rem := max(b.cap-bk.used.Load(), 0)
 	return rem, nil
 }
 
@@ -414,10 +408,7 @@ func (b *Budget) Refund(ctx context.Context, key string, amount int64, chargedAt
 		// period accounting. Report full cap for the absent charge period.
 		return b.cap, nil
 	}
-	used := bk.used.Load() - amount
-	if used < 0 {
-		used = 0
-	}
+	used := max(bk.used.Load()-amount, 0)
 	bk.used.Store(used)
 	return b.cap - used, nil
 }

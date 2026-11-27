@@ -1043,7 +1043,7 @@ func TestV4Local_CloseConcurrentWithSealVerify(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 64)
-	for i := 0; i < 16; i++ {
+	for range 16 {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
@@ -1106,7 +1106,7 @@ func TestV4PublicSigner_CloseConcurrentWithSign(t *testing.T) {
 	start := make(chan struct{})
 	done := make(chan struct{})
 
-	for i := 0; i < signers; i++ {
+	for range signers {
 		go func() {
 			defer func() { done <- struct{}{} }()
 			<-start
@@ -1125,7 +1125,7 @@ func TestV4PublicSigner_CloseConcurrentWithSign(t *testing.T) {
 	close(start)
 	require.NoError(t, <-closeDone)
 
-	for i := 0; i < signers; i++ {
+	for range signers {
 		<-done
 	}
 

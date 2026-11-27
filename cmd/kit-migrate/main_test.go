@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -434,12 +435,7 @@ func assertInOrder(t *testing.T, haystack string, needles ...string) {
 }
 
 func contains(values []string, needle string) bool {
-	for _, value := range values {
-		if value == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, needle)
 }
 
 // TestPublish_AuditlogAndOutboxRoundTrip guards L200: kit-migrate

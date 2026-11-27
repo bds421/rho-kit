@@ -351,9 +351,9 @@ func TestComputeCache_ContextCancellation(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = cc.Close() }()
 
-	var calls int32
+	var calls atomic.Int32
 	fn := func(_ context.Context) (string, time.Duration, error) {
-		atomic.AddInt32(&calls, 1)
+		calls.Add(1)
 		return "ok", 5 * time.Minute, nil
 	}
 
@@ -366,7 +366,7 @@ func TestComputeCache_ContextCancellation(t *testing.T) {
 
 	// Give the detached compute a moment to land in the backend.
 	require.Eventually(t, func() bool {
-		return atomic.LoadInt32(&calls) >= 1
+		return calls.Load() >= 1
 	}, time.Second, 5*time.Millisecond, "compute did not run on the detached context")
 }
 
@@ -390,11 +390,9 @@ func TestComputeCache_ContextCancellationDoesNotAffectOtherCallers(t *testing.T)
 	var wg sync.WaitGroup
 	var val1 string
 	var err1 error
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		val1, err1 = cc.GetOrCompute(ctx1, "shared", fn)
-	}()
+	})
 
 	// Wait for fn to start executing.
 	<-started
@@ -402,11 +400,9 @@ func TestComputeCache_ContextCancellationDoesNotAffectOtherCallers(t *testing.T)
 	// Caller 2: should NOT be affected by caller 1's cancellation.
 	var val2 string
 	var err2 error
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		val2, err2 = cc.GetOrCompute(context.Background(), "shared", fn)
-	}()
+	})
 
 	// Give caller 2 time to join the singleflight group.
 	time.Sleep(50 * time.Millisecond)

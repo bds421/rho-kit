@@ -213,7 +213,7 @@ func TestNewServer_MaxConcurrentStreamsCapsInflightStreams(t *testing.T) {
 	// Open `streamCap` long-running Watch streams and confirm each
 	// reaches its handler.
 	var firstCancel context.CancelFunc
-	for i := 0; i < streamCap; i++ {
+	for i := range streamCap {
 		ctx, cancel := context.WithCancel(context.Background())
 		_, err := client.Watch(ctx, &healthpb.HealthCheckRequest{})
 		require.NoError(t, err)

@@ -211,8 +211,7 @@ func serveListener(ctx context.Context, srv *http.Server, ln net.Listener) error
 		// Bind/accept failure: unblock the shutdown goroutine and surface
 		// the original error.
 		cancelServe()
-		<-shutdownErr
-		return serveErr
+		return errors.Join(serveErr, <-shutdownErr)
 	}
 
 	// ListenAndServe returned because Shutdown began (ErrServerClosed) or

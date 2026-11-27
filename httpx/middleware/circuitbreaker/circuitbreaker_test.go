@@ -26,7 +26,7 @@ func TestMiddleware_HappyPathLetsRequestThrough(t *testing.T) {
 	cb := circuitbreaker.NewCircuitBreaker(3, 50*time.Millisecond)
 	h := cbmw.Middleware(cbmw.WithBreaker(cb))(newHandler(http.StatusOK))
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -47,7 +47,7 @@ func TestMiddleware_TripsOn5xxAndShortCircuits(t *testing.T) {
 	)(failingHandler)
 
 	// First three failures trip the breaker.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 		require.Equal(t, http.StatusInternalServerError, rec.Code,
@@ -71,7 +71,7 @@ func TestMiddleware_4xxIsNotAFailureByDefault(t *testing.T) {
 	h := cbmw.Middleware(cbmw.WithBreaker(cb))(newHandler(http.StatusUnauthorized))
 
 	// 10 401s — default predicate must NOT trip the breaker.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 		require.Equal(t, http.StatusUnauthorized, rec.Code)
@@ -155,7 +155,7 @@ func TestMiddleware_BreakerForReturningNilBypasses(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 		require.Equal(t, http.StatusInternalServerError, rec.Code)

@@ -1175,11 +1175,11 @@ func TestWithActorFromHeader_AmbiguousHeaderRefusesStrictAuditDispatch(t *testin
 
 type failingLogger struct {
 	inner   actionlog.Logger
-	appends int64
+	appends atomic.Int64
 }
 
 func (l *failingLogger) Append(_ context.Context, _ actionlog.Entry) (actionlog.Entry, error) {
-	atomic.AddInt64(&l.appends, 1)
+	l.appends.Add(1)
 	return actionlog.Entry{}, errors.New("audit store unavailable")
 }
 
@@ -1208,7 +1208,7 @@ func TestServer_ActionLog_StrictMode_AppendFailure_FailsResponse(t *testing.T) {
 	require.Nil(t, rpc.Error)
 	require.True(t, res.IsError, "strict-mode append failure must surface as tool error")
 
-	assert.EqualValues(t, 1, atomic.LoadInt64(&logger.appends))
+	assert.EqualValues(t, 1, logger.appends.Load())
 	assert.Equal(t, 1, calls, "tool ran before the audit append failed (documented ordering)")
 }
 
@@ -1239,11 +1239,11 @@ func TestServer_ActionLog_LooseMode_AppendFailure_StillReturnsResult(t *testing.
 type blockingForeverLogger struct {
 	inner   actionlog.Logger
 	release chan struct{}
-	calls   int64
+	calls   atomic.Int64
 }
 
 func (l *blockingForeverLogger) Append(ctx context.Context, e actionlog.Entry) (actionlog.Entry, error) {
-	atomic.AddInt64(&l.calls, 1)
+	l.calls.Add(1)
 	select {
 	case <-l.release:
 	case <-ctx.Done():
@@ -1284,7 +1284,7 @@ func TestServer_AsyncAudit_QueueSaturation_DropsRatherThanLeaks(t *testing.T) {
 	h := withTenantHandler(s.HTTP(), "tenant-sat")
 
 	const N = 20
-	for i := 0; i < N; i++ {
+	for range N {
 		res, _ := callTool(t, h, "echo", map[string]any{"message": "hi"}, nil)
 		require.False(t, res.IsError, "async mode must keep responding while queue saturates")
 	}
@@ -1312,7 +1312,7 @@ func TestServer_AsyncAudit_StopDrainsWorkers(t *testing.T) {
 	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
 
 	h := withTenantHandler(s.HTTP(), "tenant-drain")
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		_, _ = callTool(t, h, "echo", map[string]any{"message": "hi"}, nil)
 	}
 
@@ -1417,7 +1417,7 @@ func TestServer_AsyncAudit_StopRace_NoLostJobs(t *testing.T) {
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for range N {
 		go func() {
 			defer wg.Done()
 			<-start

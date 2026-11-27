@@ -105,7 +105,7 @@ func TestGateway_BreakerOpensAfterSustainedFailures(t *testing.T) {
 	// consecutive failures; after that the breaker should reject
 	// fast with 503.
 	var saw503 bool
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		status := send()
 		if status == http.StatusServiceUnavailable {
 			saw503 = true
@@ -182,13 +182,11 @@ func TestGateway_BulkheadFullReturns503(t *testing.T) {
 	// They block on `release` so the bulkhead stays saturated. Worker
 	// goroutines use assert.* (t.Error, goroutine-safe) so a transport
 	// failure records the failure without aborting the goroutine.
-	for i := 0; i < bulkheadMaxInFlight; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range bulkheadMaxInFlight {
+		wg.Go(func() {
 			_, err := send()
 			assert.NoError(t, err, "saturating request must not fail at the transport layer")
-		}()
+		})
 	}
 
 	// Wait until the bulkhead is actually full before firing the

@@ -344,7 +344,7 @@ func TestList_CursorPaginatesAllRows(t *testing.T) {
 	store := New(testCursorSigner(t))
 	now := time.Now().UTC()
 	const total = 25
-	for i := 0; i < total; i++ {
+	for i := range total {
 		_, err := store.Create(context.Background(), approval.Request{
 			ID:        fmt.Sprintf("r%02d", i),
 			TenantID:  "t",

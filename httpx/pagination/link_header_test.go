@@ -33,7 +33,7 @@ func parseLinkHeader(t *testing.T, header string) map[string]string {
 		// Find rel="..."
 		params := raw[end+1:]
 		var rel string
-		for _, p := range strings.Split(params, ";") {
+		for p := range strings.SplitSeq(params, ";") {
 			p = strings.TrimSpace(p)
 			if !strings.HasPrefix(p, "rel=") {
 				continue

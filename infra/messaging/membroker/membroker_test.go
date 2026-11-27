@@ -52,7 +52,7 @@ func TestBroker_ConcurrentPublishAndDrainDeliversEachMessageOnce(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(messageCount)
-	for i := 0; i < messageCount; i++ {
+	for i := range messageCount {
 		go func(i int) {
 			defer wg.Done()
 			msg, err := messaging.NewMessage("user.created", map[string]int{"i": i})

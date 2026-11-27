@@ -220,7 +220,7 @@ func loadShippedWaves(repoRoot string) (map[int]bool, error) {
 // claim cannot be validated by an incidental commit subject.
 func parseShippedWaves(gitLog string) map[int]bool {
 	waves := map[int]bool{}
-	for _, line := range strings.Split(gitLog, "\n") {
+	for line := range strings.SplitSeq(gitLog, "\n") {
 		if !commitPrefixRE.MatchString(line) {
 			continue
 		}
@@ -228,7 +228,7 @@ func parseShippedWaves(gitLog string) map[int]bool {
 		for _, m := range matches {
 			// m[1] may be a single number ("140") or a "+"-joined
 			// group ("4+5"); split and record every number.
-			for _, part := range strings.Split(m[1], "+") {
+			for part := range strings.SplitSeq(m[1], "+") {
 				n, perr := strconv.Atoi(strings.TrimSpace(part))
 				if perr != nil {
 					continue

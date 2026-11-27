@@ -586,8 +586,7 @@ func TestEnvReloader_WithImmediateLoadAppliesEnvBeforeFirstSIGHUP(t *testing.T) 
 		WithImmediateLoad(),
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	started := make(chan struct{})
 	go func() {

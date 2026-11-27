@@ -616,7 +616,7 @@ func TestSign_KeyStoreFreshCopyContract(t *testing.T) {
 
 	client := &http.Client{Transport: WrapKeyStore(http.DefaultTransport, store)}
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		resp, err := client.Post(srv.URL+"/api/x", "application/json", strings.NewReader("payload"))
 		require.NoError(t, err, "request %d failed — a contract-abiding store must sign every request", i)
 		require.NoError(t, resp.Body.Close())

@@ -128,8 +128,7 @@ func methodLabel(method string) string {
 
 func tryRegister(reg prometheus.Registerer, c prometheus.Collector) prometheus.Collector {
 	if err := reg.Register(c); err != nil {
-		var are prometheus.AlreadyRegisteredError
-		if errors.As(err, &are) {
+		if are, ok := errors.AsType[prometheus.AlreadyRegisteredError](err); ok {
 			return are.ExistingCollector
 		}
 		panic("grpcx/client/interceptor: metric registration failed: " + err.Error())

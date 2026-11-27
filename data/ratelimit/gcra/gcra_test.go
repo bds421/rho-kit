@@ -46,7 +46,7 @@ func TestAllow_AdmitsBurstAtStart(t *testing.T) {
 	now := time.Now()
 	l := New(time.Second, 5, WithClock(func() time.Time { return now }))
 	// 5 in a row at the same instant — within burst tolerance.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ok, _, err := l.Allow(context.Background(), "k")
 		require.NoError(t, err)
 		assert.True(t, ok, "burst slot %d should admit", i+1)
@@ -62,7 +62,7 @@ func TestAllow_SmoothRateAfterBurst(t *testing.T) {
 	now := time.Now()
 	l := New(time.Second, 5, WithClock(func() time.Time { return now })) // 5/s smoothed; rate=200ms
 	// Drain the burst.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		require.True(t, mustAllow(t, l, "k"))
 	}
 	// Burst exhausted: another admit at the same instant must deny.
@@ -317,7 +317,7 @@ func TestAllow_SmoothRatePrecisionUnderFastClock(t *testing.T) {
 
 	// Phase 1: events at perfect 1000Hz must all admit.
 	admitted := 0
-	for i := 0; i < burst; i++ {
+	for range burst {
 		ok, _, err := l.Allow(context.Background(), "k")
 		require.NoError(t, err)
 		if ok {
@@ -333,7 +333,7 @@ func TestAllow_SmoothRatePrecisionUnderFastClock(t *testing.T) {
 	// 1000/sec limiter can never admit more than 2*burst events at a
 	// single instant.
 	burstAdmits := 0
-	for i := 0; i < burst*4; i++ {
+	for range burst * 4 {
 		ok, _, err := l.Allow(context.Background(), "k")
 		require.NoError(t, err)
 		if ok {

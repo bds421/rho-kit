@@ -43,6 +43,7 @@ package redact
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 )
 
 // maxErrorFrames bounds how many frames the unwrap walkers descend
@@ -98,7 +99,7 @@ func ErrorValue(err error) string {
 	// Bound the descent at maxErrorFrames so a pathological wrap-loop
 	// (a buggy error whose Unwrap returns an ancestor) cannot spin this
 	// loop forever — the same threat model ErrorChainTypes guards.
-	for i := 0; i < maxErrorFrames; i++ {
+	for range maxErrorFrames {
 		next := unwrapCause(unwrapped)
 		if next == nil {
 			break
@@ -180,9 +181,9 @@ func walkChain(err error, visit func(error)) {
 		case interface{ Unwrap() []error }:
 			causes := x.Unwrap()
 			// Push in reverse so the first branch is visited first.
-			for i := len(causes) - 1; i >= 0; i-- {
-				if causes[i] != nil {
-					stack = append(stack, causes[i])
+			for _, cause := range slices.Backward(causes) {
+				if cause != nil {
+					stack = append(stack, cause)
 				}
 			}
 		}

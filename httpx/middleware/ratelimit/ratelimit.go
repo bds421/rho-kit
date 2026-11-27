@@ -243,10 +243,7 @@ func (rl *Limiter) allow(ip string) (bool, time.Duration, error) {
 			rl.observeDecision(rateLimitOutcomeAllowed)
 			return true, 0, nil
 		}
-		remaining := rl.window - elapsed
-		if remaining < 0 {
-			remaining = 0
-		}
+		remaining := max(rl.window-elapsed, 0)
 		rl.observeDecision(rateLimitOutcomeLimited)
 		return false, remaining, nil
 	}

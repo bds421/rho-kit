@@ -79,30 +79,33 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 			},
 			[]string{"redis_instance", "command"},
 		)),
-		connectionPoolHits:     instanceGauge(reg, "pool_hits", "Snapshot of connection pool hit count (reused connections)."),
-		connectionPoolMisses:   instanceGauge(reg, "pool_misses", "Snapshot of connection pool miss count (new connections)."),
-		connectionPoolTimeouts: instanceGauge(reg, "pool_timeouts", "Snapshot of connection pool timeout count."),
-		connectionPoolSize:     instanceGauge(reg, "pool_total_conns", "Total number of connections in the pool."),
-		connectionPoolIdle:     instanceGauge(reg, "pool_idle_conns", "Number of idle connections in the pool."),
-		connectionPoolStale:    instanceGauge(reg, "pool_stale_conns", "Number of stale connections removed from the pool."),
-		reconnectAttempts:      instanceCounter(reg, "reconnect_attempts_total", "Total number of reconnection attempts."),
-		reconnectSuccesses:     instanceCounter(reg, "reconnect_successes_total", "Total number of successful reconnections."),
-		connectionHealthy:      instanceGauge(reg, "connection_healthy", "Whether the Redis connection is healthy (1) or not (0)."),
+		connectionPoolHits:     instanceGauge(reg, "redis_pool_hits", "Snapshot of connection pool hit count (reused connections)."),
+		connectionPoolMisses:   instanceGauge(reg, "redis_pool_misses", "Snapshot of connection pool miss count (new connections)."),
+		connectionPoolTimeouts: instanceGauge(reg, "redis_pool_timeouts", "Snapshot of connection pool timeout count."),
+		connectionPoolSize:     instanceGauge(reg, "redis_pool_total_conns", "Total number of connections in the pool."),
+		connectionPoolIdle:     instanceGauge(reg, "redis_pool_idle_conns", "Number of idle connections in the pool."),
+		connectionPoolStale:    instanceGauge(reg, "redis_pool_stale_conns", "Number of stale connections removed from the pool."),
+		reconnectAttempts:      instanceCounter(reg, "redis_reconnect_attempts_total", "Total number of reconnection attempts."),
+		reconnectSuccesses:     instanceCounter(reg, "redis_reconnect_successes_total", "Total number of successful reconnections."),
+		connectionHealthy:      instanceGauge(reg, "redis_connection_healthy", "Whether the Redis connection is healthy (1) or not (0)."),
 	}
 }
 
 // instanceGauge registers a redis gauge labelled by redis_instance.
+// Callers pass the full metric name, so tools/check-dashboard-metrics.sh
+// finds it as one literal.
 func instanceGauge(reg prometheus.Registerer, name, help string) *prometheus.GaugeVec {
 	return promutil.MustRegisterOrGet(reg, prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{Namespace: "redis", Name: name, Help: help},
+		prometheus.GaugeOpts{Name: name, Help: help},
 		[]string{"redis_instance"},
 	))
 }
 
 // instanceCounter registers a redis counter labelled by redis_instance.
+// Callers pass the full metric name, as for instanceGauge.
 func instanceCounter(reg prometheus.Registerer, name, help string) *prometheus.CounterVec {
 	return promutil.MustRegisterOrGet(reg, prometheus.NewCounterVec(
-		prometheus.CounterOpts{Namespace: "redis", Name: name, Help: help},
+		prometheus.CounterOpts{Name: name, Help: help},
 		[]string{"redis_instance"},
 	))
 }

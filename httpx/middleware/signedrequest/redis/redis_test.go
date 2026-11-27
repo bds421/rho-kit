@@ -303,7 +303,7 @@ func TestSeenOrStore_ConcurrentSameNonceExactlyOneWins(t *testing.T) {
 
 	start := make(chan struct{})
 	wg.Add(callers)
-	for i := 0; i < callers; i++ {
+	for range callers {
 		go func() {
 			defer wg.Done()
 			<-start

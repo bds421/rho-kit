@@ -273,15 +273,13 @@ func testConcurrentTryLockSerializes(t *testing.T, factory Factory) {
 
 	var winners atomic.Int32
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 16 {
+		wg.Go(func() {
 			_, _, ok, err := s.TryLock(ctx, key, nil, time.Minute)
 			if err == nil && ok {
 				winners.Add(1)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	assert.Equal(t, int32(1), winners.Load(), "exactly one caller must win the concurrent TryLock race")

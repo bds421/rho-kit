@@ -272,12 +272,12 @@ func decodeLockValue(v string) (token string, fingerprint []byte, ok bool) {
 		return "", nil, false
 	}
 	rest := v[len(lockMarker):]
-	idx := strings.IndexByte(rest, ':')
-	if idx < 0 {
+	before, after, ok := strings.Cut(rest, ":")
+	if !ok {
 		return "", nil, false
 	}
-	token = rest[:idx]
-	enc := rest[idx+1:]
+	token = before
+	enc := after
 	if enc == "" {
 		return token, nil, true // absent fingerprint
 	}

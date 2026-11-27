@@ -115,7 +115,7 @@ func TestHandleDelivery_UnmarshalFailure_AcksAndDiscards(t *testing.T) {
 		Acknowledger: ack,
 		Body:         []byte(`invalid`),
 	}
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	handler := func(_ context.Context, _ messaging.Delivery) error { return nil }
 	c.handleDelivery(context.Background(), delivery, handler, binding)
@@ -131,7 +131,7 @@ func TestConsumer_HandleDelivery_Success_AcksMessage(t *testing.T) {
 	c := newTestConsumer(nil, ConsumerHooks{})
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	handler := func(_ context.Context, _ messaging.Delivery) error { return nil }
 	c.handleDelivery(context.Background(), delivery, handler, binding)
@@ -145,7 +145,7 @@ func TestConsumer_HandleDelivery_HandlerError_CallsHandleFailure(t *testing.T) {
 	c := newTestConsumer(nil, ConsumerHooks{})
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	handler := func(_ context.Context, _ messaging.Delivery) error {
 		return errors.New("processing failed")
@@ -174,7 +174,7 @@ func TestConsumer_HandleDelivery_ForeignProducerInvalidMessage_AcksAndDiscards(t
 			assert.Equal(t, "test-queue", queue)
 		},
 	})
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	// Craft a wire-level message that JSON-decodes cleanly but has an
 	// oversized message Type (foreign producer bypassing kit
@@ -219,7 +219,7 @@ func TestConsumer_HandleDelivery_UnmarshalError_DiscardHookCalled(t *testing.T) 
 		Acknowledger: ack,
 		Body:         []byte(`bad json`),
 	}
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	handler := func(_ context.Context, _ messaging.Delivery) error { return nil }
 	c.handleDelivery(context.Background(), delivery, handler, binding)
@@ -240,7 +240,7 @@ func TestConsumer_HandleFailure_PermanentError_AcksAndDiscards(t *testing.T) {
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
 	// No DeadExchange configured — fall back to ack-discard.
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	c.handleFailure(context.Background(), delivery, msg, binding, apperror.NewPermanent("bad data"))
 
@@ -265,7 +265,7 @@ func TestConsumer_HandleFailure_PermanentError_DeadLettersWhenDLEConfigured(t *t
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{
-		BindingSpec:  messaging.BindingSpec{ConsumerGroup: "test-queue", RoutingKey: "test.event"},
+		ConsumerGroup: "test-queue", RoutingKey: "test.event",
 		DeadExchange: "test-exchange.dead",
 	}
 
@@ -285,7 +285,7 @@ func TestConsumer_HandleFailure_NoRetryConfig_Discards(t *testing.T) {
 	})
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("transient error"))
 
@@ -302,11 +302,9 @@ func TestConsumer_HandleFailure_Retry_Nacks(t *testing.T) {
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
-		},
+		ConsumerGroup: "test-queue",
+		RoutingKey:    "test.event",
+		Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 	}
 
 	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("transient"))
@@ -325,11 +323,9 @@ func TestConsumer_HandleFailure_RetryHookPanic_DoesNotPanic(t *testing.T) {
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
-		},
+		ConsumerGroup: "test-queue",
+		RoutingKey:    "test.event",
+		Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 	}
 
 	assert.NotPanics(t, func() {
@@ -366,12 +362,10 @@ func TestConsumer_HandleFailure_DeadLetter_PublishesAndAcks(t *testing.T) {
 	}
 
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
-		},
-		DeadExchange: "test-exchange.dead",
+		ConsumerGroup: "test-queue",
+		RoutingKey:    "test.event",
+		Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+		DeadExchange:  "test-exchange.dead",
 	}
 
 	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("too many retries"))
@@ -405,12 +399,10 @@ func TestConsumer_HandleFailure_DeadLetter_PublishFails_Nacks(t *testing.T) {
 	}
 
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
-		},
-		DeadExchange: "test-exchange.dead",
+		ConsumerGroup: "test-queue",
+		RoutingKey:    "test.event",
+		Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+		DeadExchange:  "test-exchange.dead",
 	}
 
 	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("too many retries"))
@@ -442,12 +434,10 @@ func TestConsumer_HandleFailure_DeadLetterPublisherPanic_Nacks(t *testing.T) {
 		},
 	}
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
-		},
-		DeadExchange: "test-exchange.dead",
+		ConsumerGroup: "test-queue",
+		RoutingKey:    "test.event",
+		Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+		DeadExchange:  "test-exchange.dead",
 	}
 
 	assert.NotPanics(t, func() {
@@ -484,11 +474,9 @@ func TestConsumer_HandleFailure_ForceDiscard_AcksAndDiscards(t *testing.T) {
 	}
 
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
-		},
+		ConsumerGroup: "test-queue",
+		RoutingKey:    "test.event",
+		Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 	}
 
 	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("stuck"))
@@ -504,7 +492,7 @@ func TestConsumer_HandleDelivery_AckFailure_DoesNotPanic(t *testing.T) {
 	c := newTestConsumer(nil, ConsumerHooks{})
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	handler := func(_ context.Context, _ messaging.Delivery) error { return nil }
 	c.handleDelivery(context.Background(), delivery, handler, binding)
@@ -519,7 +507,7 @@ func TestConsumer_HandleFailure_PermanentError_AckFailure(t *testing.T) {
 	c := newTestConsumer(nil, ConsumerHooks{})
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	c.handleFailure(context.Background(), delivery, msg, binding, apperror.NewPermanent("bad"))
 	assert.True(t, ack.acked)
@@ -531,7 +519,7 @@ func TestConsumer_HandleFailure_Retry_NackFailure(t *testing.T) {
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue", RoutingKey: "test.event", Retry: &messaging.RetryPolicy{MaxRetries: 3}},
+		ConsumerGroup: "test-queue", RoutingKey: "test.event", Retry: &messaging.RetryPolicy{MaxRetries: 3},
 	}
 
 	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("transient"))
@@ -543,7 +531,7 @@ func TestConsumer_HandleFailure_Discard_AckFailure(t *testing.T) {
 	c := newTestConsumer(nil, ConsumerHooks{})
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("transient"))
 	assert.True(t, ack.acked)
@@ -565,7 +553,7 @@ func TestConsumer_HandleFailure_ForceDiscard_AckFailure(t *testing.T) {
 		},
 	}
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue", RoutingKey: "test.event", Retry: &messaging.RetryPolicy{MaxRetries: 3}},
+		ConsumerGroup: "test-queue", RoutingKey: "test.event", Retry: &messaging.RetryPolicy{MaxRetries: 3},
 	}
 
 	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("stuck"))
@@ -589,7 +577,7 @@ func TestConsumer_HandleFailure_DeadLetter_PublishFails_NackFailure(t *testing.T
 		},
 	}
 	binding := messaging.Binding{
-		BindingSpec:  messaging.BindingSpec{ConsumerGroup: "test-queue", RoutingKey: "test.event", Retry: &messaging.RetryPolicy{MaxRetries: 3}},
+		ConsumerGroup: "test-queue", RoutingKey: "test.event", Retry: &messaging.RetryPolicy{MaxRetries: 3},
 		DeadExchange: "test-exchange.dead",
 	}
 
@@ -614,7 +602,7 @@ func TestConsumer_HandleFailure_DeadLetter_AckFailure(t *testing.T) {
 		},
 	}
 	binding := messaging.Binding{
-		BindingSpec:  messaging.BindingSpec{ConsumerGroup: "test-queue", RoutingKey: "test.event", Retry: &messaging.RetryPolicy{MaxRetries: 3}},
+		ConsumerGroup: "test-queue", RoutingKey: "test.event", Retry: &messaging.RetryPolicy{MaxRetries: 3},
 		DeadExchange: "test-exchange.dead",
 	}
 
@@ -633,7 +621,7 @@ func TestConsumer_HandleDelivery_HandlerPanic_DoesNotKillGoroutine(t *testing.T)
 	})
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	handler := func(_ context.Context, _ messaging.Delivery) error {
 		panic("boom")
@@ -653,12 +641,10 @@ func TestConsumer_HandleDelivery_HandlerPanicWithRetry_RoutesToDiscard(t *testin
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
-		},
-		DeadExchange: "test-exchange.dead",
+		ConsumerGroup: "test-queue",
+		RoutingKey:    "test.event",
+		Retry:         &messaging.RetryPolicy{MaxRetries: 3},
+		DeadExchange:  "test-exchange.dead",
 	}
 
 	handler := func(_ context.Context, _ messaging.Delivery) error {
@@ -679,7 +665,7 @@ func TestConsumer_HandleFailure_NilHooks_DoNotPanic(t *testing.T) {
 	c := newTestConsumer(nil, ConsumerHooks{})
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "test-queue"}}
+	binding := messaging.Binding{ConsumerGroup: "test-queue"}
 
 	// No hooks set, should not panic.
 	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("err"))
@@ -712,7 +698,7 @@ func TestNewConsumer_NilLoggerNormalisedToDefault(t *testing.T) {
 
 func TestConsumeOnce_PanicsOnNilHandler(t *testing.T) {
 	c := NewConsumer(noopConnector{}, nil, discardLogger())
-	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{ConsumerGroup: "q"}}
+	binding := messaging.Binding{ConsumerGroup: "q"}
 	assert.Panics(t, func() {
 		_ = c.ConsumeOnce(context.Background(), binding, nil)
 	})
@@ -728,11 +714,9 @@ func TestConsumeOnce_RetryWithoutPublisher_ReturnsError(t *testing.T) {
 	}
 
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{
-			ConsumerGroup: "test-queue",
-			RoutingKey:    "test.event",
-			Retry:         &messaging.RetryPolicy{MaxRetries: 3},
-		},
+		ConsumerGroup: "test-queue",
+		RoutingKey:    "test.event",
+		Retry:         &messaging.RetryPolicy{MaxRetries: 3},
 	}
 
 	err := c.ConsumeOnce(context.Background(), binding, func(_ context.Context, _ messaging.Delivery) error { return nil })

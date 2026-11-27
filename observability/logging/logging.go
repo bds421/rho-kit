@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 
 	"go.opentelemetry.io/otel/trace"
@@ -229,8 +230,8 @@ func (h *traceHandler) replayChain(recAttrs []slog.Attr) []slog.Attr {
 	// Walk the chain backwards, folding each op into the accumulator. A group
 	// op wraps the current accumulator into a single nested group attr.
 	acc := recAttrs
-	for i := len(h.ops) - 1; i >= 0; i-- {
-		op := h.ops[i]
+	for _, op := range slices.Backward(h.ops) {
+
 		if op.group != "" {
 			acc = []slog.Attr{{Key: op.group, Value: slog.GroupValue(acc...)}}
 			continue

@@ -353,8 +353,7 @@ func (c *coordinator) handleListOrders(w http.ResponseWriter, _ *http.Request) {
 // *ForwardError + *CompensateError in the latter case; we surface
 // the distinction so operators can route incidents correctly.
 func writeSagaError(w http.ResponseWriter, state *OrderState, err error) {
-	var compErr *saga.CompensateError
-	if errors.As(err, &compErr) {
+	if compErr, ok := errors.AsType[*saga.CompensateError](err); ok {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"error":         "saga rolled back with partial compensation failure",

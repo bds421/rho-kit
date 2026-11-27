@@ -355,7 +355,7 @@ func (f *fakeKeyClient) UnwrapKey(_ context.Context, name string, version string
 	f.unwrapName = name
 	f.unwrapVersion = version
 
-	resp := azkeys.UnwrapKeyResponse{}
-	resp.Result = bytes.TrimPrefix(parameters.Value, []byte("wrapped:"))
+	resp := azkeys.UnwrapKeyResponse{
+		Result: bytes.TrimPrefix(parameters.Value, []byte("wrapped:"))}
 	return resp, nil
 }

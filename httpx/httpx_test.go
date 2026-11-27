@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -284,10 +285,10 @@ func TestParseBoolParam(t *testing.T) {
 		value string
 		want  *bool
 	}{
-		{"true", boolPtr(true)},
-		{"1", boolPtr(true)},
-		{"false", boolPtr(false)},
-		{"0", boolPtr(false)},
+		{"true", new(true)},
+		{"1", new(true)},
+		{"false", new(false)},
+		{"0", new(false)},
 		{"", nil},
 		{"maybe", nil},
 	}
@@ -338,8 +339,6 @@ func TestParseBoolParam_InvalidRequestOrAmbiguousKey(t *testing.T) {
 		})
 	}
 }
-
-func boolPtr(b bool) *bool { return &b }
 
 // --- DecodeJSON ---
 
@@ -1426,12 +1425,7 @@ func TestWithTLSConfig_ClonesAtOptionCreation(t *testing.T) {
 }
 
 func containsString(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(haystack, needle)
 }
 
 func TestWithTLSConfig_PanicsWhenMaxVersionBelowFloor(t *testing.T) {

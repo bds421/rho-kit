@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"strings"
@@ -36,9 +37,7 @@ func (rc *responseCapture) WriteHeader(code int) {
 		// Sync staged headers so 103 Early Hints (Link preload, etc.)
 		// actually reaches the client. Header() returns the private
 		// capture map; without this copy the interim response is bare.
-		for k, vals := range rc.capturedHeaders {
-			rc.ResponseWriter.Header()[k] = vals
-		}
+		maps.Copy(rc.ResponseWriter.Header(), rc.capturedHeaders)
 		rc.ResponseWriter.WriteHeader(code)
 		return
 	}
@@ -47,9 +46,7 @@ func (rc *responseCapture) WriteHeader(code int) {
 	}
 	rc.statusCode = code
 	rc.wroteHeader = true
-	for k, vals := range rc.capturedHeaders {
-		rc.ResponseWriter.Header()[k] = vals
-	}
+	maps.Copy(rc.ResponseWriter.Header(), rc.capturedHeaders)
 	rc.ResponseWriter.WriteHeader(code)
 }
 

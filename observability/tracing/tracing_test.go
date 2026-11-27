@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -429,13 +430,7 @@ func TestInit_BaggagePropagatorRespectsConfigOnNoopPath(t *testing.T) {
 			defer func() { _ = p.Stop(context.Background()) }()
 
 			fields := otel.GetTextMapPropagator().Fields()
-			hasBaggage := false
-			for _, f := range fields {
-				if f == "baggage" {
-					hasBaggage = true
-					break
-				}
-			}
+			hasBaggage := slices.Contains(fields, "baggage")
 			if hasBaggage != tc.wantBaggage {
 				t.Fatalf("propagator fields = %v; want baggage=%v", fields, tc.wantBaggage)
 			}

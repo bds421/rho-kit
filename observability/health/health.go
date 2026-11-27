@@ -82,10 +82,7 @@ func OpaqueCheckName(prefix string, opaqueParts ...string) string {
 	rawParts := append([]string{prefix}, opaqueParts...)
 	sum := sha256.Sum256([]byte(strings.Join(rawParts, "\x00")))
 	suffix := hex.EncodeToString(sum[:6])
-	keep := MaxCheckNameLen - len(suffix) - 1
-	if keep < 1 {
-		keep = 1
-	}
+	keep := max(MaxCheckNameLen-len(suffix)-1, 1)
 	if len(name) > keep {
 		name = strings.TrimRight(name[:keep], "-_")
 	}

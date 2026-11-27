@@ -1234,11 +1234,11 @@ func encodeSubjectToken(s string) string {
 // which is lossy for dotted exchange names — the dispatcher prefers
 // headers exactly because of this ambiguity.
 func splitSubject(subject string) (exchange, routingKey string) {
-	i := strings.IndexByte(subject, '.')
-	if i < 0 {
+	before, after, ok := strings.Cut(subject, ".")
+	if !ok {
 		return subject, ""
 	}
-	return subject[:i], subject[i+1:]
+	return before, after
 }
 
 // extractExchangeAndRoutingKey returns the exchange and routing-key for

@@ -83,10 +83,7 @@ func (t *deadlineBudgetTransport) RoundTrip(req *http.Request) (*http.Response, 
 		return t.base.RoundTrip(req)
 	}
 
-	remaining := time.Until(deadline) - t.safetyMargin
-	if remaining < t.minTimeout {
-		remaining = t.minTimeout
-	}
+	remaining := max(time.Until(deadline)-t.safetyMargin, t.minTimeout)
 
 	ctx, cancel := context.WithTimeout(req.Context(), remaining)
 	resp, err := t.base.RoundTrip(req.WithContext(ctx))

@@ -34,7 +34,7 @@ type fakeState struct {
 	held map[int64]int
 	// openConns counts physical connections currently checked out from the
 	// driver (i.e. not yet driver-closed).
-	openConns int32
+	openConns atomic.Int32
 }
 
 func newFakeState() *fakeState {
@@ -48,11 +48,11 @@ func (s *fakeState) lockCount(id int64) int {
 }
 
 func (s *fakeState) openConnCount() int32 {
-	return atomic.LoadInt32(&s.openConns)
+	return s.openConns.Load()
 }
 
 func (d *fakeDriver) Open(string) (driver.Conn, error) {
-	atomic.AddInt32(&d.state.openConns, 1)
+	d.state.openConns.Add(1)
 	return &fakeConn{state: d.state}, nil
 }
 
@@ -91,7 +91,7 @@ func (c *fakeConn) Close() error {
 		return nil
 	}
 	c.closed = true
-	atomic.AddInt32(&c.state.openConns, -1)
+	c.state.openConns.Add(-1)
 	// A dropped session releases every advisory lock it held — this is the
 	// real-Postgres behaviour the leak fix relies on.
 	c.state.mu.Lock()
@@ -197,7 +197,7 @@ type fakeConnector struct {
 }
 
 func (c *fakeConnector) Connect(context.Context) (driver.Conn, error) {
-	atomic.AddInt32(&c.driver.state.openConns, 1)
+	c.driver.state.openConns.Add(1)
 	return &fakeConn{state: c.driver.state, behavior: c.behavior}, nil
 }
 

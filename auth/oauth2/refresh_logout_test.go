@@ -3,6 +3,7 @@ package oauth2_test
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -34,9 +35,7 @@ func (f *fakeIssuer) signClaims(t *testing.T, subject string, extra map[string]a
 		"exp": time.Now().Add(time.Hour).Unix(),
 		"iat": time.Now().Unix(),
 	}
-	for k, v := range extra {
-		claims[k] = v
-	}
+	maps.Copy(claims, extra)
 	raw, err := jwt.Signed(signer).Claims(claims).Serialize()
 	require.NoError(t, err)
 	return raw

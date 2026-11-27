@@ -470,8 +470,7 @@ func DecodeJSONWithLimit(w http.ResponseWriter, r *http.Request, dst any, maxByt
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return false
 		}

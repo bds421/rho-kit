@@ -416,8 +416,8 @@ func (plan *publishPlan) add(targetDir string, entry registryEntry, filename str
 // one directory are a "duplicate migration version" that goose refuses
 // to run.
 func gooseVersion(filename string) string {
-	if i := strings.IndexByte(filename, '_'); i >= 0 {
-		return filename[:i]
+	if before, _, ok := strings.Cut(filename, "_"); ok {
+		return before
 	}
 	return filename
 }
@@ -514,7 +514,7 @@ func rejectSymlinkPathComponents(root, path string) error {
 	}
 
 	cur := absRoot
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
 		if part == "" {
 			continue
 		}

@@ -782,7 +782,7 @@ func TestDeliveryHeaderMaps_RejectsOversizedAggregate(t *testing.T) {
 	manyValues := nats.Header{}
 	const each = 1024
 	const count = (maxNatsDeliveryHeaderBytes / each) + 16
-	for i := 0; i < count; i++ {
+	for i := range count {
 		manyValues.Set(fmt.Sprintf("k-%03d", i), strings.Repeat("v", each-len("k-000")))
 	}
 	headers, _ = deliveryHeaderMaps(manyValues)
@@ -801,7 +801,7 @@ func TestDeliveryHeaderMaps_RejectsOversizedAggregate(t *testing.T) {
 // node-count cap independent of the byte budget.
 func TestDeliveryHeaderMaps_RejectsOversizedCount(t *testing.T) {
 	h := nats.Header{}
-	for i := 0; i < maxNatsDeliveryHeaders*2; i++ {
+	for i := range maxNatsDeliveryHeaders * 2 {
 		h.Set(fmt.Sprintf("k-%05d", i), "v")
 	}
 	headers, _ := deliveryHeaderMaps(h)
@@ -862,7 +862,7 @@ func TestDispatch_MaxUserHeadersSurviveRoundTrip(t *testing.T) {
 	h.Set(headerExchange, "orders")
 	h.Set(headerRoutingKey, "created")
 	// The maximum number of user headers permitted at publish time.
-	for i := 0; i < messaging.MaxMessageHeaders; i++ {
+	for i := range messaging.MaxMessageHeaders {
 		h.Set(fmt.Sprintf("X-User-%03d", i), "v")
 	}
 

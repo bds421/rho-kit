@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -334,12 +335,7 @@ func oauthConfig(cfg Config, endpoint xoauth2.Endpoint) *xoauth2.Config {
 }
 
 func containsScope(scopes []string, want string) bool {
-	for _, s := range scopes {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(scopes, want)
 }
 
 // safeRelativeRedirect reports whether rawTarget is a safe origin-relative

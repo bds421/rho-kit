@@ -444,8 +444,7 @@ func jwksFetchErrorKind(err error) string {
 	if errors.Is(err, ErrJWKSRedirectBlocked) {
 		return "redirect_blocked"
 	}
-	var urlErr *neturl.Error
-	if errors.As(err, &urlErr) {
+	if _, ok := errors.AsType[*neturl.Error](err); ok {
 		return "request_failed"
 	}
 	if errors.Is(err, errJWKSUnexpectedContentType) {
@@ -586,7 +585,7 @@ func hardenWrappedRoundTripper(rt http.RoundTripper) (http.RoundTripper, bool) {
 		// Field is http.RoundTripper interface or *http.Transport.
 		var inner http.RoundTripper
 		switch {
-		case f.Type() == reflect.TypeOf((*http.Transport)(nil)):
+		case f.Type() == reflect.TypeFor[*http.Transport]():
 			if f.IsNil() {
 				inner = defaultHTTPTransport()
 			} else {
@@ -596,7 +595,7 @@ func hardenWrappedRoundTripper(rt http.RoundTripper) (http.RoundTripper, bool) {
 			f.Set(reflect.ValueOf(hardened))
 			out, _ := cpPtr.Interface().(http.RoundTripper)
 			return out, true
-		case f.Type().Implements(reflect.TypeOf((*http.RoundTripper)(nil)).Elem()):
+		case f.Type().Implements(reflect.TypeFor[http.RoundTripper]()):
 			if f.IsNil() {
 				inner = defaultHTTPTransport()
 			} else {

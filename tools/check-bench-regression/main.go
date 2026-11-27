@@ -175,7 +175,7 @@ func runBenchmarks(cfg config, pkgs []string) ([]benchResult, error) {
 // benchmark across multiple -count runs maps to one entry.
 func parseBenchOutput(out string) []benchResult {
 	best := map[string]benchResult{}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 4 || !strings.HasPrefix(fields[0], "Benchmark") {
 			continue

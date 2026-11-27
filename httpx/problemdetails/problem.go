@@ -356,8 +356,7 @@ func mapStatus(err error) int {
 }
 
 func resolveType(base string, err error, status int) string {
-	var ae apperror.AppError
-	if errors.As(err, &ae) {
+	if ae, ok := errors.AsType[apperror.AppError](err); ok {
 		code := string(ae.ErrorCode())
 		if base == "" {
 			return "about:blank"

@@ -46,7 +46,7 @@ func TestAllow_RejectsInvalidKey(t *testing.T) {
 
 func TestAllow_FullBucketAcceptsBurst(t *testing.T) {
 	l := New(5, 1) // 5 tokens, refill 1/s
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ok, _, err := l.Allow(context.Background(), "k")
 		require.NoError(t, err)
 		assert.True(t, ok, "burst slot %d should be allowed", i+1)
@@ -311,14 +311,12 @@ func TestAllow_ConcurrentDeniesDoNotBurnTokens(t *testing.T) {
 
 	const storm = 64
 	var wg sync.WaitGroup
-	for i := 0; i < storm; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range storm {
+		wg.Go(func() {
 			ok, _, err := l.Allow(context.Background(), "k")
 			require.NoError(t, err)
 			assert.False(t, ok)
-		}()
+		})
 	}
 	wg.Wait()
 

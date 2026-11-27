@@ -291,10 +291,7 @@ func publishingFor(msg messaging.Message, body []byte) amqp.Publishing {
 		}
 		if msg.SchemaVersion != 0 {
 			// Clamp to int32 range for AMQP wire format safety.
-			sv := msg.SchemaVersion
-			if sv > math.MaxInt32 {
-				sv = math.MaxInt32
-			}
+			sv := min(msg.SchemaVersion, math.MaxInt32)
 			pub.Headers[messaging.HeaderSchemaVersion] = int32(sv)
 		}
 	}

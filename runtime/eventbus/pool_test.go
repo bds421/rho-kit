@@ -329,11 +329,9 @@ func TestBus_StartStopLifecycle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var startErr error
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		startErr = bus.Start(ctx)
-	}()
+	})
 
 	waitForWorkers(t, bus)
 	assert.NotNil(t, bus.pool, "pool should be initialized")

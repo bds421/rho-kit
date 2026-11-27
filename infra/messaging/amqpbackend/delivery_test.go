@@ -367,7 +367,7 @@ func TestExtractStringHeaders_RejectsOversizedAggregate(t *testing.T) {
 	manyValues := amqp.Table{}
 	const each = 1024
 	const count = (maxHeaderBytes / each) + 16 // overshoot by 16 headers
-	for i := 0; i < count; i++ {
+	for i := range count {
 		manyValues[fmt.Sprintf("k-%03d", i)] = strings.Repeat("v", each-len("k-000"))
 	}
 	result = extractStringHeaders(manyValues)
@@ -385,7 +385,7 @@ func TestExtractStringHeaders_RejectsOversizedAggregate(t *testing.T) {
 // thousands of one-byte headers should still be capped at maxHeaderNodes.
 func TestExtractStringHeaders_RejectsOversizedCount(t *testing.T) {
 	h := amqp.Table{}
-	for i := 0; i < maxHeaderNodes*2; i++ {
+	for i := range maxHeaderNodes * 2 {
 		h[fmt.Sprintf("k-%05d", i)] = "v"
 	}
 	result := extractStringHeaders(h)

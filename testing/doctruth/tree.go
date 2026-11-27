@@ -23,7 +23,7 @@ func readTreeLine(line string) treeLine {
 	if l.indent >= nameColumn {
 		return l
 	}
-	for _, field := range strings.Fields(trimmed) {
+	for field := range strings.FieldsSeq(trimmed) {
 		if !strings.HasSuffix(field, "/") || strings.ContainsAny(field, "<*") {
 			break
 		}
@@ -40,7 +40,7 @@ func treePaths(section string) [][2]string {
 	var paths [][2]string
 	var parents []treeLine
 	inBlock := false
-	for _, line := range strings.Split(section, "\n") {
+	for line := range strings.SplitSeq(section, "\n") {
 		if strings.HasPrefix(line, "```") {
 			inBlock, parents = !inBlock, nil
 			continue
@@ -76,7 +76,7 @@ var tableCell = regexp.MustCompile("`([^`]+)`")
 // row without a closed cell name nothing.
 func tablePaths(section string) [][2]string {
 	var paths [][2]string
-	for _, line := range strings.Split(section, "\n") {
+	for line := range strings.SplitSeq(section, "\n") {
 		if !strings.HasPrefix(line, "| `") {
 			continue
 		}
@@ -104,7 +104,7 @@ func expandBraces(p string) []string {
 		return []string{p}
 	}
 	var out []string
-	for _, alt := range strings.Split(p[open+1:end], ",") {
+	for alt := range strings.SplitSeq(p[open+1:end], ",") {
 		out = append(out, p[:open]+alt+p[end+1:])
 	}
 	return out

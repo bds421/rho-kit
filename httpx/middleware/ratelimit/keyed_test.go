@@ -16,7 +16,7 @@ import (
 func TestKeyedLimiter_Allow(t *testing.T) {
 	rl := NewKeyedLimiter(3, time.Minute)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		allowed, _, _ := rl.Allow(context.Background(), "key1")
 		if !allowed {
 			t.Fatalf("request %d should be allowed", i+1)
@@ -252,8 +252,7 @@ func TestKeyedLimiter_StopAfterStopBeforeStartDoesNotLeak(t *testing.T) {
 
 	// A Start that slips past the stopped guard would launch a cleanup
 	// goroutine. If Start is correctly rejected, no goroutine exists.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	done := make(chan error, 1)
 	go func() { done <- rl.Start(ctx) }()
 
@@ -288,7 +287,7 @@ func TestKeyedMiddleware(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("X-API-Key", "api-key-1")
 		rec := httptest.NewRecorder()

@@ -368,7 +368,6 @@ func TestWithHTTPBuckets_PanicsOnInvalid(t *testing.T) {
 		},
 	}
 	for name, tt := range cases {
-		tt := tt
 		t.Run(name, func(t *testing.T) {
 			defer func() {
 				rec := recover()

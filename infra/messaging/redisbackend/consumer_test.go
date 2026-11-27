@@ -30,7 +30,7 @@ func TestConsumer_InvalidReceiverReturnsError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Exchange: "stream"}}
+			binding := messaging.Binding{Exchange: "stream"}
 			err := tc.consumer.Consume(ctx, binding, func(context.Context, messaging.Delivery) error { return nil })
 			assert.ErrorIs(t, err, messaging.ErrInvalidConsumer)
 
@@ -76,7 +76,7 @@ func TestConsumer_SecondInvocationReturnsErrorNotPanic(t *testing.T) {
 			require.NoError(t, err)
 			consumer := NewConsumer(streamConsumer, slog.Default())
 
-			binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Exchange: "test.stream"}}
+			binding := messaging.Binding{Exchange: "test.stream"}
 			handler := func(context.Context, messaging.Delivery) error { return nil }
 
 			// A cancelled context lets the first invocation return immediately
@@ -109,10 +109,8 @@ func TestConsumer_BindingGroupMismatchDoesNotReflectNames(t *testing.T) {
 	consumer := NewConsumer(streamConsumer, slog.Default())
 
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{
-			Exchange:      "test.stream",
-			ConsumerGroup: "binding-secret-token-group",
-		},
+		Exchange:      "test.stream",
+		ConsumerGroup: "binding-secret-token-group",
 	}
 	err = consumer.Consume(context.Background(), binding, func(context.Context, messaging.Delivery) error { return nil })
 

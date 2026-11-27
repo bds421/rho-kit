@@ -80,7 +80,7 @@ func routeLabels(t *testing.T, reg *prometheus.Registry) []string {
 // "no data race under -race", nothing else: a plain-string slot fails
 // this the moment the reader wins the schedule.
 func TestCaptureRoute_ConcurrentOuterReadIsRaceFree(t *testing.T) {
-	for iter := 0; iter < 200; iter++ {
+	for range 200 {
 		ctx := metrics.EnsureRoutePatternSlot(context.Background())
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /items/{id}", func(http.ResponseWriter, *http.Request) {})

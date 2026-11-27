@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -291,9 +292,7 @@ func cloneHeaders(headers map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(headers))
-	for k, v := range headers {
-		out[k] = v
-	}
+	maps.Copy(out, headers)
 	return out
 }
 

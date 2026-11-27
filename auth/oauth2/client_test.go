@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -91,9 +92,7 @@ func (f *fakeIssuer) serveDiscovery(w http.ResponseWriter, _ *http.Request) {
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
 	}
-	for k, v := range f.discoveryExtra {
-		doc[k] = v
-	}
+	maps.Copy(doc, f.discoveryExtra)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(doc)
 }
@@ -166,9 +165,7 @@ func (f *fakeIssuer) signIDToken(t *testing.T, nonce string) string {
 		"nonce": nonce,
 		"email": "user@example.com",
 	}
-	for k, v := range f.idTokenExtra {
-		claims[k] = v
-	}
+	maps.Copy(claims, f.idTokenExtra)
 	raw, err := jwt.Signed(signer).Claims(claims).Serialize()
 	require.NoError(t, err)
 	return raw

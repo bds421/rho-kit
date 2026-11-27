@@ -149,7 +149,6 @@ func TestUUIDKeyFunc_InvalidPrefixes(t *testing.T) {
 			"avatars//2026",
 			`avatars\2026`,
 		} {
-			prefix := prefix
 			t.Run(prefix, func(t *testing.T) {
 				t.Parallel()
 				assert.Panics(t, func() {

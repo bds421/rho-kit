@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v3/jwa"
-	"github.com/lestrrat-go/jwx/v3/jwk"
-	"github.com/lestrrat-go/jwx/v3/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
@@ -80,7 +80,7 @@ type IssuedJTIRecorder interface {
 // but adds SigningProvider so adopter services that need to issue
 // short-lived service tokens, on-behalf-of tokens, or "session-scoped"
 // JWTs can do so without rolling a parallel issuance path against the
-// same jwx/v3 dependency the verifier already pulls in.
+// same jwx/v4 dependency the verifier already pulls in.
 //
 // # Key rotation semantics
 //
@@ -724,7 +724,7 @@ func (p *SigningProvider) refresh(ctx context.Context) error {
 	if raw == nil {
 		return errors.New("jwtutil: KeyRotator returned a nil key")
 	}
-	key, err := jwk.Import(raw)
+	key, err := jwk.Import[jwk.Key](raw)
 	if err != nil {
 		return fmt.Errorf("jwtutil: import signing key: %w", err)
 	}

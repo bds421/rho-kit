@@ -1,5 +1,7 @@
 package stack
 
+import "slices"
+
 import "net/http"
 
 // Chain is an explicit, composable middleware chain. Unlike [Default],
@@ -47,8 +49,8 @@ func (c Chain) Then(handler http.Handler) http.Handler {
 	if handler == nil {
 		panic("middleware/stack: Chain.Then requires a non-nil handler")
 	}
-	for i := len(c.middlewares) - 1; i >= 0; i-- {
-		handler = c.middlewares[i](handler)
+	for _, v := range slices.Backward(c.middlewares) {
+		handler = v(handler)
 	}
 	return handler
 }

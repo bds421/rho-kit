@@ -191,8 +191,7 @@ func normalizeScannerError(err error) error {
 		return err
 	}
 	if errors.Is(err, ErrMalwareDetected) {
-		var detected *MalwareDetectedError
-		if errors.As(err, &detected) {
+		if detected, ok := errors.AsType[*MalwareDetectedError](err); ok {
 			return detected
 		}
 		return ErrMalwareDetected

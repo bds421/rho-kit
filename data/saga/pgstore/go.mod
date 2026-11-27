@@ -3,7 +3,7 @@
 // in-memory saga executor consumers don't pull pgx.
 module github.com/bds421/rho-kit/data/saga/pgstore/v2
 
-go 1.26.8
+go 1.27.4
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.49.0
@@ -13,5 +13,5 @@ require (
 
 require (
 	github.com/google/uuid v1.6.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 )

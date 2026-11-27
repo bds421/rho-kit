@@ -34,7 +34,7 @@ func TestValidatePayload(t *testing.T) {
 	assert.ErrorIs(t, stream.ValidatePayload(map[string]string{"bad key": "v"}), stream.ErrInvalidPayload)
 
 	big := make(map[string]string, stream.MaxPayloadFields+1)
-	for i := 0; i < stream.MaxPayloadFields+1; i++ {
+	for i := range stream.MaxPayloadFields + 1 {
 		big[fmt.Sprintf("k%d", i)] = "v"
 	}
 	assert.ErrorIs(t, stream.ValidatePayload(big), stream.ErrInvalidPayload)

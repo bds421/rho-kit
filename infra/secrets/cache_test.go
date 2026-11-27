@@ -151,12 +151,10 @@ func TestCachedLoader_SingleflightCoalescesConcurrentMisses(t *testing.T) {
 	require.NoError(t, err)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 20 {
+		wg.Go(func() {
 			_, _ = c.Get(context.Background(), "k")
-		}()
+		})
 	}
 	wg.Wait()
 	require.LessOrEqual(t, inner.calls.Load(), int32(2), "singleflight should coalesce; got %d calls", inner.calls.Load())

@@ -313,7 +313,7 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 	}
 
 	var zero E
-	expectedType := reflect.TypeOf((*E)(nil)).Elem()
+	expectedType := reflect.TypeFor[E]()
 	// For pointer event types (e.g. *FooEvent), the zero value of E is a
 	// typed-nil pointer; calling EventName on it would panic if the impl
 	// reads receiver fields. Instantiate a fresh value of the pointee so
@@ -497,29 +497,35 @@ func publishAny(b *Bus, ctx context.Context, event Event) error {
 		if !h.alive {
 			continue
 		}
-		if h.async {
-			// Async paths honor OnFullPolicy for post-Stop Publish:
-			// OnFullError surfaces ErrStopped; Drop/Block suppress it.
-			if err := b.dispatchAsync(ctx, eventName, h, event); err != nil {
-				dispatchErrs = append(dispatchErrs, fmt.Errorf("handler failed: %w", err))
-			}
-		} else {
+		if !h.async && b.isStopped() {
 			// Sync handlers always observe Stop: they are the
 			// security-critical path and must not run against
 			// torn-down dependencies after Stop returns.
-			b.startMu.Lock()
-			stopped := b.stopped
-			b.startMu.Unlock()
-			if stopped {
-				return ErrStopped
-			}
-			if err := callSync(ctx, h, event); err != nil {
-				dispatchErrs = append(dispatchErrs, fmt.Errorf("handler failed: %w", err))
-			}
+			return ErrStopped
+		}
+		if err := b.dispatchOne(ctx, eventName, h, event); err != nil {
+			dispatchErrs = append(dispatchErrs, fmt.Errorf("handler failed: %w", err))
 		}
 	}
 
 	return errors.Join(dispatchErrs...)
+}
+
+// isStopped reports whether Stop has run.
+func (b *Bus) isStopped() bool {
+	b.startMu.Lock()
+	defer b.startMu.Unlock()
+	return b.stopped
+}
+
+// dispatchOne hands event to one live handler. Async paths honor
+// OnFullPolicy for post-Stop Publish: OnFullError surfaces ErrStopped;
+// Drop/Block suppress it.
+func (b *Bus) dispatchOne(ctx context.Context, eventName string, h registeredHandler, event Event) error {
+	if h.async {
+		return b.dispatchAsync(ctx, eventName, h, event)
+	}
+	return callSync(ctx, h, event)
 }
 
 // callSync invokes a sync handler with panic recovery. A buggy subscriber
@@ -579,11 +585,9 @@ func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredH
 			}
 			return nil
 		}
-		b.unboundedWG.Add(1)
-		go func() {
-			defer b.unboundedWG.Done()
+		b.unboundedWG.Go(func() {
 			b.runAsync(ctx, eventName, h, event)
-		}()
+		})
 		b.startMu.Unlock()
 		return nil
 	}

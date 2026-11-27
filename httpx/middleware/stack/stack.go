@@ -185,8 +185,8 @@ func (cfg *Config) handlerLayers(h http.Handler) http.Handler {
 		h = mwauditlog.Middleware(cfg.AuditLogger, cfg.AuditLogOptions...)(h)
 	}
 
-	for i := len(cfg.Inner) - 1; i >= 0; i-- {
-		h = cfg.Inner[i](h)
+	for _, v := range slices.Backward(cfg.Inner) {
+		h = v(h)
 	}
 
 	// Compression wraps handler + Inner + AuditLog so the handler always
@@ -285,8 +285,8 @@ func (cfg *Config) boundaryLayers(h http.Handler) http.Handler {
 		h = secheaders.New(shOpts...)(h)
 	}
 
-	for i := len(cfg.Outer) - 1; i >= 0; i-- {
-		h = cfg.Outer[i](h)
+	for _, v := range slices.Backward(cfg.Outer) {
+		h = v(h)
 	}
 
 	if cfg.EnableRecover {

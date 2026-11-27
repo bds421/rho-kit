@@ -1,12 +1,6 @@
 module github.com/bds421/rho-kit/data/lock/pgadvisory/v2
 
-go 1.26.8
-
-require (
-	github.com/stretchr/testify v1.12.1
-	go.opentelemetry.io/otel v1.47.0
-	go.opentelemetry.io/otel/trace v1.47.0
-)
+go 1.27.4
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -15,10 +9,13 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 )
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.49.0
 	github.com/bds421/rho-kit/data/v2 v2.49.0
+	github.com/stretchr/testify v1.12.1
+	go.opentelemetry.io/otel v1.47.0
+	go.opentelemetry.io/otel/trace v1.47.0
 )
