@@ -14,8 +14,8 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.48.0
 	github.com/aws/aws-sdk-go-v2/service/kms v1.63.0
 	github.com/aws/smithy-go v1.28.9
-	github.com/bds421/rho-kit/core/v2 v2.57.0
-	github.com/bds421/rho-kit/crypto/v2 v2.57.0
+	github.com/bds421/rho-kit/core/v2 v2.58.0
+	github.com/bds421/rho-kit/crypto/v2 v2.58.0
 	github.com/prometheus/client_golang v1.25.0
 )
 
