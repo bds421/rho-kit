@@ -110,12 +110,26 @@
 // Application-level handler errors (validation failures, gate
 // refusals, internal errors) are returned as
 // [sdkmcp.CallToolResult] objects with `isError: true` and a
-// caller-safe message in the content envelope. This matches the
+// caller-safe message in the content envelope. A handler that
+// returns a [ToolError] chooses that message: the caller reads its Text
+// and the cause is only logged and audited; every other error becomes
+// one of the kit's fixed texts. This matches the
 // MCP spec recommendation that tool-execution errors propagate to
 // the model rather than being surfaced as JSON-RPC protocol
 // errors. Sensitive infrastructure details (database errors,
 // internal hostnames, file paths) are scrubbed from the message and
 // logged server-side instead.
+//
+// # Results, listing and limits
+//
+// A handler whose Out is [Contents] answers with content items instead
+// of JSON: [Text], [Image], an embedded [Resource] (a file to save) or a
+// [ResourceLink] (a large file the client fetches); such a tool has no
+// output schema. [WithAnnotations] sends a tool's title and every hint
+// (read-only, destructive, idempotent, open world) in tools/list.
+// [WithToolFilter] lists each caller only the tools it keeps (the
+// listing only: tools/call still dispatches). [WithMaxRequestBytes]
+// replaces the SDK's 4 MiB bound on a request.
 //
 // # What is NOT done here
 //

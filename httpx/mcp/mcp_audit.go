@@ -148,6 +148,12 @@ func (s *Server) gateDestructive(ctx context.Context, httpReq *http.Request, nam
 // we can only honour it if the audit reason reflects the post-marshal
 // outcome.
 func (s *Server) toolResult(ctx context.Context, httpReq *http.Request, name string, out any, callErr error, panicked bool) *sdkmcp.CallToolResult {
+	if items, ok := out.(ContentResult); ok && callErr == nil && !panicked {
+		if auditErr := s.recordActionLog(ctx, httpReq, name, nil); auditErr != nil && s.cfg.strictAudit && !s.cfg.asyncAudit {
+			return errorResult("internal error")
+		}
+		return contentResult(items.ToolContent())
+	}
 	var outBytes []byte
 	marshalFailed := false
 	if callErr == nil {
@@ -236,6 +242,9 @@ func errorResult(msg string) *sdkmcp.CallToolResult {
 func mapErrorForCaller(s *Server, ctx context.Context, err error) string {
 	if err == nil {
 		return ""
+	}
+	if text, ok := callerText(err); ok {
+		return text
 	}
 	switch {
 	case apperror.IsValidation(err):

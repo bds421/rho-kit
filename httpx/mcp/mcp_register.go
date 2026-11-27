@@ -61,6 +61,7 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 
 	tool := Tool{
 		Name:         name,
+		Title:        title(cfg),
 		Description:  desc,
 		InputSchema:  inSchema,
 		OutputSchema: outSchema,
@@ -68,7 +69,7 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 	if err := s.reserveTool(tool, cfg.destructive); err != nil {
 		return err
 	}
-	sdkTool := sdkToolFor(tool, cfg.destructive)
+	sdkTool := sdkToolFor(tool, cfg)
 
 	// Commit kit catalog only after SDK registration succeeds. AddTool
 	// panics on non-object/missing schemas; pre-validation makes that
@@ -113,20 +114,16 @@ func (s *Server) reserveTool(tool Tool, destructive bool) error {
 // L-4 / decode-failure tests). Owning decode lets us rewrite the error to
 // a stable "invalid arguments" message while logging the verbose form
 // server-side.
-func sdkToolFor(tool Tool, destructive bool) *sdkmcp.Tool {
+func sdkToolFor(tool Tool, cfg toolConfig) *sdkmcp.Tool {
 	sdkTool := &sdkmcp.Tool{
 		Name:        tool.Name,
+		Title:       tool.Title,
+		Annotations: sdkAnnotations(cfg.annotations, cfg.destructive),
 		Description: tool.Description,
 		InputSchema: tool.InputSchema,
 	}
 	if len(tool.OutputSchema) > 0 {
 		sdkTool.OutputSchema = tool.OutputSchema
-	}
-	if destructive {
-		destHint := true
-		sdkTool.Annotations = &sdkmcp.ToolAnnotations{
-			DestructiveHint: &destHint,
-		}
 	}
 	return sdkTool
 }
@@ -156,6 +153,10 @@ func resolveInputSchema[In any](override json.RawMessage) (json.RawMessage, erro
 func resolveOutputSchema[Out any](override json.RawMessage) (json.RawMessage, error) {
 	if len(override) > 0 {
 		return validateSchemaOverride("output", override)
+	}
+	// A handler that answers with content items has no structured output.
+	if reflect.TypeFor[Out]().Implements(reflect.TypeFor[ContentResult]()) {
+		return nil, nil
 	}
 	schema, err := validate.SchemaFor[Out]()
 	if err != nil {

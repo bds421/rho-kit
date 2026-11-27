@@ -108,6 +108,9 @@ type Tool struct {
 	// capped at MaxToolNameLen bytes.
 	Name string `json:"name"`
 
+	// Title is the display name of [WithAnnotations]; empty without it.
+	Title string `json:"title,omitempty"`
+
 	// Description is human-readable. Default: derived from the input
 	// type's name; override via [WithToolDescription].
 	Description string `json:"description,omitempty"`
@@ -138,6 +141,7 @@ type toolConfig struct {
 	inputSchema  json.RawMessage
 	outputSchema json.RawMessage
 	destructive  bool
+	annotations  *Annotations
 }
 
 // WithToolDescription sets the human-readable description shown in
@@ -198,6 +202,8 @@ type serverConfig struct {
 	destructiveGateAcknowledged bool
 	serverName                  string
 	serverVersion               string
+	toolFilter                  ToolFilter
+	maxRequestBytes             int64
 }
 
 // DestructiveGate authorizes a destructive-tool invocation. The
@@ -470,6 +476,9 @@ func NewServer(opts ...ServerOption) *Server {
 		sdk:      sdkmcp.NewServer(impl, sdkOpts),
 		toolMeta: make(map[string]*toolMeta),
 	}
+	if cfg.toolFilter != nil {
+		s.sdk.AddReceivingMiddleware(filterListing(cfg.toolFilter))
+	}
 	if cfg.asyncAudit {
 		s.startAuditWorkers()
 	}
@@ -605,9 +614,10 @@ func (s *Server) HTTP() http.Handler {
 	return sdkmcp.NewStreamableHTTPHandler(
 		func(*http.Request) *sdkmcp.Server { return s.sdk },
 		&sdkmcp.StreamableHTTPOptions{
-			Stateless:    true,
-			JSONResponse: true,
-			Logger:       s.cfg.logger,
+			Stateless:           true,
+			JSONResponse:        true,
+			MaxRequestBodyBytes: s.cfg.maxRequestBytes,
+			Logger:              s.cfg.logger,
 		},
 	)
 }
