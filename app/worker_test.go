@@ -142,8 +142,8 @@ func TestBgSpec_UntilShutdown(t *testing.T) {
 		go func() { returned <- run(ctx) }()
 		<-ran
 		select {
-		case <-returned:
-			t.Fatal("task returned before the shutdown")
+		case err := <-returned:
+			t.Fatalf("task returned before the shutdown: %v", err)
 		default:
 		}
 		cancel()
