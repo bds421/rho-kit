@@ -159,9 +159,11 @@ type logoutToken struct {
 }
 
 // verifyLogoutToken validates raw per OpenID Connect Back-Channel Logout 1.0
-// section 2.6 except jti replay, which the caller records.
-func (c *Client) verifyLogoutToken(ctx context.Context, raw string, now time.Time) (logoutToken, error) {
-	tok, err := c.verifier.Verify(oidc.ClientContext(ctx, c.httpClient), raw)
+// section 2.6 except jti replay, which the caller records. verifier checks
+// signature, iss, aud and exp; client makes its JWKS calls. [Client] and
+// [Flow] share it.
+func verifyLogoutToken(ctx context.Context, verifier *oidc.IDTokenVerifier, client *http.Client, raw string, now time.Time) (logoutToken, error) {
+	tok, err := verifier.Verify(oidc.ClientContext(ctx, client), raw)
 	if err != nil {
 		return logoutToken{}, fmt.Errorf("verify: %w", err)
 	}
@@ -230,7 +232,7 @@ func (c *Client) handleBackChannelLogout(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	ctx := r.Context()
-	tok, err := c.verifyLogoutToken(ctx, raw, time.Now())
+	tok, err := verifyLogoutToken(ctx, c.verifier, c.httpClient, raw, time.Now())
 	if err != nil {
 		c.logger.WarnContext(ctx, "oauth2: back-channel logout token rejected", redact.Error(err))
 		writeLogoutError(w, http.StatusBadRequest)

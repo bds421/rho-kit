@@ -233,3 +233,40 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// LogoutEvent is the events member of a back-channel logout token.
+const LogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
+
+// LogoutToken signs a back-channel logout token (OpenID Connect
+// Back-Channel Logout 1.0) as the provider would post it: iss, aud, iat,
+// exp, a fresh jti and the logout event, then claims (sub and/or sid; a
+// nil value removes a claim, so tests can build invalid tokens).
+func (i *Issuer) LogoutToken(t testing.TB, claims map[string]any) string {
+	t.Helper()
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: i.key},
+		(&jose.SignerOptions{}).WithType("logout+jwt").WithHeader("kid", keyID),
+	)
+	if err != nil {
+		t.Fatalf("oauth2test: signer: %v", err)
+	}
+	now := time.Now()
+	i.mu.Lock()
+	all := map[string]any{
+		"iss": i.server.URL, "aud": i.clientID, "iat": now.Unix(), "exp": now.Add(2 * time.Minute).Unix(),
+		"jti": rand.Text(), "events": map[string]any{LogoutEvent: map[string]any{}},
+	}
+	i.mu.Unlock()
+	for k, v := range claims {
+		if v == nil {
+			delete(all, k)
+			continue
+		}
+		all[k] = v
+	}
+	raw, err := jwt.Signed(signer).Claims(all).Serialize()
+	if err != nil {
+		t.Fatalf("oauth2test: sign the logout token: %v", err)
+	}
+	return raw
+}

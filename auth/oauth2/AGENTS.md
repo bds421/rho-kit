@@ -94,7 +94,7 @@ or UserInfo without re-discovering endpoints.
   and returns the authorization URL. `Flow.Finish(w, r, resolver)` checks
   the binding, takes the state, asks the `Resolver` for the `Config` by
   `Key`, exchanges the code and returns `Result{Key, Data, RedirectTo,
-  Issuer, Subject, Claims, AMR, AuthTime}`, or a sentinel error; it writes
+  Issuer, Subject, SID, Claims, AMR, AuthTime}`, or a sentinel error; it writes
   no body. Before the exchange it refuses an answer of another provider
   (`ErrIssuerMismatch`, the RFC 9207 mix-up): the state keeps the issuer,
   the resolved `Config` must name it, the callback must come to the path of
@@ -104,6 +104,15 @@ or UserInfo without re-discovering endpoints.
   runtime; discovery is cached per issuer (`WithFlowDiscoveryTTL`, 1 h;
   `Flow.Forget(issuer)`). `WithFlowHTTPClient` for a guarded dialer,
   `WithFlowStateTTL` (10 min), `WithFlowClock`
+- Back-channel logout with Flow: `Flow.VerifyLogoutToken(ctx, cfg, raw)`
+  checks a posted `logout_token` against the provider of `cfg` (signature,
+  iss, aud = client id, exp, iat at most 5 min old and 1 min ahead, the
+  logout event, sid and/or sub, no nonce) and records its jti, and returns
+  `LogoutToken{Issuer, Subject, SID}`; errors `ErrLogoutTokenInvalid`,
+  `ErrLogoutTokenReplayed`. The replay cache is the state store when it
+  implements `ReplayCache` (`auth/oauth2/redis` does), else in-process;
+  `WithFlowReplayCache` sets one. The caller ends its sessions by
+  `Result.SID` or subject and answers 200, or 400 `{"error":"invalid_request"}`
 - `oauth2test.NewIssuer(t, clientID, clientSecret, redirectURIs...)`: a local
   OIDC provider for tests over https (discovery, JWKS, an authorize endpoint that signs
   `SetClaims` in at once or answers `access_denied` after `Deny(true)`, the
@@ -162,6 +171,9 @@ value persisted at login. No transport-only trust shortcut is taken.
 - Flow: verified identity with key, data and deep link; unbound browser,
   provider error, removed provider, wrong secret and expired state refused;
   single-use state; relative deep links only
+- Flow back-channel logout: sub and sid, sid alone; replayed jti, other
+  client, other key, expiry, events, nonce, jti, iat and missing sub and sid
+  refused; a failing replay cache fails closed
 - Flow mix-up: an answer of another provider (another callback URL, an iss
   naming itself, a key naming another issuer now) and a missing or wrong
   iss where announced are refused before any code exchange

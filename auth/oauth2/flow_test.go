@@ -66,7 +66,7 @@ func resolverFor(cfg oauth2.Config) oauth2.Resolver {
 
 func TestFlow_SignInReturnsVerifiedIdentity(t *testing.T) {
 	iss := oauth2test.NewIssuer(t, "app", "s3cret", flowCallback)
-	iss.SetClaims(map[string]any{"sub": "abc", "email": "a@example.com", "email_verified": true})
+	iss.SetClaims(map[string]any{"sub": "abc", "email": "a@example.com", "email_verified": true, "sid": "idp-1"})
 	flow := newFlow(t, iss)
 	cfg := flowConfig(iss, "s3cret")
 
@@ -89,6 +89,7 @@ func TestFlow_SignInReturnsVerifiedIdentity(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, iss.URL(), res.Issuer)
 	assert.Equal(t, "abc", res.Subject)
+	assert.Equal(t, "idp-1", res.SID)
 	assert.Equal(t, "p1", res.Key)
 	assert.Equal(t, "link:42", res.Data)
 	assert.Equal(t, "/settings", res.RedirectTo)

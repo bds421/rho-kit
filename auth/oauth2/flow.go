@@ -40,6 +40,7 @@ type Flow struct {
 	cookiePath   string
 	cookieSecure bool
 	now          func() time.Time
+	replay       ReplayCache
 
 	mu        sync.Mutex
 	providers map[string]cachedProvider
@@ -101,6 +102,13 @@ func NewFlow(state StateStore, opts ...FlowOption) (*Flow, error) {
 		}
 		opt(f)
 	}
+	if f.replay == nil {
+		if cache, ok := state.(ReplayCache); ok {
+			f.replay = cache
+		} else {
+			f.replay = NewMemoryReplayCache()
+		}
+	}
 	if f.httpClient == nil {
 		// kit-doctor:allow default-http-client reason="callers inject a hardened client with WithFlowHTTPClient"
 		f.httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -153,6 +161,9 @@ type Result struct {
 	// the stable identity (OpenID Connect Core 1.0 section 5.7).
 	Issuer  string
 	Subject string
+	// SID is the provider session (the sid claim), or empty; a
+	// [LogoutToken] with this SID ends what this sign-in started.
+	SID string
 	// Claims are the verified ID token's claims.
 	Claims   map[string]any
 	AMR      []string
@@ -348,6 +359,7 @@ func (f *Flow) exchange(ctx context.Context, provider *oidc.Provider, cfg Config
 	return Result{
 		Key: entry.Key, Data: entry.Data, RedirectTo: entry.RedirectTo,
 		Issuer: idToken.Issuer, Subject: idToken.Subject,
+		SID:    stringClaim(claims, "sid"),
 		Claims: claims, AMR: amr, AuthTime: authTime,
 	}, nil
 }

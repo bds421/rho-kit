@@ -221,6 +221,13 @@ var (
 	// [Client.DeleteSessionsBySubject] when the session store does not
 	// implement [SessionIndex].
 	ErrSessionIndexUnsupported = errors.New("oauth2: session store does not implement SessionIndex")
+	// ErrLogoutTokenInvalid is returned by [Flow.VerifyLogoutToken] for a
+	// token that fails a check of OpenID Connect Back-Channel Logout 1.0
+	// section 2.6. It does not carry what the token said.
+	ErrLogoutTokenInvalid = errors.New("oauth2: logout token invalid")
+	// ErrLogoutTokenReplayed is returned by [Flow.VerifyLogoutToken] for a
+	// valid token whose jti was seen before.
+	ErrLogoutTokenReplayed = errors.New("oauth2: logout token replayed")
 )
 
 // Handlers is the http.Handler returned by [Client.Handlers]. It serves
