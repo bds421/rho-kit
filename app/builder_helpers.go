@@ -68,6 +68,20 @@ type bgSpec struct {
 	fn   func(ctx context.Context) error
 }
 
+// untilShutdown adapts a Background task to the lifecycle Runner, which
+// shuts the service down when any component returns. A task that finished
+// its work with nil (start-up work such as writing a marker) waits for the
+// shutdown instead; an error still stops the service.
+func (s bgSpec) untilShutdown() func(context.Context) error {
+	return func(ctx context.Context) error {
+		if err := s.fn(ctx); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		return nil
+	}
+}
+
 func validateBackgroundSpec(name string, fn func(context.Context) error) {
 	if name == "" {
 		panic("app: Background requires a non-empty name")

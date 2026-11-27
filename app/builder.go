@@ -182,7 +182,8 @@ func (b *Builder) AddHealthCheck(check health.DependencyCheck) *Builder {
 }
 
 // Background registers a managed goroutine that starts before the
-// router. If fn returns a non-nil error, the entire service shuts down.
+// router. If fn returns a non-nil error, the entire service shuts down;
+// if it returns nil, it has finished and the service keeps running.
 //
 // Name kept (NOT `WithBackground`) because Background is a noun in
 // the kit's vocabulary — alongside `Storage`, `AuditLog`, `Router` —
@@ -345,7 +346,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	r.newRunner()
 	r.addTLSReloadSignal()
 	for _, bg := range b.earlyBgs {
-		r.runner.AddFunc(bg.name, bg.fn)
+		r.runner.AddFunc(bg.name, bg.untilShutdown())
 	}
 
 	closeModules, err := r.initModules(ctx)

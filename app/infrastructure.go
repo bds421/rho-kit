@@ -63,10 +63,12 @@ type Infrastructure struct {
 	// calls through the pointer).
 	resources *resourceStore
 
-	// Background registers a managed goroutine that runs until the worker
-	// context is cancelled. If the function returns a non-nil error, the
-	// entire service shuts down. Use this inside RouterFunc for late-bound
-	// goroutines that need infrastructure references (hub, consumers, etc.).
+	// Background registers a managed goroutine under the worker context. If
+	// the function returns a non-nil error, the entire service shuts down;
+	// one that returns nil has finished and the service keeps running, so a
+	// one-shot start-up task may end. Use this inside RouterFunc for
+	// late-bound goroutines that need infrastructure references (hub,
+	// consumers, etc.).
 	Background func(name string, fn func(ctx context.Context) error)
 
 	// SetCustomReadiness overrides the auto-accumulated health checks with a

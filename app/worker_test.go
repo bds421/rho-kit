@@ -102,3 +102,56 @@ func TestBuilder_WithoutPublicServerRunsInternalServerOnly(t *testing.T) {
 		t.Fatal("RunContext did not return after cancellation")
 	}
 }
+
+// A Background task that finishes with nil leaves the service running; the
+// Runner would otherwise treat its return as a shutdown.
+func TestBuilder_BackgroundThatFinishesKeepsServiceRunning(t *testing.T) {
+	cfg, _, intURL := lifecycleAddrs(t)
+	early, late := make(chan struct{}), make(chan struct{})
+	b := New("once-test", "v0.0.1", cfg).
+		With(allowPlaintextOnly()).
+		WithoutRateLimit().
+		Background("once-early", func(context.Context) error { close(early); return nil }).
+		Router(func(infra Infrastructure) http.Handler {
+			infra.Background("once-late", func(context.Context) error { close(late); return nil })
+			return http.NotFoundHandler()
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- b.RunContext(ctx) }()
+	<-early
+	<-late
+	waitForHTTP(t, intURL+"/ready", 3*time.Second)
+	select {
+	case err := <-errCh:
+		t.Fatalf("service stopped after its one-shot tasks finished: %v", err)
+	default:
+	}
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestBgSpec_UntilShutdown(t *testing.T) {
+	t.Run("nil waits for the shutdown", func(t *testing.T) {
+		ran := make(chan struct{})
+		run := bgSpec{name: "once", fn: func(context.Context) error { close(ran); return nil }}.untilShutdown()
+		ctx, cancel := context.WithCancel(t.Context())
+		returned := make(chan error, 1)
+		go func() { returned <- run(ctx) }()
+		<-ran
+		select {
+		case <-returned:
+			t.Fatal("task returned before the shutdown")
+		default:
+		}
+		cancel()
+		require.NoError(t, <-returned)
+	})
+	t.Run("an error returns at once", func(t *testing.T) {
+		boom := fmt.Errorf("boom")
+		run := bgSpec{name: "fail", fn: func(context.Context) error { return boom }}.untilShutdown()
+		require.ErrorIs(t, run(t.Context()), boom)
+	})
+}

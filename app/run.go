@@ -248,7 +248,7 @@ func (r *appRun) publicHandler() http.Handler {
 		handler = r.wrapPublicMiddleware(handler)
 	}
 	for _, bg := range reg.freeze() {
-		r.runner.AddFunc(bg.name, bg.fn)
+		r.runner.AddFunc(bg.name, bg.untilShutdown())
 	}
 	return handler
 }
