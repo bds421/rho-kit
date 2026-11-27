@@ -10,8 +10,8 @@ module github.com/bds421/rho-kit/crypto/envelope/vaulttransit/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.53.0
-	github.com/bds421/rho-kit/crypto/v2 v2.53.0
+	github.com/bds421/rho-kit/core/v2 v2.54.0
+	github.com/bds421/rho-kit/crypto/v2 v2.54.0
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/prometheus/client_golang v1.25.0
 )
