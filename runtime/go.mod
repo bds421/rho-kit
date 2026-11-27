@@ -8,8 +8,8 @@ module github.com/bds421/rho-kit/runtime/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.52.0
-	github.com/bds421/rho-kit/observability/v2 v2.52.0
+	github.com/bds421/rho-kit/core/v2 v2.52.1
+	github.com/bds421/rho-kit/observability/v2 v2.52.1
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/robfig/cron/v3 v3.0.1
