@@ -3,7 +3,7 @@ module github.com/bds421/rho-kit/data/tenant/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.54.0
+	github.com/bds421/rho-kit/core/v2 v2.55.0
 	github.com/stretchr/testify v1.12.1
 )
 
