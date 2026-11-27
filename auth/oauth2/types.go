@@ -172,6 +172,9 @@ type StateEntry struct {
 	// Data is the caller's own value of a [Flow] sign-in, opaque to the
 	// kit and returned by [Flow.Finish]. Empty for [Client].
 	Data string `json:",omitempty"`
+	// Issuer is the issuer a [Flow] sign-in started with; the callback
+	// refuses a configuration or an answer of another. Empty for [Client].
+	Issuer string `json:",omitempty"`
 }
 
 // Sentinel errors.
@@ -209,6 +212,11 @@ var (
 	// login requested max_age but the ID token's auth_time is missing or
 	// older than allowed.
 	ErrStaleAuthentication = errors.New("oauth2: authentication older than max_age")
+	// ErrIssuerMismatch is returned by [Flow.Finish] when the answer is not
+	// the provider's the sign-in started with: another issuer configured
+	// for its key, another callback URL, or an RFC 9207 iss parameter that
+	// is missing or names another issuer (a mix-up attack).
+	ErrIssuerMismatch = errors.New("oauth2: the answer is not from the provider the sign-in started with")
 	// ErrSessionIndexUnsupported is returned by
 	// [Client.DeleteSessionsBySubject] when the session store does not
 	// implement [SessionIndex].

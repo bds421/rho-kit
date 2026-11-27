@@ -95,14 +95,19 @@ or UserInfo without re-discovering endpoints.
   the binding, takes the state, asks the `Resolver` for the `Config` by
   `Key`, exchanges the code and returns `Result{Key, Data, RedirectTo,
   Issuer, Subject, Claims, AMR, AuthTime}`, or a sentinel error; it writes
-  no body. The `Config` is given per sign-in, so providers change at
+  no body. Before the exchange it refuses an answer of another provider
+  (`ErrIssuerMismatch`, the RFC 9207 mix-up): the state keeps the issuer,
+  the resolved `Config` must name it, the callback must come to the path of
+  its `RedirectURL` (one per provider), and `iss` must equal the issuer when
+  discovery announces `authorization_response_iss_parameter_supported` or
+  one is sent. The `Config` is given per sign-in, so providers change at
   runtime; discovery is cached per issuer (`WithFlowDiscoveryTTL`, 1 h;
   `Flow.Forget(issuer)`). `WithFlowHTTPClient` for a guarded dialer,
   `WithFlowStateTTL` (10 min), `WithFlowClock`
 - `oauth2test.NewIssuer(t, clientID, clientSecret, redirectURIs...)`: a local
   OIDC provider for tests (discovery, JWKS, an authorize endpoint that signs
-  `SetClaims` in at once or answers `access_denied` after `Deny(true)`, a
-  token endpoint checking client, redirect URI and PKCE, RS256 ID tokens)
+  `SetClaims` in at once or answers `access_denied` after `Deny(true)`, the
+  RFC 9207 `iss` parameter after `SendIssuer(true)`, a token endpoint checking client, redirect URI and PKCE, RS256 ID tokens)
 
 ## Security defaults
 
@@ -157,6 +162,9 @@ value persisted at login. No transport-only trust shortcut is taken.
 - Flow: verified identity with key, data and deep link; unbound browser,
   provider error, removed provider, wrong secret and expired state refused;
   single-use state; relative deep links only
+- Flow mix-up: an answer of another provider (another callback URL, an iss
+  naming itself, a key naming another issuer now) and a missing or wrong
+  iss where announced are refused before any code exchange
 - MemorySessionStore + MemoryStateStore TTL expiry
 - Absolute lifetime cap (incl. refresh TTL cap), idle timeout with
   header/context background markers, activity write throttling, logout

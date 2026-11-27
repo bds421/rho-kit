@@ -39,6 +39,7 @@ type Issuer struct {
 	redirects    []string
 	claims       map[string]any
 	denied       bool
+	issParameter bool
 	codes        map[string]grant
 }
 
@@ -90,6 +91,14 @@ func (i *Issuer) SetClaims(claims map[string]any) {
 	i.claims = maps.Clone(claims)
 }
 
+// SendIssuer makes the provider announce and send the iss parameter of
+// RFC 9207 on its authorization responses.
+func (i *Issuer) SendIssuer(send bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.issParameter = send
+}
+
 // Deny makes the authorization endpoint answer access_denied, as when the
 // person cancels at the provider.
 func (i *Issuer) Deny(denied bool) {
@@ -100,15 +109,19 @@ func (i *Issuer) Deny(denied bool) {
 
 func (i *Issuer) discovery(w http.ResponseWriter, _ *http.Request) {
 	base := i.server.URL
+	i.mu.Lock()
+	issParameter := i.issParameter
+	i.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                base,
-		"authorization_endpoint":                base + "/authorize",
-		"token_endpoint":                        base + "/token",
-		"jwks_uri":                              base + "/jwks",
-		"id_token_signing_alg_values_supported": []string{"RS256"},
-		"response_types_supported":              []string{"code"},
-		"subject_types_supported":               []string{"public"},
-		"code_challenge_methods_supported":      []string{"S256"},
+		"issuer":                                         base,
+		"authorization_endpoint":                         base + "/authorize",
+		"token_endpoint":                                 base + "/token",
+		"jwks_uri":                                       base + "/jwks",
+		"id_token_signing_alg_values_supported":          []string{"RS256"},
+		"response_types_supported":                       []string{"code"},
+		"subject_types_supported":                        []string{"public"},
+		"code_challenge_methods_supported":               []string{"S256"},
+		"authorization_response_iss_parameter_supported": issParameter,
 	})
 }
 
@@ -132,7 +145,7 @@ func (i *Issuer) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.mu.Lock()
-	denied := i.denied
+	denied, issParameter := i.denied, i.issParameter
 	code := rand.Text()
 	if !denied {
 		i.codes[code] = grant{nonce: q.Get("nonce"), challenge: q.Get("code_challenge"), redirectURI: back.String(), claims: maps.Clone(i.claims)}
@@ -140,6 +153,9 @@ func (i *Issuer) authorize(w http.ResponseWriter, r *http.Request) {
 	i.mu.Unlock()
 	bq := back.Query()
 	bq.Set("state", q.Get("state"))
+	if issParameter {
+		bq.Set("iss", i.server.URL)
+	}
 	if denied {
 		bq.Set("error", "access_denied")
 	} else {

@@ -187,7 +187,7 @@ func (f *Flow) Start(w http.ResponseWriter, r *http.Request, req StartRequest) (
 	verifier := xoauth2.GenerateVerifier()
 	entry := StateEntry{
 		Nonce: nonce, CodeVerifier: verifier, CreatedAt: f.now(), MaxAge: params.maxAge,
-		Key: req.Key, Data: req.Data,
+		Key: req.Key, Data: req.Data, Issuer: req.Config.Issuer,
 	}
 	if safe, ok := safeRelativeRedirect(req.RedirectTo); ok {
 		entry.RedirectTo = safe
@@ -232,7 +232,9 @@ type Resolver func(ctx context.Context, key string) (Config, error)
 // answers. Its errors are the sentinels [ErrStateMismatch] (no binding in
 // this browser: restart the sign-in), [ErrStateNotFound], [ErrProviderError],
 // [ErrCodeExchange], [ErrIDTokenInvalid], [ErrNonceMismatch],
-// [ErrStaleAuthentication] and [ErrIssuerDiscovery], or the resolver's.
+// [ErrStaleAuthentication], [ErrIssuerMismatch] (an answer of another
+// provider, the mix-up attack of RFC 9207) and [ErrIssuerDiscovery], or
+// the resolver's.
 // None of them carries what the provider or the token said.
 func (f *Flow) Finish(w http.ResponseWriter, r *http.Request, resolve Resolver) (Result, error) {
 	q := r.URL.Query()
@@ -260,7 +262,47 @@ func (f *Flow) Finish(w http.ResponseWriter, r *http.Request, resolve Resolver) 
 	if err != nil {
 		return Result{}, err
 	}
-	return f.exchange(r.Context(), cfg, entry, code)
+	provider, err := f.answeredBy(r, cfg, entry)
+	if err != nil {
+		return Result{}, err
+	}
+	return f.exchange(r.Context(), provider, cfg, entry, code)
+}
+
+// answeredBy checks that the callback answers the sign-in's own provider
+// before any code is sent anywhere (RFC 9207, mix-up attacks): the
+// configuration of its key still names the issuer it started with, the
+// request came to that configuration's callback URL, and the iss parameter
+// names that issuer exactly when the provider says it sends one, or when
+// one is sent at all.
+func (f *Flow) answeredBy(r *http.Request, cfg Config, entry StateEntry) (*oidc.Provider, error) {
+	if err := checkConfig(cfg); err != nil {
+		return nil, err
+	}
+	if cfg.Issuer != entry.Issuer || !sameCallback(r, cfg.RedirectURL) {
+		return nil, ErrIssuerMismatch
+	}
+	provider, err := f.provider(r.Context(), cfg.Issuer)
+	if err != nil {
+		return nil, err
+	}
+	var meta struct {
+		IssParameter bool `json:"authorization_response_iss_parameter_supported"`
+	}
+	if err := provider.Claims(&meta); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrIssuerDiscovery, redact.WrapError("discovery claims", err))
+	}
+	q := r.URL.Query()
+	if (meta.IssParameter || q.Has("iss")) && q.Get("iss") != cfg.Issuer {
+		return nil, ErrIssuerMismatch
+	}
+	return provider, nil
+}
+
+// sameCallback reports whether r came to the path of redirectURL.
+func sameCallback(r *http.Request, redirectURL string) bool {
+	u, err := url.Parse(redirectURL)
+	return err == nil && u.EscapedPath() == r.URL.EscapedPath()
 }
 
 func (f *Flow) take(ctx context.Context, state string) (StateEntry, error) {
@@ -278,14 +320,7 @@ func (f *Flow) take(ctx context.Context, state string) (StateEntry, error) {
 	return entry, nil
 }
 
-func (f *Flow) exchange(ctx context.Context, cfg Config, entry StateEntry, code string) (Result, error) {
-	if err := checkConfig(cfg); err != nil {
-		return Result{}, err
-	}
-	provider, err := f.provider(ctx, cfg.Issuer)
-	if err != nil {
-		return Result{}, err
-	}
+func (f *Flow) exchange(ctx context.Context, provider *oidc.Provider, cfg Config, entry StateEntry, code string) (Result, error) {
 	exchangeCtx := oidc.ClientContext(ctx, f.httpClient)
 	token, err := oauthConfig(cfg, provider.Endpoint()).Exchange(exchangeCtx, code, xoauth2.VerifierOption(entry.CodeVerifier))
 	if err != nil {

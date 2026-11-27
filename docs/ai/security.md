@@ -366,7 +366,10 @@ An application that keeps its own sessions (its own cookie and session
 table), or whose providers are configured at runtime, uses `oauth2.Flow`
 instead: `Start` returns the authorization URL for a `Config` given per
 sign-in, `Finish` returns the verified issuer, subject and claims, and the
-application mints its session itself. `auth/oauth2/redis` `Store.States()`
+application mints its session itself. Give each provider its own callback URL:
+`Finish` refuses an answer at another provider's URL, from another issuer
+than the state holds, or with a missing or wrong `iss` where the provider
+announces it (RFC 9207), before any code is exchanged. `auth/oauth2/redis` `Store.States()`
 holds the state and consumes it with GETDEL. Tests run against
 `auth/oauth2/oauth2test.NewIssuer`, a local provider.
 
