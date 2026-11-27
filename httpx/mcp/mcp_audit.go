@@ -149,10 +149,11 @@ func (s *Server) gateDestructive(ctx context.Context, httpReq *http.Request, nam
 // outcome.
 func (s *Server) toolResult(ctx context.Context, httpReq *http.Request, name string, out any, callErr error, panicked bool) *sdkmcp.CallToolResult {
 	if items, ok := out.(ContentResult); ok && callErr == nil && !panicked {
-		if auditErr := s.recordActionLog(ctx, httpReq, name, nil); auditErr != nil && s.cfg.strictAudit && !s.cfg.asyncAudit {
+		result, buildErr := s.buildContent(ctx, name, items)
+		if auditErr := s.recordActionLog(ctx, httpReq, name, buildErr); buildErr != nil || auditErr != nil && s.cfg.strictAudit && !s.cfg.asyncAudit {
 			return errorResult("internal error")
 		}
-		return contentResult(items.ToolContent())
+		return result
 	}
 	var outBytes []byte
 	marshalFailed := false

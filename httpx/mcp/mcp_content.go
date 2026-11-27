@@ -1,9 +1,13 @@
 package mcp
 
 import (
+	"context"
 	"errors"
+	"reflect"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // ToolError is a handler error whose Text the caller reads: the result has
@@ -113,12 +117,24 @@ func (l ResourceLink) sdk() sdkmcp.Content {
 	return link
 }
 
-// contentResult builds the result of a handler that answers with content
-// items; nil items are skipped.
+// buildContent builds the result of a handler that answers with content
+// items. ToolContent is the handler's code: a panic in it, or in an item,
+// fails the call like a panicking handler. Nil items, typed nil pointers
+// too, are skipped.
+func (s *Server) buildContent(ctx context.Context, name string, items ContentResult) (result *sdkmcp.CallToolResult, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			result, err = nil, errHandlerPanicked
+			s.cfg.logger.ErrorContext(ctx, "mcp: tool content panicked", redact.String("tool", name), redact.Panic(rec))
+		}
+	}()
+	return contentResult(items.ToolContent()), nil
+}
+
 func contentResult(items []Content) *sdkmcp.CallToolResult {
 	content := make([]sdkmcp.Content, 0, len(items))
 	for _, item := range items {
-		if item != nil {
+		if v := reflect.ValueOf(item); item != nil && (v.Kind() != reflect.Pointer || !v.IsNil()) {
 			content = append(content, item.sdk())
 		}
 	}

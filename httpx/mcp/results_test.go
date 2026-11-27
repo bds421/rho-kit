@@ -142,3 +142,26 @@ func TestWithMaxRequestBytes_BoundsARequest(t *testing.T) {
 	assert.Equal(t, http.StatusOK, post(newTestServer(t, mcp.WithBestEffortAuditOnMissingTenant(), mcp.WithMaxRequestBytes(4096)).HTTP()))
 	assert.Panics(t, func() { mcp.WithMaxRequestBytes(-1) })
 }
+
+type panickingContent struct{}
+
+func (panickingContent) ToolContent() []mcp.Content { panic("content broke") }
+
+func TestContents_APanicFailsTheCallAndNilItemsAreSkipped(t *testing.T) {
+	s := mcp.NewServer(mcp.WithBestEffortAuditOnMissingTenant())
+	require.NoError(t, mcp.Register(s, "broken", func(context.Context, echoIn) (panickingContent, error) {
+		return panickingContent{}, nil
+	}))
+	var nilImage *mcp.Image
+	require.NoError(t, mcp.Register(s, "holes", func(context.Context, echoIn) (mcp.Contents, error) {
+		return mcp.Contents{nil, nilImage, mcp.Text("kept")}, nil
+	}))
+	res, rpc := callTool(t, s.HTTP(), "broken", map[string]any{"message": "x"}, nil)
+	require.Nil(t, rpc.Error)
+	assert.True(t, res.IsError)
+	assert.Equal(t, "internal error", res.Content[0].Text)
+	res, rpc = callTool(t, s.HTTP(), "holes", map[string]any{"message": "x"}, nil)
+	require.Nil(t, rpc.Error)
+	require.Len(t, res.Content, 1)
+	assert.Equal(t, "kept", res.Content[0].Text)
+}
