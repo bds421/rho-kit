@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -291,4 +292,44 @@ func TestEgressDialer_JudgesEveryAddress(t *testing.T) {
 	conn, err := EgressDialer(allowHosts(hostOf(t, srv.URL)))(t.Context(), "tcp", hostOf(t, srv.URL))
 	require.NoError(t, err)
 	require.NoError(t, conn.Close())
+}
+
+// A host taken off the list loses its pooled connection too: the next
+// request dials anew under the public guard.
+func TestEgressClient_ARevokedHostIsRefusedOnTheNextRequest(t *testing.T) {
+	t.Parallel()
+	srv := serve(t, false, answer("ok"))
+	var listed atomic.Bool
+	listed.Store(true)
+	c := NewEgressClient(WithEgressHosts(func(_ context.Context, host string, port int) (bool, error) {
+		return listed.Load() && net.JoinHostPort(host, strconv.Itoa(port)) == hostOf(t, srv.URL), nil
+	}))
+	_, err := call(t, c, srv.URL)
+	require.NoError(t, err)
+	listed.Store(false)
+	_, err = call(t, c, srv.URL)
+	require.ErrorIs(t, err, ErrEgressRefused)
+}
+
+// The allowlist is asked about one form of a host, the one net/http
+// dials: lowercased; a name that is not ASCII is refused.
+func TestEgressClient_AHostIsJudgedInTheFormItIsDialed(t *testing.T) {
+	t.Parallel()
+	srv := serve(t, false, answer("ok"))
+	u, _ := url.Parse(srv.URL)
+	listedName := net.JoinHostPort("localhost", u.Port())
+	c := NewEgressClient(allowHosts(listedName))
+	body, err := call(t, c, "http://LocalHost:"+u.Port())
+	require.NoError(t, err, "a listed name in other case")
+	assert.Equal(t, "ok", body)
+	_, err = call(t, NewEgressClient(allowHosts()), "http://LocalHost:"+u.Port())
+	require.ErrorIs(t, err, ErrEgressRefused, "an unlisted name in other case")
+
+	for _, target := range []string{"http://ⓛocalhost:" + u.Port(), "http://xn--ocalhost-ss0d:" + u.Port()} {
+		redirect := serve(t, false, redirectTo(target))
+		_, err := call(t, NewEgressClient(allowHosts(hostOf(t, redirect.URL), listedName)), redirect.URL)
+		require.ErrorIs(t, err, ErrEgressRefused, "a redirect to %s", target)
+		_, err = call(t, NewEgressClient(allowHosts(listedName)), target)
+		require.ErrorIs(t, err, ErrEgressRefused, target)
+	}
 }

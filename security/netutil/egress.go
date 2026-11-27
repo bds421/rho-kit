@@ -11,8 +11,10 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 // ErrEgressRefused marks a call the egress guard refused: a scheme, an
@@ -77,7 +79,10 @@ type EgressOption func(*egressConfig)
 
 // WithEgressHosts lists the hosts and ports that may use http and reach
 // the internal ranges. Without it no host is listed: public addresses
-// over https only. hosts is asked for every request, redirect and dial.
+// over https only. hosts is asked for every request and redirect, with
+// the host lowercased (a host that is not ASCII is refused), so the list
+// may change while the client runs: a connection opened for a listed host
+// is reused only while the list still names it.
 func WithEgressHosts(hosts HostAllowed) EgressOption {
 	if hosts == nil {
 		panic("netutil: WithEgressHosts requires a function")
@@ -195,9 +200,18 @@ func collectEgress(opts []EgressOption) *egressConfig {
 // [WithEgressStripOnRedirect] on another host.
 func NewEgressClient(opts ...EgressOption) *http.Client {
 	c := collectEgress(opts)
-	transport := &http.Transport{
+	t := egressTransport{c: c, public: c.transport(false), listed: c.transport(true)}
+	return &http.Client{Transport: t, CheckRedirect: c.checkRedirect, Timeout: c.timeout}
+}
+
+// transport is the pool of one verdict. A request goes to the listed pool
+// only while its host and port are listed, so a connection opened for a
+// listed host is never reused once the list no longer names it: the
+// request then dials anew through the public pool's guard.
+func (c *egressConfig) transport(listed bool) *http.Transport {
+	return &http.Transport{
 		Proxy:                 nil,
-		DialContext:           c.dial,
+		DialContext:           c.dialer(listed),
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: c.roots},
 		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   c.dialTimeout,
@@ -205,31 +219,36 @@ func NewEgressClient(opts ...EgressOption) *http.Client {
 		MaxIdleConnsPerHost:   2,
 		IdleConnTimeout:       time.Minute,
 	}
-	return &http.Client{Transport: egressTransport{c: c, next: transport}, CheckRedirect: c.checkRedirect, Timeout: c.timeout}
 }
 
-// EgressDialer is the guarded DialContext of [NewEgressClient], for a
-// transport of the caller's own. It judges addresses only; the scheme
-// and redirect rules are the client's.
+// EgressDialer is the guarded DialContext for a transport of the caller's
+// own: it asks the allowlist for every dial and judges every address. It
+// judges connections only; the scheme and redirect rules are
+// [NewEgressClient]'s. A transport that keeps idle connections reuses one
+// opened while a host was listed after the list stopped naming it; where
+// the list changes at runtime, turn keep-alives off or use NewEgressClient.
 func EgressDialer(opts ...EgressOption) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	return collectEgress(opts).dial
+	c := collectEgress(opts)
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("%w: dial address", ErrEgressRefused)
+		}
+		listed, err := c.listedAt(ctx, host, port)
+		if err != nil {
+			return nil, err
+		}
+		return c.dialer(listed)(ctx, network, addr)
+	}
 }
 
-// dial resolves through the system and lets Control judge each address
-// the socket is about to connect to.
-func (c *egressConfig) dial(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, fmt.Errorf("%w: dial address", ErrEgressRefused)
-	}
-	listed, err := c.listedAt(ctx, host, port)
-	if err != nil {
-		return nil, err
-	}
+// dialer resolves through the system and lets Control judge each address
+// the socket is about to connect to, under the verdict of its pool.
+func (c *egressConfig) dialer(listed bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	d := net.Dialer{Timeout: c.dialTimeout, Control: func(_, address string, _ syscall.RawConn) error {
 		return c.check(address, listed)
 	}}
-	return d.DialContext(ctx, network, addr)
+	return d.DialContext
 }
 
 // check is the guard on one address ("ip:port").
@@ -263,6 +282,10 @@ func (c *egressConfig) listedAt(ctx context.Context, host, port string) (bool, e
 	if c.hosts == nil {
 		return false, nil
 	}
+	host, err := egressHost(host)
+	if err != nil {
+		return false, err
+	}
 	n, err := strconv.Atoi(port)
 	if err != nil {
 		return false, fmt.Errorf("%w: port", ErrEgressRefused)
@@ -293,4 +316,18 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 	}
 	b.left -= int64(n)
 	return n, err
+}
+
+// egressHost is the one form of a host the allowlist is asked about:
+// lowercased ASCII, as net/http dials it. A host with other than ASCII
+// bytes is refused rather than mapped (IDNA), so the verdict and the dial
+// cannot read two names out of one; a punycode name (xn--) is ASCII and
+// is judged as written.
+func egressHost(host string) (string, error) {
+	for i := range len(host) {
+		if host[i] >= utf8.RuneSelf {
+			return "", fmt.Errorf("%w: a host name that is not ASCII; use its punycode form", ErrEgressRefused)
+		}
+	}
+	return strings.ToLower(host), nil
 }

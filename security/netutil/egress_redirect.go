@@ -8,14 +8,15 @@ import (
 )
 
 // egressTransport checks every request, the first and each redirect,
-// before it is sent.
+// before it is sent, and sends it through the pool of its verdict.
 type egressTransport struct {
-	c    *egressConfig
-	next http.RoundTripper
+	c              *egressConfig
+	public, listed http.RoundTripper
 }
 
 func (t egressTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if _, err := t.c.target(req); err != nil {
+	listed, err := t.c.target(req)
+	if err != nil {
 		if req.Body != nil {
 			_ = req.Body.Close() // RoundTrip must close it, also on an error
 		}
@@ -25,7 +26,11 @@ func (t egressTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		req = req.Clone(req.Context())
 		req.Header.Set("User-Agent", t.c.userAgent)
 	}
-	resp, err := t.next.RoundTrip(req)
+	next := t.public
+	if listed {
+		next = t.listed
+	}
+	resp, err := next.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
