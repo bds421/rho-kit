@@ -155,3 +155,47 @@ func TestBgSpec_UntilShutdown(t *testing.T) {
 		require.ErrorIs(t, run(t.Context()), boom)
 	})
 }
+
+// resourceModule publishes one resource, as an adapter module does.
+type resourceModule struct {
+	BaseModule
+	value string
+}
+
+func (m *resourceModule) Populate(infra *Infrastructure) { infra.SetResource("test.resource", m.value) }
+
+// A worker role wires its background task on a module's resource through
+// Worker, where a service with a public server has its Router.
+func TestBuilder_WorkerWiresTheRoleOnTheInfrastructure(t *testing.T) {
+	intPort := freePort(t)
+	got := make(chan any, 1)
+	b := New("worker", "v0.0.1", BaseConfig{
+		Internal: InternalConfig{Host: "127.0.0.1", Port: intPort},
+	}).
+		WithoutPublicServer().
+		With(&resourceModule{BaseModule: NewBaseModule("resource"), value: "pool"}).
+		Worker(func(infra Infrastructure) {
+			value, _ := infra.Resource("test.resource")
+			infra.Background("jobs", func(ctx context.Context) error {
+				got <- value
+				<-ctx.Done()
+				return nil
+			})
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- b.RunContext(ctx) }()
+	assert.Equal(t, "pool", <-got)
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestBuilder_WorkerNeedsWithoutPublicServer(t *testing.T) {
+	cfg, _, _ := lifecycleAddrs(t)
+	err := New("svc", "v0.0.1", cfg).With(allowPlaintextOnly()).WithoutRateLimit().
+		Worker(func(Infrastructure) {}).Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WithoutPublicServer")
+	assert.Panics(t, func() { New("svc", "v0.0.1", cfg).Worker(nil) })
+}

@@ -33,6 +33,8 @@ func (b *Builder) Validate() error {
 		if err := b.validateWorker(listeners.internalListener != nil); err != nil {
 			return err
 		}
+	} else if b.workerFn != nil {
+		return redact.Safe("Worker requires WithoutPublicServer: a service with a public server wires itself in its Router")
 	} else if err := b.validateBase(listeners); err != nil {
 		return err
 	}

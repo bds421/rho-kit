@@ -106,6 +106,8 @@ type Builder struct {
 
 	// Router
 	routerFn RouterFunc
+	// workerFn wires a worker role (WithoutPublicServer) on the infrastructure.
+	workerFn func(Infrastructure)
 
 	// ran guards against reuse after Run().
 	ran bool
@@ -149,7 +151,8 @@ func (b *Builder) WithoutRateLimit() *Builder {
 // module, background goroutine and runner-attached component (for example a
 // public gRPC server from app/grpc) still run.
 //
-// In this mode [Builder.Router] is rejected by [Builder.Validate], module
+// In this mode [Builder.Router] is rejected by [Builder.Validate]; wire the
+// role on the infrastructure with [Builder.Worker] instead. Module
 // public middleware is not installed, and the public-listener requirements
 // do not apply: no rate-limit declaration and no public TLS configuration
 // are required, and BaseConfig.Server is not validated. Registering a
@@ -291,6 +294,19 @@ func (b *Builder) With(m Module) *Builder {
 		}
 	}
 	b.modules = append(b.modules, m)
+	return b
+}
+
+// Worker sets the function that wires a worker role ([Builder.WithoutPublicServer])
+// on the infrastructure the modules populated, as [Builder.Router] does for a
+// service with a public server: it runs where the RouterFunc would, after
+// every module's Populate, and its [Infrastructure.Background] tasks start
+// with the role. [Builder.Validate] rejects it without WithoutPublicServer.
+func (b *Builder) Worker(fn func(Infrastructure)) *Builder {
+	if fn == nil {
+		panic("app: Worker requires a non-nil function")
+	}
+	b.workerFn = fn
 	return b
 }
 

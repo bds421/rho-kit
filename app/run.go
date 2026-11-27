@@ -239,6 +239,9 @@ func (r *appRun) publicHandler() http.Handler {
 	var handler http.Handler
 	switch {
 	case b.noPublicServer:
+		if b.workerFn != nil {
+			b.workerFn(infra)
+		}
 	case b.routerFn != nil:
 		handler = b.routerFn(infra)
 	default:

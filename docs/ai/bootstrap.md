@@ -130,7 +130,8 @@ lives in per-adapter sub-modules under `app/` and is registered via
 |---|---|---|
 | `With(m)` | Register an adapter module returned by a sub-package's `Module(...)` constructor (postgres, redis, amqp, nats, jwt, paseto, flags, cron, leader, slo, ratelimit, signedrequest, http, grpc, tracing, storage, auditlog, actionlog, approval, authz, tenant, budget, …) | - |
 | `WithoutRateLimit()` | Explicit opt-out of the always-on rate-limit gate | - |
-| `WithoutPublicServer()` | Worker role: no public HTTP listener, router or public middleware; internal health/readiness/metrics server still runs. Rate-limit and public-TLS requirements do not apply; `Router` and rate-limit modules are rejected | no `Router` |
+| `WithoutPublicServer()` | Worker role: no public HTTP listener, router or public middleware; internal health/readiness/metrics server still runs. Rate-limit and public-TLS requirements do not apply; `Router` and rate-limit modules are rejected; wire the role with `Worker(fn)` | no `Router` |
+| `Worker(fn)` | Worker role wiring: `fn(Infrastructure)` runs after every module's `Populate`, where `Router` would, and registers the role's `Background` tasks | only with `WithoutPublicServer()` |
 | `AddHealthCheck(check)` | Custom readiness dependency | - |
 | `Background(name, fn)` | Managed goroutine | - |
 | `OnShutdown(fn)` | Shutdown hook before close/drain | - |
