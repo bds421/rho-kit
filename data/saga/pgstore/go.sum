@@ -1,7 +1,7 @@
-github.com/bds421/rho-kit/core/v2 v2.51.1 h1:7mC/GXjSy8T7X1pNG5jIok8YXE04QpYH2YGPcEcMSVY=
-github.com/bds421/rho-kit/core/v2 v2.51.1/go.mod h1:XOnxFqKaT+WcMS07fbrHvTmk6P6Qrb49cqy/55o5AnQ=
-github.com/bds421/rho-kit/runtime/v2 v2.51.1 h1:2hd9bcFealDPTPibs9GDXRDZ3ecNtQj16/3SoRhsWmw=
-github.com/bds421/rho-kit/runtime/v2 v2.51.1/go.mod h1:M42c7lsuqLO5gI1exdZ1cabJ56CldMqK3np/NyHtSfM=
+github.com/bds421/rho-kit/core/v2 v2.52.0 h1:gnt/xhbuZRlF04kqH3bA8CcRFf2rR6ZWv4SkLuFduaA=
+github.com/bds421/rho-kit/core/v2 v2.52.0/go.mod h1:XOnxFqKaT+WcMS07fbrHvTmk6P6Qrb49cqy/55o5AnQ=
+github.com/bds421/rho-kit/runtime/v2 v2.52.0 h1:+tEJ+nFLGS8i/iII8eeT/1P4RfygfyFeQ/FnJ/OZixs=
+github.com/bds421/rho-kit/runtime/v2 v2.52.0/go.mod h1:9gJeh4yPcrhiSYuMcawDZUeqA4lHrh5XC4ngWYrLra0=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
