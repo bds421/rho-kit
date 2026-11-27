@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.50.0 — 2026-11-27
 
 ### every module: Go 1.27 (breaking)
 

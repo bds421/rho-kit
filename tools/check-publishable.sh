@@ -23,13 +23,14 @@ EXPECTED_INTERNAL_VERSION="${EXPECTED_INTERNAL_VERSION:-}"
 FORBID_INTERNAL_REPLACES="${FORBID_INTERNAL_REPLACES:-0}"
 
 find_go_mods() {
-  # Prune .git/.claude/dist instead of filtering by path: descending into
+  # Prune .git/.claude/dist/.worktrees (other checkouts of the repository)
+  # instead of filtering by path: descending into
   # .git races with git writing pack objects (e.g. inside the release
   # rehearsal's fresh temp repo), and a transient "No such file or directory"
   # from find returns non-zero, which `set -o pipefail` turns into a spurious
   # failure of every find_go_mods pipeline.
   find . \
-    \( -path '*/.git' -o -path '*/.claude' -o -path '*/dist' \) -prune \
+    \( -path '*/.git' -o -path '*/.claude' -o -path '*/.worktrees' -o -path '*/dist' \) -prune \
     -o -name go.mod -print0
 }
 
@@ -37,13 +38,14 @@ if command -v rg >/dev/null 2>&1; then
   # Match find_go_mods's file set exactly so the gate is deterministic
   # regardless of which tool is installed: scan hidden files and ignore
   # .gitignore (--no-ignore --hidden), then exclude the same .git /
-  # .claude / dist trees the find branch prunes. Without --no-ignore /
+  # .claude / .worktrees / dist trees the find branch prunes. Without --no-ignore /
   # --hidden, rg would honor .gitignore and skip dot-trees, scanning a
   # different set than the find branch.
   v0_matches=$(rg --no-heading --line-number --no-ignore --hidden "$INTERNAL_V0_PATTERN" \
     --glob 'go.mod' \
     --glob '!**/.git/**' \
     --glob '!**/.claude/**' \
+    --glob '!**/.worktrees/**' \
     --glob '!**/dist/**' \
     || true)
 else
