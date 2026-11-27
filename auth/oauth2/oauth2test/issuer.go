@@ -52,8 +52,9 @@ type grant struct {
 
 // NewIssuer starts a provider for the client clientID with the secret
 // clientSecret (empty for a public client) and the registered redirect URIs
-// on a loopback httptest server, closed when the test ends. A redirect URI
-// must match one registered exactly. It signs in subject "user-1" with the address
+// on a loopback httptest TLS server, closed when the test ends, so its
+// issuer is an https URL as OpenID Connect requires; [Issuer.Client]
+// trusts its certificate. A redirect URI must match one registered exactly. It signs in subject "user-1" with the address
 // user@example.com, verified, until [Issuer.SetClaims] says otherwise.
 func NewIssuer(t testing.TB, clientID, clientSecret string, redirectURIs ...string) *Issuer {
 	t.Helper()
@@ -71,7 +72,7 @@ func NewIssuer(t testing.TB, clientID, clientSecret string, redirectURIs ...stri
 	mux.HandleFunc("GET /jwks", iss.jwks)
 	mux.HandleFunc("GET /authorize", iss.authorize)
 	mux.HandleFunc("POST /token", iss.token)
-	iss.server = httptest.NewServer(mux)
+	iss.server = httptest.NewTLSServer(mux)
 	t.Cleanup(iss.server.Close)
 	return iss
 }
@@ -79,7 +80,8 @@ func NewIssuer(t testing.TB, clientID, clientSecret string, redirectURIs ...stri
 // URL is the issuer identifier and base URL.
 func (i *Issuer) URL() string { return i.server.URL }
 
-// Client is an http.Client that reaches the issuer.
+// Client is an http.Client that reaches the issuer and trusts its
+// certificate.
 func (i *Issuer) Client() *http.Client { return i.server.Client() }
 
 // SetClaims replaces the claims of the ID tokens issued from now on (sub,

@@ -105,7 +105,7 @@ or UserInfo without re-discovering endpoints.
   `Flow.Forget(issuer)`). `WithFlowHTTPClient` for a guarded dialer,
   `WithFlowStateTTL` (10 min), `WithFlowClock`
 - `oauth2test.NewIssuer(t, clientID, clientSecret, redirectURIs...)`: a local
-  OIDC provider for tests (discovery, JWKS, an authorize endpoint that signs
+  OIDC provider for tests over https (discovery, JWKS, an authorize endpoint that signs
   `SetClaims` in at once or answers `access_denied` after `Deny(true)`, the
   RFC 9207 `iss` parameter after `SendIssuer(true)`, a token endpoint checking client, redirect URI and PKCE, RS256 ID tokens)
 

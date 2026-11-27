@@ -17,7 +17,9 @@ security fix: update from v2.52.0.
   equal the issuer when discovery announces
   `authorization_response_iss_parameter_supported` or one is sent;
   otherwise `ErrIssuerMismatch`. `StateEntry` gains `Issuer`.
-- `oauth2test.Issuer.SendIssuer` announces and sends `iss`.
+- `oauth2test.Issuer.SendIssuer` announces and sends `iss`. The test provider serves
+  https (an httptest TLS server; `Client` trusts it), so its issuer is a
+  valid OpenID Connect issuer.
 
 ## v2.52.0 — 2026-11-27
 
