@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.52.0 — unreleased
+## v2.52.0 — 2026-11-27
 
 Every workspace module is released at v2.52.0 (`release/v2.52.0`). No breaking changes.
 
