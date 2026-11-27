@@ -3,16 +3,16 @@ module github.com/bds421/rho-kit/data/apikey/postgres/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.51.0
-	github.com/bds421/rho-kit/security/v2 v2.51.0
+	github.com/bds421/rho-kit/core/v2 v2.51.1
+	github.com/bds421/rho-kit/security/v2 v2.51.1
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/stretchr/testify v1.12.1
 )
 
 require (
-	github.com/bds421/rho-kit/crypto/v2 v2.51.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.51.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.51.0 // indirect
+	github.com/bds421/rho-kit/crypto/v2 v2.51.1 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.51.1 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.51.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v6 v6.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
