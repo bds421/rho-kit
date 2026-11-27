@@ -393,8 +393,8 @@ func TestVerify_ExpiredToken(t *testing.T) {
 	})
 
 	_, err := ks.Verify(token, now)
-	if err == nil {
-		t.Fatal("expected error for expired token")
+	if !errors.Is(err, ErrTokenExpired) {
+		t.Fatalf("expired token: got %v, want ErrTokenExpired", err)
 	}
 }
 
@@ -464,6 +464,21 @@ func TestVerify_WrongKey(t *testing.T) {
 	_, err := ks.Verify(token, time.Now())
 	if err == nil {
 		t.Fatal("expected error for wrong key")
+	}
+}
+
+func TestVerify_ExpiredTokenWithWrongKeyIsNotExpired(t *testing.T) {
+	ks, _ := ParseKeySet(testJWKS(t, testKey(t), "kid-1"))
+	allowAnyPolicy(ks)
+
+	token := signJWT(t, testKey(t), "kid-1", map[string]any{
+		"sub": "user-1",
+		"exp": time.Now().Add(-5 * time.Minute).Unix(),
+	})
+
+	_, err := ks.Verify(token, time.Now())
+	if err == nil || errors.Is(err, ErrTokenExpired) {
+		t.Fatalf("expired token with a bad signature: got %v, want a signature failure", err)
 	}
 }
 

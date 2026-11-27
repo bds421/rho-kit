@@ -19,7 +19,7 @@
 - `WithJWTAuth(*jwtutil.Provider)` — installs the connect-time bearer-token verification callback.
 - `NewConnectionTokens(ctx, TokenConfig)` — the signer of a service's connection tokens and the verifier `WithJWTAuth` takes, from one PEM key, issuer, audience and claim set.
 - `WithSubscribeAuthorizer` / `WithPublishAuthorizer` — channel-level authz (fail-closed without them). Prefer these over touching the underlying node.
-- `WithVerifiedConnectPolicy` / `WithVerifiedRefreshPolicy` — additive session/resource policy after JWT verification; refresh requires the same subject. Policy expiry can tighten token expiry, not extend it. Preserve incoming context/cancellation.
+- `WithVerifiedConnectPolicy` / `WithVerifiedRefreshPolicy` — additive session/resource policy after JWT verification; refresh requires the same subject. Without a refresh policy a connection closes at token expiry. An expired token gets token expired (109), on which SDKs fetch a new one; other token failures are terminal. Policy expiry can tighten token expiry, not extend it. Preserve incoming context/cancellation.
 - `WithConnectObserver` / `WithDisconnectObserver` — observe accepted client lifecycle through `Connection` (ID/UserID/Context/Send/Disconnect), which exposes no callback replacement methods. Application policy and current-scope checks still precede private sends.
 - `WithOpenChannelsUnsafe` — deliberate allow-all for demos; name is grep-able like `httpx/websocket.WithAnyOriginUnsafe`.
 - `WithChannelClassifier(fn)` — REQUIRED for production. Maps each channel to a short bounded set of class strings ("user", "room", "system"). Without it, the default classifier returns "default" for everything — no observability.

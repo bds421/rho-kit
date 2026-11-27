@@ -168,6 +168,12 @@ var ErrInvalidKeySet = errors.New("jwtutil: key set is not initialized")
 // checks for raw KeySet users.
 var ErrPolicyRequired = errors.New("jwtutil: issuer and audience policy required (set Expected* or AllowAny*)")
 
+// ErrTokenExpired is returned when a token's signature verified but its exp
+// claim has passed (beyond the clock skew). Claims validated after exp, such as
+// issuer and audience, are not reported. The holder may fetch a new token; every
+// other verification failure means the token itself is not acceptable.
+var ErrTokenExpired = errors.New("jwtutil: token expired")
+
 var (
 	errMalformedPermissionsClaim = errors.New("malformed permissions claim")
 	errMalformedScopesClaim      = errors.New("malformed scopes claim")
@@ -412,6 +418,9 @@ func parseVerifiedToken(set jwk.Set, tokenString string, now time.Time, expected
 	}
 	tok, err := jwt.Parse([]byte(tokenString), parseOpts...)
 	if err != nil {
+		if errors.Is(err, jwt.TokenExpiredError{}) {
+			return nil, fmt.Errorf("%w: %w", ErrTokenExpired, err)
+		}
 		return nil, err
 	}
 

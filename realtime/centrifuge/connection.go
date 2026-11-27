@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/security/v2/jwtutil"
 	cfg "github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
 )
@@ -143,15 +144,28 @@ func boundedPolicyExpiry(ctx context.Context, jwtExpiry int64, reply ConnectionP
 	return policyExpiry(jwtExpiry, expiry, now)
 }
 
+// errRefreshTokenExpired answers a refresh whose token has expired. SDKs end
+// the connection on a refresh error that is not temporary, so this one is:
+// the client fetches another token and refreshes again on the open connection.
+var errRefreshTokenExpired = &cfg.Error{
+	Code:      cfg.ErrorTokenExpired.Code,
+	Message:   cfg.ErrorTokenExpired.Message,
+	Temporary: true,
+}
+
 func (n *Node) refresh(client *cfg.Client, event cfg.RefreshEvent, cb cfg.RefreshCallback) {
 	if !event.ClientSideRefresh || n.verifier == nil || n.refreshPolicy == nil {
 		cb(cfg.RefreshReply{}, cfg.DisconnectInvalidToken)
 		return
 	}
 	claims, err := n.verifier.VerifyContext(client.Context(), extractBearer(event.Token), time.Now())
+	if errors.Is(err, jwtutil.ErrTokenExpired) {
+		cb(cfg.RefreshReply{}, errRefreshTokenExpired)
+		return
+	}
 	if err != nil {
-		advice, _ := connectVerifyFailure(err)
-		cb(cfg.RefreshReply{}, advice)
+		_, reply := connectVerifyFailure(err)
+		cb(cfg.RefreshReply{}, reply)
 		return
 	}
 	if claims.Subject == "" || claims.Subject != client.UserID() {

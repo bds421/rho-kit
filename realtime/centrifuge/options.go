@@ -191,9 +191,17 @@ func WithVerifiedConnectPolicy(fn VerifiedConnectPolicy) Option {
 	return func(c *config) { c.connectPolicy = fn }
 }
 
-// WithVerifiedRefreshPolicy enables SDK client-side token refresh. Every refresh
-// re-verifies JWT and subject before invoking current session/resource policy.
-// Requires WithJWTAuth. Omission preserves the existing expiration behavior.
+// WithVerifiedRefreshPolicy enables SDK client-side token refresh: before the
+// token expires the client sends a new one, and the connection and its
+// subscriptions stay open. Every refresh re-verifies JWT and subject before
+// invoking current session/resource policy; an expired refresh token gets a
+// temporary token-expired error (code 109), on which the SDK fetches another
+// token and retries the refresh. Requires WithJWTAuth.
+//
+// Without this option the node closes each connection when its token expires
+// (DisconnectExpired); the SDK reconnects, receives ErrorTokenExpired for its
+// stored token, fetches a new one and subscribes again, and publications sent
+// in between reach it only through [WithSubscriptionRecovery].
 func WithVerifiedRefreshPolicy(fn VerifiedRefreshPolicy) Option {
 	if fn == nil {
 		panic("realtime/centrifuge: WithVerifiedRefreshPolicy requires a non-nil policy")
@@ -243,6 +251,13 @@ func WithLogger(logger *slog.Logger) Option {
 // verifies the bearer token sent by the centrifuge client via the
 // supplied kit [jwtutil.Provider] and propagates the verified
 // subject as the centrifuge connection's user ID.
+//
+// The connection lives until the token's exp. Pair it with
+// [WithVerifiedRefreshPolicy] so the SDK refreshes the token on the open
+// connection; without it the node closes the connection at expiry and the
+// client reconnects. A connect with an expired token (validly signed) gets
+// ErrorTokenExpired, on which centrifuge SDKs fetch a new token; every other
+// verification failure gets DisconnectInvalidToken, which is terminal.
 //
 // Per-channel authorization is separate: pass [WithSubscribeAuthorizer]
 // / [WithPublishAuthorizer] (or deliberately [WithOpenChannelsUnsafe]).

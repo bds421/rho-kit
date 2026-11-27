@@ -30,9 +30,13 @@ WithVerifiedRefreshPolicy enables SDK client-side token refresh. Every refresh
 verifies a fresh JWT and requires the same subject before application policy.
 Recheck session/resource/permission state; reject stale/revoked bindings. Context
 is not replaced on refresh. Expiry/cancellation bounds still apply. Without this
-option existing expiration behavior is unchanged. Invalid tokens and unavailable
-key sets retain distinct disconnect advice; raw callback errors are not returned
-to clients.
+option the node closes a connection when its token expires (DisconnectExpired)
+and the SDK reconnects; pass it whenever tokens are short-lived. A validly signed
+but expired token gets token expired (code 109): on connect ErrorTokenExpired, on
+refresh the same code marked temporary, and the SDK fetches a new token through
+getToken and retries. Other invalid tokens get the terminal DisconnectInvalidToken,
+unavailable key sets the temporary DisconnectServerError; raw callback errors are
+not returned to clients.
 
 WithConnectObserver/WithDisconnectObserver run after kit authz/metrics wiring.
 Their Connection view exposes ID/UserID/Context/Send/Disconnect, no callback
@@ -44,7 +48,8 @@ queues a framework push, not proof of browser receipt.
 Durable recovery/private projection remain application/backend choices. Hooks do
 not create a new broker or durable authorization. Contained native WebSocket tests
 cover signed connect, identity preservation, default channel denial, valid refresh,
-subject-change rejection, invalid JWT and expiry/context bounds.
+subject-change rejection, invalid JWT, expired tokens on connect and refresh and
+expiry/context bounds.
 
 `WithSubscriptionReadyObserver` observes a completed native subscribe callback
 only when the channel is installed and the connection context is live. A native

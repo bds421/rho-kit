@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.51.1 — 2026-11-27
+
+Every workspace module is released at v2.51.1 (`release/v2.51.1`). No breaking changes.
+
+### realtime/centrifuge
+
+- **fix: an expired connection token gets "token expired", not "invalid
+  token".** A connect with a validly signed token whose `exp` has passed now
+  gets `ErrorTokenExpired` (code 109), on which centrifuge SDKs fetch a new
+  token through `getToken` and retry. Before, it got the terminal
+  `DisconnectInvalidToken`, so a client that reconnected with its stored token
+  after sleep, a network break or a server restart stopped for good. A refresh
+  with an expired token gets the same code marked temporary, so the SDK
+  retries the refresh on the open connection instead of disconnecting. A bad
+  signature or any other verification failure stays `DisconnectInvalidToken`.
+  The expired connect is logged at debug, not as a warning.
+- **docs:** `WithJWTAuth` and `WithVerifiedRefreshPolicy` say that without a
+  refresh policy the node closes each connection when its token expires.
+
+### security/jwtutil
+
+- **feat: `ErrTokenExpired`.** Verification returns it (wrapping jwx's
+  error) when the signature verified and `exp` has passed.
+
 ## v2.51.0 — 2026-11-27
 
 ### infra/storage/encryption: streaming format (breaking)

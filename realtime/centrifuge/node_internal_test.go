@@ -153,36 +153,41 @@ func TestValueToString_RendersScalars(t *testing.T) {
 	}
 }
 
-func TestConnectVerifyFailure_DistinguishesKeySetUnavailable(t *testing.T) {
-	// Infrastructure: JWKS not ready / stale → temporary DisconnectServerError.
-	for _, err := range []error{
-		jwtutil.ErrKeySetUnavailable,
-		jwtutil.ErrKeySetNotReady,
-		jwtutil.ErrKeySetStale,
-		fmt.Errorf("wrap: %w", jwtutil.ErrKeySetNotReady),
-	} {
-		disc, outcome := connectVerifyFailure(err)
-		if disc.Code != cfg.DisconnectServerError.Code {
-			t.Fatalf("err=%v: disconnect code=%d, want %d (server error)", err, disc.Code, cfg.DisconnectServerError.Code)
-		}
-		if outcome != connectOutcomeError {
-			t.Fatalf("err=%v: outcome=%q, want %q", err, outcome, connectOutcomeError)
+func TestConnectVerifyFailure(t *testing.T) {
+	cases := []struct {
+		err     error
+		code    uint32
+		outcome string
+	}{
+		// Infrastructure: JWKS not ready / stale → temporary server error.
+		{jwtutil.ErrKeySetUnavailable, cfg.DisconnectServerError.Code, connectOutcomeError},
+		{jwtutil.ErrKeySetNotReady, cfg.DisconnectServerError.Code, connectOutcomeError},
+		{jwtutil.ErrKeySetStale, cfg.DisconnectServerError.Code, connectOutcomeError},
+		{fmt.Errorf("wrap: %w", jwtutil.ErrKeySetNotReady), cfg.DisconnectServerError.Code, connectOutcomeError},
+		// Expired → token expired, on which the client fetches a new token.
+		{fmt.Errorf("%w: exp not satisfied", jwtutil.ErrTokenExpired), cfg.ErrorTokenExpired.Code, connectOutcomeRejected},
+		// Other token failures → terminal invalid token.
+		{errors.New("jwtutil: signature invalid"), cfg.DisconnectInvalidToken.Code, connectOutcomeRejected},
+		{errors.New("token expired"), cfg.DisconnectInvalidToken.Code, connectOutcomeRejected},
+	}
+	for _, tc := range cases {
+		outcome, reply := connectVerifyFailure(tc.err)
+		if code := replyCode(t, reply); code != tc.code || outcome != tc.outcome {
+			t.Errorf("err=%v: code=%d outcome=%q, want %d %q", tc.err, code, outcome, tc.code, tc.outcome)
 		}
 	}
+}
 
-	// Genuine token failures → terminal invalid token.
-	for _, err := range []error{
-		errors.New("jwtutil: signature invalid"),
-		fmt.Errorf("token expired"),
-	} {
-		disc, outcome := connectVerifyFailure(err)
-		if disc.Code != cfg.DisconnectInvalidToken.Code {
-			t.Fatalf("err=%v: disconnect code=%d, want %d (invalid token)", err, disc.Code, cfg.DisconnectInvalidToken.Code)
-		}
-		if outcome != connectOutcomeRejected {
-			t.Fatalf("err=%v: outcome=%q, want %q", err, outcome, connectOutcomeRejected)
-		}
+func replyCode(t *testing.T, reply error) uint32 {
+	t.Helper()
+	if d, ok := errors.AsType[cfg.Disconnect](reply); ok {
+		return d.Code
 	}
+	if e, ok := errors.AsType[*cfg.Error](reply); ok {
+		return e.Code
+	}
+	t.Fatalf("reply %T is neither a disconnect nor a client error", reply)
+	return 0
 }
 
 func TestExtractBearer(t *testing.T) {
@@ -203,25 +208,5 @@ func TestExtractBearer(t *testing.T) {
 				t.Fatalf("extractBearer = %q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestConnectVerifyFailure_KeySetUnavailable(t *testing.T) {
-	disc, outcome := connectVerifyFailure(fmt.Errorf("wrap: %w", jwtutil.ErrKeySetUnavailable))
-	if disc.Code != cfg.DisconnectServerError.Code {
-		t.Fatalf("disconnect code = %d, want server error", disc.Code)
-	}
-	if outcome != connectOutcomeError {
-		t.Fatalf("outcome = %q, want %q", outcome, connectOutcomeError)
-	}
-}
-
-func TestConnectVerifyFailure_InvalidToken(t *testing.T) {
-	disc, outcome := connectVerifyFailure(errors.New("bad token"))
-	if disc.Code != cfg.DisconnectInvalidToken.Code {
-		t.Fatalf("disconnect code = %d, want invalid token", disc.Code)
-	}
-	if outcome != connectOutcomeRejected {
-		t.Fatalf("outcome = %q, want rejected", outcome)
 	}
 }

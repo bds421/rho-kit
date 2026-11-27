@@ -380,7 +380,7 @@ func (n *Node) connecting(ctx context.Context, e cfg.ConnectEvent) (cfg.ConnectR
 }
 
 // verifyConnectToken verifies the connect token. A failure is counted and
-// returned as the disconnect to send.
+// returned as the reply to send.
 func (n *Node) verifyConnectToken(ctx context.Context, rawToken string) (*jwtutil.Claims, error) {
 	token := extractBearer(rawToken)
 	if token == "" {
@@ -389,18 +389,23 @@ func (n *Node) verifyConnectToken(ctx context.Context, rawToken string) (*jwtuti
 	}
 	claims, err := n.verifier.VerifyContext(ctx, token, time.Now())
 	if err != nil {
-		disc, outcome := connectVerifyFailure(err)
+		outcome, reply := connectVerifyFailure(err)
 		n.metrics.observeConnect(outcome)
-		if outcome == connectOutcomeError {
+		switch {
+		case outcome == connectOutcomeError:
 			n.logger.ErrorContext(ctx, "centrifuge: connect token verification failed (key set unavailable)",
 				redact.Error(err),
 			)
-		} else {
+		case errors.Is(err, jwtutil.ErrTokenExpired):
+			// Routine after sleep, a network break or a restart: the client
+			// fetches a new token on this reply.
+			n.logger.DebugContext(ctx, "centrifuge: connect token expired")
+		default:
 			n.logger.WarnContext(ctx, "centrifuge: connect token verification failed",
 				redact.Error(err),
 			)
 		}
-		return nil, disc
+		return nil, reply
 	}
 	if claims.Subject == "" {
 		n.metrics.observeConnect(connectOutcomeRejected)
@@ -532,14 +537,19 @@ func (n *Node) authorizeChannel(client *cfg.Client, channel string, authorizer C
 // clients). The kit accepts either with the Token field taking
 // precedence.
 
-// connectVerifyFailure maps a verifier error to the centrifuge disconnect
-// advice and the connects_total outcome label. Infrastructure failures
-// (JWKS not ready / stale) are temporary; token failures are terminal.
-func connectVerifyFailure(err error) (disconnect cfg.Disconnect, outcome string) {
+// connectVerifyFailure maps a verifier error to the connects_total outcome
+// label and the centrifuge reply. Infrastructure failures (JWKS not ready /
+// stale) are temporary. An expired token gets ErrorTokenExpired, the one
+// error on which centrifuge SDKs fetch a new token and retry; other token
+// failures are terminal.
+func connectVerifyFailure(err error) (outcome string, reply error) {
 	if errors.Is(err, jwtutil.ErrKeySetUnavailable) {
-		return cfg.DisconnectServerError, connectOutcomeError
+		return connectOutcomeError, cfg.DisconnectServerError
 	}
-	return cfg.DisconnectInvalidToken, connectOutcomeRejected
+	if errors.Is(err, jwtutil.ErrTokenExpired) {
+		return connectOutcomeRejected, cfg.ErrorTokenExpired
+	}
+	return connectOutcomeRejected, cfg.DisconnectInvalidToken
 }
 
 func extractBearer(token string) string {

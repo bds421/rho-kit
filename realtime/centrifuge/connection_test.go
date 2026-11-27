@@ -31,6 +31,13 @@ type bindingContextKey struct{}
 
 func fixtureTokenProvider(t *testing.T) (*jwtutil.Provider, func(string) string) {
 	t.Helper()
+	provider, signUntil := fixtureTokenSigner(t)
+	return provider, func(subject string) string { return signUntil(subject, time.Now().Add(time.Hour)) }
+}
+
+// fixtureTokenSigner returns a verifier and a signer of tokens that expire at exp.
+func fixtureTokenSigner(t *testing.T) (*jwtutil.Provider, func(subject string, exp time.Time) string) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -44,8 +51,8 @@ func fixtureTokenProvider(t *testing.T) (*jwtutil.Provider, func(string) string)
 		t.Fatal(err)
 	}
 	provider := jwtutil.NewProviderWithKeySet(set, jwtutil.WithExpectedIssuer("https://issuer.invalid"), jwtutil.WithExpectedAudience("fixture-realtime"), jwtutil.WithStringClaims("sid"))
-	return provider, func(subject string) string {
-		payload, err := json.Marshal(map[string]any{"iss": "https://issuer.invalid", "aud": "fixture-realtime", "sub": subject, "sid": "fixture-session", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()})
+	return provider, func(subject string, exp time.Time) string {
+		payload, err := json.Marshal(map[string]any{"iss": "https://issuer.invalid", "aud": "fixture-realtime", "sub": subject, "sid": "fixture-session", "iat": time.Now().Unix(), "exp": exp.Unix()})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +104,8 @@ func socketCommand(t *testing.T, ctx context.Context, conn *websocket.Conn, valu
 type socketReply struct {
 	ID    int `json:"id"`
 	Error *struct {
-		Code int `json:"code"`
+		Code      int  `json:"code"`
+		Temporary bool `json:"temporary"`
 	} `json:"error"`
 }
 
@@ -250,5 +258,63 @@ func TestVerifiedConnectionPoliciesRequireJWTAndRejectNilCallbacks(t *testing.T)
 			}()
 			fn()
 		}()
+	}
+}
+
+func TestExpiredConnectTokenGetsTokenExpired(t *testing.T) {
+	provider, signUntil := fixtureTokenSigner(t)
+	_, signOther := fixtureTokenSigner(t)
+	connect := func(token string) (*websocket.Conn, context.Context) {
+		node, err := NewNode(WithJWTAuth(provider), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, ctx := fixtureSocket(t, node)
+		socketCommand(t, ctx, conn, map[string]any{"id": 1, "connect": map[string]any{"token": token}})
+		return conn, ctx
+	}
+	expired := time.Now().Add(-5 * time.Minute)
+	conn, ctx := connect(signUntil(fixtureSubject, expired))
+	if reply := readSocketReply(t, ctx, conn, 1); reply.Error == nil || reply.Error.Code != int(cfg.ErrorTokenExpired.Code) {
+		t.Fatalf("expired connect token: reply %+v, want token expired", reply.Error)
+	}
+
+	// A bad signature stays a terminal invalid token, expired or not.
+	conn, ctx = connect(signOther(fixtureSubject, expired))
+	if _, _, err := conn.Read(ctx); websocket.CloseStatus(err) != websocket.StatusCode(cfg.DisconnectInvalidToken.Code) {
+		t.Fatalf("expired token with a bad signature: %v, want close %d", err, cfg.DisconnectInvalidToken.Code)
+	}
+}
+
+func TestExpiredRefreshTokenGetsTemporaryTokenExpired(t *testing.T) {
+	provider, signUntil := fixtureTokenSigner(t)
+	_, signOther := fixtureTokenSigner(t)
+	node, err := NewNode(WithJWTAuth(provider), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		WithVerifiedRefreshPolicy(func(context.Context, Connection, cfg.RefreshEvent, jwtutil.Claims) (ConnectionPolicyReply, error) {
+			return ConnectionPolicyReply{}, nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, ctx := fixtureSocket(t, node)
+	valid := time.Now().Add(time.Hour)
+	expired := time.Now().Add(-5 * time.Minute)
+	socketCommand(t, ctx, conn, map[string]any{"id": 1, "connect": map[string]any{"token": signUntil(fixtureSubject, valid)}})
+	if reply := readSocketReply(t, ctx, conn, 1); reply.Error != nil {
+		t.Fatal(reply.Error)
+	}
+	socketCommand(t, ctx, conn, map[string]any{"id": 2, "refresh": map[string]any{"token": signUntil(fixtureSubject, expired)}})
+	if reply := readSocketReply(t, ctx, conn, 2); reply.Error == nil || reply.Error.Code != int(cfg.ErrorTokenExpired.Code) || !reply.Error.Temporary {
+		t.Fatalf("expired refresh token: reply %+v, want temporary token expired", reply.Error)
+	}
+	// The connection stays open: the next refresh with a new token succeeds.
+	socketCommand(t, ctx, conn, map[string]any{"id": 3, "refresh": map[string]any{"token": signUntil(fixtureSubject, valid)}})
+	if reply := readSocketReply(t, ctx, conn, 3); reply.Error != nil {
+		t.Fatalf("refresh after an expired one: %+v", reply.Error)
+	}
+
+	socketCommand(t, ctx, conn, map[string]any{"id": 4, "refresh": map[string]any{"token": signOther(fixtureSubject, expired)}})
+	if _, _, err := conn.Read(ctx); websocket.CloseStatus(err) != websocket.StatusCode(cfg.DisconnectInvalidToken.Code) {
+		t.Fatalf("refresh token with a bad signature: %v, want close %d", err, cfg.DisconnectInvalidToken.Code)
 	}
 }
