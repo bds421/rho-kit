@@ -139,9 +139,11 @@ type SessionIndex interface {
 //
 // Remember records key for ttl and reports whether it was not recorded
 // before (first=true). A key seen within its ttl returns first=false and a
-// nil error.
+// nil error. Forget removes key, so an identifier whose use was refused
+// after it was recorded can come again.
 type ReplayCache interface {
 	Remember(ctx context.Context, key string, ttl time.Duration) (first bool, err error)
+	Forget(ctx context.Context, key string) error
 }
 
 // StateStore persists the per-login CSRF state token + OIDC nonce so

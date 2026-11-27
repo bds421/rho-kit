@@ -371,9 +371,10 @@ application mints its session itself. Give each provider its own callback URL:
 than the state holds, or with a missing or wrong `iss` where the provider
 announces it (RFC 9207), before any code is exchanged. `auth/oauth2/redis` `Store.States()`
 holds the state and consumes it with GETDEL. For back-channel logout, `Flow.VerifyLogoutToken(ctx, cfg, raw, admit...)`
-checks the posted `logout_token` against that provider, runs `admit` (for
-example a budget per provider that only verified tokens spend) and records
-its jti (in the same Redis store); forged tokens make the provider's keys
+checks the posted `logout_token` against that provider, records its jti (in
+the same Redis store; a replay fails here) and runs `admit` (for example a
+budget per provider that only verified first deliveries spend; a refusal
+forgets the jti); forged tokens make the provider's keys
 be fetched at most once a minute; the application ends the sessions it recorded for
 `Result.SID`, or for the subject when the token has no sid. Tests run against
 `auth/oauth2/oauth2test.NewIssuer`, a local provider.

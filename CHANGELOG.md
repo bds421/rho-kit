@@ -2,15 +2,17 @@
 
 ## v2.57.0 — 2026-11-27
 
-Every workspace module is released at v2.57.0 (`release/v2.57.0`). No breaking changes.
+Every workspace module is released at v2.57.0 (`release/v2.57.0`). Breaking for
+own `ReplayCache` implementations: the interface gains `Forget`.
 
 ### auth/oauth2
 
 - **feat: `Flow.VerifyLogoutToken` admits after verification.** Optional
-  admission functions run on the verified token before its `jti` is
-  recorded; an error is returned as it is and leaves the `jti` unrecorded,
-  so a budget per provider that only verified tokens spend cannot be used
-  up by forged ones, and the provider may deliver the token again.
+  admission functions run on a verified token after its `jti` is recorded,
+  so neither a forged nor a replayed token reaches them; an error is
+  returned as it is and the `jti` forgotten (`ReplayCache.Forget`, new), so
+  the provider may deliver the token again. A budget per provider that only
+  verified first deliveries spend cannot be used up by others.
 - **fix(security): forged logout tokens no longer fetch the provider's
   keys each.** go-oidc fetches the keys again whenever a signature does not
   verify; logout tokens are now checked against a key set per issuer that

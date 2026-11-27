@@ -306,6 +306,10 @@ func TestMemoryReplayCache(t *testing.T) {
 	first, err = cache.Remember(ctx, "k", time.Minute)
 	require.NoError(t, err)
 	assert.True(t, first, "an expired key may be recorded again")
+	require.NoError(t, cache.Forget(ctx, "k"))
+	first, err = cache.Remember(ctx, "k", time.Minute)
+	require.NoError(t, err)
+	assert.True(t, first, "a forgotten key may be recorded again")
 	_, err = cache.Remember(ctx, "", time.Minute)
 	require.Error(t, err)
 }

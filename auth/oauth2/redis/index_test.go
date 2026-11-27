@@ -109,6 +109,10 @@ func TestReplayCache_SetNXWindow(t *testing.T) {
 	first, err := store.Remember(ctx, "bcl:abc", time.Minute)
 	require.NoError(t, err)
 	assert.True(t, first)
+	require.NoError(t, store.Forget(ctx, "bcl:abc"))
+	first, err = store.Remember(ctx, "bcl:abc", time.Minute)
+	require.NoError(t, err)
+	assert.True(t, first, "a forgotten key may be recorded again")
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex

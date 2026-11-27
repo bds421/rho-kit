@@ -126,3 +126,14 @@ func (s *Store) Remember(ctx context.Context, key string, ttl time.Duration) (bo
 	}
 	return first, nil
 }
+
+// Forget implements [oauth2.ReplayCache].
+func (s *Store) Forget(ctx context.Context, key string) error {
+	if err := validateRead(ctx, key); err != nil {
+		return err
+	}
+	if err := s.client.Del(ctx, s.prefix+"replay:"+key).Err(); err != nil {
+		return redact.WrapError("oauth2/redis: forget replay key", err)
+	}
+	return nil
+}

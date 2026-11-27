@@ -107,9 +107,10 @@ or UserInfo without re-discovering endpoints.
 - Back-channel logout with Flow: `Flow.VerifyLogoutToken(ctx, cfg, raw,
   admit...)` checks a posted `logout_token` against the provider of `cfg`
   (signature, iss, aud = client id, exp, iat at most 5 min old and 1 min
-  ahead, the logout event, sid and/or sub, no nonce), runs `admit` on the
-  verified token (its error leaves the jti unrecorded: a budget only
-  verified tokens spend), records its jti, and returns
+  ahead, the logout event, sid and/or sub, no nonce), records its jti (a replay
+  fails before anything else), runs `admit` on the verified first delivery
+  (its error forgets the jti again, so the provider may retry: a budget
+  only verified, first deliveries spend), and returns
   `LogoutToken{Issuer, Subject, SID}`; the keys are fetched again at most
   once a `WithFlowKeyRefetchInterval` (1 min) per issuer, so forged tokens
   cannot make a fetch each; errors `ErrLogoutTokenInvalid`,
@@ -178,8 +179,8 @@ value persisted at login. No transport-only trust shortcut is taken.
 - Flow back-channel logout: sub and sid, sid alone; replayed jti, other
   client, other key, expiry, events, nonce, jti, iat and missing sub and sid
   refused; a failing replay cache fails closed; a refused admission
-  leaves the jti unrecorded; forged tokens fetch the keys at most once an
-  interval
+  forgets the jti; a replay never reaches the admission; forged tokens
+  fetch the keys at most once an interval
 - Flow mix-up: an answer of another provider (another callback URL, an iss
   naming itself, a key naming another issuer now) and a missing or wrong
   iss where announced are refused before any code exchange

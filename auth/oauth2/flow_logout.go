@@ -52,10 +52,11 @@ func WithFlowReplayCache(cache ReplayCache) FlowOption {
 // most a minute ahead; the back-channel logout event in events; sid and/or
 // sub; no nonce. Only Issuer and ClientID of cfg are used.
 //
-// admit, when given, runs on the verified token before its jti is recorded;
-// its error is returned as it is and leaves the jti unrecorded, so the
-// provider may deliver the token again. Use it for what only a verified
-// token should spend, such as a budget per provider, so forged tokens
+// admit, when given, runs on a verified token that was not used before,
+// after its jti is recorded (so a replay never reaches it); its error is
+// returned as it is and the jti forgotten, so the provider may deliver the
+// token again. Use it for what only a verified, first delivery should
+// spend, such as a budget per provider, so forged or replayed tokens
 // cannot use it up.
 //
 // The jti is recorded before VerifyLogoutToken returns, so a second
@@ -80,18 +81,23 @@ func (f *Flow) VerifyLogoutToken(ctx context.Context, cfg Config, raw string, ad
 	if err != nil {
 		return LogoutToken{}, fmt.Errorf("%w: %w", ErrLogoutTokenInvalid, redact.WrapError("logout token", err))
 	}
-	verified := LogoutToken{Issuer: tok.issuer, Subject: tok.subject, SID: tok.sid}
-	for _, fn := range admit {
-		if err := fn(ctx, verified); err != nil {
-			return LogoutToken{}, err
-		}
-	}
 	first, err := f.replay.Remember(ctx, tok.replayKey(), logoutTokenMaxAge+logoutTokenClockSkew)
 	if err != nil {
 		return LogoutToken{}, redact.WrapError("oauth2: record the logout token", err)
 	}
 	if !first {
 		return LogoutToken{}, ErrLogoutTokenReplayed
+	}
+	verified := LogoutToken{Issuer: tok.issuer, Subject: tok.subject, SID: tok.sid}
+	for _, fn := range admit {
+		if err := fn(ctx, verified); err != nil {
+			// Refused after the jti was recorded: forget it, so the provider
+			// may deliver the token again.
+			if ferr := f.replay.Forget(ctx, tok.replayKey()); ferr != nil {
+				return LogoutToken{}, errors.Join(err, redact.WrapError("oauth2: forget the logout token", ferr))
+			}
+			return LogoutToken{}, err
+		}
 	}
 	return verified, nil
 }

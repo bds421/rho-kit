@@ -66,6 +66,8 @@ func (failingReplay) Remember(context.Context, string, time.Duration) (bool, err
 	return false, errors.New("cache down")
 }
 
+func (failingReplay) Forget(context.Context, string) error { return errors.New("cache down") }
+
 func TestFlow_VerifyLogoutTokenFailsClosed(t *testing.T) {
 	iss := oauth2test.NewIssuer(t, "app", "s3cret", flowCallback)
 	flow := newFlow(t, iss, oauth2.WithFlowReplayCache(failingReplay{}))
@@ -75,9 +77,9 @@ func TestFlow_VerifyLogoutTokenFailsClosed(t *testing.T) {
 	assert.Panics(t, func() { oauth2.WithFlowReplayCache(nil) })
 }
 
-// An admission refused after verification leaves the jti unrecorded, so
-// the provider's next delivery of the same token is verified again; a
-// forged token never reaches the admission.
+// An admission refused after verification forgets the jti, so the
+// provider's next delivery of the same token is admitted; neither a
+// forged nor a replayed token reaches the admission.
 func TestFlow_VerifyLogoutTokenAdmitsVerifiedTokensOnly(t *testing.T) {
 	iss := oauth2test.NewIssuer(t, "app", "s3cret", flowCallback)
 	other := oauth2test.NewIssuer(t, "app", "s3cret", flowCallback)
@@ -104,9 +106,9 @@ func TestFlow_VerifyLogoutTokenAdmitsVerifiedTokensOnly(t *testing.T) {
 	tok, err := flow.VerifyLogoutToken(context.Background(), cfg, raw, admit(false))
 	require.NoError(t, err, "a refused admission recorded the jti")
 	assert.Equal(t, "abc", tok.Subject)
-	assert.Len(t, admitted, 2)
 	_, err = flow.VerifyLogoutToken(context.Background(), cfg, raw, admit(false))
 	require.ErrorIs(t, err, oauth2.ErrLogoutTokenReplayed)
+	assert.Len(t, admitted, 2, "a replayed token reached the admission")
 }
 
 // Forged logout tokens make the provider's keys be fetched at most once a

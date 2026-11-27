@@ -57,3 +57,11 @@ func (m *MemoryReplayCache) Remember(_ context.Context, key string, ttl time.Dur
 	m.entries[key] = now.Add(ttl)
 	return true, nil
 }
+
+// Forget implements [ReplayCache].
+func (m *MemoryReplayCache) Forget(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.entries, key)
+	return nil
+}
