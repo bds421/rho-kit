@@ -13,8 +13,8 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.57.0
-	github.com/bds421/rho-kit/data/v2 v2.57.0
+	github.com/bds421/rho-kit/core/v2 v2.58.0
+	github.com/bds421/rho-kit/data/v2 v2.58.0
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0

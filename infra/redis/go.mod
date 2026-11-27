@@ -4,9 +4,9 @@ go 1.27.4
 
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
-	github.com/bds421/rho-kit/core/v2 v2.57.0
-	github.com/bds421/rho-kit/observability/v2 v2.57.0
-	github.com/bds421/rho-kit/resilience/v2 v2.57.0
+	github.com/bds421/rho-kit/core/v2 v2.58.0
+	github.com/bds421/rho-kit/observability/v2 v2.58.0
+	github.com/bds421/rho-kit/resilience/v2 v2.58.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/redis/go-redis/v9 v9.23.0
