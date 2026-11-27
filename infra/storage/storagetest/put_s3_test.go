@@ -21,8 +21,7 @@ func TestS3PutLargerThanMinIOStreamingChunkLimit(t *testing.T) {
 	// This is the compatibility boundary that rejected the AWS SDK's optional
 	// aws-chunked checksum stream with "chunk too big" for a 24 MiB lineage
 	// object in a real downstream execution.
-	config := startMinIO(t, "rho-kit-large-put", "minio/minio:RELEASE.2025-04-22T22-12-26Z")
-	createS3Bucket(t, ctx, config)
+	config := NewS3Bucket(t, startMinIO(t, "rho-kit-large-put", "minio/minio:RELEASE.2025-04-22T22-12-26Z"))
 	backend, err := s3backend.NewContext(ctx, config)
 	require.NoError(t, err)
 

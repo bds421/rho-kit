@@ -24,7 +24,8 @@ var (
 // The container is started on the first call and reused within the same
 // test process (Ryuk terminates it when the process exits).
 //
-// Each test should use a unique bucket name to ensure isolation.
+// The bucket is named but not created: pass the result to [NewS3Bucket] for
+// a bucket of the test's own.
 func StartS3(t *testing.T, bucket string) s3backend.Config {
 	t.Helper()
 

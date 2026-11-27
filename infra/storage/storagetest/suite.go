@@ -30,7 +30,9 @@ func testPrefix(t *testing.T) string {
 }
 
 // BackendSuite runs a standard compliance suite against any [storage.Storage]
-// implementation. Call this from each backend's test to verify correct behavior:
+// implementation and deletes every key it put when the test ends, so a shared
+// backend keeps nothing of the run. Call this from each backend's test to
+// verify correct behavior:
 //
 //	func TestLocalBackendCompliance(t *testing.T) {
 //	    backend := storagetest.NewLocalBackend(t)
@@ -38,6 +40,7 @@ func testPrefix(t *testing.T) string {
 //	}
 func BackendSuite(t *testing.T, backend storage.Storage) {
 	t.Helper()
+	backend = removeWritten(t, backend)
 	ctx := context.Background()
 	pfx := testPrefix(t)
 
@@ -204,7 +207,8 @@ func backendContentCases(t *testing.T, ctx context.Context, backend storage.Stor
 }
 
 // ListerSuite runs compliance tests for backends implementing [storage.Lister].
-// Requires that the backend also implements [storage.Storage] for seeding data.
+// Requires that the backend also implements [storage.Storage] for seeding data;
+// the seeded keys are deleted when the test ends.
 //
 //	func TestLocalBackendListerCompliance(t *testing.T) {
 //	    backend := storagetest.NewLocalBackend(t)
@@ -212,6 +216,7 @@ func backendContentCases(t *testing.T, ctx context.Context, backend storage.Stor
 //	}
 func ListerSuite(t *testing.T, backend storage.Storage, lister storage.Lister) {
 	t.Helper()
+	backend = removeWritten(t, backend)
 	ctx := context.Background()
 	pfx := testPrefix(t)
 

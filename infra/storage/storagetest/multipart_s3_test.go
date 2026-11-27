@@ -13,9 +13,6 @@ import (
 	"testing"
 	"time"
 
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/infra/storage/s3backend/v2"
@@ -26,8 +23,7 @@ func TestS3MultipartConformanceAgainstMinIO(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cfg := StartMinIO(t, "rho-kit-multipart")
-	createS3Bucket(t, ctx, cfg)
+	cfg := NewS3Bucket(t, StartMinIO(t, "rho-kit-multipart"))
 	backend, err := s3backend.NewContext(ctx, cfg)
 	require.NoError(t, err)
 	runS3MultipartConformance(t, ctx, backend, "tenant/staging/item")
@@ -102,16 +98,4 @@ func runS3MultipartConformance(t *testing.T, ctx context.Context, backend *s3bac
 	require.NoError(t, err)
 	require.NoError(t, uploader.AbortUpload(ctx, orphan))
 	require.NoError(t, uploader.AbortUpload(ctx, orphan), "abort retry must be idempotent")
-}
-
-func createS3Bucket(t *testing.T, ctx context.Context, cfg s3backend.Config) {
-	t.Helper()
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithRegion(cfg.Region), awsconfig.WithBaseEndpoint(cfg.Endpoint),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, "")),
-	)
-	require.NoError(t, err)
-	client := s3.NewFromConfig(awsCfg, func(options *s3.Options) { options.UsePathStyle = true })
-	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &cfg.Bucket})
-	require.NoError(t, err)
 }
