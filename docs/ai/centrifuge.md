@@ -6,6 +6,14 @@ application channel authorizers. Default subscriptions/publication remain denied
 Mount through a WebSocket-compatible HTTP stack; buffering/ordinary request timeout
 wrappers require a qualified bypass.
 
+The WebSocket upgrade checks the Origin header. Without an option it must name the
+request's Host (Centrifuge's default), which fails behind a reverse proxy that
+forwards another Host. `WithAllowedOrigins("https://app.example.com", ...)` names
+the accepted origins instead: exact `scheme://host[:port]` matches, case-insensitive,
+a default port (443, 80) the same as none;
+an upgrade without Origin or with `null` is refused; an invalid entry or an empty
+list panics at construction.
+
 WithVerifiedConnectPolicy runs after mandatory JWT verification and a nonempty
 subject. It receives the ConnectEvent plus a value copy of verified jwtutil.Claims.
 Configure jwtutil.WithStringClaims for application claims such as a session ID.

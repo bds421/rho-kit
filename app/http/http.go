@@ -17,6 +17,7 @@
 //	        http.WithTLSReloadOnSignal(syscall.SIGHUP), // pair with WithReloadingTLS
 //	        http.WithServerOption(myOpt),
 //	        http.WithStackOptions(stackOpt1, stackOpt2),
+//	        http.WithStackOptions(stack.WithStreamingRoutes(route)), // uploads, downloads
 //	        http.WithoutDefaultStack(),
 //	        http.WithInternalNonLoopback(),             // bind /metrics publicly
 //	        http.WithCustomReadiness(myHandler),

@@ -29,7 +29,10 @@ import (
 // pending claim, status-guarded UPDATEs on outcome) make a caller-
 // supplied tx the wrong unit of atomicity for those operations.
 type Store struct {
-	pool                *pgxpool.Pool
+	pool *pgxpool.Pool
+	// table is the schema-qualified outbox_entries of WithSchema; empty
+	// leaves it to search_path.
+	table               string
 	claimTopics         []string
 	claimRoutingKeys    []string
 	claimMessageTypes   []string
@@ -162,9 +165,9 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`
 	}
 	var err error
 	if tx, ok := TxFromContext(ctx); ok {
-		_, err = tx.Exec(ctx, q, args...)
+		_, err = tx.Exec(ctx, s.sql(q), args...)
 	} else {
-		_, err = s.pool.Exec(ctx, q, args...)
+		_, err = s.pool.Exec(ctx, s.sql(q), args...)
 	}
 	if err != nil {
 		return redact.WrapError("outbox/postgres: insert", err)
@@ -201,7 +204,7 @@ func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, er
 	// Select exact route tuples before LIMIT and row locking. Filtering a claimed
 	// batch afterwards could starve eligible routes and mutate deferred rows.
 	routePredicate, args := s.routeSelection([]any{limit})
-	rows, err := s.pool.Query(ctx, fetchPendingQuery(routePredicate), args...)
+	rows, err := s.pool.Query(ctx, s.sql(fetchPendingQuery(routePredicate)), args...)
 	if err != nil {
 		return nil, redact.WrapError("outbox/postgres: fetch pending", err)
 	}
@@ -307,7 +310,7 @@ FROM unnest($1::uuid[], $2::uuid[]) AS t(id, token)
 WHERE o.id = t.id
   AND o.status = 'processing'
   AND o.claim_token = t.token`
-	ct, err := s.pool.Exec(ctx, q, hbIDs, hbTokens)
+	ct, err := s.pool.Exec(ctx, s.sql(q), hbIDs, hbTokens)
 	if err != nil {
 		return 0, redact.WrapError("outbox/postgres: heartbeat", err)
 	}
@@ -426,7 +429,7 @@ SET status = 'pending',
     claim_token = NULL
 FROM (VALUES ` + strings.Join(valParts, ", ") + `) AS v(id, token)
 WHERE o.id = v.id AND o.status = 'processing' AND o.claim_token = v.token`
-	if _, err := s.pool.Exec(ctx, q, args...); err != nil {
+	if _, err := s.pool.Exec(ctx, s.sql(q), args...); err != nil {
 		return redact.WrapError("outbox/postgres: reset pending", err)
 	}
 	return nil
@@ -463,7 +466,7 @@ func (s *Store) transition(ctx context.Context, id string, p transitionParams) e
 	}
 	args := append([]any{id}, p.args...)
 	args = append(args, token)
-	ct, err := s.pool.Exec(ctx, p.sql, args...)
+	ct, err := s.pool.Exec(ctx, s.sql(p.sql), args...)
 	if err != nil {
 		return redact.WrapError("outbox/postgres: transition", err)
 	}
@@ -475,7 +478,7 @@ func (s *Store) transition(ctx context.Context, id string, p transitionParams) e
 	// Disambiguate not-found vs stale-state for the relay's logging
 	// and metric paths.
 	var status string
-	err = s.pool.QueryRow(ctx, `SELECT status FROM outbox_entries WHERE id = $1`, id).Scan(&status)
+	err = s.pool.QueryRow(ctx, s.sql(`SELECT status FROM outbox_entries WHERE id = $1`), id).Scan(&status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Row gone entirely — our claim is meaningless now.
@@ -499,7 +502,7 @@ func (s *Store) DeletePublishedBefore(ctx context.Context, before time.Time) (in
 	}
 	predicate, args := s.routeSelection([]any{before.UTC()})
 	q := `DELETE FROM outbox_entries WHERE status = 'published' AND published_at < $1` + predicate
-	ct, err := s.pool.Exec(ctx, q, args...)
+	ct, err := s.pool.Exec(ctx, s.sql(q), args...)
 	if err != nil {
 		return 0, redact.WrapError("outbox/postgres: delete published before", err)
 	}
@@ -516,7 +519,7 @@ func (s *Store) DeleteFailedBefore(ctx context.Context, before time.Time) (int64
 	}
 	predicate, args := s.routeSelection([]any{before.UTC()})
 	q := `DELETE FROM outbox_entries WHERE status = 'failed' AND updated_at < $1` + predicate
-	ct, err := s.pool.Exec(ctx, q, args...)
+	ct, err := s.pool.Exec(ctx, s.sql(q), args...)
 	if err != nil {
 		return 0, redact.WrapError("outbox/postgres: delete failed before", err)
 	}
@@ -550,7 +553,7 @@ SET status = 'pending',
     updated_at = NOW()
 WHERE status = 'processing'
   AND updated_at < NOW() - make_interval(secs => $1)` + predicate
-	ct, err := s.pool.Exec(ctx, q, args...)
+	ct, err := s.pool.Exec(ctx, s.sql(q), args...)
 	if err != nil {
 		return 0, redact.WrapError("outbox/postgres: reset stale processing", err)
 	}
@@ -567,7 +570,7 @@ func (s *Store) CountPending(ctx context.Context) (int64, error) {
 	predicate, args := s.routeSelection(nil)
 	q := `SELECT count(*) FROM outbox_entries WHERE status = 'pending'` + predicate
 	var n int64
-	if err := s.pool.QueryRow(ctx, q, args...).Scan(&n); err != nil {
+	if err := s.pool.QueryRow(ctx, s.sql(q), args...).Scan(&n); err != nil {
 		return 0, redact.WrapError("outbox/postgres: count pending", err)
 	}
 	return n, nil

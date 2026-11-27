@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -46,16 +47,15 @@ type ServeOptions struct {
 // Returns an error wrapping [storage.ErrObjectNotFound] when the key
 // does not exist — callers should map this to HTTP 404.
 //
-// Streaming-error caveat: in the non-seekable streaming fallback path, Go
-// flushes a 200 status on the first body Write. If io.Copy then fails
-// partway through, ServeFile still returns that error, but the client has
-// already received a 200 with a TRUNCATED, corrupt body — the status can no
-// longer be changed. Callers MUST NOT attempt to map this returned error to
-// an HTTP 5xx (e.g. http.Error / WriteHeader(500)): doing so is a no-op or
-// panics on a second WriteHeader. Instead, log and alert so the truncated
-// download is observable, and treat the error as a delivery failure rather
-// than a request-handling failure. (The seekable path via http.ServeContent
-// is not affected: it can still emit a Range/precondition error response.)
+// Streaming errors: in the non-seekable streaming path a 200 goes out with
+// the first body bytes. If the copy fails after that (a backend read error,
+// or a decryption layer reporting a truncated or tampered object), ServeFile
+// panics with [http.ErrAbortHandler], so net/http aborts the connection
+// (HTTP/1.1) or resets the stream (HTTP/2) and the client sees a failed
+// transfer instead of a complete, shortened body. Recovery middleware must
+// re-raise that value (httpx/middleware/recover does). A failure before any
+// byte was written is returned, so the caller can still answer with an
+// error status.
 func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, key string, opts ServeOptions) error {
 	if w == nil {
 		return fmt.Errorf("storagehttp: response writer is required")
@@ -123,18 +123,39 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 		return nil
 	}
 
-	// Streaming fallback — no Range support.
-	// Do not call WriteHeader explicitly; Go sends 200 on the first Write.
-	// This allows middleware to still modify headers or set status codes.
-	//
-	// Content-Length is intentionally omitted for non-seekable streams.
-	// If the backend reports an incorrect Size, setting Content-Length
-	// causes clients to hang waiting for the declared number of bytes.
-	// Without Content-Length, Go uses chunked transfer encoding, which
-	// gracefully handles size mismatches.
 	w.Header().Set("Content-Type", contentType)
-	_, err = io.Copy(w, rc)
+	return streamBody(w, rc, meta.Size)
+}
+
+// streamBody is the fallback for a reader that cannot seek: no Range
+// support. Go sends 200 on the first Write, so middleware can still change
+// headers or the status before. A failure after that aborts the response.
+func streamBody(w http.ResponseWriter, rc io.Reader, size int64) error {
+	if size > 0 {
+		// The size of the object the backend opened. A body that ends short
+		// makes net/http close the connection instead of completing the
+		// response; a longer one fails the write and aborts below.
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+	counted := &countingWriter{w: w}
+	_, err := io.Copy(counted, rc)
+	if err != nil && counted.n > 0 {
+		panic(http.ErrAbortHandler)
+	}
 	return err
+}
+
+// countingWriter counts the bytes written to w. It hides any io.ReaderFrom
+// of w, so every byte goes through Write.
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
 }
 
 type serveConfig struct {

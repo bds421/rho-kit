@@ -36,7 +36,10 @@ type Config struct {
 	// rest because buckets without a default-encryption policy would
 	// otherwise persist plaintext on PutObject — unacceptable for
 	// SOC2/PCI workloads. Set to empty string to opt out (e.g. when the
-	// bucket policy is the source of truth).
+	// bucket policy is the source of truth, the objects are encrypted
+	// before they reach S3, or the S3 service has no SSE-S3);
+	// [LoadConfig] takes [SSENone] for that, since an empty environment
+	// variable counts as unset.
 	SSE string
 
 	// SSEKMSKeyID is the KMS key ID used when SSE = "aws:kms". Ignored
@@ -89,6 +92,9 @@ func (c Config) LogValue() slog.Value {
 //   - STORAGE_S3_USE_DEFAULT_CREDENTIALS (optional bool, default false)
 //   - {envPrefix}_S3_ACCESS_KEY_ID (required)
 //   - {envPrefix}_S3_SECRET_ACCESS_KEY (required, supports _FILE suffix)
+//   - STORAGE_S3_SSE (optional, default "AES256"; "aws:kms", or [SSENone]
+//     to send no server-side encryption header)
+//   - STORAGE_S3_SSE_KMS_KEY_ID (required when STORAGE_S3_SSE=aws:kms)
 func LoadConfig(envPrefix, environment string) (Config, error) {
 	p := &config.Parser{}
 	forcePathStyle := p.Bool("STORAGE_S3_FORCE_PATH_STYLE", false)
@@ -108,7 +114,7 @@ func LoadConfig(envPrefix, environment string) (Config, error) {
 		UseDefaultCredentials: useDefaultCredentials,
 		AccessKeyID:           config.Get(envPrefix+"_S3_ACCESS_KEY_ID", ""),
 		SecretAccessKey:       config.MustGetSecret(envPrefix+"_S3_SECRET_ACCESS_KEY", ""),
-		SSE:                   config.Get("STORAGE_S3_SSE", "AES256"),
+		SSE:                   loadSSE(),
 		SSEKMSKeyID:           config.Get("STORAGE_S3_SSE_KMS_KEY_ID", ""),
 	}
 
@@ -117,6 +123,21 @@ func LoadConfig(envPrefix, environment string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// SSENone is the STORAGE_S3_SSE value that switches server-side
+// encryption off. [config.Get] takes an empty variable as unset and
+// returns the default, so the empty [Config.SSE] cannot be set from the
+// environment.
+const SSENone = "none"
+
+// loadSSE reads STORAGE_S3_SSE, mapping [SSENone] to the empty opt-out.
+func loadSSE() string {
+	sse := config.Get("STORAGE_S3_SSE", "AES256")
+	if sse == SSENone {
+		return ""
+	}
+	return sse
 }
 
 // Validate checks that required S3 fields are present and credentials

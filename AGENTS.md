@@ -64,7 +64,7 @@ whole catalog.
 | **Public-facing HTTP/JSON API** (orders, accounts, products) | [examples/api-gateway](examples/api-gateway) | `app.Builder` + `apphttp.Module` + `jwt.Module` + `ratelimit.IP` + `httpx/middleware/idempotency` + `data/idempotency/pgstore` (or `redisstore`) + `resilience/circuitbreaker` + `resilience/retry` for downstreams |
 | **B2B webhook receiver** (Stripe, GitHub, etc. push to us) | [examples/webhook-receiver](examples/webhook-receiver) | `signedrequest.Middleware` + `signedrequest.NewMemoryNonceStore` (or Redis) + `httpx/middleware/idempotency` + `data/idempotency/pgstore` + typed JSON handler + optionally `infra/outbox` for crash-safe downstream dispatch |
 | **Async background worker** (consumes a queue, processes, retries) | [examples/background-worker](examples/background-worker) | `messaging.TypedSubscription[T]` + a backend Consumer (`amqpbackend` / `kafkabackend` / `natsbackend` / `redisbackend`) + `resilience/circuitbreaker` + `resilience/retry` + `runtime/lifecycle.Runner` (or `app.Builder.WithoutPublicServer()` for an internal-health-only worker) |
-| **Browser real-time** (live updates, presence, chat) | [examples/realtime-broadcast](examples/realtime-broadcast) | `realtime/centrifuge.NewNode` + `security/jwtutil.Provider` + `centrifuge.WithChannelClassifier` + `lifecycle.Component` wiring + `centrifuge.WithBackend(centrifuge.RedisBackend(...))` for multiple replicas |
+| **Browser real-time** (live updates, presence, chat) | [examples/realtime-broadcast](examples/realtime-broadcast) | `realtime/centrifuge.NewNode` + `security/jwtutil.Provider` + `centrifuge.WithChannelClassifier` + `lifecycle.Component` wiring + `centrifuge.WithBackend(centrifuge.RedisBackend(...))` for multiple replicas + `centrifuge.WithAllowedOrigins(...)` behind a reverse proxy |
 | **Browser/BFF OIDC application** (server-side login session) | manual wiring on `app.Builder` | `app/oidc.Module` + `auth/oauth2/redis.New` for durable session/state + `security/identity.Principal`; use `app/jwt.Module` instead for a resource API |
 | **Multi-step transactional workflow** (saga: reserve → charge → ship → compensate on fail) | [examples/saga-coordinator](examples/saga-coordinator) | In-memory: `runtime/saga.Run` + `data/idempotency.Store` (pgstore in prod) + `data/lock/pgadvisory.AcquireTx` + optionally `infra/outbox` for crash-safe step-event dispatch. Durable (crash-recovery, multi-replica): `runtime/saga.DurableExecutor` + `data/saga/pgstore.New` |
 | **gRPC service** (internal RPC, server-streaming) | manual wiring on `app.Builder` | `app/grpc.Module` + `grpcx/interceptor.MaxConcurrentStreamsServer` + `grpcx/interceptor.StreamIdleTimeout` + `resilience/retry` for downstream clients |
@@ -122,6 +122,7 @@ row you start from:
 | Compress HTTP responses (gzip) | `httpx/middleware/compress` (opt-in via `stack.WithCompress()`; pluggable `Encoder` admits brotli/zstd) | [http](docs/ai/http.md) |
 | Decode zstd from untrusted senders | `codec/zstd` (`NewDecoder(Limits{MaxSize, MaxRatio, Concurrency})`; a bomb fails with `ErrTooLarge` before allocating) | [codec/zstd](codec/zstd/doc.go) |
 | Serve a built web app (SPA) | `httpx/webapp` (precompressed files, immutable hashed assets) with `stack.WithStaticPaths` | [http](docs/ai/http.md) |
+| Stream large uploads and downloads past the buffering request timeout, with idle, minimum-rate and total deadlines per route | `stack.WithStreamingRoutes(stack.StreamingRoute{Pattern, Timeout, Idle, MinRate})` | [http](docs/ai/http.md) |
 | Distributed locking | `data/lock/redislock` | [redis](docs/ai/redis.md) |
 | Fan-out N tasks concurrently | `runtime/concurrency` (FanOut, FanOutSettled) | [utilities](docs/ai/utilities.md) |
 | Composable lifecycle | `runtime/lifecycle` (Runner, Component) | [utilities](docs/ai/utilities.md) |
@@ -130,7 +131,7 @@ row you start from:
 | Explicit middleware chains | `httpx/middleware/stack` (Chain) | [http](docs/ai/http.md) |
 | Store/retrieve files | `infra/storage` + backend (s3/azure/gcs/sftp/local) | [storage](docs/ai/storage.md) |
 | Multi-disk file storage | `infra/storage` (Manager) | [storage](docs/ai/storage.md) |
-| Encrypt files at rest | `infra/storage/encryption` | [storage](docs/ai/storage.md) |
+| Encrypt files at rest (streaming, any size; truncation, reordering and tampering fail with `ErrInvalidCiphertext`) | `infra/storage/encryption` | [storage](docs/ai/storage.md) |
 | Scan uploaded files for malware | `infra/storage/storagehttp/uploadsec` + `infra/storage/storagehttp/uploadsec/clamav` | [storage](docs/ai/storage.md) |
 | Publish/consume AMQP messages | `infra/messaging/amqpbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
 | Publish/consume Kafka messages | `infra/messaging/kafkabackend` (Publisher, Subscriber) | [messaging](docs/ai/messaging.md) |
@@ -208,7 +209,7 @@ row you start from:
 | Per-request health endpoints | `httpx/healthhttp` | [observability](docs/ai/observability.md) |
 | Tamper-evident audit log (implementation: HMAC chain, Store, VerifyChain) | `observability/auditlog` (in-process `MemoryStore`) → `observability/auditlog/postgres` (durable, schema via `cmd/kit-migrate auditlog`) | [observability](docs/ai/observability.md) |
 | Tamper-evident audit log (Builder wiring as an app.Module) | `app/auditlog` (thin bridge; pass to `app.Builder.With(...)`) | [observability](docs/ai/observability.md) |
-| Transactional outbox (at-least-once messaging, DB + broker) | `infra/outbox` (Relay) + `infra/outbox/postgres` (durable Store; schema via `cmd/kit-migrate outbox`; `WithTx`/`RequireTx` for caller-tx atomicity) | [messaging](docs/ai/messaging.md) |
+| Transactional outbox (at-least-once messaging, DB + broker) | `infra/outbox` (Relay) + `infra/outbox/postgres` (durable Store; schema via `cmd/kit-migrate outbox`; `WithTx`/`RequireTx` for caller-tx atomicity; `MigrationsInSchema` + `WithSchema`/`WithInboxSchema` for tables in a chosen schema) | [messaging](docs/ai/messaging.md) |
 | Transactional inbox (dedupe inbound delivery + local work in one DB transaction) | `infra/inbox/postgres` (`Process` / `ProcessInTx`; schema is co-published by `cmd/kit-migrate outbox`) | [messaging](docs/ai/messaging.md) |
 | Distributed tracing helpers | `observability/tracing` | [observability](docs/ai/observability.md) |
 | RFC 7807 problem-details responses | `httpx/problemdetails` | [http](docs/ai/http.md) |

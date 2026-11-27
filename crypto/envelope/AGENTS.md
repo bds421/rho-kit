@@ -7,7 +7,7 @@
 
 ## When to use something else
 
-- **Encrypting a stream or object under one key:** `crypto/encrypt` (`NewGCM`) and `infra/storage/encryption`; envelope encryption is per value.
+- **Encrypting bytes under one key:** `crypto/encrypt` (`NewGCM`); a stored object of any size: `infra/storage/encryption` (streaming); envelope encryption is per value.
 - **TLS / wire encryption:** stdlib `crypto/tls`. Envelope encryption is for data at rest, not in flight.
 - **Hashing / MAC:** `golang.org/x/crypto/blake2b` or stdlib `crypto/hmac`.
 

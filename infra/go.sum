@@ -1,7 +1,5 @@
 github.com/bds421/rho-kit/core/v2 v2.50.0 h1:jJdGsKZES6U/7dIYcAp8df7HwWk6mp5iN2d46Af50vE=
 github.com/bds421/rho-kit/core/v2 v2.50.0/go.mod h1:XOnxFqKaT+WcMS07fbrHvTmk6P6Qrb49cqy/55o5AnQ=
-github.com/bds421/rho-kit/crypto/v2 v2.50.0 h1:s58SFGnu8mR1W5pGs0zPeHVH24eIQjbrjpG6voRux7o=
-github.com/bds421/rho-kit/crypto/v2 v2.50.0/go.mod h1:KNggG6PZUwSBDayhWDbCPryTSibXFCc1u0LYFeeQzrs=
 github.com/bds421/rho-kit/io/v2 v2.50.0 h1:w4/uWn9kjcD60VyxA1r5kO/hhCQhcwx9oZpfwShK9vQ=
 github.com/bds421/rho-kit/io/v2 v2.50.0/go.mod h1:fJzQQEhnWtghL96wb0Yg9OGtBJd3AMXkz950YJ4Najs=
 github.com/bds421/rho-kit/observability/v2 v2.50.0 h1:eUbOsZmPsHKWkE3rUE3UTAAHF+bZkoyKrn4TWDl53Ec=

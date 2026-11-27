@@ -98,6 +98,7 @@ type config struct {
 	anonymousUnsafe           bool
 	wsMessageSizeLimit        int
 	wsWriteTimeout            time.Duration
+	allowedOrigins            map[string]struct{}
 	connectPolicy             VerifiedConnectPolicy
 	refreshPolicy             VerifiedRefreshPolicy
 	connectObserver           func(Connection)

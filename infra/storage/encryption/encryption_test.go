@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	"fmt"
 	"io"
 	"iter"
 	"strings"
@@ -25,178 +24,6 @@ func testKey(t *testing.T) []byte {
 	_, err := rand.Read(key)
 	require.NoError(t, err)
 	return key
-}
-
-func TestWithMaxConcurrentEncryptions_PanicsOnNonPositive(t *testing.T) {
-	for _, n := range []int{0, -1} {
-		t.Run(fmt.Sprintf("%d", n), func(t *testing.T) {
-			require.Panics(t, func() {
-				WithMaxConcurrentEncryptions(n)
-			})
-		})
-	}
-}
-
-func TestWithMaxConcurrentDecryptions_PanicsOnNonPositive(t *testing.T) {
-	for _, n := range []int{0, -1} {
-		t.Run(fmt.Sprintf("%d", n), func(t *testing.T) {
-			require.Panics(t, func() {
-				WithMaxConcurrentDecryptions(n)
-			})
-		})
-	}
-}
-
-func TestWithMaxOpenPlaintextReaders_PanicsOnNonPositive(t *testing.T) {
-	for _, n := range []int{0, -1} {
-		t.Run(fmt.Sprintf("%d", n), func(t *testing.T) {
-			require.Panics(t, func() {
-				WithMaxOpenPlaintextReaders(n)
-			})
-		})
-	}
-}
-
-// TestEncryptedStorage_OpenPlaintextBudgetBlocksWhileHeld asserts that open
-// unclosed readers consume the retained-plaintext budget and block further
-// Gets until Close releases a slot.
-func TestEncryptedStorage_OpenPlaintextBudgetBlocksWhileHeld(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	backend := membackend.New()
-	enc := New(backend, StaticKey(testKey(t)),
-		WithMaxConcurrentDecryptions(4),
-		WithMaxOpenPlaintextReaders(1),
-	)
-
-	require.NoError(t, enc.Put(ctx, "file.txt", bytes.NewReader([]byte("payload")), storage.ObjectMeta{}))
-
-	rc1, _, err := enc.Get(ctx, "file.txt")
-	require.NoError(t, err)
-
-	// Second Get must wait on the open-plaintext budget. Cancel to observe the wait.
-	waitCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-	defer cancel()
-	_, _, err = enc.Get(waitCtx, "file.txt")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-
-	// Closing the first reader frees the slot.
-	require.NoError(t, rc1.Close())
-
-	rc2, _, err := enc.Get(ctx, "file.txt")
-	require.NoError(t, err, "Get after Close must acquire freed open-plaintext slot")
-	_ = rc2.Close()
-}
-
-// TestEncryptedStorage_OpenPlaintextBudgetReleasedOnCloseDoubleCloseSafe
-// pins idempotent Close: second Close must not double-release the semaphore.
-func TestEncryptedStorage_OpenPlaintextBudgetReleasedOnCloseDoubleCloseSafe(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	backend := membackend.New()
-	enc := New(backend, StaticKey(testKey(t)), WithMaxOpenPlaintextReaders(1))
-	require.NoError(t, enc.Put(ctx, "file.txt", bytes.NewReader([]byte("payload")), storage.ObjectMeta{}))
-
-	rc, _, err := enc.Get(ctx, "file.txt")
-	require.NoError(t, err)
-	require.NoError(t, rc.Close())
-	require.NoError(t, rc.Close()) // must not panic / double-free
-
-	rc2, _, err := enc.Get(ctx, "file.txt")
-	require.NoError(t, err)
-	_ = rc2.Close()
-}
-
-// TestEncryptedStorage_WithoutMaxOpenPlaintextReaders_NoBound asserts the
-// opt-out disables the retained-plaintext budget.
-func TestEncryptedStorage_WithoutMaxOpenPlaintextReaders_NoBound(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	backend := membackend.New()
-	enc := New(backend, StaticKey(testKey(t)),
-		WithMaxOpenPlaintextReaders(1), // overridden by Without because it is last
-		WithoutMaxOpenPlaintextReaders(),
-	)
-
-	require.NoError(t, enc.Put(ctx, "file.txt", bytes.NewReader([]byte("payload")), storage.ObjectMeta{}))
-	rc1, _, err := enc.Get(ctx, "file.txt")
-	require.NoError(t, err)
-	rc2, _, err := enc.Get(ctx, "file.txt")
-	require.NoError(t, err)
-	_ = rc1.Close()
-	_ = rc2.Close()
-}
-
-// TestEncryptedStorage_GetBoundedByDecryptionSemaphore asserts that Get is
-// gated by a concurrency cap on the decrypt window. After plaintext is
-// materialised the slot is released, so a leaked ReadCloser cannot permanently
-// starve subsequent Gets (review-18). With a cap of 1, a second Get succeeds
-// even if the first reader is still open.
-func TestEncryptedStorage_GetSemaphoreReleasedAfterMaterialize(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	backend := membackend.New()
-	enc := New(backend, StaticKey(testKey(t)), WithMaxConcurrentDecryptions(1))
-
-	require.NoError(t, enc.Put(ctx, "file.txt", bytes.NewReader([]byte("payload")), storage.ObjectMeta{}))
-
-	// First Get returns with the only slot already released.
-	rc1, _, err := enc.Get(ctx, "file.txt")
-	require.NoError(t, err)
-	defer func() { _ = rc1.Close() }()
-
-	// Second Get must succeed without closing the first reader.
-	rc2, _, err := enc.Get(ctx, "file.txt")
-	require.NoError(t, err, "leaked/open first reader must not block subsequent Gets")
-	_ = rc2.Close()
-}
-
-// TestEncryptedStorage_GetRespectsCtxCancelWhileWaiting asserts that a Get
-// blocked on a saturated decryption semaphore returns the ctx error rather
-// than hanging, mirroring Put's ctx-aware acquire. Saturation is simulated by
-// holding the slot via a concurrent in-flight decrypt that we delay by
-// injecting a slow backend Read (not possible with membackend alone), so this
-// test only covers the cancelled-before-acquire path: a pre-cancelled ctx
-// fails at the select even when no slot is held.
-func TestEncryptedStorage_GetRespectsCtxCancelWhileWaiting(t *testing.T) {
-	t.Parallel()
-
-	backend := membackend.New()
-	enc := New(backend, StaticKey(testKey(t)), WithMaxConcurrentDecryptions(1))
-
-	require.NoError(t, enc.Put(context.Background(), "file.txt", bytes.NewReader([]byte("payload")), storage.ObjectMeta{}))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, _, err := enc.Get(ctx, "file.txt")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.Canceled)
-}
-
-// TestEncryptedStorage_WithoutMaxConcurrentDecryptions_NoBound asserts the
-// additive opt-out disables the Get cap so concurrent Gets do not serialize.
-func TestEncryptedStorage_WithoutMaxConcurrentDecryptions_NoBound(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	backend := membackend.New()
-	enc := New(backend, StaticKey(testKey(t)), WithoutMaxConcurrentDecryptions())
-
-	require.NoError(t, enc.Put(ctx, "file.txt", bytes.NewReader([]byte("payload")), storage.ObjectMeta{}))
-
-	// Two open readers at once must both succeed with no cap.
-	rc1, _, err := enc.Get(ctx, "file.txt")
-	require.NoError(t, err)
-	rc2, _, err := enc.Get(ctx, "file.txt")
-	require.NoError(t, err)
-	_ = rc1.Close()
-	_ = rc2.Close()
 }
 
 func TestEncryptedStorage_RoundTrip(t *testing.T) {
@@ -421,17 +248,17 @@ func TestEncryptedStorage_GetReturnsEmptyMetaOnError(t *testing.T) {
 		assert.Equal(t, storage.ObjectMeta{}, meta, "read error must not leak backend meta")
 	})
 
-	t.Run("ciphertext exceeds max size", func(t *testing.T) {
+	t.Run("stored size no object has", func(t *testing.T) {
 		t.Parallel()
-		const gcmOverhead = 12 + 16
-		oversized := bytes.Repeat([]byte{0xAB}, MaxEncryptableSize+gcmOverhead+1)
 		enc := New(stubBackendGetting(func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
-			return io.NopCloser(bytes.NewReader(oversized)), backendMetaToWithhold(), nil
+			meta := backendMetaToWithhold()
+			meta.Size = headerSize + 1
+			return io.NopCloser(bytes.NewReader(make([]byte, meta.Size))), meta, nil
 		}), StaticKey(testKey(t)))
 
 		_, meta, err := enc.Get(ctx, "file.txt")
-		require.Error(t, err)
-		assert.Equal(t, storage.ObjectMeta{}, meta, "size-limit error must not leak backend meta")
+		require.ErrorIs(t, err, ErrInvalidCiphertext)
+		assert.Equal(t, storage.ObjectMeta{}, meta, "size error must not leak backend meta")
 	})
 
 	t.Run("decrypt failure on wrong key", func(t *testing.T) {
@@ -558,13 +385,6 @@ func TestEncryptedStorage_New_PanicsOnNilKeys(t *testing.T) {
 	t.Parallel()
 	assert.PanicsWithValue(t, "encryption: New keys provider must not be nil", func() {
 		New(membackend.New(), nil)
-	})
-}
-
-func TestEncryptedStorage_New_PanicsOnNilOption(t *testing.T) {
-	t.Parallel()
-	assert.PanicsWithValue(t, "encryption: New option must not be nil", func() {
-		New(membackend.New(), StaticKey(testKey(t)), nil)
 	})
 }
 

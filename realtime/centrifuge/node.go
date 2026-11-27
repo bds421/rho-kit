@@ -40,6 +40,7 @@ type Node struct {
 	anonymousUnsafe           bool
 	wsMessageSizeLimit        int
 	wsWriteTimeout            time.Duration
+	allowedOrigins            map[string]struct{}
 	connectPolicy             VerifiedConnectPolicy
 	refreshPolicy             VerifiedRefreshPolicy
 	connectObserver           func(Connection)
@@ -112,6 +113,7 @@ func NewNode(opts ...Option) (*Node, error) {
 		anonymousUnsafe:           c.anonymousUnsafe,
 		wsMessageSizeLimit:        c.wsMessageSizeLimit,
 		wsWriteTimeout:            c.wsWriteTimeout,
+		allowedOrigins:            c.allowedOrigins,
 		connectPolicy:             c.connectPolicy,
 		refreshPolicy:             c.refreshPolicy,
 		connectObserver:           c.connectObserver,
@@ -301,6 +303,9 @@ func (n *Node) Publish(channel string, data []byte, opts ...cfg.PublishOption) (
 // recovery exactly like any other http.Handler. Behind httpx
 // middleware/stack, name its path with stack.WithWebSocketPaths: the
 // stack's buffering timeout cannot hand the connection over.
+//
+// The upgrade checks the Origin header against [WithAllowedOrigins], or,
+// without that option, against the request's Host (centrifuge's default).
 func (n *Node) WebsocketHandler() http.Handler {
 	wscfg := cfg.WebsocketConfig{}
 	if n.wsMessageSizeLimit > 0 {
@@ -309,6 +314,7 @@ func (n *Node) WebsocketHandler() http.Handler {
 	if n.wsWriteTimeout > 0 {
 		wscfg.WriteTimeout = n.wsWriteTimeout
 	}
+	wscfg.CheckOrigin = originCheck(n.allowedOrigins)
 	return cfg.NewWebsocketHandler(n.node, wscfg)
 }
 

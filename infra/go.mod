@@ -16,7 +16,6 @@ go 1.27.4
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.50.0
-	github.com/bds421/rho-kit/crypto/v2 v2.50.0
 	github.com/bds421/rho-kit/io/v2 v2.50.0
 	github.com/bds421/rho-kit/observability/v2 v2.50.0
 	github.com/bds421/rho-kit/runtime/v2 v2.50.0
@@ -26,6 +25,7 @@ require (
 	github.com/prometheus/client_golang v1.25.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/stretchr/testify v1.12.1
+	github.com/tink-crypto/tink-go/v2 v2.9.0
 )
 
 require (
@@ -43,7 +43,6 @@ require (
 	github.com/prometheus/common v0.74.0 // indirect
 	github.com/prometheus/procfs v0.23.0 // indirect
 	github.com/sethvargo/go-retry v0.5.0 // indirect
-	github.com/tink-crypto/tink-go/v2 v2.9.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.47.0 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect

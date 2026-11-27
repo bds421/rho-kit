@@ -470,6 +470,36 @@ operator store when table-wide maintenance is intended. Do not return a
 successful publish merely to defer a row.
 `New(pool)` is `NewWithOptions(pool)` without options: it claims every route.
 
+### Tables in a chosen schema
+
+By default the store, the inbox and `Migrations` name `outbox_entries` and
+`inbox_entries` without a schema, so they land in and resolve against
+whatever `search_path` gives. To keep them in a schema of their own, migrate
+with `MigrationsInSchema` and give the store and the inbox the same schema:
+
+```go
+dir, err := outboxpostgres.MigrationsInSchema("outbox") // the schema must exist
+if err != nil {
+    return err
+}
+sub, _ := fs.Sub(dir, "migrations")
+if _, err := migrate.Up(ctx, sqlDB, migrate.Config{Dir: sub, TableName: "outbox.goose_db_version"}); err != nil {
+    return err
+}
+store := outboxpostgres.NewWithOptions(pool, outboxpostgres.WithSchema("outbox"))
+inbox := inboxpostgres.New(pool, inboxpostgres.WithSchema("outbox"))
+// or outboxpostgres.NewInbox(pool, outboxpostgres.WithInboxSchema("outbox"))
+```
+
+`MigrationsInSchema` puts the schema first on each migration's `search_path`
+for that migration's transaction only and fails the migration when the schema
+does not exist (PostgreSQL would skip it and create the tables in `public`);
+migrations marked `NO TRANSACTION` are refused. Give `migrate.Config` a
+schema-qualified `TableName`, so the version table does not depend on the
+session's `search_path` either. The options name the table as `"schema".outbox_entries` in every
+statement, so the sessions need no `search_path` setting. Grant the service
+login `USAGE` on the schema and the table privileges it uses.
+
 ## Transactional Inbox
 
 Use `infra/inbox/postgres` at an at-least-once consumer boundary when the

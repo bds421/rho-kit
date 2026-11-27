@@ -311,3 +311,36 @@ func runConfigMutationCases(t *testing.T, base Config, tests []configMutationCas
 		})
 	}
 }
+
+func TestLoadConfig_SSE(t *testing.T) {
+	cases := []struct {
+		name, env, want string
+	}{
+		{name: "unset defaults to AES256", want: "AES256"},
+		{name: "none switches it off", env: SSENone, want: ""},
+		{name: "AES256 kept", env: "AES256", want: "AES256"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("STORAGE_S3_REGION", "eu-central-1")
+			t.Setenv("STORAGE_S3_BUCKET", "bucket")
+			t.Setenv("TEST_S3_ACCESS_KEY_ID", "access-key")
+			t.Setenv("TEST_S3_SECRET_ACCESS_KEY", "S3cur3-S3-Secret-Key-Value-123456")
+			t.Setenv("STORAGE_S3_SSE", tc.env)
+			cfg, err := LoadConfig("TEST", "production")
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.SSE != tc.want {
+				t.Fatalf("SSE = %q, want %q", cfg.SSE, tc.want)
+			}
+			mode, _, err := sseFields(cfg)
+			if err != nil {
+				t.Fatalf("sseFields: %v", err)
+			}
+			if tc.want == "" && mode != "" {
+				t.Fatalf("mode = %q, want no SSE header", mode)
+			}
+		})
+	}
+}

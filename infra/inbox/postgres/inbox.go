@@ -18,9 +18,16 @@ type Handler = outboxpostgres.InboxHandler
 // Store is the PostgreSQL transactional inbox implementation.
 type Store = outboxpostgres.Inbox
 
+// Option configures a Store.
+type Option = outboxpostgres.InboxOption
+
+// WithSchema makes the Store use inbox_entries in schema instead of the
+// table search_path resolves; see outbox/postgres.WithInboxSchema.
+func WithSchema(schema string) Option { return outboxpostgres.WithInboxSchema(schema) }
+
 // New constructs a durable inbox using the same pgx transaction context as the
 // Postgres outbox adapter.
-func New(pool *pgxpool.Pool) *Store { return outboxpostgres.NewInbox(pool) }
+func New(pool *pgxpool.Pool, opts ...Option) *Store { return outboxpostgres.NewInbox(pool, opts...) }
 
 // Process is provided for documentation discoverability on the focused inbox
 // import path. It delegates to Store.Process.

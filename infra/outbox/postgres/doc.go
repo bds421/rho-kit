@@ -19,6 +19,8 @@
 //
 // Schema lives in [Migrations] and includes both outbox_entries and
 // inbox_entries; apply with the kit migrate helper or embed directly.
+// [MigrationsInSchema], [WithSchema] and [WithInboxSchema] put both tables
+// in a chosen schema instead of the one search_path resolves.
 // Integration tests live in the sibling
 // integrationtest module so production callers do not transitively
 // pull testcontainers.

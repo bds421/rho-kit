@@ -48,6 +48,9 @@ type inboxPool interface {
 type Inbox struct {
 	pool    inboxPool
 	metrics *InboxMetrics
+	// table is the schema-qualified inbox_entries of WithInboxSchema;
+	// empty leaves it to search_path.
+	table string
 }
 
 // InboxOption configures an Inbox.
@@ -169,7 +172,7 @@ func (s *Inbox) processInTx(ctx context.Context, tx pgx.Tx, consumer, messageID 
 INSERT INTO inbox_entries (consumer_name, message_id, received_at)
 VALUES ($1, $2, NOW())
 ON CONFLICT (consumer_name, message_id) DO NOTHING`
-	tag, err := tx.Exec(ctx, claim, consumer, messageID)
+	tag, err := tx.Exec(ctx, s.sql(claim), consumer, messageID)
 	if err != nil {
 		return InboxResult{}, redact.WrapError("outbox/postgres: inbox claim delivery", err)
 	}
@@ -192,7 +195,7 @@ func (s *Inbox) PruneBefore(ctx context.Context, beforeTime time.Time) (int64, e
 	if ctx == nil {
 		return 0, errors.New("outbox/postgres: inbox context must not be nil")
 	}
-	tag, err := s.pool.Exec(ctx, `DELETE FROM inbox_entries WHERE received_at < $1`, beforeTime.UTC())
+	tag, err := s.pool.Exec(ctx, s.sql(`DELETE FROM inbox_entries WHERE received_at < $1`), beforeTime.UTC())
 	if err != nil {
 		return 0, redact.WrapError("outbox/postgres: inbox prune", err)
 	}
@@ -209,7 +212,7 @@ func (s *Inbox) Count(ctx context.Context) (int64, error) {
 		return 0, errors.New("outbox/postgres: inbox context must not be nil")
 	}
 	var count int64
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM inbox_entries`).Scan(&count); err != nil {
+	if err := s.pool.QueryRow(ctx, s.sql(`SELECT count(*) FROM inbox_entries`)).Scan(&count); err != nil {
 		return 0, redact.WrapError("outbox/postgres: inbox count", err)
 	}
 	return count, nil

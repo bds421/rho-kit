@@ -1,5 +1,98 @@
 # Changelog
 
+## Unreleased
+
+### infra/storage/encryption: streaming format (breaking)
+
+- **feat!: objects are encrypted in segments and stream.** Put encrypts
+  while the backend reads and Get decrypts while the caller reads, so each
+  holds about two 64 KiB segments of memory, whatever the object's size;
+  the 256 MiB limit is gone. The format is Tink's AES-GCM-HKDF streaming
+  AEAD (STREAM): a 40-byte header with a random salt, a key per object
+  derived with HKDF-SHA256 from the main key with the storage key as info,
+  and AES-256-GCM segments whose nonces carry the segment number and a
+  last-segment flag. A truncated, reordered, changed or moved object fails
+  with the new `ErrInvalidCiphertext`. Get authenticates the first segment
+  before it returns; later damage is a Read error, and io.EOF only follows
+  the authenticated last segment. Put with `ObjectMeta.Size` set gives the
+  backend the exact ciphertext size and fails on content of another length.
+- **breaking: objects written by v2.50.0 or earlier do not decrypt.** The
+  single-message format is not read any more; re-encrypt such objects with
+  the old release's Get and this release's Put.
+- **breaking: the memory caps and their metrics are removed.**
+  `MaxEncryptableSize`, `DefaultMaxOpenPlaintextReaders`, the `Option`
+  type, `WithMaxConcurrentEncryptions`, `WithoutMaxConcurrentEncryptions`,
+  `WithMaxConcurrentDecryptions`, `WithoutMaxConcurrentDecryptions`,
+  `WithMaxOpenPlaintextReaders`, `WithoutMaxOpenPlaintextReaders`,
+  `WithMetricsRegisterer`, `Metrics`, `NewMetrics`, `MetricsOption`,
+  `WithRegisterer` and the `storage_encryption_open_reader_*` metrics are
+  gone: memory no longer grows with object size. `New(backend, keys)`
+  takes no options.
+- **breaking: Get's reader does not seek.** It was a `bytes.Reader` over the
+  whole plaintext; `storagehttp.ServeFile` now streams encrypted objects
+  without Range support.
+
+### infra/storage/storagehttp
+
+- **fix: a streamed download that fails midway is aborted.** ServeFile
+  streamed a non-seekable object chunked and returned the copy error, so a
+  backend failure or a tampered encrypted object reached the client as a
+  complete 200. After the first byte, a failure now panics with
+  `http.ErrAbortHandler`, which aborts the connection (HTTP/2: resets the
+  stream). The response carries `Content-Length` from the backend's size.
+
+### httpx/middleware/stack, app/http
+
+- **feat: `WithStreamingRoutes(routes ...StreamingRoute)`** gives upload
+  and download routes their own deadlines instead of the buffering
+  timeout. A `StreamingRoute` names an `http.ServeMux` pattern, a
+  `Timeout` for the whole request (handler context and connection
+  deadlines), an `Idle` bound per body read and per 32 KiB response write,
+  and a `MinRate` in bytes per second measured on the bytes moved; a
+  too-slow transfer fails with `ErrTransferTooSlow`. The deadlines are set
+  through `http.ResponseController`, so the server's ReadTimeout and
+  WriteTimeout stay short for every other route, which keeps the buffering
+  timeout. When the handler returns, both deadlines move to `Idle` from
+  then, bounding net/http's tail flush and body drain; keep the server's
+  WriteTimeout above zero, or the next request on the connection inherits
+  that write deadline. A handler that hijacks the connection must set its
+  own. Through `app.Builder`: `apphttp.WithStackOptions`.
+
+### infra/outbox/postgres, infra/inbox/postgres
+
+- **feat: tables in a chosen schema.** `MigrationsInSchema(schema)` returns
+  the migrations with the schema first on each migration's search_path
+  (for its transaction only, so goose keeps finding its version table),
+  failing when the schema does not exist instead of creating the tables in
+  `public`; give `migrate.Config` a schema-qualified `TableName`.
+  `WithSchema(schema)` (Store) and `WithInboxSchema(schema)` (Inbox,
+  `inboxpostgres.WithSchema`) name the tables schema-qualified in every
+  statement, so sessions need no search_path. `inboxpostgres.New` takes
+  options.
+
+### realtime/centrifuge
+
+- **feat: `WithAllowedOrigins(origins ...string)`** makes the WebSocket
+  handler accept exactly the listed origins (`scheme://host[:port]`,
+  case-insensitive, default ports normalised) instead of comparing the
+  Origin with the request's Host, which fails behind a reverse proxy. An
+  upgrade without Origin is refused; an invalid or empty list panics.
+
+### infra/storage/s3backend
+
+- **fix: `STORAGE_S3_SSE=none` switches server-side encryption off.** An
+  empty variable counts as unset and gave `AES256`, so the opt-out could
+  not be set from the environment. `SSENone` names the value.
+- **fix: Put takes a body that cannot seek.** Over plain HTTP the SDK must
+  hash the payload in advance and failed on any stream (an HTTP upload, a
+  validated or encrypted body). With `ObjectMeta.Size` set such a body now
+  goes with an unsigned payload, as over HTTPS (over an insecure endpoint
+  it is then unsigned and unchecked: emulators only); without a size it is
+  spooled to a file first, since S3 needs a Content-Length.
+  `WithSpoolDir(dir)` places the spool, `WithMaxSpoolBytes(n)` caps it
+  (default `DefaultMaxSpoolBytes`, 5 GiB; a longer body fails with
+  `storage.ErrValidation`).
+
 ## v2.50.0 — 2026-11-27
 
 ### every module: Go 1.27 (breaking)

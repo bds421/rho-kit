@@ -60,9 +60,12 @@ type Config struct {
 	// StaticPaths are request path prefixes whose GET and HEAD requests
 	// skip the timeout middleware, so built files of any size stream
 	// instead of going through its 1 MiB buffer. Set with [WithStaticPaths].
-	StaticPaths    []string
-	FrameOption    secheaders.FrameOption
-	RecoverMetrics *mwrecover.Metrics
+	StaticPaths []string
+	// StreamingRoutes get their own deadlines instead of the timeout
+	// middleware; set with [WithStreamingRoutes].
+	StreamingRoutes []StreamingRoute
+	FrameOption     secheaders.FrameOption
+	RecoverMetrics  *mwrecover.Metrics
 	// SecHeadersOptions forwards arbitrary options to [secheaders.New]
 	// (audit FR-018). Use this to wire trusted-proxy CIDRs, force
 	// HSTS, or any other secheaders option that the stack does not
@@ -241,8 +244,8 @@ func (cfg *Config) requestLayers(h http.Handler) http.Handler {
 	if cfg.EnableReqLogger {
 		h = mwlogging.WithRequestLogger(cfg.Logger, cfg.LogAttrs...)(h)
 	}
-	if cfg.EnableTimeout && cfg.Timeout > 0 {
-		h = timeoutExcept(cfg.Timeout, cfg.WebSocketPaths, cfg.StaticPaths, h)
+	if (cfg.EnableTimeout && cfg.Timeout > 0) || len(cfg.StreamingRoutes) > 0 {
+		h = cfg.timeoutExcept(h)
 	}
 	if cfg.EnableLogging {
 		var logOpts []mwlogging.LoggerOption
@@ -383,9 +386,10 @@ func WithoutLogging() Option {
 //
 // The stack-level timeout does not auto-bypass WebSocket upgrades or any
 // streaming endpoint. The timeout middleware buffers the response, which
-// defeats streaming — mount SSE, WebSocket, or long-poll routes on a sub-stack
-// built with [WithoutTimeout] (or apply timeout.WithWebSocketUpgradeBypass on
-// a custom timeout middleware) rather than relying on automatic detection.
+// defeats streaming: name upload and download routes with
+// [WithStreamingRoutes] and WebSocket paths with [WithWebSocketPaths], and
+// mount SSE or long-poll routes on a sub-stack built with [WithoutTimeout],
+// rather than relying on automatic detection.
 func WithTimeout(d time.Duration) Option {
 	if d <= 0 {
 		panic("stack: WithTimeout requires a positive duration (use WithoutTimeout to opt out)")
@@ -531,14 +535,27 @@ func WithStaticPaths(prefixes ...string) Option {
 	return func(cfg *Config) { cfg.StaticPaths = append(cfg.StaticPaths, cloned...) }
 }
 
-func timeoutExcept(d time.Duration, webSocketPaths, staticPaths []string, next http.Handler) http.Handler {
-	limited := mwtimeout.Timeout(d)(next)
-	if len(webSocketPaths) == 0 && len(staticPaths) == 0 {
+// timeoutExcept runs next under the buffering timeout, except WebSocket
+// upgrades on WebSocketPaths and reads under StaticPaths (unbounded) and
+// StreamingRoutes (their own deadlines). Without the timeout, only the
+// streaming routes are bounded here.
+func (cfg *Config) timeoutExcept(next http.Handler) http.Handler {
+	limited := next
+	if cfg.EnableTimeout && cfg.Timeout > 0 {
+		limited = mwtimeout.Timeout(cfg.Timeout)(next)
+	}
+	webSocketPaths, staticPaths := cfg.WebSocketPaths, cfg.StaticPaths
+	streaming := newStreamingMatcher(cfg.StreamingRoutes)
+	if len(webSocketPaths) == 0 && len(staticPaths) == 0 && streaming == nil {
 		return limited
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isWebSocketUpgrade(r) && slices.Contains(webSocketPaths, r.URL.Path) {
 			next.ServeHTTP(w, r)
+			return
+		}
+		if route := streaming.match(r); route != nil {
+			route.serve(next, w, r)
 			return
 		}
 		if isRead(r) && hasAnyPrefix(r.URL.Path, staticPaths) {

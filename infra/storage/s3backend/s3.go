@@ -74,6 +74,11 @@ type Backend struct {
 	instance   string
 	validators []storage.Validator
 	metrics    *Metrics
+
+	// spoolDir and maxSpoolBytes govern the spool of a Put body that
+	// cannot seek and has no size; see [WithSpoolDir], [WithMaxSpoolBytes].
+	spoolDir      string
+	maxSpoolBytes int64
 }
 
 // Option configures an Backend.
@@ -285,7 +290,9 @@ func (b *Backend) Bucket() string {
 func (b *Backend) Close() error { return nil }
 
 // Put uploads content from r to the given key. Validators run before the upload.
-// The reader is piped directly to S3 without buffering into memory.
+// The reader is piped directly to S3 without buffering into memory; one
+// that cannot seek and comes without meta.Size is spooled to a file first
+// ([WithSpoolDir], at most [WithMaxSpoolBytes]), since S3 needs the length.
 func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "s3.Put")
 	defer span.End()
@@ -311,28 +318,20 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 		return err
 	}
 
-	contentType := meta.ContentType
-	if contentType == "" {
-		contentType = "application/octet-stream"
+	body, size, putOpts, cleanup, err := b.putBody(validated, meta.Size)
+	if err != nil {
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
+		return err
 	}
-
-	input := &s3.PutObjectInput{
-		Bucket:      aws.String(b.bucket),
-		Key:         aws.String(key),
-		Body:        validated,
-		ContentType: aws.String(contentType),
-		Metadata:    storage.CloneCustomMeta(meta.Custom),
-	}
-	if meta.Size > 0 {
-		input.ContentLength = aws.Int64(meta.Size)
-	}
-	if err := applySSE(input, b.cfg); err != nil {
+	defer cleanup()
+	input, err := b.putInput(key, body, size, meta)
+	if err != nil {
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
 		return err
 	}
 
 	start := now()
-	_, putErr := b.client.PutObject(ctx, input)
+	_, putErr := b.client.PutObject(ctx, input, putOpts...)
 	b.metrics.observeOp(b.instance, "put", start, putErr)
 
 	if putErr != nil {
@@ -581,7 +580,7 @@ func validateSSEConfig(cfg Config) error {
 			return fmt.Errorf("STORAGE_S3_SSE_KMS_KEY_ID is required when STORAGE_S3_SSE=aws:kms")
 		}
 	default:
-		return fmt.Errorf("STORAGE_S3_SSE must be one of empty, AES256, or aws:kms")
+		return fmt.Errorf("STORAGE_S3_SSE must be one of none, AES256, or aws:kms")
 	}
 	if cfg.SSEKMSKeyID != "" && cfg.SSE != "aws:kms" {
 		return fmt.Errorf("STORAGE_S3_SSE_KMS_KEY_ID requires STORAGE_S3_SSE=aws:kms")
@@ -604,7 +603,7 @@ func sseFields(cfg Config) (types.ServerSideEncryption, *string, error) {
 		return types.ServerSideEncryptionAwsKms, aws.String(cfg.SSEKMSKeyID), nil
 	default:
 		// validateSSEConfig already rejects unknown values; defensive.
-		return "", nil, fmt.Errorf("STORAGE_S3_SSE must be one of empty, AES256, or aws:kms")
+		return "", nil, fmt.Errorf("STORAGE_S3_SSE must be one of none, AES256, or aws:kms")
 	}
 }
 

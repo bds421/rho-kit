@@ -34,6 +34,7 @@
 //	node, err := centrifuge.NewNode(
 //		centrifuge.WithLogger(slog.Default()),
 //		centrifuge.WithJWTAuth(provider),
+//		centrifuge.WithAllowedOrigins("https://app.example.com"),
 //		centrifuge.WithChannelClassifier(func(channel string) string {
 //			if strings.HasPrefix(channel, "user:") { return "user" }
 //			if strings.HasPrefix(channel, "room:") { return "room" }

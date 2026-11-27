@@ -76,9 +76,9 @@ err = kek.RemoveKey("k1")                    // once nothing is under k1
 
 ### Byte Encryption
 
-`crypto/encrypt` is the AES-256-GCM primitive the stores build on
-(`infra/storage/encryption` encrypts objects with it); it binds nothing
-and rotates nothing, so values at rest use a Box instead.
+`crypto/encrypt` is the AES-256-GCM primitive over bytes; it binds nothing
+and rotates nothing, so values at rest use a Box instead. Objects in storage
+use `infra/storage/encryption`, a streaming AEAD with a key per object.
 
 ```go
 gcm, err := encrypt.NewGCM(key32) // tink.AEAD

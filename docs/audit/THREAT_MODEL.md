@@ -594,9 +594,9 @@ secret-store layout.
 **AES-GCM random-IV ceiling (Lens F A.8 closeout).** Values at rest
 are sealed with `crypto/envelope`, which mints a data key per value, so
 no key approaches the 2^32 random-IV birthday-bound ceiling
-(`crypto/encrypt/doc.go`). `infra/storage/encryption` encrypts objects
-under one key through `crypto/encrypt`; its key provider is the place to
-rotate when an object store nears ~10^9 writes per key.
+(`crypto/encrypt/doc.go`). `infra/storage/encryption` derives a key per
+object (HKDF-SHA256 over a random 256-bit salt) and numbers its segment
+nonces, so neither the object keys nor the main key reach that bound.
 
 **Cross-Origin-Isolation defaults (Lens F A.11 closeout).**
 `httpx/middleware/secheaders` now emits `Cross-Origin-Opener-Policy:

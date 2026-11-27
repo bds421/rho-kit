@@ -380,6 +380,44 @@ cors.New(cors.WithAllowedOrigins("https://app.example.com"))
 ip := clientip.ClientIP(r) // trusts X-Real-IP, X-Forwarded-For from loopback peers only
 ```
 
+## Uploads and Downloads (Streaming Routes)
+
+The stack's timeout buffers each response up to 1 MiB (500 above) and gives every
+route 30 seconds, and the server's `ReadTimeout` (15 s) and `WriteTimeout` (35 s)
+cut off longer transfers. Name the routes that move large bodies with
+`stack.WithStreamingRoutes`; each gets its own deadlines and streams unbuffered,
+while every other route keeps the buffering timeout and the server timeouts stay
+short:
+
+```go
+handler := stack.Default(mux, logger, stack.WithStreamingRoutes(
+    stack.StreamingRoute{Pattern: "POST /files", Timeout: 5 * time.Minute, Idle: 30 * time.Second, MinRate: 16 << 10},
+    stack.StreamingRoute{Pattern: "GET /files/{id}/content", Timeout: 5 * time.Minute, Idle: 30 * time.Second, MinRate: 16 << 10},
+))
+// With app.Builder: apphttp.Module(apphttp.WithStackOptions(stack.WithStreamingRoutes(...)))
+```
+
+- `Pattern` is an `http.ServeMux` pattern and matches as the mux would (`GET`
+  also matches `HEAD`; a path the mux would redirect, or a 405, matches none).
+- `Timeout` bounds the request: the handler's context and the connection's read
+  and write deadlines (set through `http.ResponseController`) end with it.
+- `Idle` is the longest one body read waits for the client's next bytes, or one
+  32 KiB write waits for the client to take it.
+- When the handler returns, both deadlines move to `Idle` from then, so the
+  response tail and net/http's drain of unread body stay bounded. Keep the
+  server's `WriteTimeout` above zero (the kit's default is 35 s): it resets the
+  write deadline for the next request on the connection, which otherwise
+  inherits this one. A handler that hijacks the connection keeps the route's
+  deadlines on it and must set its own.
+- `MinRate` (bytes per second, 0 off) is measured on bytes moved: the body's
+  reads together may wait `Idle + read/MinRate`, the response's writes
+  `Idle + written/MinRate`. Time the handler spends between reads or writes
+  (storage, a queue slot) does not count. A too-slow transfer fails with
+  `stack.ErrTransferTooSlow` (it wraps `os.ErrDeadlineExceeded`).
+
+The handler sees its context end rather than a 503; enforce body size limits
+in it (or with `maxbody`). The routes apply with `stack.WithoutTimeout` too.
+
 ## Web App
 
 `webapp.New` serves a built single-page app (for example a Vite build

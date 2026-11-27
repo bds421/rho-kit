@@ -207,9 +207,7 @@ optional interfaces. Retries and circuit breaking around a backend call are
 
 ```go
 base, _ := s3backend.New(cfg)
-enc := encryption.New(base, encryption.StaticKey(key32),
-    encryption.WithMetricsRegisterer(nil), // optional open-plaintext budget metrics
-)
+enc := encryption.New(base, encryption.StaticKey(key32))
 hooked := storage.WithHooks(enc, storage.Hooks{
     AfterPut:    func(ctx context.Context, key string, meta storage.ObjectMeta) { /* CDN invalidation */ },
     AfterDelete: func(ctx context.Context, key string) { /* cache purge */ },
@@ -318,11 +316,25 @@ existing AWS bucket via the default credential chain.
 | `STORAGE_S3_URL_TEMPLATE` | No | HTTPS public URL template for `PublicURLer`, supports `{bucket}` and `{region}` |
 | `STORAGE_S3_FORCE_PATH_STYLE` | No | Required for MinIO/LocalStack |
 | `STORAGE_S3_ALLOW_INSECURE_ENDPOINT` | No | Set `true` only for local `http://` emulators |
-| `STORAGE_S3_SSE` | No | Default `AES256`; set `aws:kms` with `STORAGE_S3_SSE_KMS_KEY_ID`, or empty to rely on bucket policy |
+| `STORAGE_S3_SSE` | No | Default `AES256`; set `aws:kms` with `STORAGE_S3_SSE_KMS_KEY_ID`, or `none` to send no SSE header (bucket policy, objects encrypted before upload, or an S3 service without SSE-S3) |
 | `STORAGE_S3_SSE_KMS_KEY_ID` | Conditional | Required when `STORAGE_S3_SSE=aws:kms` |
 | `STORAGE_S3_USE_DEFAULT_CREDENTIALS` | No | Use AWS SDK default credential chain; mutually exclusive with static keys |
 | `{PREFIX}_S3_ACCESS_KEY_ID` | Conditional | Required only when not using default credentials or `CredentialProvider` |
 | `{PREFIX}_S3_SECRET_ACCESS_KEY` | Conditional | Supports `_FILE` suffix; required only for static-key mode |
+
+`Put` bodies that cannot seek (an HTTP upload, a validated or encrypted body):
+
+- With `ObjectMeta.Size` set, the body streams with an unsigned payload, as the
+  SDK does over HTTPS anyway. Over an insecure `http://` endpoint it is then
+  neither signed nor checked in transit: acceptable for local emulators only.
+- Without a size, S3 still needs a Content-Length, so the body is spooled to a
+  file first, in `s3backend.WithSpoolDir(dir)` (default `os.TempDir()`) and at
+  most `s3backend.WithMaxSpoolBytes(n)` (default 5 GiB, one PutObject's limit;
+  a longer body fails with `storage.ErrValidation` before uploading). Memory
+  stays flat, but the disk holds the whole object until the upload ends: on a
+  tmpfs `/tmp` that is RAM again, so point the spool at a disk. A body that is
+  not encrypted before it reaches the backend lands on local disk in plaintext
+  for that time. Set `Size` when it is known to avoid the spool.
 
 ### Azure
 | Variable | Required | Notes |
@@ -368,9 +380,26 @@ a shared user-writable tree.
 
 ## Encryption Notes
 
-- `encryption.StaticKey(key)` — 32-byte AES-256-GCM key. Each object gets a unique nonce.
-- **256 MiB max** per object (AES-GCM requires full buffer).
-- For larger files, use S3 SSE instead.
+- `encryption.StaticKey(key)` — the 32-byte main key; each object is sealed under
+  its own key derived from it (HKDF-SHA256 with a random salt, the storage key as
+  info).
+- Streaming, any size: Tink's AES-GCM-HKDF streaming AEAD (STREAM) in 64 KiB
+  segments. `Put` encrypts while the backend reads, `Get` decrypts while the
+  caller reads; each holds about two segments of memory. Set `ObjectMeta.Size`
+  on `Put` when known: the backend gets the exact ciphertext size, and content of
+  another length fails the `Put`; `s3backend` spools a body of unknown size to a
+  file (see the S3 notes above), since S3 needs its length.
+- Truncated, reordered, changed or moved objects fail with
+  `encryption.ErrInvalidCiphertext`. `Get` authenticates the first segment before
+  it returns; later damage is a `Read` error after the segments before it, and
+  `io.EOF` only follows the authenticated last segment, so treat any read error
+  as a failed transfer.
+- `Get`'s reader does not seek, so `storagehttp.ServeFile` streams encrypted
+  objects without Range support, with `Content-Length`, and aborts the
+  connection (HTTP/2: the stream) when decryption fails after the first bytes.
+- Objects written by rho-kit v2.50.0 or earlier (one AES-GCM message per object)
+  do not decrypt; re-encrypt them with the old release's `Get` and this
+  release's `Put`.
 - Object-storage encryption `KeyProvider` implementations are app-supplied.
   Envelope encryption ships AWS KMS, Azure Key Vault, Google Cloud KMS, and
   HashiCorp Vault Transit KEK adapters under `crypto/envelope/awskms`,
