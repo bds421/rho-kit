@@ -19,4 +19,7 @@
 // Panic payloads are redacted in the returned [PanicError]; the raw recovered
 // value is not exposed.
 // Use [WithMaxGoroutines] to bound parallelism.
+//
+// [KeyedSlots] bound work that runs at once in all and per key (uploads
+// and downloads per caller), so one key cannot take every slot.
 package concurrency
