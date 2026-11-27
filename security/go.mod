@@ -9,10 +9,10 @@ module github.com/bds421/rho-kit/security/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/authz/v2 v2.53.0
-	github.com/bds421/rho-kit/core/v2 v2.53.0
-	github.com/bds421/rho-kit/crypto/v2 v2.53.0
-	github.com/bds421/rho-kit/resilience/v2 v2.53.0
+	github.com/bds421/rho-kit/authz/v2 v2.54.0
+	github.com/bds421/rho-kit/core/v2 v2.54.0
+	github.com/bds421/rho-kit/crypto/v2 v2.54.0
+	github.com/bds421/rho-kit/resilience/v2 v2.54.0
 	github.com/lestrrat-go/jwx/v4 v4.6.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
@@ -21,7 +21,7 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/observability/v2 v2.53.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.54.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v6 v6.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

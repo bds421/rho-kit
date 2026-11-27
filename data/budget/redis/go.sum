@@ -1,9 +1,9 @@
 github.com/alicebob/miniredis/v2 v2.40.0 h1:6IgTQbvm2JiMYZ8yur/acNJzVjtSOWCelxXbk/LUBXc=
 github.com/alicebob/miniredis/v2 v2.40.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
-github.com/bds421/rho-kit/core/v2 v2.53.0 h1:X56UwlFb63Hmu+gl+UQPdPXOqVbCG150oxfPFYbzQV4=
-github.com/bds421/rho-kit/core/v2 v2.53.0/go.mod h1:XOnxFqKaT+WcMS07fbrHvTmk6P6Qrb49cqy/55o5AnQ=
-github.com/bds421/rho-kit/data/v2 v2.53.0 h1:Esoav+G3m1fMzAMIG0rOoUPqG3pxChW9+Rmkh6503EA=
-github.com/bds421/rho-kit/data/v2 v2.53.0/go.mod h1:R31qkEjC5HEFRQouwzK1tXujiNcs4nVoogbVO+Dh5Ks=
+github.com/bds421/rho-kit/core/v2 v2.54.0 h1:PhQzOhnlA6FnS6V2qPmrmzrqKDrA72cwtHGbR33Csi0=
+github.com/bds421/rho-kit/core/v2 v2.54.0/go.mod h1:XOnxFqKaT+WcMS07fbrHvTmk6P6Qrb49cqy/55o5AnQ=
+github.com/bds421/rho-kit/data/v2 v2.54.0 h1:GjRPuTGnJO/FG+6Li+RcjHjHop7xuyWSoDkZyegQRNY=
+github.com/bds421/rho-kit/data/v2 v2.54.0/go.mod h1:jcQpPGm/2hM92f/6Q4WUBAewSFUcOIIqTSe//rolW3s=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=
