@@ -3,8 +3,8 @@ module github.com/bds421/rho-kit/data/approval/postgres/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.58.0
-	github.com/bds421/rho-kit/data/v2 v2.58.0
+	github.com/bds421/rho-kit/core/v2 v2.59.0
+	github.com/bds421/rho-kit/data/v2 v2.59.0
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/stretchr/testify v1.12.1
 )
