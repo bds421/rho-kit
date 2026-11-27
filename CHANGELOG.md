@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.55.0 — 2026-11-27
+
+Every workspace module is released at v2.55.0 (`release/v2.55.0`). No breaking changes.
+
+### app
+
+- **feat: `Builder.Worker`** wires a role without a public server
+  (`WithoutPublicServer`) on the infrastructure the modules populated: it
+  runs where the `RouterFunc` would, with the same `Background`
+  registration. `Validate` refuses it on a service with a public server.
+
+### data/queue/riverqueue/periodic
+
+- **feat: `InsertOnly` enqueues kinds only a worker role registers**
+  (River's `SkipUnknownJobCheck`); the enqueuing role needs no stand-in
+  worker.
+
+### infra/outbox/postgres
+
+- **feat: `WithNotify(channel)`** makes `Insert` send a notification in
+  the entry's transaction, delivered at commit.
+- **feat: `Listen(ctx, pool, channel, wake)`** holds a LISTEN connection of
+  its own and wakes a relay (`relay.Wake`) per notification and after every
+  (re)connect; it connects again after `WithListenRetry` (1 s) when the
+  connection fails, and returns nil when ctx ends.
+
 ## v2.54.0 — 2026-11-27
 
 Every workspace module is released at v2.54.0 (`release/v2.54.0`). No breaking changes.
