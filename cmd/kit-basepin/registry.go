@@ -25,6 +25,7 @@ type registry struct {
 }
 
 func newRegistry() *registry {
+	// kit-doctor:allow default-http-client reason="a CLI reading public registry metadata anonymously, dependency-free, with an explicit timeout; the token realm is limited to known https hosts"
 	return &registry{client: &http.Client{Timeout: 30 * time.Second}, hosts: map[string]string{"docker.io": "https://registry-1.docker.io"}, hub: "https://hub.docker.com", tokens: map[string]string{}}
 }
 
