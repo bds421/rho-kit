@@ -15,10 +15,10 @@ module github.com/bds421/rho-kit/infra/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.50.0
-	github.com/bds421/rho-kit/io/v2 v2.50.0
-	github.com/bds421/rho-kit/observability/v2 v2.50.0
-	github.com/bds421/rho-kit/runtime/v2 v2.50.0
+	github.com/bds421/rho-kit/core/v2 v2.51.0
+	github.com/bds421/rho-kit/io/v2 v2.51.0
+	github.com/bds421/rho-kit/observability/v2 v2.51.0
+	github.com/bds421/rho-kit/runtime/v2 v2.51.0
 	github.com/gabriel-vasile/mimetype v1.4.16
 	github.com/google/uuid v1.6.0
 	github.com/pressly/goose/v3 v3.30.1
