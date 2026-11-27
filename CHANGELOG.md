@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.52.1 — 2026-11-27
+
+Every workspace module is released at v2.52.1 (`release/v2.52.1`). A
+security fix: update from v2.52.0.
+
+### auth/oauth2
+
+- **fix(security): `Flow` refuses an answer of another provider.** In
+  v2.52.0 `Flow.Finish` exchanged the code with the provider its state named
+  without checking which provider answered, so with several providers an
+  attacker controlling one could mix up the flows (RFC 9207). The state now
+  keeps the issuer, and before the exchange `Finish` requires the resolved
+  `Config` to name it, the callback to come to the path of its
+  `RedirectURL` (give each provider its own), and the `iss` parameter to
+  equal the issuer when discovery announces
+  `authorization_response_iss_parameter_supported` or one is sent;
+  otherwise `ErrIssuerMismatch`. `StateEntry` gains `Issuer`.
+- `oauth2test.Issuer.SendIssuer` announces and sends `iss`.
+
 ## v2.52.0 — 2026-11-27
 
 Every workspace module is released at v2.52.0 (`release/v2.52.0`). No breaking changes.
