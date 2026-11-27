@@ -204,6 +204,7 @@ type serverConfig struct {
 	serverVersion               string
 	toolFilter                  ToolFilter
 	maxRequestBytes             int64
+	callLimits                  []CallLimit
 }
 
 // DestructiveGate authorizes a destructive-tool invocation. The
@@ -611,7 +612,7 @@ func (s *Server) AsyncAuditDropped() int64 {
 // `Content-Type: application/json`. The SDK rejects requests that omit
 // either with `400 Bad Request` / `415 Unsupported Media Type`.
 func (s *Server) HTTP() http.Handler {
-	return sdkmcp.NewStreamableHTTPHandler(
+	return s.withCallScope(sdkmcp.NewStreamableHTTPHandler(
 		func(*http.Request) *sdkmcp.Server { return s.sdk },
 		&sdkmcp.StreamableHTTPOptions{
 			Stateless:           true,
@@ -619,7 +620,7 @@ func (s *Server) HTTP() http.Handler {
 			MaxRequestBodyBytes: s.cfg.maxRequestBytes,
 			Logger:              s.cfg.logger,
 		},
-	)
+	))
 }
 
 // Tools returns a copy of the registered tool catalog, sorted by

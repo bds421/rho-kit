@@ -131,6 +131,11 @@
 // listing only: tools/call still dispatches). [WithMaxRequestBytes]
 // replaces the SDK's 4 MiB bound on a request.
 //
+// [WithCallLimits] counts every operation a tool handler runs inside one
+// call against the caller's rate limits: the handler calls [Charge]
+// before each, and a refusal is a [CallLimitedError] (a rate-limit
+// apperror). [LimitByIP] and [LimitByKey] adapt the kit's limiters.
+//
 // # What is NOT done here
 //
 //   - Auth, rate-limit, idempotency, CSRF: delegated to the
