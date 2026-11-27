@@ -1,5 +1,66 @@
 # Changelog
 
+## v2.53.0 — 2026-11-27
+
+Every workspace module is released at v2.53.0 (`release/v2.53.0`). No breaking changes.
+
+### app
+
+- **fix: a `Background` task that returns nil leaves the service running.**
+  The lifecycle runner shut the service down when any component returned,
+  so a one-shot start-up task stopped it with exit 0. A task that finishes
+  with nil now waits for the shutdown; an error still stops the service.
+
+### httpx/mcp
+
+- **feat: `ToolError`,** a handler error whose `Text` the caller reads
+  (`isError: true`); its cause is only logged and audited.
+- **feat: content results.** A handler whose `Out` is `Contents` answers
+  with `Text`, `Image`, embedded `Resource` and `ResourceLink` items instead
+  of JSON, and its tool has no output schema. A panic while the content is
+  built fails the call as `internal error`; nil items are skipped.
+- **feat: `WithAnnotations`** sends a tool's title and every hint
+  (read-only, destructive, idempotent, open world) explicitly.
+- **feat: `WithToolFilter`** lists each caller only the tools it keeps
+  (the listing only; calls still dispatch).
+- **feat: `WithMaxRequestBytes`** replaces the SDK's 4 MiB request bound.
+
+### infra/storage/storagetest
+
+- **feat: the suites remove what they write.** `BackendSuite` and
+  `ListerSuite` delete every key they put when the test ends.
+- **feat: `NewS3Bucket`** creates a bucket of the test's own on a given
+  endpoint and removes it, objects first, in `t.Cleanup`.
+
+### observability/auditlog/postgres
+
+- **feat: tables in a chosen schema.** `WithSchema` names
+  `audit_log_events` and `audit_log_retention` as `"schema".table` in every
+  statement; `MigrationsInSchema` puts the schema first on each migration's
+  `search_path` (for the session, reset at its end, in a `NO TRANSACTION`
+  migration) and fails when the schema does not exist.
+
+### runtime/concurrency
+
+- **feat: `KeyedSlots`,** a bound in all and per key (uploads and downloads
+  per caller): waits until the context ends, releases once, forgets idle
+  keys.
+
+### security/netutil
+
+- **feat: `NewEgressClient`,** an http.Client for URLs callers name. The
+  dialer judges every address in `Control` after DNS: public addresses over
+  https; for a host and port `WithEgressHosts` lists, http and the internal
+  ranges (loopback, RFC 1918, unique-local, CGNAT), never link-local or
+  metadata. No proxy. Redirects are bounded, keep https, never lead from a
+  host not listed into a listed one and drop the `WithEgressStripOnRedirect`
+  headers on another host. Requests go through a listed and a public
+  connection pool by their verdict, so a host taken off the list never
+  reuses a connection opened while it was listed. The allowlist is asked
+  about the lowercased host; a host that is not ASCII is refused.
+  `WithEgressMaxResponse` fails a read past its bound. `EgressDialer` is the
+  dialer alone.
+
 ## v2.52.1 — 2026-11-27
 
 Every workspace module is released at v2.52.1 (`release/v2.52.1`). A
