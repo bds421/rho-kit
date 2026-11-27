@@ -134,7 +134,7 @@ row you start from:
 | Explicit middleware chains | `httpx/middleware/stack` (Chain) | [http](docs/ai/http.md) |
 | Store/retrieve files | `infra/storage` + backend (s3/azure/gcs/sftp/local) | [storage](docs/ai/storage.md) |
 | Multi-disk file storage | `infra/storage` (Manager) | [storage](docs/ai/storage.md) |
-| Encrypt files at rest (streaming, any size; truncation, reordering and tampering fail with `ErrInvalidCiphertext`) | `infra/storage/encryption` | [storage](docs/ai/storage.md) |
+| Encrypt files at rest (streaming, any size; truncation, reordering and tampering fail with `ErrInvalidCiphertext`); delete and list them without the key (`WithoutKey`) | `infra/storage/encryption` | [storage](docs/ai/storage.md) |
 | Scan uploaded files for malware | `infra/storage/storagehttp/uploadsec` + `infra/storage/storagehttp/uploadsec/clamav` | [storage](docs/ai/storage.md) |
 | Publish/consume AMQP messages | `infra/messaging/amqpbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
 | Publish/consume Kafka messages | `infra/messaging/kafkabackend` (Publisher, Subscriber) | [messaging](docs/ai/messaging.md) |

@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.58.0 — 2026-11-27
+
+Every workspace module is released at v2.58.0 (`release/v2.58.0`). No breaking changes.
+
+### infra/storage/encryption
+
+- **feat: a store without the key deletes and lists.** `WithoutKey(backend)`
+  wraps an encrypted store without a key: `Delete`, `Exists`, `List` (with
+  plaintext sizes), the exact-version metadata calls and `DeleteVersion`
+  work as through `New`; `Put`, `Get`, `Copy` and `GetVersion` fail with
+  `ErrNoKey` before the backend is called. A process that only purges no
+  longer holds a key that reads every object.
+
 ## v2.57.0 — 2026-11-27
 
 Every workspace module is released at v2.57.0 (`release/v2.57.0`). Breaking for

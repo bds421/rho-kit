@@ -400,6 +400,10 @@ a shared user-writable tree.
 - Objects written by rho-kit v2.50.0 or earlier (one AES-GCM message per object)
   do not decrypt; re-encrypt them with the old release's `Get` and this
   release's `Put`.
+- `encryption.WithoutKey(backend)` deletes and lists an encrypted store's objects
+  (plaintext sizes, exact-version metadata and `DeleteVersion` too) without the
+  key; `Put`, `Get`, `Copy` and `GetVersion` fail with `encryption.ErrNoKey`, so a
+  role that only purges holds no key that reads every object.
 - Object-storage encryption `KeyProvider` implementations are app-supplied.
   Envelope encryption ships AWS KMS, Azure Key Vault, Google Cloud KMS, and
   HashiCorp Vault Transit KEK adapters under `crypto/envelope/awskms`,

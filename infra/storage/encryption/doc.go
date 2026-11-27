@@ -20,6 +20,8 @@
 //
 // The main key is provided by a [KeyProvider] so callers can plug in AWS
 // KMS, HashiCorp Vault, or a static key.
+// [WithoutKey] builds a store without one that deletes and lists objects
+// and refuses to read or write them.
 //
 // Usage:
 //
@@ -27,4 +29,6 @@
 //	enc := encryption.New(backend, key)
 //	enc.Put(ctx, "secret.txt", reader, meta) // encrypted at rest
 //	rc, meta, _ := enc.Get(ctx, "secret.txt") // decrypted on read
+//
+//	purge := encryption.WithoutKey(backend) // Delete and List, no Put or Get
 package encryption
