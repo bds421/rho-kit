@@ -50,6 +50,9 @@ const chainLockKey int64 = 8_157_398_551_437_201_487
 type Store struct {
 	pool        *pgxpool.Pool
 	lockTimeout time.Duration
+	// events and retention are the tables, schema-qualified by WithSchema;
+	// empty, the statements name them as written.
+	events, retention string
 }
 
 // DefaultLockTimeout is how long an append waits for the chain lock.
@@ -127,7 +130,7 @@ func (s *Store) AppendChained(ctx context.Context, build func(head auditlog.Even
 	if err := s.lock(ctx, tx); err != nil {
 		return err
 	}
-	if err := appendLocked(ctx, tx, build); err != nil {
+	if err := s.appendLocked(ctx, tx, build); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -159,7 +162,7 @@ func (s *Store) appendJoined(ctx context.Context, tx pgx.Tx, build func(head aud
 	if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true)", timeout); err != nil {
 		return fmt.Errorf("auditlog/postgres: restore lock_timeout: %w", err)
 	}
-	return appendLocked(ctx, tx, build)
+	return s.appendLocked(ctx, tx, build)
 }
 
 // lock takes the chain lock in tx, waiting at most the lock timeout.
@@ -175,8 +178,8 @@ func (s *Store) lock(ctx context.Context, tx pgx.Tx) error {
 
 // appendLocked chains build's event onto the head and inserts it; tx holds
 // the chain lock.
-func appendLocked(ctx context.Context, tx pgx.Tx, build func(head auditlog.Event) (auditlog.Event, error)) error {
-	head, err := selectHead(ctx, tx)
+func (s *Store) appendLocked(ctx context.Context, tx pgx.Tx, build func(head auditlog.Event) (auditlog.Event, error)) error {
+	head, err := s.selectHead(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -187,7 +190,7 @@ func appendLocked(ctx context.Context, tx pgx.Tx, build func(head auditlog.Event
 	if err := auditlog.ValidateEvent(event); err != nil {
 		return err
 	}
-	return insertEvent(ctx, tx, event)
+	return s.insertEvent(ctx, tx, event)
 }
 
 // Query implements the [auditlog.Store] contract: returns events
@@ -221,7 +224,7 @@ func (s *Store) Query(ctx context.Context, filter auditlog.Filter, cursor string
 
 	sql, args := querySQL(filter, cursor, cursorTime, cursorID, limit)
 
-	rows, err := s.pool.Query(ctx, sql, args...)
+	rows, err := s.pool.Query(ctx, s.sql(sql), args...)
 	if err != nil {
 		return nil, "", fmt.Errorf("auditlog/postgres: query: %w", err)
 	}
@@ -318,7 +321,7 @@ func (s *Store) RangeChain(ctx context.Context, fn func(auditlog.Event) error) e
 		return err
 	}
 	const q = selectColumns + ", search_text FROM audit_log_events ORDER BY seq ASC"
-	rows, err := s.pool.Query(ctx, q)
+	rows, err := s.pool.Query(ctx, s.sql(q))
 	if err != nil {
 		return fmt.Errorf("auditlog/postgres: range chain: %w", err)
 	}
@@ -349,7 +352,7 @@ func (s *Store) Head(ctx context.Context) (auditlog.Event, bool, error) {
 	if s == nil || s.pool == nil {
 		return auditlog.Event{}, false, errors.New("auditlog/postgres: store not initialized")
 	}
-	event, err := selectHead(ctx, s.pool)
+	event, err := s.selectHead(ctx, s.pool)
 	return event, err == nil && event.ID != "", err
 }
 
@@ -365,7 +368,7 @@ func (s *Store) LastHMAC(ctx context.Context) ([]byte, error) {
 	}
 	const q = "SELECT hmac FROM audit_log_events ORDER BY seq DESC LIMIT 1"
 	var hmac []byte
-	if err := s.pool.QueryRow(ctx, q).Scan(&hmac); err != nil {
+	if err := s.pool.QueryRow(ctx, s.sql(q)).Scan(&hmac); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
@@ -393,9 +396,9 @@ type rowQuerier interface {
 }
 
 // selectHead reads the newest event, or the zero Event on an empty chain.
-func selectHead(ctx context.Context, q rowQuerier) (auditlog.Event, error) {
+func (s *Store) selectHead(ctx context.Context, q rowQuerier) (auditlog.Event, error) {
 	const sql = selectColumns + " FROM audit_log_events ORDER BY seq DESC LIMIT 1"
-	event, err := scanEvent(q.QueryRow(ctx, sql))
+	event, err := scanEvent(q.QueryRow(ctx, s.sql(sql)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return auditlog.Event{}, nil
 	}
@@ -405,7 +408,7 @@ func selectHead(ctx context.Context, q rowQuerier) (auditlog.Event, error) {
 	return event, nil
 }
 
-func insertEvent(ctx context.Context, tx pgx.Tx, e auditlog.Event) error {
+func (s *Store) insertEvent(ctx context.Context, tx pgx.Tx, e auditlog.Event) error {
 	const q = `
 INSERT INTO audit_log_events
 (id, occurred_at, actor, tenant, action, resource, status, ip_address, trace_id,
@@ -415,7 +418,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
 	if prev == nil {
 		prev = []byte{}
 	}
-	if _, err := tx.Exec(ctx, q,
+	if _, err := tx.Exec(ctx, s.sql(q),
 		e.ID, e.Timestamp.UTC(), e.Actor, e.Tenant, e.Action, e.Resource, e.Status,
 		e.IPAddress, e.TraceID, nil, signedBytes(e.Metadata), prev, e.HMAC,
 		auditlog.SearchText(e),

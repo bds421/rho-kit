@@ -20,7 +20,7 @@ func (s *Store) RetentionRecord(ctx context.Context, key []byte) (auditlog.Reten
 	if s == nil || s.pool == nil {
 		return auditlog.RetentionRecord{}, errors.New("auditlog/postgres: store not initialized")
 	}
-	return readRecord(ctx, s.pool, key, false)
+	return s.readRecord(ctx, s.pool, key, false)
 }
 
 // ApplyCut removes the events c names and replaces the sealed record in
@@ -62,11 +62,11 @@ func (s *Store) applyCut(ctx context.Context, tx pgx.Tx, c auditlog.Cut, key []b
 	if err := s.lock(ctx, tx); err != nil {
 		return 0, err
 	}
-	earlier, err := readRecord(ctx, tx, key, true)
+	earlier, err := s.readRecord(ctx, tx, key, true)
 	if err != nil || c.Events == 0 {
 		return 0, err
 	}
-	rows, err := tx.Query(ctx, `SELECT seq, hmac FROM audit_log_events ORDER BY seq LIMIT $1 FOR UPDATE`, c.Events+1)
+	rows, err := tx.Query(ctx, s.sql(`SELECT seq, hmac FROM audit_log_events ORDER BY seq LIMIT $1 FOR UPDATE`), c.Events+1)
 	if err != nil {
 		return 0, fmt.Errorf("auditlog/postgres: read the cut: %w", err)
 	}
@@ -87,7 +87,7 @@ func (s *Store) applyCut(ctx context.Context, tx pgx.Tx, c auditlog.Cut, key []b
 	if err := c.Holds(hmacs); err != nil {
 		return 0, err
 	}
-	tag, err := tx.Exec(ctx, `DELETE FROM audit_log_events WHERE seq <= $1`, seqs[c.Events-1])
+	tag, err := tx.Exec(ctx, s.sql(`DELETE FROM audit_log_events WHERE seq <= $1`), seqs[c.Events-1])
 	if err != nil {
 		return 0, fmt.Errorf("auditlog/postgres: remove the cut: %w", err)
 	}
@@ -99,24 +99,24 @@ func (s *Store) applyCut(ctx context.Context, tx pgx.Tx, c auditlog.Cut, key []b
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.Exec(ctx, `
+	if _, err := tx.Exec(ctx, s.sql(`
 INSERT INTO audit_log_retention (id, watermark, removed, pruned_before, pruned_at, seal)
 VALUES (1, $1, $2, $3, $4, $5)
-ON CONFLICT (id) DO UPDATE SET watermark = $1, removed = $2, pruned_before = $3, pruned_at = $4, seal = $5`,
+ON CONFLICT (id) DO UPDATE SET watermark = $1, removed = $2, pruned_before = $3, pruned_at = $4, seal = $5`),
 		next.Watermark, next.Removed, next.PrunedBefore, next.PrunedAt, seal); err != nil {
 		return 0, fmt.Errorf("auditlog/postgres: write the retention record: %w", err)
 	}
 	return c.Events, nil
 }
 
-func readRecord(ctx context.Context, q rowQuerier, key []byte, lock bool) (auditlog.RetentionRecord, error) {
+func (s *Store) readRecord(ctx context.Context, q rowQuerier, key []byte, lock bool) (auditlog.RetentionRecord, error) {
 	query := `SELECT watermark, removed, pruned_before, pruned_at, seal FROM audit_log_retention WHERE id = 1`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	var r auditlog.RetentionRecord
 	var seal []byte
-	err := q.QueryRow(ctx, query).Scan(&r.Watermark, &r.Removed, &r.PrunedBefore, &r.PrunedAt, &seal)
+	err := q.QueryRow(ctx, s.sql(query)).Scan(&r.Watermark, &r.Removed, &r.PrunedBefore, &r.PrunedAt, &seal)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return auditlog.RetentionRecord{}, nil
 	}

@@ -23,7 +23,7 @@ func (s *Store) Tail(ctx context.Context, tenant string, after auditlog.Position
  WHERE seq > $1 AND ($2 = '' OR tenant = $2)
  ORDER BY seq ASC
  LIMIT $3`
-	rows, err := s.pool.Query(ctx, q, int64(after), tenant, limit)
+	rows, err := s.pool.Query(ctx, s.sql(q), int64(after), tenant, limit)
 	if err != nil {
 		return nil, after, fmt.Errorf("auditlog/postgres: tail: %w", err)
 	}

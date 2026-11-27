@@ -139,6 +139,17 @@ a unique index on `prev_hmac` refuses a fork; its migration stops on a chain
 that already forked. `Log` is best-effort and reports drops through logs,
 `WithDroppedCounter`, and `WithOnDrop`.
 
+To keep `audit_log_events` and `audit_log_retention` in a schema of their
+own instead of whatever `search_path` resolves, migrate with
+`postgres.MigrationsInSchema("audit")` (the schema must exist; give
+`migrate.Config` a schema-qualified `TableName`) and build the store with
+`postgres.New(pool, postgres.WithSchema("audit"))`, which names the tables
+as `"audit".audit_log_events` in every statement, so the sessions need no
+`search_path`. Each migration puts the schema first on its `search_path`:
+for its transaction, or, for one marked `NO TRANSACTION`, for the session
+until it ends with `RESET search_path`. pg_trgm, when the migration creates
+it, lands in that schema too.
+
 Use `httpx/middleware/auditlog` for request-level HTTP audit capture. Configure
 the same trusted proxy CIDRs as access logging so `IPAddress` is derived from
 the same trust boundary. The middleware keeps the request trace context while
