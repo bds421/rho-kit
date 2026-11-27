@@ -3,21 +3,21 @@ module github.com/bds421/rho-kit/app/nats/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/app/v2 v2.52.0
-	github.com/bds421/rho-kit/core/v2 v2.52.0
-	github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 v2.52.0
-	github.com/bds421/rho-kit/infra/v2 v2.52.0
-	github.com/bds421/rho-kit/observability/v2 v2.52.0
-	github.com/bds421/rho-kit/security/v2 v2.52.0
+	github.com/bds421/rho-kit/app/v2 v2.52.1
+	github.com/bds421/rho-kit/core/v2 v2.52.1
+	github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 v2.52.1
+	github.com/bds421/rho-kit/infra/v2 v2.52.1
+	github.com/bds421/rho-kit/observability/v2 v2.52.1
+	github.com/bds421/rho-kit/security/v2 v2.52.1
 	github.com/nats-io/nats.go v1.56.0
 	github.com/stretchr/testify v1.12.1
 )
 
 require (
-	github.com/bds421/rho-kit/httpx/v2 v2.52.0 // indirect
-	github.com/bds421/rho-kit/io/v2 v2.52.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.52.0 // indirect
-	github.com/bds421/rho-kit/runtime/v2 v2.52.0 // indirect
+	github.com/bds421/rho-kit/httpx/v2 v2.52.1 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.52.1 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.52.1 // indirect
+	github.com/bds421/rho-kit/runtime/v2 v2.52.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
