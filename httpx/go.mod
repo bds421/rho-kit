@@ -3,14 +3,14 @@ module github.com/bds421/rho-kit/httpx/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/authz/v2 v2.51.1
-	github.com/bds421/rho-kit/core/v2 v2.51.1
-	github.com/bds421/rho-kit/crypto/v2 v2.51.1
-	github.com/bds421/rho-kit/data/v2 v2.51.1
-	github.com/bds421/rho-kit/observability/v2 v2.51.1
-	github.com/bds421/rho-kit/resilience/v2 v2.51.1
-	github.com/bds421/rho-kit/runtime/v2 v2.51.1
-	github.com/bds421/rho-kit/security/v2 v2.51.1
+	github.com/bds421/rho-kit/authz/v2 v2.52.0
+	github.com/bds421/rho-kit/core/v2 v2.52.0
+	github.com/bds421/rho-kit/crypto/v2 v2.52.0
+	github.com/bds421/rho-kit/data/v2 v2.52.0
+	github.com/bds421/rho-kit/observability/v2 v2.52.0
+	github.com/bds421/rho-kit/resilience/v2 v2.52.0
+	github.com/bds421/rho-kit/runtime/v2 v2.52.0
+	github.com/bds421/rho-kit/security/v2 v2.52.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7

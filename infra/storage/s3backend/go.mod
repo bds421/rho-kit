@@ -8,9 +8,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.21.3
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.116.0
 	github.com/aws/smithy-go v1.28.9
-	github.com/bds421/rho-kit/core/v2 v2.51.1
-	github.com/bds421/rho-kit/infra/v2 v2.51.1
-	github.com/bds421/rho-kit/observability/v2 v2.51.1
+	github.com/bds421/rho-kit/core/v2 v2.52.0
+	github.com/bds421/rho-kit/infra/v2 v2.52.0
+	github.com/bds421/rho-kit/observability/v2 v2.52.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.47.0
@@ -30,7 +30,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.39.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.53.0 // indirect
-	github.com/bds421/rho-kit/io/v2 v2.51.1 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.52.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
