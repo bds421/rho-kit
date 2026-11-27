@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.51.0 — 2026-11-27
 
 ### infra/storage/encryption: streaming format (breaking)
 
