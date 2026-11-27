@@ -6,8 +6,8 @@ module github.com/bds421/rho-kit/infra/secrets/vaultkv/v2
 go 1.27.4
 
 require (
-	github.com/bds421/rho-kit/core/v2 v2.58.0
-	github.com/bds421/rho-kit/infra/secrets/v2 v2.58.0
+	github.com/bds421/rho-kit/core/v2 v2.59.0
+	github.com/bds421/rho-kit/infra/secrets/v2 v2.59.0
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/stretchr/testify v1.12.1
 )

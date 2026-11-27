@@ -12,8 +12,8 @@ go 1.27.4
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.24.0
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys v1.5.0
-	github.com/bds421/rho-kit/core/v2 v2.58.0
-	github.com/bds421/rho-kit/crypto/v2 v2.58.0
+	github.com/bds421/rho-kit/core/v2 v2.59.0
+	github.com/bds421/rho-kit/crypto/v2 v2.59.0
 	github.com/prometheus/client_golang v1.25.0
 )
 
