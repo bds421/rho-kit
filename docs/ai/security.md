@@ -375,7 +375,8 @@ checks the posted `logout_token` against that provider, records its jti (in
 the same Redis store; a replay fails here) and runs `admit` (for example a
 budget per provider that only verified first deliveries spend; a refusal
 forgets the jti); forged tokens make the provider's keys
-be fetched at most once a minute; the application ends the sessions it recorded for
+be fetched at most once a minute (sooner fails with `LogoutKeysBusyError`, answer 503 with
+`Retry-After`), through a copy of the guarded client that keeps its redirect policy; the application ends the sessions it recorded for
 `Result.SID`, or for the subject when the token has no sid. Tests run against
 `auth/oauth2/oauth2test.NewIssuer`, a local provider.
 

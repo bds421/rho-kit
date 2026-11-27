@@ -113,8 +113,11 @@ or UserInfo without re-discovering endpoints.
   only verified, first deliveries spend), and returns
   `LogoutToken{Issuer, Subject, SID}`; the keys are fetched again at most
   once a `WithFlowKeyRefetchInterval` (1 min) per issuer, so forged tokens
-  cannot make a fetch each; errors `ErrLogoutTokenInvalid`,
-  `ErrLogoutTokenReplayed`. The replay cache is the state store when it
+  cannot make a fetch each (a token that would need one sooner fails with
+  `*LogoutKeysBusyError{RetryAfter}`, `errors.Is` `ErrLogoutKeysBusy`: answer
+  503 with `Retry-After`, so a provider that rotated its key retries); the key
+  fetch uses a copy of the `WithFlowHTTPClient` client, so its `CheckRedirect`
+  and timeout hold; errors `ErrLogoutTokenInvalid`, `ErrLogoutTokenReplayed`. The replay cache is the state store when it
   implements `ReplayCache` (`auth/oauth2/redis` does), else in-process;
   `WithFlowReplayCache` sets one. The caller ends its sessions by
   `Result.SID` or subject and answers 200, or 400 `{"error":"invalid_request"}`

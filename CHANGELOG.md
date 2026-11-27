@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.59.0 — 2026-11-27
+
+Every workspace module is released at v2.59.0 (`release/v2.59.0`). No breaking changes.
+
+### auth/oauth2
+
+- **fix(security): the logout key fetch keeps the client's redirect policy.**
+  `Flow.VerifyLogoutToken` fetched the provider's keys with a new
+  `http.Client` that only took the transport of `WithFlowHTTPClient`, so a
+  `CheckRedirect` that refuses redirects (an egress guard) did not apply to
+  the JWKS. It now uses a copy of that client with the bounded transport.
+- **feat: a too-soon key fetch has its own error.** A logout token that
+  would need the keys again within `WithFlowKeyRefetchInterval` fails with
+  `*LogoutKeysBusyError` (`errors.Is` `ErrLogoutKeysBusy`) carrying
+  `RetryAfter`, instead of `ErrLogoutTokenInvalid`. Answer it 503 with
+  `Retry-After`: a provider that rotated its key retries and is heard.
+
 ## v2.58.0 — 2026-11-27
 
 Every workspace module is released at v2.58.0 (`release/v2.58.0`). No breaking changes.

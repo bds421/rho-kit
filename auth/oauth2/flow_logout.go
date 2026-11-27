@@ -28,8 +28,9 @@ type LogoutToken struct {
 // provider's keys (JWKS) be fetched again, per issuer (default one minute).
 // A logout token comes from anyone, and one whose signature does not
 // verify against the cached keys would otherwise cause a fetch each time.
-// After a key rotation, tokens signed with the new key fail until the next
-// fetch is allowed.
+// After a key rotation, a token signed with the new key that arrives too
+// soon after the last fetch fails with a [LogoutKeysBusyError], whose
+// RetryAfter says when to try again.
 func WithFlowKeyRefetchInterval(d time.Duration) FlowOption {
 	return func(f *Flow) { f.keyRefetch = d }
 }
@@ -62,8 +63,9 @@ func WithFlowReplayCache(cache ReplayCache) FlowOption {
 // The jti is recorded before VerifyLogoutToken returns, so a second
 // delivery fails with [ErrLogoutTokenReplayed] even when the caller failed
 // to end the sessions of the first. Other failures are
-// [ErrLogoutTokenInvalid] and [ErrIssuerDiscovery], or the replay cache's
-// error. The caller answers 200 on success and 400 with
+// [ErrLogoutTokenInvalid], [LogoutKeysBusyError] (the keys could not be
+// fetched again yet: answer 503 with its RetryAfter) and
+// [ErrIssuerDiscovery], or the replay cache's error. The caller answers 200 on success and 400 with
 // {"error":"invalid_request"} for an invalid or replayed token.
 func (f *Flow) VerifyLogoutToken(ctx context.Context, cfg Config, raw string, admit ...func(context.Context, LogoutToken) error) (LogoutToken, error) {
 	if cfg.Issuer == "" || cfg.ClientID == "" || raw == "" {
@@ -73,12 +75,18 @@ func (f *Flow) VerifyLogoutToken(ctx context.Context, cfg Config, raw string, ad
 	if err != nil {
 		return LogoutToken{}, err
 	}
-	verifier, err := f.logoutVerifier(ctx, provider, cfg)
+	verifier, fetch, err := f.logoutVerifier(ctx, provider, cfg)
 	if err != nil {
 		return LogoutToken{}, err
 	}
+	refusedBefore, _ := fetch.refusals()
 	tok, err := verifyLogoutToken(ctx, verifier, f.httpClient, raw, f.now())
 	if err != nil {
+		// go-oidc does not wrap its key set's error; a refusal counted
+		// meanwhile says the keys could not be fetched again yet.
+		if refused, wait := fetch.refusals(); refused > refusedBefore {
+			return LogoutToken{}, &LogoutKeysBusyError{RetryAfter: wait}
+		}
 		return LogoutToken{}, fmt.Errorf("%w: %w", ErrLogoutTokenInvalid, redact.WrapError("logout token", err))
 	}
 	first, err := f.replay.Remember(ctx, tok.replayKey(), logoutTokenMaxAge+logoutTokenClockSkew)
@@ -104,35 +112,63 @@ func (f *Flow) VerifyLogoutToken(ctx context.Context, cfg Config, raw string, ad
 
 // logoutKeySet is the key set of an issuer's logout tokens: go-oidc's
 // remote key set, which fetches the keys again whenever a signature does
-// not verify, behind a client that allows one fetch per keyRefetch.
+// not verify, behind a transport that allows one fetch per keyRefetch.
 type logoutKeySet struct {
 	jwksURL string
 	keys    *oidc.RemoteKeySet
+	fetch   *boundedFetch
 }
 
-// errKeyRefetchBounded fails a key fetch that came too soon after the last.
-var errKeyRefetchBounded = errors.New("oauth2: the provider's keys were fetched moments ago")
+// ErrLogoutKeysBusy is matched by a [LogoutKeysBusyError].
+var ErrLogoutKeysBusy = errors.New("oauth2: the provider's keys were fetched moments ago")
 
-// boundedFetch lets one request through per interval.
+// LogoutKeysBusyError is returned by [Flow.VerifyLogoutToken] when the
+// token's signature did not verify against the cached keys and fetching
+// them again was refused as too soon after the last fetch
+// ([WithFlowKeyRefetchInterval]). The token may be valid, signed with a
+// key the provider just rotated in: answer 503 with RetryAfter, so the
+// provider retries.
+type LogoutKeysBusyError struct{ RetryAfter time.Duration }
+
+func (e *LogoutKeysBusyError) Error() string { return ErrLogoutKeysBusy.Error() }
+
+// Is matches [ErrLogoutKeysBusy].
+func (e *LogoutKeysBusyError) Is(target error) bool { return target == ErrLogoutKeysBusy }
+
+// boundedFetch lets one request through per interval; the hops of a
+// redirect belong to their request. It counts the requests it refused.
 type boundedFetch struct {
 	next  http.RoundTripper
 	every time.Duration
 	now   func() time.Time
 
-	mu   sync.Mutex
-	last time.Time
+	mu      sync.Mutex
+	last    time.Time
+	refused int
 }
 
 func (b *boundedFetch) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Response != nil { // a redirect hop of a request already let through
+		return b.next.RoundTrip(r)
+	}
 	b.mu.Lock()
 	now := b.now()
 	if !b.last.IsZero() && now.Sub(b.last) < b.every {
+		b.refused++
 		b.mu.Unlock()
-		return nil, errKeyRefetchBounded
+		return nil, ErrLogoutKeysBusy
 	}
 	b.last = now
 	b.mu.Unlock()
 	return b.next.RoundTrip(r)
+}
+
+// refusals is how many fetches were refused, and how long until the next
+// one is allowed.
+func (b *boundedFetch) refusals() (int, time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.refused, max(b.every-b.now().Sub(b.last), 0)
 }
 
 // signingAlgs are the algorithms go-oidc verifies.
@@ -142,13 +178,13 @@ var signingAlgs = []string{
 
 // logoutVerifier checks logout tokens of cfg against the issuer's bounded
 // key set, kept per issuer while its discovery names the same JWKS URL.
-func (f *Flow) logoutVerifier(ctx context.Context, provider *oidc.Provider, cfg Config) (*oidc.IDTokenVerifier, error) {
+func (f *Flow) logoutVerifier(ctx context.Context, provider *oidc.Provider, cfg Config) (*oidc.IDTokenVerifier, *boundedFetch, error) {
 	var meta struct {
 		JWKSURL string   `json:"jwks_uri"`
 		Algs    []string `json:"id_token_signing_alg_values_supported"`
 	}
 	if err := provider.Claims(&meta); err != nil || meta.JWKSURL == "" {
-		return nil, fmt.Errorf("%w: discovery names no jwks_uri", ErrIssuerDiscovery)
+		return nil, nil, fmt.Errorf("%w: discovery names no jwks_uri", ErrIssuerDiscovery)
 	}
 	f.mu.Lock()
 	set, ok := f.logoutKeys[cfg.Issuer]
@@ -157,10 +193,13 @@ func (f *Flow) logoutVerifier(ctx context.Context, provider *oidc.Provider, cfg 
 		if next == nil {
 			next = http.DefaultTransport
 		}
-		// kit-doctor:allow default-http-client reason="wraps the caller's client transport and keeps its timeout"
-		client := &http.Client{Timeout: f.httpClient.Timeout, Transport: &boundedFetch{next: next, every: f.keyRefetch, now: f.now}}
+		// A copy of the caller's client keeps its redirect policy (an egress
+		// guard's) and timeout; only the transport is bounded.
+		fetch := &boundedFetch{next: next, every: f.keyRefetch, now: f.now}
+		client := *f.httpClient
+		client.Transport = fetch
 		// The key set keeps its context for later fetches, as the provider does.
-		set = logoutKeySet{jwksURL: meta.JWKSURL, keys: oidc.NewRemoteKeySet(oidc.ClientContext(context.WithoutCancel(ctx), client), meta.JWKSURL)}
+		set = logoutKeySet{jwksURL: meta.JWKSURL, keys: oidc.NewRemoteKeySet(oidc.ClientContext(context.WithoutCancel(ctx), &client), meta.JWKSURL), fetch: fetch}
 		f.logoutKeys[cfg.Issuer] = set
 	}
 	f.mu.Unlock()
@@ -168,5 +207,5 @@ func (f *Flow) logoutVerifier(ctx context.Context, provider *oidc.Provider, cfg 
 	if len(algs) == 0 {
 		algs = []string{oidc.RS256}
 	}
-	return oidc.NewVerifier(cfg.Issuer, set.keys, &oidc.Config{ClientID: cfg.ClientID, Now: f.now, SupportedSigningAlgs: algs}), nil
+	return oidc.NewVerifier(cfg.Issuer, set.keys, &oidc.Config{ClientID: cfg.ClientID, Now: f.now, SupportedSigningAlgs: algs}), set.fetch, nil
 }

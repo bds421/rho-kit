@@ -3,6 +3,8 @@ package oauth2_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -35,7 +37,6 @@ func TestFlow_VerifyLogoutToken(t *testing.T) {
 func TestFlow_VerifyLogoutTokenRefuses(t *testing.T) {
 	iss := oauth2test.NewIssuer(t, "app", "s3cret", flowCallback)
 	other := oauth2test.NewIssuer(t, "app", "s3cret", flowCallback)
-	flow := newFlow(t, iss)
 	cfg := flowConfig(iss, "s3cret")
 	cases := map[string]string{
 		"other client":          iss.LogoutToken(t, map[string]any{"sub": "abc", "aud": "other"}),
@@ -54,6 +55,8 @@ func TestFlow_VerifyLogoutTokenRefuses(t *testing.T) {
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
+			// A flow per case: an unknown key right after another fetch is busy, not invalid.
+			flow := newFlow(t, iss)
 			_, err := flow.VerifyLogoutToken(context.Background(), cfg, raw)
 			require.ErrorIs(t, err, oauth2.ErrLogoutTokenInvalid)
 		})
@@ -125,7 +128,10 @@ func TestFlow_LogoutTokensBoundKeyFetches(t *testing.T) {
 	require.Equal(t, 1, iss.KeyFetches())
 	for range 20 {
 		_, err := flow.VerifyLogoutToken(ctx, cfg, forger.LogoutToken(t, map[string]any{"sub": "abc", "iss": iss.URL()}))
-		require.ErrorIs(t, err, oauth2.ErrLogoutTokenInvalid)
+		busy, ok := errors.AsType[*oauth2.LogoutKeysBusyError](err)
+		require.True(t, ok, "a token whose keys may not be fetched yet: %v", err)
+		require.ErrorIs(t, err, oauth2.ErrLogoutKeysBusy)
+		assert.Equal(t, time.Minute, busy.RetryAfter)
 	}
 	assert.Equal(t, 1, iss.KeyFetches(), "forged tokens fetched the keys again")
 	_, err = flow.VerifyLogoutToken(ctx, cfg, iss.LogoutToken(t, map[string]any{"sub": "abc"}))
@@ -136,4 +142,37 @@ func TestFlow_LogoutTokensBoundKeyFetches(t *testing.T) {
 
 	_, err = oauth2.NewFlow(oauth2.NewMemoryStateStore(), oauth2.WithFlowKeyRefetchInterval(0))
 	require.Error(t, err)
+}
+
+// The logout key set keeps the caller's client: a jwks_uri that redirects
+// elsewhere is refused when the caller's redirect policy refuses it (an
+// egress guard's), and followed when it allows it.
+func TestFlow_LogoutKeysKeepTheClientsRedirectPolicy(t *testing.T) {
+	iss := oauth2test.NewIssuer(t, "app", "s3cret", flowCallback)
+	var front *httptest.Server
+	front = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"issuer":"` + front.URL + `","authorization_endpoint":"` + front.URL + `/authorize","token_endpoint":"` + front.URL + `/token","jwks_uri":"` + front.URL + `/jwks","id_token_signing_alg_values_supported":["RS256"]}`))
+		case "/jwks":
+			http.Redirect(w, r, iss.URL()+"/jwks", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(front.Close)
+	cfg := oauth2.Config{Issuer: front.URL, ClientID: "app", RedirectURL: flowCallback}
+	token := func() string { return iss.LogoutToken(t, map[string]any{"sub": "abc", "iss": front.URL}) }
+
+	guarded := *iss.Client() // a copy: the issuer hands out one client
+	guarded.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("redirect refused") }
+	refusing := newFlow(t, iss, oauth2.WithFlowHTTPClient(&guarded))
+	_, err := refusing.VerifyLogoutToken(context.Background(), cfg, token())
+	require.ErrorIs(t, err, oauth2.ErrLogoutTokenInvalid)
+	assert.Zero(t, iss.KeyFetches(), "the redirect was followed")
+
+	following := newFlow(t, iss)
+	_, err = following.VerifyLogoutToken(context.Background(), cfg, token())
+	require.NoError(t, err, "the same redirect where the client allows it")
 }
