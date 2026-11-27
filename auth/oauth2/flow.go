@@ -41,9 +41,15 @@ type Flow struct {
 	cookieSecure bool
 	now          func() time.Time
 	replay       ReplayCache
+	// keyRefetch bounds how often a logout token makes the provider's keys
+	// be fetched again (WithFlowKeyRefetchInterval).
+	keyRefetch time.Duration
 
 	mu        sync.Mutex
 	providers map[string]cachedProvider
+	// logoutKeys are the key sets logout tokens are checked against, per
+	// issuer, with their fetches bounded.
+	logoutKeys map[string]logoutKeySet
 }
 
 type cachedProvider struct {
@@ -95,6 +101,8 @@ func NewFlow(state StateStore, opts ...FlowOption) (*Flow, error) {
 		cookieSecure: true,
 		now:          time.Now,
 		providers:    make(map[string]cachedProvider),
+		logoutKeys:   make(map[string]logoutKeySet),
+		keyRefetch:   time.Minute,
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -112,6 +120,9 @@ func NewFlow(state StateStore, opts ...FlowOption) (*Flow, error) {
 	if f.httpClient == nil {
 		// kit-doctor:allow default-http-client reason="callers inject a hardened client with WithFlowHTTPClient"
 		f.httpClient = &http.Client{Timeout: 10 * time.Second}
+	}
+	if f.keyRefetch <= 0 {
+		return nil, errors.New("oauth2: the key refetch interval must be positive")
 	}
 	if f.stateTTL <= 0 || f.discoveryTTL <= 0 || f.cookiePrefix == "" {
 		return nil, errors.New("oauth2: flow TTLs must be positive and the cookie prefix set")
@@ -391,5 +402,6 @@ func (f *Flow) provider(ctx context.Context, issuer string) (*oidc.Provider, err
 func (f *Flow) Forget(issuer string) {
 	f.mu.Lock()
 	delete(f.providers, issuer)
+	delete(f.logoutKeys, issuer)
 	f.mu.Unlock()
 }

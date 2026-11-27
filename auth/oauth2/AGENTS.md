@@ -104,11 +104,15 @@ or UserInfo without re-discovering endpoints.
   runtime; discovery is cached per issuer (`WithFlowDiscoveryTTL`, 1 h;
   `Flow.Forget(issuer)`). `WithFlowHTTPClient` for a guarded dialer,
   `WithFlowStateTTL` (10 min), `WithFlowClock`
-- Back-channel logout with Flow: `Flow.VerifyLogoutToken(ctx, cfg, raw)`
-  checks a posted `logout_token` against the provider of `cfg` (signature,
-  iss, aud = client id, exp, iat at most 5 min old and 1 min ahead, the
-  logout event, sid and/or sub, no nonce) and records its jti, and returns
-  `LogoutToken{Issuer, Subject, SID}`; errors `ErrLogoutTokenInvalid`,
+- Back-channel logout with Flow: `Flow.VerifyLogoutToken(ctx, cfg, raw,
+  admit...)` checks a posted `logout_token` against the provider of `cfg`
+  (signature, iss, aud = client id, exp, iat at most 5 min old and 1 min
+  ahead, the logout event, sid and/or sub, no nonce), runs `admit` on the
+  verified token (its error leaves the jti unrecorded: a budget only
+  verified tokens spend), records its jti, and returns
+  `LogoutToken{Issuer, Subject, SID}`; the keys are fetched again at most
+  once a `WithFlowKeyRefetchInterval` (1 min) per issuer, so forged tokens
+  cannot make a fetch each; errors `ErrLogoutTokenInvalid`,
   `ErrLogoutTokenReplayed`. The replay cache is the state store when it
   implements `ReplayCache` (`auth/oauth2/redis` does), else in-process;
   `WithFlowReplayCache` sets one. The caller ends its sessions by
@@ -173,7 +177,9 @@ value persisted at login. No transport-only trust shortcut is taken.
   single-use state; relative deep links only
 - Flow back-channel logout: sub and sid, sid alone; replayed jti, other
   client, other key, expiry, events, nonce, jti, iat and missing sub and sid
-  refused; a failing replay cache fails closed
+  refused; a failing replay cache fails closed; a refused admission
+  leaves the jti unrecorded; forged tokens fetch the keys at most once an
+  interval
 - Flow mix-up: an answer of another provider (another callback URL, an iss
   naming itself, a key naming another issuer now) and a missing or wrong
   iss where announced are refused before any code exchange

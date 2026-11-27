@@ -40,6 +40,7 @@ type Issuer struct {
 	claims       map[string]any
 	denied       bool
 	issParameter bool
+	keyFetches   int
 	codes        map[string]grant
 }
 
@@ -101,6 +102,13 @@ func (i *Issuer) SendIssuer(send bool) {
 	i.issParameter = send
 }
 
+// KeyFetches is how often the key set (JWKS) was fetched.
+func (i *Issuer) KeyFetches() int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.keyFetches
+}
+
 // Deny makes the authorization endpoint answer access_denied, as when the
 // person cancels at the provider.
 func (i *Issuer) Deny(denied bool) {
@@ -128,6 +136,9 @@ func (i *Issuer) discovery(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (i *Issuer) jwks(w http.ResponseWriter, _ *http.Request) {
+	i.mu.Lock()
+	i.keyFetches++
+	i.mu.Unlock()
 	writeJSON(w, http.StatusOK, jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
 		Key: &i.key.PublicKey, KeyID: keyID, Algorithm: string(jose.RS256), Use: "sig",
 	}}})

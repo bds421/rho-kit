@@ -74,3 +74,64 @@ func TestFlow_VerifyLogoutTokenFailsClosed(t *testing.T) {
 	assert.NotErrorIs(t, err, oauth2.ErrLogoutTokenInvalid, "a cache failure is not the token's fault")
 	assert.Panics(t, func() { oauth2.WithFlowReplayCache(nil) })
 }
+
+// An admission refused after verification leaves the jti unrecorded, so
+// the provider's next delivery of the same token is verified again; a
+// forged token never reaches the admission.
+func TestFlow_VerifyLogoutTokenAdmitsVerifiedTokensOnly(t *testing.T) {
+	iss := oauth2test.NewIssuer(t, "app", "s3cret", flowCallback)
+	other := oauth2test.NewIssuer(t, "app", "s3cret", flowCallback)
+	flow := newFlow(t, iss)
+	cfg := flowConfig(iss, "s3cret")
+	full := errors.New("budget spent")
+	var admitted []oauth2.LogoutToken
+	admit := func(refuse bool) func(context.Context, oauth2.LogoutToken) error {
+		return func(_ context.Context, tok oauth2.LogoutToken) error {
+			admitted = append(admitted, tok)
+			if refuse {
+				return full
+			}
+			return nil
+		}
+	}
+	_, err := flow.VerifyLogoutToken(context.Background(), cfg, other.LogoutToken(t, map[string]any{"sub": "abc", "iss": iss.URL()}), admit(false))
+	require.ErrorIs(t, err, oauth2.ErrLogoutTokenInvalid)
+	assert.Empty(t, admitted, "a forged token reached the admission")
+
+	raw := iss.LogoutToken(t, map[string]any{"sub": "abc"})
+	_, err = flow.VerifyLogoutToken(context.Background(), cfg, raw, admit(true))
+	require.ErrorIs(t, err, full)
+	tok, err := flow.VerifyLogoutToken(context.Background(), cfg, raw, admit(false))
+	require.NoError(t, err, "a refused admission recorded the jti")
+	assert.Equal(t, "abc", tok.Subject)
+	assert.Len(t, admitted, 2)
+	_, err = flow.VerifyLogoutToken(context.Background(), cfg, raw, admit(false))
+	require.ErrorIs(t, err, oauth2.ErrLogoutTokenReplayed)
+}
+
+// Forged logout tokens make the provider's keys be fetched at most once a
+// refetch interval, and a valid token still verifies from the cached keys.
+func TestFlow_LogoutTokensBoundKeyFetches(t *testing.T) {
+	iss := oauth2test.NewIssuer(t, "app", "s3cret", flowCallback)
+	forger := oauth2test.NewIssuer(t, "app", "s3cret", flowCallback)
+	now := time.Now()
+	flow := newFlow(t, iss, oauth2.WithFlowClock(func() time.Time { return now }), oauth2.WithFlowKeyRefetchInterval(time.Minute))
+	cfg := flowConfig(iss, "s3cret")
+	ctx := context.Background()
+	_, err := flow.VerifyLogoutToken(ctx, cfg, iss.LogoutToken(t, map[string]any{"sub": "abc"}))
+	require.NoError(t, err)
+	require.Equal(t, 1, iss.KeyFetches())
+	for range 20 {
+		_, err := flow.VerifyLogoutToken(ctx, cfg, forger.LogoutToken(t, map[string]any{"sub": "abc", "iss": iss.URL()}))
+		require.ErrorIs(t, err, oauth2.ErrLogoutTokenInvalid)
+	}
+	assert.Equal(t, 1, iss.KeyFetches(), "forged tokens fetched the keys again")
+	_, err = flow.VerifyLogoutToken(ctx, cfg, iss.LogoutToken(t, map[string]any{"sub": "abc"}))
+	require.NoError(t, err, "a valid token after the flood")
+	now = now.Add(time.Minute)
+	_, _ = flow.VerifyLogoutToken(ctx, cfg, forger.LogoutToken(t, map[string]any{"sub": "abc", "iss": iss.URL()}))
+	assert.Equal(t, 2, iss.KeyFetches(), "a fetch once the interval passed")
+
+	_, err = oauth2.NewFlow(oauth2.NewMemoryStateStore(), oauth2.WithFlowKeyRefetchInterval(0))
+	require.Error(t, err)
+}
