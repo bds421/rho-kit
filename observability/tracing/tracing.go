@@ -6,6 +6,7 @@ package tracing
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,6 +23,9 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.30.0"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc/credentials"
+
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 )
 
 // defaultInitTimeout bounds the OTLP exporter handshake during [Init] when
@@ -46,8 +50,19 @@ type Config struct {
 	Endpoint string
 
 	// Insecure disables TLS for the OTLP gRPC connection.
-	// Typically true for local collectors and development.
+	// Typically true for local collectors and development. Must not be
+	// combined with TLS.
 	Insecure bool
+
+	// TLS, when set, secures the OTLP connection with this configuration
+	// instead of the system roots: RootCAs (or the PeerVerifier of
+	// security/netutil.ReloadingClientTLS) verify the collector, and
+	// GetClientCertificate or Certificates present a client certificate for
+	// mutual TLS. Go calls GetClientCertificate on every handshake, so a
+	// config from ReloadingClientTLS presents a renewed certificate on the
+	// next connection. Init clones it with TLS 1.3 as the floor and refuses
+	// InsecureSkipVerify unless a PeerVerifier replaces the verification.
+	TLS *tls.Config
 
 	// SampleRate is the fraction of traces to sample (0.0 to 1.0).
 	// Zero (the field's zero value) means "unset" and receives the
@@ -131,6 +146,7 @@ func (c Config) LogValue() slog.Value {
 		slog.String("environment", c.Environment),
 		slog.String("endpoint", redactedEndpoint(c.Endpoint)),
 		slog.Bool("insecure", c.Insecure),
+		slog.Bool("tls_configured", c.TLS != nil),
 		slog.Float64("sample_rate", c.SampleRate),
 		slog.Bool("enable_baggage", c.EnableBaggage),
 		slog.Duration("init_timeout", c.InitTimeout),
@@ -171,6 +187,9 @@ func (c Config) Validate() error {
 	if err := validateEndpoint(c.Endpoint); err != nil {
 		return err
 	}
+	if err := c.validateTLS(); err != nil {
+		return err
+	}
 	if c.SampleRate < 0 || c.SampleRate > 1 {
 		return fmt.Errorf("tracing: SampleRate must be between 0 and 1 (got %.4f)", c.SampleRate)
 	}
@@ -186,6 +205,26 @@ func (c Config) Validate() error {
 		}
 	}
 	return validateTenantSampleRates(c.TenantSampleRates)
+}
+
+// validateTLS rejects a TLS config that Init could not use.
+func (c Config) validateTLS() error {
+	if c.TLS == nil {
+		return nil
+	}
+	if c.Insecure {
+		return errors.New("tracing: set Insecure or TLS, not both")
+	}
+	if _, err := exporterTLS(c.TLS); err != nil {
+		return fmt.Errorf("tracing: TLS: %w", err)
+	}
+	return nil
+}
+
+// exporterTLS detaches the caller's config with the TLS 1.3 floor every new
+// kit transport uses.
+func exporterTLS(cfg *tls.Config) (*tls.Config, error) {
+	return tlsclone.ConfigWithFloor(cfg, tls.VersionTLS13, tlsclone.WithAllowPeerVerifier())
 }
 
 func (c Config) validateBatching() error {
@@ -338,7 +377,11 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 
 	dialCtx, dialCancel := initDialContext(ctx, cfg.InitTimeout)
 	defer dialCancel()
-	exporter, err := otlptracegrpc.New(dialCtx, exporterOptions(cfg)...)
+	opts, err := exporterOptions(cfg)
+	if err != nil {
+		return nil, err
+	}
+	exporter, err := otlptracegrpc.New(dialCtx, opts...)
 	if err != nil {
 		// Don't block service startup on an unreachable collector.
 		// Surface the failure and degrade to noop so the rest of the
@@ -371,12 +414,19 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 	return &Provider{tp: tp}, nil
 }
 
-func exporterOptions(cfg Config) []otlptracegrpc.Option {
+func exporterOptions(cfg Config) ([]otlptracegrpc.Option, error) {
 	opts := []otlptracegrpc.Option{
 		otlptracegrpc.WithEndpoint(cfg.Endpoint),
 	}
-	if cfg.Insecure {
+	switch {
+	case cfg.Insecure:
 		opts = append(opts, otlptracegrpc.WithInsecure())
+	case cfg.TLS != nil:
+		tlsCfg, err := exporterTLS(cfg.TLS)
+		if err != nil {
+			return nil, fmt.Errorf("tracing: TLS: %w", err)
+		}
+		opts = append(opts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsCfg)))
 	}
 	if len(cfg.Headers) > 0 {
 		opts = append(opts, otlptracegrpc.WithHeaders(cfg.Headers))
@@ -384,7 +434,7 @@ func exporterOptions(cfg Config) []otlptracegrpc.Option {
 	if cfg.Compression == "gzip" {
 		opts = append(opts, otlptracegrpc.WithCompressor("gzip"))
 	}
-	return opts
+	return opts, nil
 }
 
 // initDialContext bounds the exporter handshake by timeout: the default

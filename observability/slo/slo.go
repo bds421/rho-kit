@@ -78,6 +78,13 @@ type SLO struct {
 	// methods. Set Name+Pattern (or LabelMatcher) to scope the SLO to a
 	// single endpoint or status class.
 	LatencyLabelFilter LabelFilter
+
+	// LatencyExclude leaves out of the latency percentile every histogram
+	// label combination that matches any of these filters, applied after
+	// LatencyLabelFilter. Use it for routes whose duration is the client's,
+	// such as uploads and downloads, so they do not burn the budget of the
+	// rest. Used only for [TypeLatency].
+	LatencyExclude []LabelFilter
 }
 
 // LabelFilter defines a label name and a pattern for filtering metrics.
@@ -300,7 +307,15 @@ func evaluateLatency(s SLO, families map[string]*dto.MetricFamily) float64 {
 	}
 
 	if s.LatencyLabelFilter.Name != "" {
-		mf = filterHistogramByLabel(mf, s.LatencyLabelFilter)
+		mf = filterHistogram(mf, func(labels []*dto.LabelPair) bool { return matchesLabel(labels, s.LatencyLabelFilter) })
+		if mf == nil {
+			return math.NaN()
+		}
+	}
+	if len(s.LatencyExclude) > 0 {
+		mf = filterHistogram(mf, func(labels []*dto.LabelPair) bool {
+			return !slices.ContainsFunc(s.LatencyExclude, func(f LabelFilter) bool { return matchesLabel(labels, f) })
+		})
 		if mf == nil {
 			return math.NaN()
 		}
@@ -309,16 +324,16 @@ func evaluateLatency(s SLO, families map[string]*dto.MetricFamily) float64 {
 	return histogramPercentile(mf, s.Percentile)
 }
 
-// filterHistogramByLabel returns a shallow-copy [dto.MetricFamily]
-// containing only the metrics whose labels match filter. Returns nil if no
+// filterHistogram returns a shallow-copy [dto.MetricFamily]
+// containing only the metrics whose labels keep accepts. Returns nil if no
 // metrics match. The returned family is safe to pass to histogramPercentile,
 // which aggregates across all metrics — restricting the input restricts the
 // aggregation.
-func filterHistogramByLabel(mf *dto.MetricFamily, filter LabelFilter) *dto.MetricFamily {
+func filterHistogram(mf *dto.MetricFamily, keep func([]*dto.LabelPair) bool) *dto.MetricFamily {
 	src := mf.GetMetric()
 	matched := make([]*dto.Metric, 0, len(src))
 	for _, m := range src {
-		if matchesLabel(m.GetLabel(), filter) {
+		if keep(m.GetLabel()) {
 			matched = append(matched, m)
 		}
 	}

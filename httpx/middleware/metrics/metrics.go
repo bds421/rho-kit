@@ -33,7 +33,17 @@ type routePatternSlot struct {
 	pattern atomic.Pointer[string]
 }
 
-func (s *routePatternSlot) set(pattern string) { s.pattern.Store(&pattern) }
+// setFirst records pattern unless one is already recorded. Handlers
+// return inside out, so the innermost [CaptureRoute] writes first and an
+// outer one, whose pattern only names the prefix that led to a nested mux,
+// keeps the more specific pattern. An empty pattern (the inner mux matched
+// nothing) leaves the slot to the outer one.
+func (s *routePatternSlot) setFirst(pattern string) {
+	if pattern == "" {
+		return
+	}
+	s.pattern.CompareAndSwap(nil, &pattern)
+}
 
 func (s *routePatternSlot) get() string {
 	if p := s.pattern.Load(); p != nil {
@@ -48,11 +58,15 @@ func (s *routePatternSlot) get() string {
 // the metrics/tracing middleware and the mux leaves the outer request's
 // Pattern empty. Place CaptureRoute immediately around the mux
 // (stack.Default does this) so route labels and span names are accurate.
+//
+// When a mux routes to another mux, wrap the inner one in CaptureRoute
+// too: the innermost matched pattern wins, so an outer pattern such as
+// "/" that leads to a nested mux does not label every request.
 func CaptureRoute(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
 		if slot, ok := r.Context().Value(routePatternKey{}).(*routePatternSlot); ok && slot != nil {
-			slot.set(r.Pattern)
+			slot.setFirst(r.Pattern)
 		}
 	})
 }

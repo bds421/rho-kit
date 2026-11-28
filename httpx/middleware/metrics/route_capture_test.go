@@ -103,3 +103,43 @@ func TestCaptureRoute_ConcurrentOuterReadIsRaceFree(t *testing.T) {
 		}
 	}
 }
+
+// An outer mux routes "/" to an inner mux, as a service that mounts a
+// generated API router under its own does. Each mux is wrapped in
+// CaptureRoute and a middleware clones the request between them. The
+// request is labelled with the inner pattern, method stripped; a path the
+// inner mux does not match keeps the outer pattern.
+func TestCaptureRoute_NestedMuxInnerPatternWins(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewHTTPMetrics(metrics.WithRegisterer(reg))
+
+	inner := http.NewServeMux()
+	inner.HandleFunc("GET /api/v1/items/{id}", func(http.ResponseWriter, *http.Request) {})
+	clone := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(r.Context()))
+		})
+	}
+	outer := http.NewServeMux()
+	outer.Handle("/", clone(metrics.CaptureRoute(inner)))
+	outer.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
+	h := m.Middleware(clone(metrics.CaptureRoute(outer)))
+
+	for _, path := range []string{"/api/v1/items/42", "/healthz", "/elsewhere"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+	}
+
+	got := map[string]bool{}
+	for _, route := range routeLabels(t, reg) {
+		got[route] = true
+	}
+	want := map[string]bool{"/api/v1/items/{id}": true, "/healthz": true, "/": true}
+	if len(got) != len(want) {
+		t.Fatalf("routes = %v, want %v", got, want)
+	}
+	for route := range want {
+		if !got[route] {
+			t.Fatalf("routes = %v, want %v", got, want)
+		}
+	}
+}

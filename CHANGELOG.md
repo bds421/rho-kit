@@ -1,5 +1,48 @@
 # Changelog
 
+## v2.61.0 — 2026-11-28
+
+Every workspace module is released at v2.61.0 (`release/v2.61.0`). No breaking changes.
+
+### observability/tracing
+
+- **feat: export traces over mutual TLS.** `Config.TLS` secures the OTLP
+  connection with the caller's `*tls.Config` instead of the system roots,
+  so a collector that requires a client certificate can be reached. Go
+  asks `GetClientCertificate` on every handshake: with
+  `netutil.ReloadingClientTLS(src)` the exporter presents a renewed
+  certificate from its next connection and verifies the collector against
+  the source's current CAs. `Init` clones the config with a TLS 1.3 floor
+  and refuses `InsecureSkipVerify` unless a peer verifier replaces the
+  verification; `Insecure` and `TLS` together fail `Validate`.
+
+### httpx/middleware/metrics
+
+- **fix: the innermost route pattern labels a request.** `CaptureRoute`
+  wrote its request's `Pattern` into the route slot after the handler
+  returned, so around a mux that routes to another mux the outer pattern
+  (often `/`) replaced the inner one and every request through the nested
+  mux had one label and span name. The first non-empty pattern recorded
+  now stays: wrap each mux in `CaptureRoute` and a request is labelled
+  with the inner mux's pattern, method stripped as before; a path the inner
+  mux does not match keeps the outer pattern.
+
+### observability/slo
+
+- **feat: leave routes out of a latency objective.** `SLO.LatencyExclude`
+  drops every histogram label combination that matches one of its filters
+  from the latency percentile, after `LatencyLabelFilter`, so routes whose
+  duration is the client's (uploads, downloads) do not burn the budget of
+  the rest.
+
+### crypto/envelope
+
+- **feat: `kektest.Conform`**, the contract every KEK passes, as subtests:
+  a wrap unwraps to its DEK under the returned key ID and does not hold
+  the DEK in the clear, two wraps differ, nothing aliases, unknown key IDs
+  and changed, truncated or empty wraps are refused, concurrent wraps each
+  unwrap to their own DEK. `kekstatic` conforms.
+
 ## v2.60.0 — 2026-11-27
 
 Every workspace module is released at v2.60.0 (`release/v2.60.0`). No breaking changes.

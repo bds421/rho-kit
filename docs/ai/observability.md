@@ -43,7 +43,14 @@ When `Endpoint` is set, `ServiceName` is required. `Endpoint` must be
 or fragment components. OTLP exporter headers are treated as secret-bearing:
 logs expose only whether headers are configured, and `Init` snapshots the
 header map before exporter setup. Set `Insecure: true` only for local collectors
-or trusted sidecar hops where plaintext is intentionally accepted.
+or trusted sidecar hops where plaintext is intentionally accepted. For a
+collector behind mutual TLS, set `TLS` to a client config:
+`netutil.ReloadingClientTLS(src)` verifies the collector against the
+source's CAs and presents its client certificate, read again on every
+handshake, so a renewed certificate is used from the next connection. `Init`
+clones `TLS` with a TLS 1.3 floor and refuses `InsecureSkipVerify` unless a
+peer verifier replaces the verification; `Insecure` and `TLS` together fail
+validation.
 
 Keep `EnableBaggage` off unless every downstream service treats baggage as
 untrusted input. Baggage propagates arbitrary key/value pairs and is easy to

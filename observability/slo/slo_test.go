@@ -554,7 +554,9 @@ func TestIsSLOBreached(t *testing.T) {
 	}
 }
 
-func TestEvaluateLatency_LabelFilter(t *testing.T) {
+// fastSlowFamilies is one latency histogram with two routes: "fast"
+// answers within 0.1 s, "slow" within 10 s.
+func fastSlowFamilies() map[string]*dto.MetricFamily {
 	stringPtr := func(s string) *string { return &s }
 	uint64Ptr := func(u uint64) *uint64 { return &u }
 	float64Ptr := func(f float64) *float64 { return &f }
@@ -585,9 +587,13 @@ func TestEvaluateLatency_LabelFilter(t *testing.T) {
 		Type:   dto.MetricType_HISTOGRAM.Enum(),
 		Metric: []*dto.Metric{fast, slow},
 	}
-	families := map[string]*dto.MetricFamily{
+	return map[string]*dto.MetricFamily{
 		"http_request_duration_seconds": mf,
 	}
+}
+
+func TestEvaluateLatency_LabelFilter(t *testing.T) {
+	families := fastSlowFamilies()
 
 	// Without filter — aggregates across both routes.
 	unfiltered := evaluateLatency(SLO{
@@ -612,6 +618,30 @@ func TestEvaluateLatency_LabelFilter(t *testing.T) {
 		LatencyLabelFilter: LabelFilter{Name: "route", Pattern: "no-such-route"},
 	}, families)
 	assert.True(t, math.IsNaN(none))
+
+}
+
+// Excluding route=slow leaves the fast percentile; excluding both leaves
+// nothing.
+func TestEvaluateLatency_Exclude(t *testing.T) {
+	families := fastSlowFamilies()
+	filtered := evaluateLatency(SLO{
+		Type:               TypeLatency,
+		Percentile:         0.99,
+		LatencyLabelFilter: LabelFilter{Name: "route", Pattern: "fast"},
+	}, families)
+	excluded := evaluateLatency(SLO{
+		Type:           TypeLatency,
+		Percentile:     0.99,
+		LatencyExclude: []LabelFilter{{Name: "route", Pattern: "slow"}},
+	}, families)
+	assert.InDelta(t, filtered, excluded, 1e-9, "excluding slow must equal filtering on fast")
+	all := evaluateLatency(SLO{
+		Type:           TypeLatency,
+		Percentile:     0.99,
+		LatencyExclude: []LabelFilter{{Name: "route", Pattern: "slow"}, {Name: "route", Pattern: "fast"}},
+	}, families)
+	assert.True(t, math.IsNaN(all))
 }
 
 // failingGatherer returns partial data with an error — the exact shape
