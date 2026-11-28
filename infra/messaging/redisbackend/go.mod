@@ -4,9 +4,9 @@ go 1.27.4
 
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
-	github.com/bds421/rho-kit/core/v2 v2.60.0
-	github.com/bds421/rho-kit/data/stream/redisstream/v2 v2.60.0
-	github.com/bds421/rho-kit/infra/v2 v2.60.0
+	github.com/bds421/rho-kit/core/v2 v2.61.0
+	github.com/bds421/rho-kit/data/stream/redisstream/v2 v2.61.0
+	github.com/bds421/rho-kit/infra/v2 v2.61.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.47.0
@@ -15,11 +15,11 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/data/v2 v2.60.0 // indirect
-	github.com/bds421/rho-kit/infra/redis/v2 v2.60.0 // indirect
-	github.com/bds421/rho-kit/io/v2 v2.60.0 // indirect
-	github.com/bds421/rho-kit/observability/v2 v2.60.0 // indirect
-	github.com/bds421/rho-kit/resilience/v2 v2.60.0 // indirect
+	github.com/bds421/rho-kit/data/v2 v2.61.0 // indirect
+	github.com/bds421/rho-kit/infra/redis/v2 v2.61.0 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.61.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.61.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.61.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v6 v6.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
